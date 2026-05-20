@@ -9574,8 +9574,14 @@ static int hidpp10_consumer_keys_raw_event(struct hidpp_device *hidpp,
 	consumer_report[0] = 0x03;
 	memcpy(&consumer_report[1], &data[3], 4);
 	/* We are called from atomic context */
+
+  #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 9)
 	hid_report_raw_event(hidpp->hid_dev, HID_INPUT_REPORT,
 			     consumer_report, sizeof(consumer_report), 5, 1);
+  #else
+	hid_report_raw_event(hidpp->hid_dev, HID_INPUT_REPORT,
+			     consumer_report, 5, 1);
+  #endif
 
 	return 1;
 }
