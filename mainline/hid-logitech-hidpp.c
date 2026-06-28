@@ -8930,6 +8930,7 @@ static struct attribute *gpro_wheel_group_attrs[] = {
 	&dev_attr_wheel_mode.attr,
 	&dev_attr_wheel_profile.attr,
 	&dev_attr_wheel_calibrate.attr,
+	&dev_attr_wheel_calibrate_here.attr,
 #ifdef CONFIG_HID_LOGITECH_HIDPP_DEBUG
 	&dev_attr_wheel_hidpp_debug.attr,
 #endif
