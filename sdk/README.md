@@ -34,7 +34,7 @@ Everything else is the same API. No Trueforce.
 
 ### Trueforce SDK 1.3.11
 
-This is the SDK that Trueforce-aware games (BeamNG, some AC titles, iRacing) link against. 75 total exports; 59 have readable names, 16 are obfuscated C++ symbols that we don't need to shim.
+This is the SDK that Trueforce-aware games (BeamNG, some AC titles, iRacing) link against. 75 total exports; 62 have readable names, 13 are obfuscated C++ symbols that we don't need to shim.
 
 **API groups (readable exports):**
 
@@ -106,7 +106,7 @@ Both channels coexist at runtime: the SDK sets both KF (slow, steering feel) and
 ### How we use this in practice
 
 - The Proton recipe in the project README installs the unmodified, Logitech-signed Trueforce DLL into each Wine prefix and registers its CLSID. The DLL talks to Wine's HID stack rather than the (nonexistent on Linux) G HUB Agent named pipe; Wine's HID stack reaches our kernel driver. End-to-end verified against ACC. See `tools/install-tf-shim.sh`.
-- For native Linux apps that want to drive Trueforce directly (no Wine in the loop), `userspace/libtrueforce/` is a from-scratch C reimplementation of the same protocol; `include/trueforce.h` mirrors the 59 named exports of the Windows DLL.
+- For native Linux apps that want to drive Trueforce directly (no Wine in the loop), `userspace/libtrueforce/` is a from-scratch C reimplementation of the same protocol; `include/trueforce.h` mirrors the 62 named exports of the Windows DLL.
 - `logiTrueForceSetStreamTF` suggested a bulk-upload path in addition to per-sample. libtrueforce supports streaming writes via `write(2)` on the wheel's interface-2 hidraw node rather than a single ioctl per sample, matching the wire-level format.
 
 ## How to re-dump the exports

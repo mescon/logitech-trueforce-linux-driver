@@ -85,7 +85,7 @@ sessions get access automatically on login.
 
 ## API
 
-`include/trueforce.h` mirrors the 59 named exports of the Windows
+`include/trueforce.h` mirrors the 62 named exports of the Windows
 SDK (`trueforce_sdk_x64.dll` 1.3.11) so a Linux app can call the
 same API surface. Function signatures use the host C ABI; all
 Windows-isms (HANDLE, GUID, wide strings) have been translated to

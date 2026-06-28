@@ -19,7 +19,7 @@ Linux kernel driver for **Logitech direct-drive racing wheels**:
 - **Logitech G PRO Racing Wheel for PS/PC** (`046d:c268`)
 
 You get the full evdev force-feedback suite (constant, spring, damper,
-friction, inertia, periodic, ramp, autocenter, gain), all 17 buttons,
+friction, inertia, periodic, ramp, rumble, gain), all 17 buttons,
 encoders, paddles, hat switch, 16-bit pedal axes, and G Hub-equivalent
 settings (rotation range, FFB strength / damping / TRUEFORCE / filter,
 pedal curves, LIGHTSYNC LEDs) exposed via sysfs. **TrueForce haptics
@@ -35,7 +35,7 @@ G920 / G923 wheels, etc.) keep working through the same module.
 **Force feedback** (full evdev suite, all routed to wheel torque):
 `FF_CONSTANT`, `FF_SPRING`, `FF_DAMPER`, `FF_FRICTION`, `FF_INERTIA`,
 `FF_PERIODIC` (sine, square, triangle, saw-up, saw-down), `FF_RAMP`,
-`FF_AUTOCENTER`, `FF_GAIN`. Verified with `fftest`, the in-tree
+`FF_RUMBLE`, `FF_GAIN`. Verified with `fftest`, the in-tree
 `tests/ff_matrix_test`, and across multiple sims (ACC, AC, BeamNG,
 AMS2, Le Mans Ultimate, iRacing, Dirt Rally, ETS2).
 
@@ -124,7 +124,7 @@ SDK-aware sims under Proton.
 
 ### Prerequisites
 
-- Linux kernel 5.15 or newer (tested through 6.18)
+- Linux kernel 5.15 or newer (tested through 7.1)
 - Kernel headers for the running kernel
 - `dkms`, `make`, `gcc` or `clang`
 - **For TrueForce in Proton sims only**: `winegcc` (ships with Wine
@@ -403,7 +403,7 @@ echo 1 | sudo tee $WHEEL_DEV/wheel_led_apply
 | `wheel_brake_force` | 0-100 | Brake pedal load cell threshold (Onboard mode only) |
 | `wheel_ffb_filter` | 1-15 | FFB smoothing level |
 | `wheel_ffb_filter_auto` | 0-1 | Auto FFB filter (0=off, 1=on) |
-| `wheel_calibrate` | 0-65535 (write-only) | G Pro only. Raw encoder value to adopt as the new centre. |
+| `wheel_calibrate` | 0-65535 (write-only) | Raw encoder value to adopt as the new centre (RS50 and G Pro). |
 
 **LIGHTSYNC LED Control:**
 
@@ -414,7 +414,7 @@ echo 1 | sudo tee $WHEEL_DEV/wheel_led_apply
 | `wheel_led_slot_brightness` | 0-100 | Per-slot brightness (applied when slot activated) |
 | `wheel_led_direction` | 0-3 | Animation direction (0=L→R, 1=R→L, 2=In→Out, 3=Out→In) |
 | `wheel_led_colors` | hex | 10 space-separated RGB hex values (LED1-LED10) |
-| `wheel_led_effect` | 5-9 | LED effect (5=custom/static, 6-9=built-in effects) |
+| `wheel_led_effect` | 1-5 | LED effect (1-4 = animated modes, 5 = static/custom slot colors) |
 | `wheel_led_brightness` | 0-100 | Global LED brightness percentage |
 | `wheel_led_apply` | (write) | Apply current slot config to device |
 

@@ -188,7 +188,7 @@ Used for constant force values with extended precision.
 | `userspace/libtrueforce/src/tf_init_data.h` | 68 canonical init packets, auto-generated from capture, sent twice at session bring-up |
 | `userspace/libtrueforce/src/session.c` | `logitf_session_ensure()` opens the hidraw node and runs the two-pass init |
 | `userspace/libtrueforce/src/stream.c` | 250 Hz timerfd loop, 13-slot rolling window, `logitf_stream_push_s16()` / `_clear()` / `_start/stop()` |
-| `userspace/libtrueforce/include/trueforce.h` | Mirrors the 59 exports of `trueforce_sdk_x64.dll` (Windows SDK) so a Linux app can call the same API surface |
+| `userspace/libtrueforce/include/trueforce.h` | Mirrors the 62 exports of `trueforce_sdk_x64.dll` (Windows SDK) so a Linux app can call the same API surface |
 
 ## Open Items
 

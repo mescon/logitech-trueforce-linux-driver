@@ -1,6 +1,6 @@
 # Logitech RS50 Protocol Specification
 
-**Document Version**: 6.1
+**Document Version**: 6.2
 **Date**: 2026-04-21
 **Author**: Verified from USB capture analysis
 **Status**: Protocol reference for Linux driver development
@@ -90,7 +90,7 @@ Button state is encoded in bytes 0-3 of the input report.
 **Byte 0:**
 | Bit | Mask   | Button |
 |-----|--------|--------|
-| 3   | `0x08` | Baseline (normally set, cleared for D-pad) |
+| 0-3 | `0x0F` | D-pad hat nibble (see D-pad Encoding below; `0x08`+ = released) |
 | 4   | `0x10` | **A** |
 | 5   | `0x20` | **X** |
 | 6   | `0x40` | **B** |
@@ -113,31 +113,49 @@ Button state is encoded in bytes 0-3 of the input report.
 |-----|--------|--------|
 | 7   | `0x80` | **G Button** (Logitech logo) |
 
-### D-pad Encoding (Byte 0, bits 0-2) - 8 directions
+### D-pad Encoding (Byte 0 low nibble, bits 0-3) - standard HID hat
 
-When the D-pad is pressed, byte 0 bit 3 (`0x08` baseline) is **cleared** and bits 0-2 encode the direction. The RS50 and G Pro both emit all 8 codes; the earlier "4-way" write-up missed the diagonals. The driver decodes this as `ABS_HAT0X`/`ABS_HAT0Y` (see `rs50_process_dpad()` and `RS50_DPAD_*` constants in the source).
+Byte 0's low nibble (`byte0 & 0x0F`) is a **standard HID Hat Switch**
+(Usage `0x39`). The interface-0 report descriptor declares it as logical
+`0-7` over physical `0-315` degrees with a null state, which by HID
+convention means value `0` = Up and each step is `45` degrees clockwise.
+Values `8-15` are the null (centered / released) state. The high nibble
+(bits 4-7) holds the A/X/B/Y buttons listed in the Byte 0 table above.
 
-| Byte 0 value | Direction |
-|--------------|-----------|
-| `0x00` | Right |
-| `0x01` | Up-Right |
-| `0x02` | Left |
-| `0x03` | Up-Left |
-| `0x04` | Up |
-| `0x05` | Down-Right |
-| `0x06` | Down |
-| `0x07` | Down-Left |
-| `0x08` | Released (baseline) |
+Because this is a standard hat switch, the kernel's native HID input
+mapping decodes it to `ABS_HAT0X`/`ABS_HAT0Y`; the driver does **no**
+custom D-pad decoding.
 
-**Detection**: D-pad pressed when `(byte0 & 0x08) == 0`; direction then read from `byte0 & 0x07`.
+| Hat value | Direction | Angle |
+|-----------|-----------|-------|
+| `0` | Up | 0 deg |
+| `1` | Up-Right | 45 deg |
+| `2` | Right | 90 deg |
+| `3` | Down-Right | 135 deg |
+| `4` | Down | 180 deg |
+| `5` | Down-Left | 225 deg |
+| `6` | Left | 270 deg |
+| `7` | Up-Left | 315 deg |
+| `8-15` | Released (null state) | - |
 
-**Example:**
-- Idle: `08 00 00 00` (baseline set)
-- D-Up: `04 00 00 00` (baseline cleared, direction = 0x04)
-- D-Left: `02 00 00 00` (baseline cleared, direction = 0x02)
+**Detection**: the hat value is `byte0 & 0x0F`; `0-7` are directions and
+`8-15` are released (so "released" is also detectable as `byte0 & 0x08`).
+
+**Example (no buttons pressed):**
+- Idle / released: `08 00 00 00`
+- D-Up: `00 00 00 00`
+- D-Right: `02 00 00 00`
+- D-Down: `04 00 00 00`
+- D-Left: `06 00 00 00`
 - D-Up-Right: `01 00 00 00`
 
-Verified 2026-04-21 from G Pro (2026-04-18_dpad) and RS50 captures.
+> An earlier revision of this section documented a hand-rolled byte-0
+> decode with a non-standard direction table (e.g. value `0x02` = Left,
+> `0x06` = Down). That decode lived in the driver, mapped several
+> directions wrongly - it reported physical Left as Down - and was removed
+> in favour of the kernel's native hat mapping (issue #22). The table
+> above is the standard HID hat encoding the report descriptor actually
+> declares, confirmed against the live wheel after the fix.
 
 ### Wheel Position Encoding
 
@@ -1321,3 +1339,4 @@ This returns the PAGE ID at each index. G Hub queries indices 0x00 through ~0x1F
 | 5.7 | 2026-02-03 | FFB simplified to FF_CONSTANT only (500Hz timer) |
 | 6.0 | 2026-02-04 | Verified feature table, SW_ID behaviour, LIGHTSYNC two-feature architecture |
 | 6.1 | 2026-04-21 | 8-way D-pad, G Pro coverage, per-feature SET fn numbers (damping fn=1, TRUEFORCE fn=3), FFB filter flags bitfield, centre calibration (feature 0x812C, G Pro sub-device 0x05), `wheel_calibrate` sysfs attribute |
+| 6.2 | 2026-06-29 | Corrected the D-pad section: the hat is a standard HID Hat Switch (value 0 = Up, clockwise) decoded natively by the kernel, not a custom byte-0 decode. The previous direction table and the `rs50_process_dpad()`/`RS50_DPAD_*` references were the removed, scrambled implementation (issue #22) |
