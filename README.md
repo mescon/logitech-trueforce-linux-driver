@@ -210,8 +210,10 @@ the SDK DLL installation into your wine prefixes.
    ```bash
    fftest /dev/input/by-id/*Logitech*event-joystick
    ```
-   The wheel should respond to each effect in turn. (`fftest` is in
-   `linuxconsoletools` on most distros.)
+   The wheel should respond to each effect in turn. `fftest` comes from
+   the linuxconsoletools project: it's in the `linuxconsole` package on
+   Arch-based distros (Arch, CachyOS, SteamOS) and `linuxconsoletools`
+   on most others.
 
 For ACC + TrueForce specifically, see "Recipe: ACC + TrueForce on
 RS50 or G PRO Racing Wheel" further down. Other SDK-aware sims
