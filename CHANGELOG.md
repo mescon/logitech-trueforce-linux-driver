@@ -115,6 +115,16 @@ plugin, iRacing) because they all link against the same SDK.
 
 ### Fixed
 
+- **D-pad directions scrambled** (issue #22): the hat reported wrong
+  directions in game binding screens, most visibly Left registering as
+  Down. Interface 0's HID descriptor already declares a standard hat
+  switch that the kernel maps correctly, but the driver also ran a
+  hand-rolled byte-0 decode based on a non-standard encoding and emitted
+  its own (wrong) hat frame ahead of the correct one. A binding screen
+  latches the first frame, so it saw the wrong direction. The redundant
+  decode was removed and the native hat mapping left to do its job.
+  Verified on a live wheel: Up/Right/Down/Left all report correctly with
+  no spurious frames.
 - **Build break on kernel 7.x** (issue #24): `hid_report_raw_event()`
   gained a `size_t bufsize` parameter ("HID: pass the buffer size to
   hid_report_raw_event", mainline v7.1, backported into the v7.0.x

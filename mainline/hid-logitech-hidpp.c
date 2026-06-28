@@ -3905,18 +3905,6 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define RS50_FF_REPORT_SIZE		64
 #define RS50_INPUT_REPORT_SIZE		30	/* Interface 0 joystick report */
 
-/* RS50 D-pad encoding in byte 0 of joystick report */
-#define RS50_DPAD_RELEASED		0x08	/* Bit set when D-pad not pressed */
-#define RS50_DPAD_DIR_MASK		0x07	/* Direction bits 0-2 */
-#define RS50_DPAD_RIGHT			0x00
-#define RS50_DPAD_UP_RIGHT		0x01
-#define RS50_DPAD_LEFT			0x02
-#define RS50_DPAD_UP_LEFT		0x03
-#define RS50_DPAD_UP			0x04
-#define RS50_DPAD_DOWN_RIGHT		0x05
-#define RS50_DPAD_DOWN			0x06
-#define RS50_DPAD_DOWN_LEFT		0x07
-
 /* RS50 FFB refresh command (sent periodically to maintain FFB state) */
 #define RS50_FF_REFRESH_ID		0x05
 #define RS50_FF_REFRESH_CMD		0x07
@@ -4243,10 +4231,6 @@ struct rs50_ff_data {
 	bool ffb_constant_sign;
 	u16 gain;			/* Global FF_GAIN multiplier (0..0xFFFF = 0..100%); lockless, READ_ONCE/WRITE_ONCE */
 
-	/* D-pad state tracking (per-device, not static) */
-	int last_dpad_x;
-	int last_dpad_y;
-
 	/* Track whether we opened HID device for runtime HID++ communication */
 	bool hid_open;
 	bool ff_hdev_open;	/* Track whether interface 2 is open for FFB I/O */
@@ -4280,8 +4264,6 @@ struct rs50_ff_data {
 static void rs50_ff_work_handler(struct work_struct *work);
 static void rs50_ff_send_force(struct rs50_ff_data *ff, s32 force);
 static void rs50_ff_effect_timer_callback(struct timer_list *t);
-static void rs50_setup_dpad(struct input_dev *input);
-static int rs50_process_dpad(struct hidpp_device *hidpp, u8 *data, int size);
 static void rs50_process_pedals(struct hidpp_device *hidpp, u8 *data, int size);
 static struct rs50_ff_data *rs50_find_ff_data(struct hid_device *hdev);
 
@@ -10854,10 +10836,6 @@ static int hidpp_input_configured(struct hid_device *hdev,
 
 	hidpp_populate_input(hidpp, input);
 
-	/* Set up RS50 D-pad as hat switch */
-	if (hidpp->quirks & HIDPP_QUIRK_RS50_FFB)
-		rs50_setup_dpad(input);
-
 	return 0;
 }
 
@@ -11101,12 +11079,19 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 		return m560_raw_event(hdev, data, size);
 
 	/*
-	 * Process RS50 joystick reports for D-pad and pedal handling.
+	 * Process RS50 joystick reports for pedal handling.
 	 * Only process 30-byte reports from interface 0 (joystick).
 	 * Checking the interface number first guards against a 30-byte
 	 * non-HID++ report arriving on interface 1 or 2 being rewritten
 	 * in-place as pedal axes (rs50_process_pedals writes back via
 	 * put_unaligned_le16).
+	 *
+	 * The D-pad is left to hid-input's native hat-switch mapping: the
+	 * interface-0 descriptor declares a standard Hat Switch usage (logical
+	 * 0-7 over 0-315 degrees) that the HID core decodes correctly. An
+	 * earlier hand-rolled byte-0 decode assumed a non-standard encoding and
+	 * emitted scrambled directions (e.g. Left reported as Down), so it was
+	 * removed (issue #22).
 	 */
 	if ((hidpp->quirks & HIDPP_QUIRK_RS50_FFB) &&
 	    size == RS50_INPUT_REPORT_SIZE &&
@@ -11117,140 +11102,12 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 		struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
 
 		if (intf->cur_altsetting->desc.bInterfaceNumber == 0) {
-			rs50_process_dpad(hidpp, data, size);
 			/* Process pedals: curves, deadzones, combined mode */
 			rs50_process_pedals(hidpp, data, size);
 		}
 	}
 
 	return 0;
-}
-
-/*
- * RS50 D-pad input mapping.
- * The RS50 uses a custom D-pad encoding in byte 0:
- * - Bit 3 (0x08) = baseline, normally set, cleared when D-pad pressed
- * - Bits 0-2 = direction when baseline cleared:
- *   0x00 = Right, 0x01 = Up-Right, 0x02 = Left, 0x03 = Up-Left
- *   0x04 = Up, 0x05 = Down-Right, 0x06 = Down, 0x07 = Down-Left
- *
- * This function is called from input_configured to set up proper D-pad axes.
- */
-static void rs50_setup_dpad(struct input_dev *input)
-{
-	/* Set up D-pad as a hat switch (ABS_HAT0X, ABS_HAT0Y) */
-	input_set_abs_params(input, ABS_HAT0X, -1, 1, 0, 0);
-	input_set_abs_params(input, ABS_HAT0Y, -1, 1, 0, 0);
-}
-
-/*
- * Process RS50 joystick input report and generate proper D-pad events.
- * Returns 1 if D-pad was processed, 0 otherwise.
- */
-static int rs50_process_dpad(struct hidpp_device *hidpp, u8 *data, int size)
-{
-	struct rs50_ff_data *ff;
-	struct input_dev *input;
-	u8 byte0;
-	int dpad_x = 0, dpad_y = 0;
-
-	if (!hidpp || !(hidpp->quirks & HIDPP_QUIRK_RS50_FFB))
-		return 0;
-
-	/*
-	 * Interface 0's hidpp is brought up via rs50_minimal_probe which
-	 * does not populate private_data. Fall back to walking siblings
-	 * to find the shared ff_data. Same pattern and reasoning as
-	 * rs50_process_pedals; without it the very first joystick report
-	 * on an interface-0 hidpp produced no D-pad output until another
-	 * code path (rs50_process_pedals) had cached the pointer.
-	 */
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff) {
-		ff = rs50_find_ff_data(hidpp->hid_dev);
-		if (!ff)
-			return 0;
-		WRITE_ONCE(hidpp->private_data, ff);
-	}
-
-	/* Don't process during shutdown */
-	if (atomic_read_acquire(&ff->stopping))
-		return 0;
-
-	input = READ_ONCE(ff->input);
-	if (!input)
-		return 0;
-
-	/* Check if this is a joystick report (should be 30 bytes from interface 0) */
-	if (size < 4)
-		return 0;
-
-	byte0 = data[0];
-
-	/* Check if D-pad is pressed (baseline bit cleared) */
-	if (byte0 & RS50_DPAD_RELEASED) {
-		/* D-pad released - center position */
-		dpad_x = 0;
-		dpad_y = 0;
-	} else {
-		/* D-pad pressed - decode direction from bits 0-2 */
-		u8 direction = byte0 & RS50_DPAD_DIR_MASK;
-
-		switch (direction) {
-		case RS50_DPAD_RIGHT:
-			dpad_x = 1;
-			dpad_y = 0;
-			break;
-		case RS50_DPAD_UP_RIGHT:
-			dpad_x = 1;
-			dpad_y = -1;
-			break;
-		case RS50_DPAD_LEFT:
-			dpad_x = -1;
-			dpad_y = 0;
-			break;
-		case RS50_DPAD_UP_LEFT:
-			dpad_x = -1;
-			dpad_y = -1;
-			break;
-		case RS50_DPAD_UP:
-			dpad_x = 0;
-			dpad_y = -1;
-			break;
-		case RS50_DPAD_DOWN_RIGHT:
-			dpad_x = 1;
-			dpad_y = 1;
-			break;
-		case RS50_DPAD_DOWN:
-			dpad_x = 0;
-			dpad_y = 1;
-			break;
-		case RS50_DPAD_DOWN_LEFT:
-			dpad_x = -1;
-			dpad_y = 1;
-			break;
-		}
-	}
-
-	/* Only report if changed (use per-device state, not static) */
-	if (dpad_x != ff->last_dpad_x || dpad_y != ff->last_dpad_y) {
-		/*
-		 * Re-check stopping flag with acquire semantics before using
-		 * the input device. This closes the race window where destroy
-		 * sets stopping=1 then clears ff->input, but we already read
-		 * input before seeing stopping=1.
-		 */
-		if (atomic_read_acquire(&ff->stopping))
-			return 0;
-
-		input_report_abs(input, ABS_HAT0X, dpad_x);
-		input_report_abs(input, ABS_HAT0Y, dpad_y);
-		input_sync(input);
-		ff->last_dpad_x = dpad_x;
-		ff->last_dpad_y = dpad_y;
-	}
-
-	return 0; /* Don't consume the event, let other processing continue */
 }
 
 /*
