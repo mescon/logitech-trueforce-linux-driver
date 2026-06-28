@@ -71,9 +71,15 @@ TrueForce haptics, and complete button / paddle / encoder binding
 all working through Logitech's own signed SDK DLLs running
 unmodified under Proton. The same setup is expected to work for
 Le Mans Ultimate, AMS2, Assetto Corsa (the original 2014 game),
-rFactor 2 (with the Logitech plugin), and iRacing — they all use
-the same SDK. The recipe below covers the setup. Our driver passes
-the SDK's raw writes through unchanged; no shim, no DLL injection.
+rFactor 2, and iRacing — they all use the same SDK. The recipe below
+covers the setup. Our driver passes the SDK's raw writes through
+unchanged; no shim, no DLL injection.
+
+Only ACC and AC EVO are verified; the rest are expected to work because
+they share the SDK, not confirmed. This project does not ship an
+rFactor 2 plugin: rFactor 2's TrueForce support is a separate
+third-party component (for example the community TF4ALL SimHub plugin),
+not something provided here, and it is untested with this setup.
 
 See [`docs/SYSFS_API.md`](docs/SYSFS_API.md) for the complete sysfs
 reference.
@@ -170,7 +176,7 @@ the SDK DLL installation into your wine prefixes.
      (step 2), copies the four DLLs into every Steam wine prefix
      it finds and registers the two CLSIDs in each prefix's
      `system.reg` so SDK-aware sims (ACC, Le Mans Ultimate, AMS2,
-     AC, rF2 + Logitech plugin, iRacing) load TrueForce.
+     AC, rF2, iRacing) load TrueForce.
 
 4. **Blacklist conflicting in-tree drivers** (one-time):
    ```bash
@@ -255,8 +261,8 @@ End-to-end verified against **Assetto Corsa Competizione** and
 button / paddle / encoder binding, all delivered by Logitech's own
 signed SDK DLLs running unmodified under Proton. The same recipe is
 expected to work for the other Logitech-SDK-aware sims (Le Mans
-Ultimate, AMS2, Assetto Corsa, rFactor 2 + Logitech plugin,
-iRacing). The recipe applies to both the RS50 and the G PRO Racing
+Ultimate, AMS2, Assetto Corsa, rFactor 2, iRacing). The recipe
+applies to both the RS50 and the G PRO Racing
 Wheel for Xbox/PC. Step 1 is RS50-only.
 
 1. **(RS50 only)** Switch the wheel into "G PRO compatibility" mode
@@ -299,8 +305,7 @@ Wheel for Xbox/PC. Step 1 is RS50-only.
    does not pick it up over the wheel.
 
 Other Logitech-SDK-aware sims (Le Mans Ultimate, AMS2, Assetto
-Corsa, rFactor 2 with the Logitech plugin, iRacing) follow the same
-recipe.
+Corsa, rFactor 2, iRacing) follow the same recipe.
 
 ## Compat-mode behavior
 
