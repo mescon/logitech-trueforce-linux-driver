@@ -322,7 +322,7 @@ The RS50 wheel base has 10 RGB LEDs arranged in a strip. The driver provides per
 
 > **G Pro**: the driver does not currently expose `wheel_led_*` attributes for the G Pro wheel; we haven't confirmed the LIGHTSYNC protocol matches byte-for-byte on that hardware yet. The feature is RS50-only for now.
 >
-> **G PRO PID (`046d:c272` / `046d:c268`)**: covers both real G PRO Racing Wheel and RS50-in-G-PRO-compat-mode. Both run through the same `rs50_ff_*` code path and expose the same sysfs surface. LIGHTSYNC works the same way as native RS50 - feature `0x807A` is advertised at the same index discovery picks up in native, and `wheel_led_*` writes drive the LED strip end-to-end (verified against the live wheel 2026-04-29). Wheel-config attributes that work via fallback feature paths (see `docs/RS50_PROTOCOL_SPECIFICATION.md` section 5.1): `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`, `wheel_ffb_filter`, `wheel_profile` (write `0` to enter desktop mode), and `wheel_calibrate`. The remaining attributes (`wheel_brake_force`, `wheel_ffb_filter_auto`, `wheel_sensitivity`) return `-EOPNOTSUPP` on this firmware regardless of mode; for those, configure via the wheel's OLED menu or via Windows G Hub on a Windows host.
+> **G PRO PID (`046d:c272` / `046d:c268`)**: covers both real G PRO Racing Wheel and RS50-in-G-PRO-compat-mode. Both run through the same `rs50_ff_*` code path and expose the same sysfs surface. LIGHTSYNC works the same way as native RS50 - feature `0x807A` is advertised at the same index discovery picks up in native, and `wheel_led_*` writes drive the LED strip end-to-end (verified against the live wheel 2026-04-29). Wheel-config attributes that work via fallback feature paths (see `docs/RS50_PROTOCOL_SPECIFICATION.md` section 5.1): `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`, `wheel_ffb_filter`, `wheel_profile` (write `0` to enter desktop mode), and `wheel_calibrate`. The remaining attributes (`wheel_brake_force`, `wheel_ffb_filter_auto`, `wheel_sensitivity`) are unsupported by this firmware: once their mode gating is satisfied the store returns `-EOPNOTSUPP` (note `wheel_brake_force` still returns `-EPERM` in desktop mode and `wheel_sensitivity` in onboard mode before that check). For those, configure via the wheel's OLED menu or via Windows G Hub on a Windows host.
 
 ### LED Control Workflow
 
@@ -582,6 +582,7 @@ cat wheel_hidpp_debug
 | `-ENODEV` | Device not found or driver not ready |
 | `-EPERM` | Operation not permitted in current mode |
 | `-EINVAL` | Invalid value provided |
+| `-ERANGE` | Value out of range (e.g. `wheel_calibrate` > 65535, or an active LED slot index out of range) |
 | `-EOPNOTSUPP` | Feature not supported by device |
 | `-EIO` | Communication error with device |
 

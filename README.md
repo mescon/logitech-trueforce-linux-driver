@@ -19,7 +19,7 @@ Linux kernel driver for **Logitech direct-drive racing wheels**:
 - **Logitech G PRO Racing Wheel for PS/PC** (`046d:c268`)
 
 You get the full evdev force-feedback suite (constant, spring, damper,
-friction, inertia, periodic, ramp, rumble, gain), all 17 buttons,
+friction, inertia, periodic, ramp, rumble, gain), all buttons,
 encoders, paddles, hat switch, 16-bit pedal axes, and G Hub-equivalent
 settings (rotation range, FFB strength / damping / TRUEFORCE / filter,
 pedal curves, LIGHTSYNC LEDs) exposed via sysfs. **TrueForce haptics
@@ -39,7 +39,7 @@ G920 / G923 wheels, etc.) keep working through the same module.
 `tests/ff_matrix_test`, and across multiple sims (ACC, AC, BeamNG,
 AMS2, Le Mans Ultimate, iRacing, Dirt Rally, ETS2).
 
-**Inputs**: all 17 buttons including the G1 (logo) button, both
+**Inputs**: all buttons including the G1 (logo) button, both
 encoder rotaries with click, both shifter paddles, 8-direction D-pad
 as a hat switch, 16-bit wheel axis (up to 2700° on RS50), 16-bit
 pedal axes (throttle, brake, clutch). Button table further down.

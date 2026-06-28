@@ -90,7 +90,13 @@ The 68 packets are stored verbatim in `userspace/libtrueforce/src/tf_init_data.h
 | 67 | `0x04` | Stop / clear |
 | 68 | `0x03` | Start / play |
 
-Key type-0x05 parameter values (decoded from the 48 floats):
+Key type-0x05 parameter values, for reference. **Note:** the committed
+init we replay (`userspace/libtrueforce/src/tf_init_data.h`) sends every
+type-0x05 packet with a **zero** value payload (only the index byte
+varies), and TrueForce still works end-to-end, so these specific values
+are not required for basic operation. The table below records the
+non-zero values decoded from G Hub's own init capture, kept as a guide to
+what each index means:
 
 | Index | Value | Likely meaning |
 |-------|-------|----------------|
@@ -154,9 +160,19 @@ byte[33-63]: zeros
 
 Responses arrive at the same cadence as the host's packet rate, giving real-time wheel-position feedback for synchronisation. libtrueforce does not currently consume these (Rank 22.x work item); the kernel driver ignores them.
 
-## PID FFB Commands (Interface 1, for reference)
+## PID FFB Commands (report `0x10`/`0x11`, for reference)
 
-Traditional FFB uses HID SET_REPORT to interface 1. Interface 1 and interface 2 are demultiplexed by the wheel firmware, which looks at the HID report ID: PID FFB uses report IDs `0x10`/`0x11`, TRUEFORCE uses report ID `0x01` on interface 2. The two paths coexist; we verified this empirically by playing a sine on TRUEFORCE while holding a constant-torque KF effect via PID.
+Classic PID-style FFB is addressed by HID report ID (`0x10`/`0x11`),
+distinct from TRUEFORCE's report ID `0x01`; the wheel firmware
+demultiplexes the two by report ID and they coexist (verified by playing
+a sine on TRUEFORCE while holding a constant-torque KF effect).
+
+Note on interfaces: on the G920-class HID++ path these PID reports are
+addressed to interface 1, but the **RS50 has no FFB OUT endpoint on
+interface 1**. The Linux driver actuates the RS50's constant force by
+writing to **interface 2 endpoint `0x03`** (the dedicated `rs50_ff_*`
+path), the same interface TRUEFORCE uses; the two are still separated by
+report ID. See the RS50 FFB section of `RS50_PROTOCOL_SPECIFICATION.md`.
 
 ### Report 0x10 (7 bytes)
 

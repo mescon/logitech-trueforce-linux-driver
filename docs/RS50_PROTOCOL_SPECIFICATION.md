@@ -1,7 +1,7 @@
 # Logitech RS50 Protocol Specification
 
 **Document Version**: 6.2
-**Date**: 2026-04-21
+**Date**: 2026-06-29
 **Author**: Verified from USB capture analysis
 **Status**: Protocol reference for Linux driver development
 
@@ -354,7 +354,7 @@ Device → Host: Interrupt IN (endpoint 0x82)
 
 ### Setting Commands (All Verified)
 
-Each setting feature exposes a handful of HID++ functions. The encoding in byte 3 of the short report is `(function_number << 4) | SW_ID`, with SW_ID `0xD` across the board. GET semantics are stable across settings (`fn=0` queries capabilities/limits, `fn=1` reads current value) but the SET function number varies **per feature and per wheel**. Do not assume all settings use `fn=2`: damping and TRUEFORCE each have their own SET fn, and the two wheels agree on the exceptions.
+Each setting feature exposes a handful of HID++ functions. The encoding in byte 3 of the short report is `(function_number << 4) | SW_ID`. In the G Hub captures this analysis is derived from, SW_ID is `0xD` across the board; the Linux driver uses its own SW_ID `0x01`, so the same SET appears on the wire as e.g. `0x21` rather than `0x2D`. GET semantics are stable across settings (`fn=0` queries capabilities/limits, `fn=1` reads current value) but the SET function number varies **per feature and per wheel**. Do not assume all settings use `fn=2`: damping and TRUEFORCE each have their own SET fn, and the two wheels agree on the exceptions.
 
 | Feature | Page | GET caps | GET value | SET (RS50 + G Pro) |
 |---------|------|----------|-----------|--------------------|
@@ -700,7 +700,7 @@ static_assert(sizeof(struct rs50_ff_report) == RS50_FF_REPORT_SIZE,
 ### Force Value Conversion
 
 ```c
-static inline u16 rs50_force_to_offset_binary(s16 signed_force)
+static u16 rs50_force_to_offset_binary(s32 force)
 {
     return (u16)((s32)signed_force + 0x8000);
 }
