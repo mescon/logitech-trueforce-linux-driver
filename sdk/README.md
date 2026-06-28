@@ -145,6 +145,24 @@ four files are missing it prints the same expected paths and exits with
 status 2 without touching any wine prefix. So you can re-run the
 installer safely after populating `sdk/Logi/`.
 
+### Newer SDK releases are drop-in compatible
+
+Logitech ships point-release updates to these DLLs through G HUB (for
+example a build a patch version above 1.3.11, with a slightly larger
+file). These are safe to use as-is.
+
+The `1_3_11` / `9_1_0` folder names are a fixed label the games expect,
+not the DLL's own version. The installer keeps the DLLs at those exact
+paths and registers their COM CLSIDs to point there; games find the SDK
+through the CLSID, and some also key off the install path string, which
+is why the path is held stable. A newer DLL dropped into the same path
+therefore satisfies both. It also keeps the same exported interface:
+diffing the export tables of a later TrueForce / wheel release against
+the 1.3.11 / 9.1.0 ones gives identical symbol names and counts. So if
+G HUB gives you a higher point release, place those files at the paths
+above and the shim works unchanged. A version bump on its own is not a
+cause of missing force feedback.
+
 ## Licensing note
 
 The DLL files in `trueforce_1_3_11/`, `wheel_9_1_0/`, and `Logi/` are
