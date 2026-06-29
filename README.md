@@ -608,11 +608,33 @@ See `docs/RS50_PROTOCOL_SPECIFICATION.md` for complete protocol documentation.
 
 ### "Invalid code 768" messages during boot
 
-These are harmless warnings from the HID descriptor declaring more buttons than physically exist. The driver filters these phantom buttons during HID input mapping (see `rs50_input_mapping`) so they do not reach userspace.
+These come from the HID descriptor declaring more buttons than
+physically exist. **This driver filters them** (see `rs50_input_mapping`)
+so they never reach userspace - which means if you *do* see them, the
+wheel is being handled by `hid-generic`, not this driver. That happens
+when the wheel enumerates before the module loads. See "Wheel has no FFB
+/ no `wheel_*` (stuck on hid-generic)" below.
+
+### Wheel has no FFB / no `wheel_*` (stuck on hid-generic)
+
+If the wheel works as a plain joystick but has no force feedback and no
+`wheel_*` sysfs (and you see "Invalid code 768" in dmesg), `hid-generic`
+claimed it before this module was loaded. Fix it with:
+
+```bash
+sudo ./tools/rebind-wheel.sh
+```
+
+This loads the module and rebinds every wheel interface from
+`hid-generic` to this driver. If it reports the bind failed, the
+in-kernel `hid-logitech-hidpp` is loaded instead of this fork - run
+`sudo ./tools/dkms-update.sh` so the DKMS build shadows it, then retry.
 
 ### FFB not working
 
-1. Verify the driver loaded: `lsmod | grep hidpp`
+1. Verify the driver is *bound to the wheel*, not just loaded:
+   `ls /sys/class/hidraw/*/device/wheel_range` should list a path. If it
+   does not, see "stuck on hid-generic" above.
 2. Check dmesg for errors: `dmesg | grep -i rs50`
 3. Ensure you're testing with a game/app that supports FFB
 

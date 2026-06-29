@@ -112,6 +112,14 @@ Module installed. To pick it up without a reboot:
 If modprobe -r reports "Module is in use", something still has the
 device open. Find it with:  sudo fuser -v /dev/input/event* /dev/hidraw*
 
+If after this the wheel still has no force feedback and no wheel_* sysfs
+(hid-generic claimed it because it enumerated before the module loaded),
+run:
+
+  sudo ./tools/rebind-wheel.sh
+
+which loads the module and rebinds the wheel to this driver.
+
 On UEFI Secure Boot systems, DKMS should re-sign the module with your
 MOK key automatically. If load fails with "Key was rejected by
 service", re-enroll the MOK and reboot once.
