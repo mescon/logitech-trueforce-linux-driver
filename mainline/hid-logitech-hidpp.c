@@ -65,6 +65,7 @@
 	to_usb_device((hid_dev)->dev.parent->parent)
 #endif
 #include "hid-ids.h"
+#include "rs50_tf_init.h"
 
 /*
  * Build-time identifier supplied by Kbuild (-DRS50_GIT_HASH=...). Falls
@@ -3988,6 +3989,51 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define RS50_FF_REFRESH_INTERVAL_MS	20000	/* 20 seconds */
 
 /*
+ * In-kernel TrueForce texture channel (KF/TF separation, issue #8).
+ *
+ * The wheel's interface-2 type-0x01 report carries BOTH force channels,
+ * demultiplexed by byte 10 ("new samples this packet"):
+ *   - byte10 = 0: plain constant-force (KF) update - the force in the
+ *     bytes 6-9 preamble is held. This is what struct rs50_ff_report has
+ *     always sent; our steering stream is a TrueForce stream with an
+ *     empty sample window.
+ *   - byte10 = 4: audio-stream (TF) packet - bytes 12..63 carry a
+ *     13-slot rolling window of 1 kHz haptic samples (each u16 offset
+ *     binary, duplicated L/R), advanced 4 samples per packet (250 Hz
+ *     packet cadence). See docs/TRUEFORCE_PROTOCOL.md.
+ *
+ * Interleaving independent KF and TF type-0x01 streams on this endpoint
+ * is the exact traffic pattern already proven under Proton (SDK-driven
+ * TF alongside our KF force stream), so routing vibration-class evdev
+ * effects (FF_RUMBLE, high-frequency FF_PERIODIC) through TF instead of
+ * summing them into the steering force replicates the Windows KF/TF
+ * split: texture rides the wheel's audio-haptic path and no longer
+ * modulates ("grits") the steering axis.
+ *
+ * The TF session needs a one-time init: the 68-packet sequence in
+ * rs50_tf_init.h sent twice (G Hub behaviour). We run it lazily from a
+ * workqueue the first time a texture effect actually plays, so wheels
+ * that never see texture effects never see TF traffic either.
+ */
+#define RS50_TF_CMD_STREAM		0x01	/* audio window packet */
+#define RS50_TF_CMD_START		0x03	/* start / play */
+#define RS50_TF_CMD_STOP		0x04	/* stop / clear */
+#define RS50_TF_WINDOW			13	/* rolling window slots */
+#define RS50_TF_NEW_SAMPLES		4	/* new samples per packet */
+#define RS50_TF_FLAG_BYTE		0x0d	/* constant per captures */
+/*
+ * Crossover between "steering-shaping" and "texture" periodics: period
+ * at or below this (>= 20 Hz) is texture and routes to TF; slower
+ * periodic effects keep contributing to the steering force. FF_RUMBLE
+ * is always texture.
+ */
+#define RS50_TF_CROSSOVER_PERIOD_MS	50
+
+/* texture_route values */
+#define RS50_TEXTURE_ROUTE_KF		0	/* legacy: sum into steering */
+#define RS50_TEXTURE_ROUTE_TF		1	/* stream via TrueForce */
+
+/*
  * RS50 HID++ feature PAGE IDs for wheel settings.
  * These are used with hidpp_root_get_feature() to discover the actual
  * feature indices, which vary per device. Never use hardcoded indices!
@@ -4117,6 +4163,25 @@ struct rs50_lightsync_slot {
 #define RS50_FF_TIMER_INTERVAL_MS	2	/* 500 Hz update rate */
 
 /*
+ * FRICTION stick-zone half-width, in encoder counts per timer tick.
+ * Inside +/- this velocity the emulated friction force ramps linearly
+ * instead of stepping to full scale (Karnopp model; see the FF_FRICTION
+ * case in rs50_ff_effect_tick). 8 counts/tick ~= 22 deg/s at the default
+ * 900-degree range - comfortably above encoder noise, well below any
+ * deliberate steering motion.
+ */
+#define RS50_FF_FRICTION_RAMP_COUNTS	8
+
+/*
+ * Default wheel_spring_damping percent (see the spring_damping field).
+ * 25% of the spring's own coefficient is a conservative stabilising
+ * ratio: enough to damp the latency-driven ringing observed with stiff
+ * game-uploaded centring springs, small enough not to make springs feel
+ * syrupy. Tunable at runtime; 0 disables (pre-2026-07 behaviour).
+ */
+#define RS50_FF_SPRING_DAMPING_DEFAULT	25
+
+/*
  * RS50 pedal response curve types.
  * These curves are applied in software to pedal axis values.
  */
@@ -4159,6 +4224,12 @@ struct rs50_ff_work {
 	struct work_struct work;
 	struct rs50_ff_data *ff_data;
 	u16 force;
+	/*
+	 * When set, report_buf was pre-built by the queuer (TrueForce
+	 * stream/control packets) and is sent verbatim; when clear, the
+	 * handler builds the classic constant-force report from `force`.
+	 */
+	bool raw;
 	/*
 	 * Per-work DMA-safe buffer for USB transfer.
 	 * This avoids race conditions where hid_hw_output_report() returns
@@ -4306,6 +4377,35 @@ struct rs50_ff_data {
 	 * exposed to userspace as wheel_ffb_constant_sign (0 / 1).
 	 */
 	bool ffb_constant_sign;
+	/*
+	 * Synthetic damping for emulated SPRING effects, in percent (0-100)
+	 * of a DAMPER running the spring's own coefficient. Our spring is a
+	 * pure proportional controller closed over the timer -> workqueue ->
+	 * USB path; that loop latency on a low-friction direct-drive motor
+	 * makes a stiff undamped spring ring (grow-and-diverge oscillation
+	 * until the wheel's over-torque failsafe cuts power - observed live
+	 * with AC EVO map-load centring, 2026-06-30). Real wheels damp the
+	 * spring inside the firmware servo loop; this term restores that
+	 * behaviour. Lockless via READ_ONCE/WRITE_ONCE; exposed as
+	 * wheel_spring_damping.
+	 */
+	u8 spring_damping;
+	/*
+	 * In-kernel TrueForce texture channel (see the RS50_TF_* block for
+	 * the design). texture_route selects where vibration-class effects
+	 * go; the tf_* runtime state below is touched only from the effect
+	 * timer callback (single-threaded) except tf_ready/tf_init_queued,
+	 * which the lazy init work handler sets (READ_ONCE/WRITE_ONCE).
+	 */
+	u8 texture_route;		/* RS50_TEXTURE_ROUTE_KF / _TF */
+	bool tf_ready;			/* two-pass session init completed */
+	bool tf_init_queued;		/* init work queued (once per session) */
+	bool tf_streaming;		/* between START and STOP */
+	u8 tf_seq;			/* TF stream sequence counter */
+	u8 tf_staged;			/* samples staged toward next packet */
+	u16 tf_stage[RS50_TF_NEW_SAMPLES];
+	u16 tf_window[RS50_TF_WINDOW];	/* rolling window, offset binary */
+	struct work_struct tf_init_work; /* runs the 2x68-packet init */
 	u16 gain;			/* Global FF_GAIN multiplier (0..0xFFFF = 0..100%); lockless, READ_ONCE/WRITE_ONCE */
 
 	/* Track whether we opened HID device for runtime HID++ communication */
@@ -4340,6 +4440,10 @@ struct rs50_ff_data {
 /* Forward declarations */
 static void rs50_ff_work_handler(struct work_struct *work);
 static void rs50_ff_send_force(struct rs50_ff_data *ff, s32 force);
+static bool rs50_ff_effect_is_texture(const struct ff_effect *eff);
+static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
+			 const s32 *samples);
+static void rs50_tf_init_work_handler(struct work_struct *work);
 static void rs50_ff_effect_timer_callback(struct timer_list *t);
 static void rs50_process_pedals(struct hidpp_device *hidpp, u8 *data, int size);
 static struct rs50_ff_data *rs50_find_ff_data(struct hid_device *hdev);
@@ -4597,9 +4701,32 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 			f = -f;
 		return rs50_apply_envelope(&eff->u.constant.envelope, f,
 					   elapsed_ms, duration);
-	case FF_SPRING:
+	case FF_SPRING: {
+		/*
+		 * Restoring spring force, plus synthetic damping (see the
+		 * spring_damping field comment). The damping term is the
+		 * DAMPER formula run with the spring's own coefficient and
+		 * scaled by spring_damping percent, so stiffer springs get
+		 * proportionally stronger damping - the ratio, not the
+		 * absolute damping, is what sets loop stability. Velocity
+		 * uses the same x256 metric scaling as FF_DAMPER below.
+		 */
+		s32 fs;
+		u8 damping;
+
 		c = &eff->u.condition[0];
-		return rs50_condition_force(c, wheel_pos_signed);
+		fs = rs50_condition_force(c, wheel_pos_signed);
+		damping = READ_ONCE(ff_state->spring_damping);
+		if (damping) {
+			s32 coeff = max(abs((s32)c->right_coeff),
+					abs((s32)c->left_coeff));
+			s32 vel_metric = clamp(wheel_vel * 256,
+					       (s32)S16_MIN, (s32)S16_MAX);
+
+			fs -= ((coeff * vel_metric) >> 15) * damping / 100;
+		}
+		return fs;
+	}
 	case FF_DAMPER:
 		/*
 		 * Scale the raw wheel velocity up so that realistic motion
@@ -4621,12 +4748,32 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 		c = &eff->u.condition[0];
 		return rs50_condition_force(c,
 			clamp(wheel_vel * 256, (s32)S16_MIN, (s32)S16_MAX));
-	case FF_FRICTION:
+	case FF_FRICTION: {
+		/*
+		 * Karnopp-style friction: full-scale opposing force above a
+		 * small velocity window, linear ramp inside it. The previous
+		 * bang-bang version (any non-zero velocity -> +/-S16_MAX
+		 * metric) chattered: at slow turning speeds the per-tick
+		 * encoder delta hovers around 0..2 counts where quantisation
+		 * noise flips the sign every few ticks, so the friction
+		 * force slammed full-magnitude left/right at up to 500 Hz -
+		 * felt as gritty/notchy steering, worst near idle (issue #8).
+		 * Real friction models (and wheel firmware) ramp through a
+		 * stick zone instead of stepping.
+		 */
+		s32 vel = wheel_vel;
+
 		c = &eff->u.condition[0];
-		if (wheel_vel == 0)
+		if (vel == 0)
 			return 0;
-		return rs50_condition_force(c,
-			wheel_vel > 0 ? S16_MAX : -S16_MAX);
+		if (vel >= RS50_FF_FRICTION_RAMP_COUNTS)
+			vel = S16_MAX;
+		else if (vel <= -RS50_FF_FRICTION_RAMP_COUNTS)
+			vel = -S16_MAX;
+		else
+			vel *= S16_MAX / RS50_FF_FRICTION_RAMP_COUNTS;
+		return rs50_condition_force(c, vel);
+	}
 	case FF_INERTIA:
 		/*
 		 * Acceleration is even smaller than velocity. Scale by
@@ -4808,14 +4955,19 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 {
 	struct rs50_ff_data *ff = container_of(t, struct rs50_ff_data, effect_timer);
 	s32 force = 0;
+	s32 tf_sample[2] = { 0, 0 };
 	s32 wheel_pos_signed, wheel_vel, wheel_accel;
 	u16 cur_pos;
 	unsigned long flags, now;
 	bool any_playing;
+	bool any_texture = false;
+	bool route_tf;
 	int i;
 
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
+
+	route_tf = READ_ONCE(ff->texture_route) == RS50_TEXTURE_ROUTE_TF;
 
 	/*
 	 * Refresh derived wheel state. wheel_pos is updated lock-free by
@@ -4895,6 +5047,32 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 		elapsed_ms = (u32)elapsed_ms_long;
 		any_playing = true;
 
+		if (route_tf && rs50_ff_effect_is_texture(&e->effect)) {
+			any_texture = true;
+			if (smp_load_acquire(&ff->tf_ready)) {
+				/*
+				 * Texture-class effect: generate this tick's
+				 * two 1 kHz samples (1 ms apart inside the
+				 * 2 ms tick) for the TrueForce channel
+				 * instead of summing into the steering
+				 * force.
+				 */
+				tf_sample[0] += rs50_ff_effect_tick(ff, e,
+						elapsed_ms, wheel_pos_signed,
+						wheel_vel, wheel_accel);
+				tf_sample[1] += rs50_ff_effect_tick(ff, e,
+						elapsed_ms + 1,
+						wheel_pos_signed,
+						wheel_vel, wheel_accel);
+				continue;
+			}
+			/*
+			 * TF session not up yet (init work in flight):
+			 * fall through so the steering channel carries the
+			 * texture meanwhile - degraded, never lost.
+			 */
+		}
+
 		force += rs50_ff_effect_tick(ff, e, elapsed_ms,
 					     wheel_pos_signed,
 					     wheel_vel, wheel_accel);
@@ -4920,6 +5098,14 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 		WRITE_ONCE(ff->any_effect_playing, any_playing);
 	}
 	spin_unlock_irqrestore(&ff->effects_lock, flags);
+
+	/*
+	 * Drive the TrueForce texture channel. Also runs one last time
+	 * after a route flip back to KF so an in-flight stream gets its
+	 * STOP instead of looping the stale window.
+	 */
+	if (route_tf || ff->tf_streaming)
+		rs50_tf_tick(ff, route_tf && any_texture, tf_sample);
 
 	/*
 	 * Always push the current force on each timer tick. The wheel
@@ -4982,10 +5168,244 @@ static void rs50_ff_send_force(struct rs50_ff_data *ff, s32 force)
 
 	ff_work->force = rs50_force_to_offset_binary(force);
 	ff_work->ff_data = ff;
+	ff_work->raw = false;
 	INIT_WORK(&ff_work->work, rs50_ff_work_handler);
 
 	atomic_inc(&ff->pending_work);
 	queue_work(ff->wq, &ff_work->work);
+}
+
+/*
+ * In-kernel TrueForce texture channel. See the RS50_TF_* define block
+ * for the protocol/design rationale. All rs50_tf_* runtime state is
+ * timer-callback-private except tf_ready (published by the init work
+ * with store-release, consumed with load-acquire).
+ */
+
+/*
+ * Vibration-class effects ride the TF audio stream when texture_route
+ * selects it; everything else keeps shaping the steering force.
+ */
+static bool rs50_ff_effect_is_texture(const struct ff_effect *eff)
+{
+	switch (eff->type) {
+	case FF_RUMBLE:
+		return true;
+	case FF_PERIODIC:
+		return eff->u.periodic.period > 0 &&
+		       eff->u.periodic.period <= RS50_TF_CROSSOVER_PERIOD_MS;
+	default:
+		return false;
+	}
+}
+
+/*
+ * Queue a pre-built 64-byte interface-2 packet for sending. Safe from
+ * atomic (timer) context; mirrors rs50_ff_send_force's guards.
+ */
+static void rs50_tf_queue_raw(struct rs50_ff_data *ff, const u8 *pkt)
+{
+	struct rs50_ff_work *ff_work;
+
+	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
+		return;
+	if (atomic_read(&ff->pending_work) >= RS50_FF_MAX_PENDING_WORK) {
+		ff->err_count++;
+		return;
+	}
+
+	ff_work = kmalloc(sizeof(*ff_work), GFP_ATOMIC);
+	if (!ff_work) {
+		ff->err_count++;
+		return;
+	}
+
+	ff_work->ff_data = ff;
+	ff_work->raw = true;
+	memcpy(ff_work->report_buf, pkt, RS50_FF_REPORT_SIZE);
+	INIT_WORK(&ff_work->work, rs50_ff_work_handler);
+
+	atomic_inc(&ff->pending_work);
+	queue_work(ff->wq, &ff_work->work);
+}
+
+/* Queue a TF control packet (START/STOP). Timer context only (tf_seq). */
+static void rs50_tf_queue_ctrl(struct rs50_ff_data *ff, u8 cmd)
+{
+	u8 pkt[RS50_FF_REPORT_SIZE] = { 0 };
+
+	pkt[0] = RS50_FF_REPORT_ID;
+	pkt[4] = cmd;
+	pkt[5] = ff->tf_seq++;
+	rs50_tf_queue_raw(ff, pkt);
+}
+
+/*
+ * Queue one TF audio-stream packet carrying the current rolling window.
+ * Layout per docs/TRUEFORCE_PROTOCOL.md: newest sample duplicated in the
+ * bytes 6-9 preamble, sample count and the 0x0d flag at 10/11, then the
+ * 13 window slots oldest-first, each u16 duplicated L/R. Timer context
+ * only (tf_seq, tf_window).
+ */
+static void rs50_tf_queue_stream(struct rs50_ff_data *ff)
+{
+	u8 pkt[RS50_FF_REPORT_SIZE] = { 0 };
+	u16 newest = ff->tf_window[RS50_TF_WINDOW - 1];
+	int i;
+
+	pkt[0] = RS50_FF_REPORT_ID;
+	pkt[4] = RS50_TF_CMD_STREAM;
+	pkt[5] = ff->tf_seq++;
+	put_unaligned_le16(newest, &pkt[6]);
+	put_unaligned_le16(newest, &pkt[8]);
+	pkt[10] = RS50_TF_NEW_SAMPLES;
+	pkt[11] = RS50_TF_FLAG_BYTE;
+	for (i = 0; i < RS50_TF_WINDOW; i++) {
+		put_unaligned_le16(ff->tf_window[i], &pkt[12 + i * 4]);
+		put_unaligned_le16(ff->tf_window[i], &pkt[14 + i * 4]);
+	}
+	rs50_tf_queue_raw(ff, pkt);
+}
+
+/*
+ * Lazy TF session bring-up: replay the captured 68-packet init sequence
+ * twice (G Hub behaviour; the sequence byte restarts at 1 each pass and
+ * the live stream continues counting from where init left off). Runs in
+ * workqueue context the first time a texture effect plays. On failure,
+ * tf_ready stays false and texture effects keep summing into the
+ * steering force - degraded feel, never lost effects.
+ */
+static void rs50_tf_init_work_handler(struct work_struct *work)
+{
+	struct rs50_ff_data *ff = container_of(work, struct rs50_ff_data,
+					       tf_init_work);
+	struct hid_device *hdev;
+	u8 *pkt;
+	int pass, i, ret = 0;
+
+	BUILD_BUG_ON(RS50_TF_INIT_PACKET_LEN != RS50_FF_REPORT_SIZE);
+
+	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
+		return;
+	hdev = READ_ONCE(ff->ff_hdev);
+	if (!hdev)
+		return;
+
+	pkt = kmalloc(RS50_FF_REPORT_SIZE, GFP_KERNEL);
+	if (!pkt)
+		return;
+
+	for (pass = 0; pass < 2 && ret >= 0; pass++) {
+		u8 seq = 1;
+
+		for (i = 0; i < RS50_TF_INIT_PACKET_COUNT; i++) {
+			if (atomic_read_acquire(&ff->stopping)) {
+				kfree(pkt);
+				return;
+			}
+			memcpy(pkt, rs50_tf_init_packets[i],
+			       RS50_TF_INIT_PACKET_LEN);
+			pkt[RS50_TF_INIT_SEQ_OFFSET] = seq++;
+			ret = hid_hw_output_report(hdev, pkt,
+						   RS50_FF_REPORT_SIZE);
+			if (ret < 0 && ret != -EIO && ret != -ENODEV)
+				ret = hid_hw_raw_request(hdev,
+						RS50_FF_REPORT_ID, pkt,
+						RS50_FF_REPORT_SIZE,
+						HID_OUTPUT_REPORT,
+						HID_REQ_SET_REPORT);
+			if (ret < 0)
+				break;
+		}
+	}
+	kfree(pkt);
+
+	if (ret < 0) {
+		hid_warn(hdev,
+			 "RS50: TrueForce texture channel init failed (%d); texture effects stay on the steering channel\n",
+			 ret);
+		return;
+	}
+
+	ff->tf_seq = RS50_TF_INIT_PACKET_COUNT + 1;
+	/* Publish tf_seq (and the init itself) before tf_ready. */
+	smp_store_release(&ff->tf_ready, true);
+	hid_info(hdev,
+		 "RS50: TrueForce texture channel ready (vibration effects ride the TF stream)\n");
+}
+
+/*
+ * Per-tick TF driver, called from the effect timer after the effect sum.
+ * `samples` holds this tick's two 1 kHz texture samples (signed force
+ * domain, pre-gain). Stages samples four-at-a-time into the rolling
+ * window and emits one stream packet per full stage (250 Hz cadence,
+ * matching libtrueforce and the G Hub captures). When the last texture
+ * effect stops, re-centres the window and sends STOP so the wheel's DSP
+ * returns to silence instead of looping the stale window.
+ */
+static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
+			 const s32 *samples)
+{
+	u16 gain;
+	int i;
+
+	if (!any_texture) {
+		if (ff->tf_streaming) {
+			for (i = 0; i < RS50_TF_WINDOW; i++)
+				ff->tf_window[i] = 0x8000;
+			ff->tf_staged = 0;
+			rs50_tf_queue_stream(ff);
+			rs50_tf_queue_ctrl(ff, RS50_TF_CMD_STOP);
+			ff->tf_streaming = false;
+		}
+		return;
+	}
+
+	if (!smp_load_acquire(&ff->tf_ready)) {
+		/* Bring the session up once; KF carries texture meanwhile. */
+		if (!ff->tf_init_queued) {
+			ff->tf_init_queued = true;
+			queue_work(ff->wq, &ff->tf_init_work);
+		}
+		return;
+	}
+
+	if (!ff->tf_streaming) {
+		rs50_tf_queue_ctrl(ff, RS50_TF_CMD_START);
+		ff->tf_streaming = true;
+	}
+
+	gain = READ_ONCE(ff->gain);
+	for (i = 0; i < 2; i++) {
+		s32 s = samples[i];
+		u16 strength = READ_ONCE(ff->strength);
+
+		if (gain != 0xFFFF)
+			s = (s32)(((s64)s * gain) / 0xFFFF);
+		/*
+		 * Scale by the user's wheel strength. The wheel firmware
+		 * applies the 0x8136 strength setting to steering (KF)
+		 * forces itself but plays TF audio samples at face value
+		 * (verified live 2026-07-02: full-volume buzz at 20%
+		 * strength), so without this a texture effect blasts at
+		 * full amplitude on a wheel the user dialled down.
+		 */
+		if (strength != 0xFFFF)
+			s = (s32)(((s64)s * strength) / 0xFFFF);
+		ff->tf_stage[ff->tf_staged++] = rs50_force_to_offset_binary(s);
+
+		if (ff->tf_staged == RS50_TF_NEW_SAMPLES) {
+			memmove(&ff->tf_window[0],
+				&ff->tf_window[RS50_TF_NEW_SAMPLES],
+				(RS50_TF_WINDOW - RS50_TF_NEW_SAMPLES) *
+					sizeof(ff->tf_window[0]));
+			memcpy(&ff->tf_window[RS50_TF_WINDOW -
+					      RS50_TF_NEW_SAMPLES],
+			       ff->tf_stage, sizeof(ff->tf_stage));
+			ff->tf_staged = 0;
+			rs50_tf_queue_stream(ff);
+		}
+	}
 }
 
 /*
@@ -5026,8 +5446,58 @@ static int rs50_ff_upload(struct input_dev *dev, struct ff_effect *effect,
 		mod_timer(&ff->effect_timer,
 			  jiffies + msecs_to_jiffies(RS50_FF_TIMER_INTERVAL_MS));
 
-	hid_dbg(ff->hidpp->hid_dev, "RS50: Upload effect %d type=%d\n",
-		id, effect->type);
+	/*
+	 * Log full effect parameters, not just the type: root-causing FFB
+	 * feel/stability issues (e.g. the AC EVO map-load ringing) needs to
+	 * know exactly what the game uploaded. Enable at runtime with
+	 * dynamic debug: echo 'format "Upload effect" +p' > .../control
+	 */
+	switch (effect->type) {
+	case FF_CONSTANT:
+		hid_dbg(ff->hidpp->hid_dev,
+			"RS50: Upload effect %d type=%d CONSTANT level=%d dir=0x%04x len=%u\n",
+			id, effect->type, effect->u.constant.level,
+			effect->direction, effect->replay.length);
+		break;
+	case FF_SPRING:
+	case FF_DAMPER:
+	case FF_FRICTION:
+	case FF_INERTIA:
+		hid_dbg(ff->hidpp->hid_dev,
+			"RS50: Upload effect %d type=%d CONDITION rc=%d lc=%d rs=%u ls=%u db=%u ctr=%d len=%u\n",
+			id, effect->type,
+			effect->u.condition[0].right_coeff,
+			effect->u.condition[0].left_coeff,
+			effect->u.condition[0].right_saturation,
+			effect->u.condition[0].left_saturation,
+			effect->u.condition[0].deadband,
+			effect->u.condition[0].center,
+			effect->replay.length);
+		break;
+	case FF_PERIODIC:
+		hid_dbg(ff->hidpp->hid_dev,
+			"RS50: Upload effect %d type=%d PERIODIC wave=%d period=%u mag=%d off=%d len=%u\n",
+			id, effect->type, effect->u.periodic.waveform,
+			effect->u.periodic.period, effect->u.periodic.magnitude,
+			effect->u.periodic.offset, effect->replay.length);
+		break;
+	case FF_RUMBLE:
+		hid_dbg(ff->hidpp->hid_dev,
+			"RS50: Upload effect %d type=%d RUMBLE strong=%u weak=%u len=%u\n",
+			id, effect->type, effect->u.rumble.strong_magnitude,
+			effect->u.rumble.weak_magnitude, effect->replay.length);
+		break;
+	case FF_RAMP:
+		hid_dbg(ff->hidpp->hid_dev,
+			"RS50: Upload effect %d type=%d RAMP start=%d end=%d len=%u\n",
+			id, effect->type, effect->u.ramp.start_level,
+			effect->u.ramp.end_level, effect->replay.length);
+		break;
+	default:
+		hid_dbg(ff->hidpp->hid_dev, "RS50: Upload effect %d type=%d\n",
+			id, effect->type);
+		break;
+	}
 	return 0;
 }
 
@@ -5163,14 +5633,20 @@ static void rs50_ff_work_handler(struct work_struct *work)
 	/*
 	 * Use the per-work buffer to avoid race conditions where
 	 * hid_hw_output_report() returns before DMA completes.
+	 *
+	 * Raw work items (TrueForce stream/control packets) arrive with
+	 * report_buf already built by the queuer, sequence included; only
+	 * the classic constant-force report is built here.
 	 */
-	report = (struct rs50_ff_report *)ff_work->report_buf;
-	memset(report, 0, RS50_FF_REPORT_SIZE);
-	report->report_id = RS50_FF_REPORT_ID;
-	report->effect_type = RS50_FF_EFFECT_CONSTANT;
-	report->sequence = atomic_inc_return(&ff->sequence) & 0xFF;
-	report->force = cpu_to_le16(ff_work->force);
-	report->force_dup = report->force;
+	if (!ff_work->raw) {
+		report = (struct rs50_ff_report *)ff_work->report_buf;
+		memset(report, 0, RS50_FF_REPORT_SIZE);
+		report->report_id = RS50_FF_REPORT_ID;
+		report->effect_type = RS50_FF_EFFECT_CONSTANT;
+		report->sequence = atomic_inc_return(&ff->sequence) & 0xFF;
+		report->force = cpu_to_le16(ff_work->force);
+		report->force_dup = report->force;
+	}
 
 	/*
 	 * Send FFB via interface 2's HID output report mechanism.
@@ -5211,6 +5687,57 @@ static void rs50_ff_work_handler(struct work_struct *work)
 	 */
 	atomic_dec(&ff->pending_work);
 	kfree(ff_work);
+}
+
+/*
+ * Rotation-range read-back: keep the cached (and sysfs-reported) range
+ * honest against external changes.
+ *
+ * Some game launches (observed with AC EVO under Proton, 2026-06-29/30)
+ * reset the wheel's physical rotation range to 90 degrees WITHOUT any
+ * HID++ rotation-change broadcast, so rs50_ff_raw_hidpp_event never sees
+ * it and the cache silently goes stale: sysfs keeps claiming 900 degrees
+ * while the rim is physically locked at 90. That mismatch is what
+ * confuses users ("I set 900, why does it stop at 90?").
+ *
+ * Deliberate design: DETECT and REPORT, never fight. Automatically
+ * writing the range back was tried and abandoned - re-applying range or
+ * mode while a game holds active FFB desyncs the centre on a direct-
+ * drive wheel and ends in a violent swing. Instead, re-read the true
+ * value on the existing 20 s keepalive cadence; on an external change,
+ * update the cache, log it, and sysfs_notify() poll()ers on wheel_range
+ * so userspace tools can surface or handle it.
+ */
+static void rs50_ff_range_readback(struct rs50_ff_data *ff)
+{
+	struct hidpp_device *hidpp = ff->hidpp;
+	struct hidpp_report response;
+	u8 params[3] = {0, 0, 0};
+	u16 hw_range, cached;
+	int ret;
+
+	if (ff->idx_range == RS50_FEATURE_NOT_FOUND)
+		return;
+
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_range,
+					  RS50_HIDPP_FN_GET, params, 0,
+					  &response);
+	if (ret)
+		return;
+
+	hw_range = (response.fap.params[0] << 8) | response.fap.params[1];
+	if (hw_range < 90 || hw_range > 2700)
+		return;
+
+	cached = READ_ONCE(ff->range);
+	if (hw_range == cached)
+		return;
+
+	WRITE_ONCE(ff->range, hw_range);
+	hid_info(hidpp->hid_dev,
+		 "RS50: rotation range changed externally: %u -> %u degrees (not set via this driver; typically a game launch). wheel_range now reports the real value\n",
+		 cached, hw_range);
+	sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL, "wheel_range");
 }
 
 /*
@@ -5270,6 +5797,9 @@ static void rs50_ff_refresh_work(struct work_struct *work)
 			ff->last_err_log = jiffies;
 		}
 	}
+
+	/* Keep the reported rotation range honest (see helper above). */
+	rs50_ff_range_readback(ff);
 
 	/* Reschedule if still running - use dedicated workqueue for consistency */
 	if (!atomic_read_acquire(&ff->stopping) && atomic_read(&ff->initialized)) {
@@ -5610,8 +6140,22 @@ static int rs50_set_mode(struct rs50_ff_data *ff, u8 profile)
 		return -EINVAL;
 	}
 
-	params[0] = profile;
-	params[1] = 0;
+	/*
+	 * Wire format (feature 0x8137 fn=2, from the GHUB capture notes at
+	 * RS50_COMPAT_FEATURE_ID_ANGLE): [mode_class, slot, 0] where
+	 * mode_class 0x00 = desktop and 0x02 = onboard with the 1-based
+	 * slot in params[1]. The previous encoding sent [N, 0, 0] for
+	 * onboard slot N, which put the slot number in the mode_class
+	 * byte - only desktop (N=0) happened to be encoded correctly, and
+	 * onboard selection always landed on the wheel's own default slot.
+	 */
+	if (profile == 0) {
+		params[0] = 0x00;
+		params[1] = 0;
+	} else {
+		params[0] = 0x02;
+		params[1] = profile;
+	}
 	params[2] = 0;
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile,
@@ -6040,7 +6584,7 @@ static void rs50_ff_init_work(struct work_struct *work)
 
 skip_hidpp:
 
-	hid_info(hid, "RS50: Force feedback initialized (FF_CONSTANT only)\n");
+	hid_info(hid, "RS50: Force feedback initialized (full effect palette; conditions emulated host-side, textures via TrueForce)\n");
 	hid_dbg(hid, "RS50: Init work completed successfully\n");
 }
 
@@ -6123,11 +6667,9 @@ static ssize_t wheel_range_show(struct device *dev, struct device_attribute *att
  * Mode switch in compat mode goes through feature 0x8137 (Profile,
  * already wired by rs50_discover_settings_features as ff->idx_profile)
  * with fn=2 and params [mode_class, slot, 0]. mode_class=0x00 is
- * desktop, 0x02 is onboard. wheel_profile_store sends [profile, 0, 0]
- * which works for the desktop case (profile=0 -> [0,0,0]) but
- * mis-encodes onboard slot selection (profile=N -> [N,0,0] with
- * mode_class=N which is not 2); fixing the onboard-slot path is a
- * separate work item. The wheel boots in onboard mode in compat,
+ * desktop, 0x02 is onboard with the 1-based slot in the second byte;
+ * rs50_set_mode encodes both cases (slot encoding pending on-wheel
+ * confirmation). The wheel boots in onboard mode in compat,
  * onboard ignores the live host SETs below, so userspace must
  * write 0 to wheel_profile first to enter desktop mode and have
  * these SETs take effect on the motor.
@@ -8861,6 +9403,121 @@ static DEVICE_ATTR(wheel_ffb_constant_sign, 0664,
 		   wheel_ffb_constant_sign_store);
 
 /*
+ * wheel_spring_damping: synthetic damping for emulated SPRING effects,
+ * percent (0-100) of a DAMPER at the spring's own coefficient. See the
+ * spring_damping field comment for why an undamped emulated spring
+ * rings on a direct-drive wheel. 0 disables.
+ */
+static ssize_t wheel_spring_damping_show(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ff->spring_damping));
+}
+
+static ssize_t wheel_spring_damping_store(struct device *dev,
+					  struct device_attribute *attr,
+					  const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+	unsigned int val;
+	int ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+	if (val > 100)
+		return -EINVAL;
+	WRITE_ONCE(ff->spring_damping, (u8)val);
+	return count;
+}
+
+static DEVICE_ATTR(wheel_spring_damping, 0664,
+		   wheel_spring_damping_show,
+		   wheel_spring_damping_store);
+
+/*
+ * wheel_texture_route: where vibration-class effects (FF_RUMBLE and
+ * periodic effects at 20 Hz or faster) are actuated. "tf" (default)
+ * streams them on the wheel's TrueForce audio-haptic channel, matching
+ * the Windows KF/TF split; "kf" sums them into the steering force
+ * (legacy behaviour, makes steering feel gritty under rumble - issue
+ * #8). Takes effect on the next effect tick; a live TF stream gets a
+ * clean STOP when switching back to kf.
+ */
+static ssize_t wheel_texture_route_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	return sysfs_emit(buf, "%s\n",
+			  READ_ONCE(ff->texture_route) ==
+				  RS50_TEXTURE_ROUTE_TF ? "tf" : "kf");
+}
+
+static ssize_t wheel_texture_route_store(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+	u8 route;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	if (sysfs_streq(buf, "tf") || sysfs_streq(buf, "1"))
+		route = RS50_TEXTURE_ROUTE_TF;
+	else if (sysfs_streq(buf, "kf") || sysfs_streq(buf, "0"))
+		route = RS50_TEXTURE_ROUTE_KF;
+	else
+		return -EINVAL;
+
+	WRITE_ONCE(ff->texture_route, route);
+	return count;
+}
+
+static DEVICE_ATTR(wheel_texture_route, 0664,
+		   wheel_texture_route_show,
+		   wheel_texture_route_store);
+
+/*
  * Sysfs attribute groups.
  *
  * Each wheel carries its own attribute set. Keeping the list in one place
@@ -8906,6 +9563,8 @@ static struct attribute *rs50_wheel_group_attrs[] = {
 	&dev_attr_wheel_calibrate.attr,
 	&dev_attr_wheel_calibrate_here.attr,
 	&dev_attr_wheel_ffb_constant_sign.attr,
+	&dev_attr_wheel_spring_damping.attr,
+	&dev_attr_wheel_texture_route.attr,
 	&dev_attr_wheel_compat_range.attr,
 	&dev_attr_wheel_compat_gain.attr,
 	&dev_attr_wheel_compat_autocenter.attr,
@@ -9232,6 +9891,18 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	ff->last_force = 0;
 	ff->gain = 0xFFFF;		/* 100%, games scale down from here */
 	ff->ffb_constant_sign = true;	/* invert by default; Wine/Proton games rely on this */
+	ff->spring_damping = RS50_FF_SPRING_DAMPING_DEFAULT;
+	ff->texture_route = RS50_TEXTURE_ROUTE_TF;
+	ff->tf_ready = false;
+	ff->tf_init_queued = false;
+	ff->tf_streaming = false;
+	ff->tf_staged = 0;
+	{
+		int w;
+
+		for (w = 0; w < RS50_TF_WINDOW; w++)
+			ff->tf_window[w] = 0x8000;	/* offset-binary centre */
+	}
 	spin_lock_init(&ff->effects_lock);
 	atomic_set(&ff->sequence, 0);
 	atomic_set(&ff->pending_work, 0);
@@ -9300,6 +9971,7 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	INIT_DELAYED_WORK(&ff->init_work, rs50_ff_init_work);
 	INIT_DELAYED_WORK(&ff->refresh_work, rs50_ff_refresh_work);
 	INIT_WORK(&ff->settings_refresh_work, rs50_ff_settings_refresh_work);
+	INIT_WORK(&ff->tf_init_work, rs50_tf_init_work_handler);
 
 	/* Store for cleanup in hidpp_remove() */
 	hidpp->private_data = ff;
@@ -9399,6 +10071,7 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 	hid_dbg(hid, "RS50: Cancelling refresh timer\n");
 	cancel_delayed_work_sync(&ff->refresh_work);
 	cancel_work_sync(&ff->settings_refresh_work);
+	cancel_work_sync(&ff->tf_init_work);
 
 	hid_dbg(hid, "RS50: Cancelling effect timer\n");
 	timer_delete_sync(&ff->effect_timer);
