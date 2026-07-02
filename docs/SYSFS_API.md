@@ -5,7 +5,7 @@
 - Logitech RS50 Direct Drive Wheel Base (USB `046d:c276`)
 - Logitech G Pro Racing Wheel (USB `046d:c272` Xbox/PC, `046d:c268` PS/PC)
 
-**Version**: 2026-04-29
+**Version**: 2026-07-03
 
 Most of the attributes documented here are shared between the RS50 and G Pro (the two wheels share the settings code path). Attributes that are currently G Pro-only or RS50-only are called out inline.
 

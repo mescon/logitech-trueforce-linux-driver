@@ -163,9 +163,24 @@ why the launch-time range reset never produced a HID++ broadcast: it
 does not go through the HID++ range feature at all. Games push their
 configured steering rotation here at session start; a game whose
 rotation setting is 90 (or defaulted) locks the wheel to 90 degrees.
-The kernel driver's 20 s range poll detects the change and updates
-`wheel_range`; re-applying the desired range via HID++ afterwards
-sticks (the SDK write is one-shot at session init).
+The kernel driver's 20 s range poll detects the change and, by
+default, restores the pre-reset range automatically (the
+`wheel_range_restore` sysfs attribute; verified end-to-end with a
+detection-to-restore latency of ~60 ms against a faithful replay of
+the game traffic). Re-applying a range via HID++ sticks - the SDK
+write is one-shot at session init.
+
+Two firmware behaviours discovered while reproducing this
+(2026-07-03, live wheel):
+
+- **Type-`0x0e` is session-scoped**: a bare `0x0e` packet on an
+  otherwise idle interface is ignored; the range write only takes
+  effect inside an initialised TF session (init sequence sent).
+- **Idle revert**: if a TF session goes quiet (no stream packets,
+  roughly a minute) the firmware reverts the session's range change
+  on its own and broadcasts the restored value over HID++. A running
+  game keeps its session alive, which is why real launch-time resets
+  persist.
 
 AC EVO's init also differs from the canonical G Hub init in two more
 packets: a type-`0x0b` with float `1.0` (purpose unknown) and a

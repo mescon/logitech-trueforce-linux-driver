@@ -1,7 +1,7 @@
 # Logitech RS50 Protocol Specification
 
-**Document Version**: 6.3
-**Date**: 2026-07-02
+**Document Version**: 6.4
+**Date**: 2026-07-03
 **Author**: Verified from USB capture analysis
 **Status**: Protocol reference for Linux driver development
 
@@ -1554,3 +1554,5 @@ This returns the PAGE ID at each index. G Hub queries indices 0x00 through ~0x1F
 | 6.0 | 2026-02-04 | Verified feature table, SW_ID behaviour, LIGHTSYNC two-feature architecture |
 | 6.1 | 2026-04-21 | 8-way D-pad, G Pro coverage, per-feature SET fn numbers (damping fn=1, TRUEFORCE fn=3), FFB filter flags bitfield, centre calibration (feature 0x812C, G Pro sub-device 0x05), `wheel_calibrate` sysfs attribute |
 | 6.2 | 2026-06-29 | Corrected the D-pad section: the hat is a standard HID Hat Switch (value 0 = Up, clockwise) decoded natively by the kernel, not a custom byte-0 decode. The previous direction table and the `rs50_process_dpad()`/`RS50_DPAD_*` references were the removed, scrambled implementation (issue #22) |
+| 6.3 | 2026-07-02 | Resolved the three unknown features (0x80A4 axis response curves, 0x1BC0 ReportHidUsages, compat 0x15 = Brake Force); compat catalog identical to native; sub-device map (5.3); HID++ error packets, SW_ID and 0x12-report semantics from Logitech's official specs; DeviceInfo identity decode; LIGHTSYNC official lineage (9.10); registry cross-checks |
+| 6.4 | 2026-07-03 | Profile feature settled live against the OLED: fn2 SET = plain [profile,0,0], fn1 GET = [profile, mode], fn3 = per-slot profile names; catalog rows 0x02/0x03 corrected (DeviceInfo / DeviceNameType); launch-time 90-degree reset root-caused to the SDK's type-0x0e operating-range push (see TRUEFORCE_PROTOCOL.md) |

@@ -12,6 +12,30 @@ Over one hundred commits since the `v0.9-pre-simplification` tag on
 by theme. See `git log v0.9-pre-simplification..HEAD` for the full
 chronology.
 
+### The 90-degree saga closed; profile slots done right (2026-07-03)
+
+- **Launch-time 90-degree reset: root-caused and fixed.** A usbmon
+  capture of an AC EVO launch showed the game's SDK session pushing an
+  operating range of 90 degrees in a TrueForce interface-2 packet
+  (type 0x0e - previously misdocumented as a frequency config; its
+  canonical init value 2700.0 is the wheel's max range). The new
+  `wheel_range_restore` (default on) restores the pre-reset range
+  automatically - detection to restore measured under 100 ms against
+  a faithful replay of the game traffic - behind safety gates:
+  external-and-exactly-90 only, desktop mode only, wheel stationary,
+  widen-only, three strikes per session, explicit writes supersede.
+  Game-side alternative documented: AC EVO's "Steering lock" setting
+  pushes its configured value once touched and re-applied.
+- **Profile slot select settled against the wheel's OLED**: fn2 SET is
+  the plain profile index (a capture-note misparse had briefly
+  suggested a [mode_class, slot] encoding; writing that switches to
+  profile 2), fn1 GET returns [profile, mode], and fn3 returns each
+  slot's user-assigned NAME - exposed as the new read-only
+  `wheel_profile_names` attribute.
+- Firmware behaviours documented from the reproduction work: type-0x0e
+  is session-scoped, and an idle TF session's range change is
+  reverted by the firmware itself after about a minute.
+
 ### Hardening, identity, and protocol resolutions (2026-07-02, later)
 
 - **Ten review findings fixed** (commit `c2b3a65`) after an adversarial
