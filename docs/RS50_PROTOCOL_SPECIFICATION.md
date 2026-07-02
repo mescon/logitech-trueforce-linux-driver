@@ -266,7 +266,13 @@ Maximum force RIGHT, sequence 0x01:
 
 ## 5. HID++ Protocol (Interface 1)
 
-The RS50 uses HID++ 4.2 protocol for configuration.
+The RS50 uses HID++ 4.2 protocol for configuration. First-party
+confirmation (2026-07-02): decoding IRoot `GetProtocolVersion` (fn1)
+per Logitech's official cpg-docs spec, the capture traffic
+`10ff001d 0000 39` -> `12ff001d 04 02 39` (`2026-01-26_ghub_startup`)
+reads protocolMajor=4, protocolMinor=2, with the trailing byte being
+echoed pingData - G Hub uses this call with random pingData as a
+liveness ping throughout every session.
 
 ### Message Formats
 
@@ -305,7 +311,7 @@ Bytes 4-63: Parameters
 2. **RS50 ALWAYS responds with VERY LONG reports (0x12)** regardless of the input report type
 3. Responses are 64 bytes even for simple queries
 
-This is different from other Logitech HID++ devices which typically respond with the same report type they receive.
+This is different from other Logitech HID++ devices which typically respond with the same report type they receive. It is also beyond the published protocol: Logitech's official HID++ 2.0 documentation (cpg-docs) defines only the 0x10 (7-byte) and 0x11 (20-byte) report types, which is why no public source describes the 64-byte 0x12 responses - they are a newer firmware extension, documented only here. Note the exception in section 5.3: SUB-DEVICE responses (dev_idx 0x01/0x02/0x05) arrive as 0x11, not 0x12.
 
 **Implication for drivers:**
 - When sending 0x10 (short) or 0x11 (long), expect response on 0x12 (very long)
@@ -351,6 +357,16 @@ Device → Host: Interrupt IN (endpoint 0x82)
 | **0x18** | **`0x8138`** | **RotationRange** | Rotation Range slider |
 | **0x19** | **`0x8139`** | **TRUEFORCE** | TRUEFORCE slider |
 | **0x1A** | **`0x8140`** | **FFBFilter** | FFB Filter + Auto toggle |
+
+**Feature-type flags** (per Logitech's official cpg-docs `GetFeature`
+spec: bit 7 = obsolete, bit 6 = hidden/engineering): every feature the
+Linux driver touches (0x8040, 0x807A/B, 0x80A4, 0x8133-0x8140, and the
+dev-0x05 calibration cluster 0x812B/0x812C) advertises flags 0x00 =
+public. The undocumented catalog entries not listed above (0x18xx,
+0x1Exx, 0x92xx, 0x812A) carry flags 0x40-0x70, i.e. hidden or
+engineering features deliberately not exposed to normal software - a
+useful signal that the driver's surface sits entirely on Logitech's
+public feature set.
 
 ### Setting Commands (All Verified)
 
