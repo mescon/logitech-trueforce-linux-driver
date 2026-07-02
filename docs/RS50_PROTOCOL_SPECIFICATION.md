@@ -311,7 +311,7 @@ Bytes 4-63: Parameters
 2. **RS50 ALWAYS responds with VERY LONG reports (0x12)** regardless of the input report type
 3. Responses are 64 bytes even for simple queries
 
-This is different from other Logitech HID++ devices which typically respond with the same report type they receive. It is also beyond the published protocol: Logitech's official HID++ 2.0 documentation (cpg-docs) defines only the 0x10 (7-byte) and 0x11 (20-byte) report types, which is why no public source describes the 64-byte 0x12 responses - they are a newer firmware extension, documented only here. Note the exception in section 5.3: SUB-DEVICE responses (dev_idx 0x01/0x02/0x05) arrive as 0x11, not 0x12.
+This is different from other Logitech HID++ devices which typically respond with the same report type they receive - but it IS officially specified: Logitech's HID vendor-collection usages document defines report ID 0x12 as the "very long" HID++ report (64 bytes, usage page 0xFF43), and the vendor collection usage's high byte is a capability bitmask (bit 0 = short 0x10/7B, bit 1 = long 0x11/20B, bit 2 = very-long 0x12/64B), so a device advertising usage 0x07NN supports all three. A driver can therefore detect very-long support from the report descriptor instead of assuming it. (An earlier revision of this section called 0x12 an undocumented firmware extension; the cpg-docs 2.0 draft indeed only defines 0x10/0x11, but the vendor-usages document covers it.) Note the exception in section 5.3: SUB-DEVICE responses (dev_idx 0x01/0x02/0x05) arrive as 0x11, not 0x12.
 
 **Implication for drivers:**
 - When sending 0x10 (short) or 0x11 (long), expect response on 0x12 (very long)
@@ -685,10 +685,12 @@ analysis; index-to-ID mapping derived from IFeatureSet fn1 pairing in
   Naming sources: Solaar's feature registry and openlogi.org both list
   `0x1BC0` as REPORT_HID_USAGE / "report HID usage pages to host"
   (corroborating the payload reading); cvuchener/hidpp's older table
-  calls it "Persistent remappable action", but Solaar places that
-  feature at `0x1C00` - we follow the two agreeing sources. No public
-  registry documents its functions; the fn map above (from captures) is
-  the best available.
+  calls it "Persistent remappable action", but that is settled
+  definitively by Logitech's own spec set, which contains
+  `x1c00_persistentremappableaction` and no 0x1BC0 document -
+  PersistentRemappableAction is `0x1C00`, and `0x1BC0` =
+  ReportHidUsages stands. No public source documents 0x1BC0's
+  functions; the fn map above (from captures) is the best available.
 - **Compat index `0x15` = `0x8134` Brake Force - mystery closed.** The
   compat catalog is identical to native (see above), so index 0x15 is
   the already-documented Brake Force feature. The previously mysterious
@@ -1424,6 +1426,35 @@ The HID++ protocol uses a Software ID (SW_ID) in the lower nibble of the functio
 - RS50 responds: `12 ff 00 0c 18 00 00...` (function 0, SW_ID echoed as 12?)
 
 The RS50 appears to echo the SW_ID in responses, though some HID++ 2.0 devices may leave it as 0. The driver should handle both cases by comparing only the function index (upper nibble) when SW_ID is 0.
+
+Official semantics (Logitech HID++ 2.0 draft specification, 2012-06-04)
+confirm the observed behavior: the firmware must copy the software
+identifier into the response but does not otherwise use it, and SW_ID 0
+is reserved ("do not use - allows to distinguish a notification from a
+response"). This matches the capture census exactly: every unsolicited
+packet - the `12ff1500 XXXX`-style settings broadcasts, profile and
+rotation events - carries SW_ID 0 (officially "broadcast events"),
+while responses echo the requester's SW_ID (G Hub runs parallel client
+sessions on SW_IDs `a`..`e`, plus `f` for DFU checks; the Linux driver
+is `1`). The same spec also states all request parameters must be
+repeated in the response, which explains the echoed values in e.g.
+`10ff182d 0438` -> `12ff182d 0438`.
+
+### HID++ Error Packets
+
+Errors arrive as a response with feature index `0xFF` in byte 2,
+followed by the failing feature index, the failing fn|sw byte, and an
+error code (per the official 2.0 draft): 0 NoError, 1 Unknown,
+2 InvalidArgument, 3 OutOfRange, 4 HWError, 5 "Logitech internal",
+6 InvalidFeatureIndex, 7 InvalidFunctionId, 8 Busy, 9 Unsupported.
+The wheel uses this standard mechanism, including in very-long frames.
+Decoded examples from the captures:
+
+- `12 ff ff 0a 3c 09` - feature idx 0x0a (0x8040) fn3: Unsupported.
+- `12 ff ff 0b 4c 05` - LIGHTSYNC 0x807A fn4: Logitech internal.
+- `11 05 ff 0c 3b 02` - sub-device 0x05 calibration write rejected
+  with InvalidArgument (G Pro contributor capture; note the 0x11
+  report ID, matching the sub-device response quirk of section 5.3).
 
 ### Alternative: FeatureSet Enumeration
 
