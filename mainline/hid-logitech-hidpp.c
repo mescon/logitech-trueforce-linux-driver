@@ -4344,7 +4344,29 @@ struct rs50_ff_data {
 	u8 ls_num_leds;           /* latched from 0x0C fn0; clamped <= NUM_LEDS */
 
 	/* Oversteer compatibility - stored locally, no hardware effect */
-	u8 autocenter;			/* Autocenter strength 0-100 (stub) */
+	/*
+	 * Emulated autocenter: a driver-side centring spring summed into
+	 * the effect timer's force whenever nonzero. Raw 0-65535 scale
+	 * (the evdev FF_AUTOCENTER and Oversteer `autocenter` file
+	 * convention). Replaces the earlier store-only stub.
+	 */
+	u16 autocenter;
+	/*
+	 * Per-effect-class output scales, 0-100 percent, default 100
+	 * (the new-lg4ff / Oversteer convention: spring_level,
+	 * damper_level, friction_level files). Applied to the emulated
+	 * SPRING/DAMPER/FRICTION outputs in the effect tick.
+	 */
+	u8 spring_level;
+	u8 damper_level;
+	u8 friction_level;
+	/*
+	 * True once interface 0 has delivered at least one input report.
+	 * Until then ff->wheel_pos is its kzalloc 0 ("hard left"), and
+	 * anything position-fed (the autocenter spring) must stay quiet
+	 * or it would yank an untouched wheel.
+	 */
+	bool wheel_pos_seen;
 
 	/* Pedal response curve and combined mode settings */
 	u8 combined_pedals;		/* 0=off, 1=on (throttle - brake) */
@@ -4783,7 +4805,8 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 			fs -= ((coeff * vel_metric) >> 15) * damping / 100;
 			fs = clamp(fs, -sat, sat);
 		}
-		return fs;
+		/* Global per-class scale (Oversteer spring_level). */
+		return fs * READ_ONCE(ff_state->spring_level) / 100;
 	}
 	case FF_DAMPER:
 		/*
@@ -4804,8 +4827,10 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 		 * (`wheel_vel << 8`) which is UB for negative wheel_vel.
 		 */
 		c = &eff->u.condition[0];
+		/* Global per-class scale (Oversteer damper_level). */
 		return rs50_condition_force(c,
-			clamp(wheel_vel * 256, (s32)S16_MIN, (s32)S16_MAX));
+			clamp(wheel_vel * 256, (s32)S16_MIN, (s32)S16_MAX)) *
+			READ_ONCE(ff_state->damper_level) / 100;
 	case FF_FRICTION: {
 		/*
 		 * Karnopp-style friction: full-scale opposing force above a
@@ -4830,7 +4855,9 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 			vel = -S16_MAX;
 		else
 			vel *= S16_MAX / RS50_FF_FRICTION_RAMP_COUNTS;
-		return rs50_condition_force(c, vel);
+		/* Global per-class scale (Oversteer friction_level). */
+		return rs50_condition_force(c, vel) *
+			READ_ONCE(ff_state->friction_level) / 100;
 	}
 	case FF_INERTIA:
 		/*
@@ -5174,6 +5201,42 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	spin_unlock_irqrestore(&ff->effects_lock, flags);
 
 	/*
+	 * Emulated autocenter: a centring spring summed on top of any
+	 * game effects, active while the sysfs/evdev autocenter value is
+	 * nonzero (raw 0-65535; the evdev FF_AUTOCENTER scale). Gated on
+	 * wheel_pos_seen: before the first input report wheel_pos still
+	 * reads 0 ("hard left") and an ungated spring would yank an
+	 * untouched wheel. Damped with the same coefficient-proportional
+	 * term as emulated FF_SPRING so it cannot ring the direct-drive
+	 * motor.
+	 */
+	{
+		u16 ac = READ_ONCE(ff->autocenter);
+
+		if (ac && READ_ONCE(ff->wheel_pos_seen)) {
+			s32 k = ac >> 1;	/* 0-65535 -> 0-32767 coeff */
+			/*
+			 * Steepen the spring so it reaches full authority
+			 * within ~1/8 of the axis (about +/-56 degrees at a
+			 * 900-degree range) instead of only at full lock -
+			 * a linear-over-full-range spring at moderate level
+			 * computes to ~1% force for hand-sized deflections
+			 * and is imperceptible (feel-verified 2026-07-03).
+			 * This matches how hardware autocenter behaves on
+			 * other wheels: firm within a narrow window.
+			 */
+			s32 pos_metric = clamp(wheel_pos_signed * 8,
+					       (s32)S16_MIN, (s32)S16_MAX);
+			s32 vel_metric = clamp(wheel_vel * 256,
+					       (s32)S16_MIN, (s32)S16_MAX);
+
+			force += -((k * pos_metric) >> 15) -
+				 ((k * vel_metric) >> 15) *
+					 READ_ONCE(ff->spring_damping) / 100;
+		}
+	}
+
+	/*
 	 * Drive the TrueForce texture channel. Also runs while a stream
 	 * is still open with no texture playing so the STOP gets sent
 	 * (and re-sent if it was dropped) instead of the wheel looping
@@ -5198,9 +5261,11 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	 * the instantaneous net force is zero (e.g. a DAMPER at rest, or
 	 * a SPRING at exact centre). Without this, the wheel would stop
 	 * sampling and the condition effects would never fire. Also stay
-	 * alive while a TF stream is open so a dropped STOP can retry.
+	 * alive while a TF stream is open so a dropped STOP can retry,
+	 * and while autocenter is set so the centring spring keeps
+	 * tracking the wheel.
 	 */
-	if ((any_playing || ff->tf_streaming) &&
+	if ((any_playing || ff->tf_streaming || READ_ONCE(ff->autocenter)) &&
 	    !atomic_read_acquire(&ff->stopping) &&
 	    atomic_read(&ff->initialized))
 		mod_timer(&ff->effect_timer,
@@ -5735,6 +5800,28 @@ static void rs50_ff_set_gain(struct input_dev *dev, u16 gain)
 	WRITE_ONCE(ff->gain, gain);
 	hid_dbg(ff->hidpp->hid_dev, "RS50: FF_GAIN set to %u (%u%%)\n",
 		gain, ((u32)gain * 100) / 0xFFFF);
+}
+
+/*
+ * Emulated autocenter (evdev FF_AUTOCENTER): stores the magnitude and
+ * makes sure the effect timer runs so the centring spring in the tick
+ * takes effect even with no game effects playing. Games writing 0
+ * before taking over FFB disable it for their session, as on other
+ * wheels.
+ */
+static void rs50_ff_set_autocenter(struct input_dev *dev, u16 magnitude)
+{
+	struct rs50_ff_data *ff = dev->ff->private;
+
+	if (!ff)
+		return;
+	WRITE_ONCE(ff->autocenter, magnitude);
+	if (magnitude && !atomic_read_acquire(&ff->stopping) &&
+	    atomic_read(&ff->initialized))
+		mod_timer(&ff->effect_timer, jiffies +
+			  msecs_to_jiffies(RS50_FF_TIMER_INTERVAL_MS));
+	hid_dbg(ff->hidpp->hid_dev, "RS50: FF_AUTOCENTER set to %u\n",
+		magnitude);
 }
 
 /* Work handler - runs in workqueue context where blocking calls are safe */
@@ -7012,6 +7099,13 @@ static void rs50_ff_init_work(struct work_struct *work)
 	set_bit(FF_RUMBLE, input->ffbit);
 	/* Gain control */
 	set_bit(FF_GAIN, input->ffbit);
+	/*
+	 * Emulated autocenter (driver-side centring spring). Advertising
+	 * the bit matters beyond the feature itself: games conventionally
+	 * write FF_AUTOCENTER 0 before taking over FFB, which now
+	 * correctly disables a user-set centring spring for the session.
+	 */
+	set_bit(FF_AUTOCENTER, input->ffbit);
 
 	/* Create FF device with our custom handlers */
 	ret = input_ff_create(input, RS50_FF_MAX_EFFECTS);
@@ -7025,6 +7119,7 @@ static void rs50_ff_init_work(struct work_struct *work)
 	input->ff->erase = rs50_ff_erase;
 	input->ff->playback = rs50_ff_playback;
 	input->ff->set_gain = rs50_ff_set_gain;
+	input->ff->set_autocenter = rs50_ff_set_autocenter;
 
 	/*
 	 * Open interface 2's HID device for FFB I/O.
@@ -7497,17 +7592,73 @@ static DEVICE_ATTR(wheel_strength, 0664,
 		   wheel_strength_show, wheel_strength_store);
 
 /*
- * Oversteer-compatible 'gain' attribute - same functionality as wheel_strength.
- * Oversteer uses 'gain' for FFB strength control.
+ * Oversteer-compatible 'gain' attribute. The FILE speaks the raw
+ * 0-65535 scale that Oversteer (and the new-lg4ff convention) expects
+ * - Oversteer converts to percent in its UI. Internally it drives the
+ * same wheel strength setting as wheel_strength (which keeps its
+ * human-friendly 0-100 percent scale). An earlier revision aliased
+ * this file directly to wheel_strength's percent handlers, which made
+ * Oversteer read 65 as "0% gain".
  */
+static ssize_t wheel_compat_gain_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	return sysfs_emit(buf, "%u\n", ff->strength);
+}
+
+static ssize_t wheel_compat_gain_store(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+	char pct[8];
+	int val, ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret)
+		return ret;
+	val = clamp(val, 0, 65535);
+
+	/* Reuse the wheel_strength store (native + compat send paths). */
+	snprintf(pct, sizeof(pct), "%d", DIV_ROUND_CLOSEST(val * 100, 65535));
+	ret = wheel_strength_store(dev, attr, pct, strlen(pct));
+	if (ret < 0)
+		return ret;
+	/* Keep the exact raw value rather than the percent rounding. */
+	ff->strength = val;
+	return count;
+}
+
 static struct device_attribute dev_attr_wheel_compat_gain =
-	__ATTR(gain, 0664, wheel_strength_show, wheel_strength_store);
+	__ATTR(gain, 0664, wheel_compat_gain_show, wheel_compat_gain_store);
 
 /*
- * Oversteer-compatible 'autocenter' attribute.
- * Stub that stores the value locally for Oversteer compatibility only.
- * Modern direct-drive wheels don't use hardware centering -- games
- * calculate their own centering forces via FF_CONSTANT effects.
+ * Oversteer-compatible 'autocenter' attribute: the emulated centring
+ * spring (see the autocenter field and the effect-timer term). Raw
+ * 0-65535 file scale per the evdev FF_AUTOCENTER / Oversteer
+ * convention. Writing a nonzero value starts the effect timer so the
+ * spring engages without any game effects playing.
  */
 static ssize_t wheel_autocenter_show(struct device *dev, struct device_attribute *attr,
 				    char *buf)
@@ -7524,7 +7675,7 @@ static ssize_t wheel_autocenter_show(struct device *dev, struct device_attribute
 	if (atomic_read_acquire(&ff->stopping))
 		return -ENODEV;
 
-	return sysfs_emit(buf, "%u\n", ff->autocenter);
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ff->autocenter));
 }
 
 static ssize_t wheel_autocenter_store(struct device *dev, struct device_attribute *attr,
@@ -7547,15 +7698,70 @@ static ssize_t wheel_autocenter_store(struct device *dev, struct device_attribut
 	if (ret)
 		return ret;
 
-	/* Clamp to 0-100 range */
-	ff->autocenter = clamp(val, 0, 100);
-
-	/* Stub only -- no command sent to device (see comment above) */
+	WRITE_ONCE(ff->autocenter, clamp(val, 0, 65535));
+	if (val && atomic_read(&ff->initialized))
+		mod_timer(&ff->effect_timer, jiffies +
+			  msecs_to_jiffies(RS50_FF_TIMER_INTERVAL_MS));
 	return count;
 }
 
 static struct device_attribute dev_attr_wheel_compat_autocenter =
 	__ATTR(autocenter, 0664, wheel_autocenter_show, wheel_autocenter_store);
+
+/*
+ * Oversteer-compatible per-effect-class output scales, 0-100 percent,
+ * default 100 (the new-lg4ff convention): spring_level, damper_level,
+ * friction_level scale the emulated FF_SPRING / FF_DAMPER /
+ * FF_FRICTION outputs respectively. Note damper_level scales DAMPER
+ * EFFECTS from games; the wheel's own firmware damping stays on
+ * wheel_damping.
+ */
+#define RS50_LEVEL_ATTR(_name)						\
+static ssize_t wheel_##_name##_show(struct device *dev,		\
+				    struct device_attribute *attr,	\
+				    char *buf)				\
+{									\
+	struct hid_device *hid = to_hid_device(dev);			\
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);		\
+	struct rs50_ff_data *ff;					\
+									\
+	if (!hidpp)							\
+		return -ENODEV;						\
+	ff = READ_ONCE(hidpp->private_data);				\
+	if (!ff)							\
+		return -ENODEV;						\
+	if (atomic_read_acquire(&ff->stopping))				\
+		return -ENODEV;						\
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ff->_name));		\
+}									\
+static ssize_t wheel_##_name##_store(struct device *dev,		\
+				     struct device_attribute *attr,	\
+				     const char *buf, size_t count)	\
+{									\
+	struct hid_device *hid = to_hid_device(dev);			\
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);		\
+	struct rs50_ff_data *ff;					\
+	int val, ret;							\
+									\
+	if (!hidpp)							\
+		return -ENODEV;						\
+	ff = READ_ONCE(hidpp->private_data);				\
+	if (!ff)							\
+		return -ENODEV;						\
+	if (atomic_read_acquire(&ff->stopping))				\
+		return -ENODEV;						\
+	ret = kstrtoint(buf, 10, &val);					\
+	if (ret)							\
+		return ret;						\
+	WRITE_ONCE(ff->_name, (u8)clamp(val, 0, 100));			\
+	return count;							\
+}									\
+static struct device_attribute dev_attr_wheel_compat_##_name =		\
+	__ATTR(_name, 0664, wheel_##_name##_show, wheel_##_name##_store)
+
+RS50_LEVEL_ATTR(spring_level);
+RS50_LEVEL_ATTR(friction_level);
+RS50_LEVEL_ATTR(damper_level);
 
 static ssize_t wheel_damping_show(struct device *dev, struct device_attribute *attr,
 				 char *buf)
@@ -7636,9 +7842,6 @@ static DEVICE_ATTR(wheel_damping, 0664,
 /*
  * Oversteer-compatible 'damper_level' attribute - same as wheel_damping.
  */
-static struct device_attribute dev_attr_wheel_compat_damper_level =
-	__ATTR(damper_level, 0664, wheel_damping_show, wheel_damping_store);
-
 /* TRUEFORCE - audio-haptic feedback intensity */
 static ssize_t wheel_trueforce_show(struct device *dev, struct device_attribute *attr,
 				   char *buf)
@@ -10259,7 +10462,9 @@ static struct attribute *rs50_wheel_group_attrs[] = {
 	&dev_attr_wheel_compat_range.attr,
 	&dev_attr_wheel_compat_gain.attr,
 	&dev_attr_wheel_compat_autocenter.attr,
+	&dev_attr_wheel_compat_spring_level.attr,
 	&dev_attr_wheel_compat_damper_level.attr,
+	&dev_attr_wheel_compat_friction_level.attr,
 	&dev_attr_wheel_compat_combine_pedals.attr,
 	NULL,
 };
@@ -10583,6 +10788,9 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	ff->gain = 0xFFFF;		/* 100%, games scale down from here */
 	ff->ffb_constant_sign = true;	/* invert by default; Wine/Proton games rely on this */
 	ff->spring_damping = RS50_FF_SPRING_DAMPING_DEFAULT;
+	ff->spring_level = 100;		/* per-class scales: neutral */
+	ff->damper_level = 100;
+	ff->friction_level = 100;
 	ff->texture_route = RS50_TEXTURE_ROUTE_TF;
 	ff->range_restore = true;
 	ff->range_restore_attempts = 0;
@@ -12678,6 +12886,8 @@ static void rs50_process_pedals(struct hidpp_device *hidpp, u8 *data, int size)
 	 * effect tick (SPRING/DAMPER/FRICTION/INERTIA rely on it).
 	 */
 	WRITE_ONCE(ff->wheel_pos, get_unaligned_le16(&data[4]));
+	if (!READ_ONCE(ff->wheel_pos_seen))
+		WRITE_ONCE(ff->wheel_pos_seen, true);
 
 	/* Read current pedal values (little-endian) */
 	throttle = get_unaligned_le16(&data[6]);

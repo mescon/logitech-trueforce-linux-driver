@@ -698,40 +698,58 @@ layer, which already creates its own `range` attribute at the same path, so crea
 skipped on the G Pro for consistency; reach Oversteer via the G920 FFB layer's attributes
 on that wheel.
 
+These attributes follow the de-facto Linux wheel convention (the
+new-lg4ff attribute names and scales) that Oversteer and similar tools
+speak. Conformance was verified 2026-07-03 by driving every getter and
+setter through Oversteer's own code against the live wheel. Note the
+scales differ from the `wheel_*` attributes: tools expect raw device
+units here, not percent.
+
 ### range
 **Access**: Read/Write
 **Values**: `90` to `2700` (degrees)
 
-Alias for `wheel_range`. Named `range` for Oversteer compatibility.
+Same functionality as `wheel_range` (degrees on both).
 
 ### gain
 **Access**: Read/Write
-**Values**: `0` to `100` (percentage)
+**Values**: `0` to `65535` (raw; the FF_GAIN scale)
 
-Alias for `wheel_strength`. Named `gain` for Oversteer compatibility.
+Drives the same wheel strength setting as `wheel_strength`, but the
+file speaks the raw 0-65535 scale tools expect (Oversteer shows it as
+percent in its UI). `wheel_strength` keeps its human-friendly 0-100
+percent scale; the two stay in sync.
 
 ### autocenter
 **Access**: Read/Write
-**Values**: `0` to `100` (percentage)
+**Values**: `0` to `65535` (raw; the FF_AUTOCENTER scale)
 
-Stub that stores values locally but does not communicate with the device.
-The driver now implements FF_SPRING via software emulation against the
-live wheel state (see the FFB section below), so Oversteer or games that
-want hardware-spring-style centering should upload an `FF_SPRING` effect
-through evdev rather than write to this attribute. The attribute is kept
-for Oversteer GUI compatibility only.
+A real, driver-emulated centring spring (no longer a stub): while
+nonzero, the wheel pulls itself toward centre with a damped spring
+computed in the 500 Hz effect loop - firm within roughly the central
+eighth of the axis, like hardware autocenter on other wheels. Also
+reachable through the standard evdev `FF_AUTOCENTER` control, which
+means games that write autocenter 0 before taking over force feedback
+correctly disable it for their session. Useful for desk-driving
+without a game, or as idle centring.
 
-### damper_level
+### spring_level / damper_level / friction_level
 **Access**: Read/Write
-**Values**: `0` to `100` (percentage)
+**Values**: `0` to `100` (percent), default `100`
 
-Alias for `wheel_damping`. Named `damper_level` for Oversteer compatibility.
+Global output scales for the emulated `FF_SPRING` / `FF_DAMPER` /
+`FF_FRICTION` effect classes, matching the new-lg4ff semantics: 100 =
+effects play as the game commanded, lower values tame that effect
+class across all games, 0 mutes it. Note `damper_level` scales DAMPER
+EFFECTS from games; the wheel's own firmware damping remains
+`wheel_damping`. (Earlier revisions aliased `damper_level` to
+`wheel_damping`; the semantics now match what tools expect.)
 
 ### combine_pedals
 **Access**: Read/Write
 **Values**: `0`, `1`
 
-Alias for `wheel_combined_pedals`. Named `combine_pedals` for Oversteer compatibility.
+Same functionality as `wheel_combined_pedals`.
 
 ---
 

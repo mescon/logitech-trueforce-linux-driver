@@ -137,7 +137,7 @@ All effects are routed to the wheel's single direct-drive motor
 | `FF_PERIODIC` | sine / square / triangle / saw-up / saw-down. 20 Hz and faster ride the TrueForce texture channel by default (`wheel_texture_route`). |
 | `FF_RUMBLE` | Streams on the TrueForce texture channel by default, so it vibrates the rim without shaking the steering axis. |
 | `FF_GAIN` | Global force scaling. |
-| `FF_AUTOCENTER` | **Not** advertised — upload an `FF_SPRING` instead. |
+| `FF_AUTOCENTER` | Driver-emulated damped centring spring (also via the `autocenter` sysfs); games can disable it per session as usual. |
 
 ### Verified game support
 
@@ -551,14 +551,16 @@ See `docs/SYSFS_API.md` for complete API documentation with examples.
 
 ### Oversteer Compatibility
 
-The driver exposes standard wheel attributes for [Oversteer](https://github.com/berarma/oversteer) compatibility:
-- `range` - Rotation range (up to 2700°)
-- `gain` - FFB strength
-- `autocenter` - Autocenter strength (stub - see note below)
-- `combine_pedals` - Combined pedals mode
-- `damper_level` - Damping level
-
-> **Note on autocenter:** The `autocenter` attribute is a stub that stores values locally but doesn't communicate with the device. G Hub doesn't expose an autocenter setting for the RS50, and modern direct-drive wheels don't need hardware centering - games calculate their own centering forces using FF_CONSTANT effects.
+The driver exposes the standard wheel attribute set (new-lg4ff
+names and scales) for [Oversteer](https://github.com/berarma/oversteer)
+compatibility, all verified through Oversteer's own code against the
+live wheel:
+- `range` - rotation range (up to 2700°)
+- `gain` - FFB strength (raw 0-65535 scale)
+- `autocenter` - driver-emulated damped centring spring (raw 0-65535)
+- `spring_level` / `damper_level` / `friction_level` - per-effect-class
+  output scales (0-100)
+- `combine_pedals` - combined pedals mode
 
 **Note:** Oversteer requires a patch for full support (native RS50
 detection, and attribute discovery for all three PIDs - stock
