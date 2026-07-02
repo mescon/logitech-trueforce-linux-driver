@@ -344,8 +344,8 @@ Device → Host: Interrupt IN (endpoint 0x82)
 |-------|------------|------|---------------|
 | 0x00 | `0x0000` | IRoot | Feature discovery |
 | 0x01 | `0x0001` | IFeatureSet | List all features |
-| 0x02 | `0x0002` | IFeatureInfo | Feature metadata |
-| 0x03 | `0x0003` | DeviceInfo | Device name, firmware |
+| 0x02 | `0x0003` | DeviceInfo | Serial, firmware entities (live-verified 2026-07-02; see below) |
+| 0x03 | `0x0005` | DeviceNameType | Device name string (fn0 = length, fn1 = name at offset, fn2 = type) |
 | 0x04 | `0x00C3` | SecureDFU | Firmware update |
 | **0x09** | **`0x1BC0`** | **ReportHidUsages** | Enables extra Button-page HID usages; optional (see 5.1) |
 | 0x0A | `0x8040` | Brightness/Sensitivity | Sensitivity (desktop) + **Brightness** (onboard) |
@@ -361,6 +361,21 @@ Device → Host: Interrupt IN (endpoint 0x82)
 | **0x18** | **`0x8138`** | **RotationRange** | Rotation Range slider |
 | **0x19** | **`0x8139`** | **TRUEFORCE** | TRUEFORCE slider |
 | **0x1A** | **`0x8140`** | **FFBFilter** | FFB Filter + Auto toggle |
+
+**DeviceInfo identity readout (live-verified 2026-07-02).** Feature
+`0x0003` fn0 getDeviceInfo returns `[entityCnt][unitId x4][transport
+x2][modelId...][capabilities @ byte 14]`; capabilities bit 0 gates fn2
+`getDeviceSerialNumber`, which returns the real 12-character ASCII
+serial (verified identical to the USB `iSerial`). fn1
+`getFwInfo(entity)` returns `[type][name x3 ASCII][BCD number][BCD
+rev][BE16 BCD build][active][trPid]...`; the wheel base has 3 entities
+(type 1 bootloader "BL2", type 0 active main FW "U1 65.03.B0038", type
+2 hardware) and the motor unit at sub-device `0x05` carries its own
+DeviceInfo whose type-0 entity is the servo firmware ("SC
+02.01.B0042"). Querying past the last entity returns a standard
+InvalidArgument error frame. The driver reads all of this once at init
+(`RS50: serial ..., base FW ..., motor FW ...` in dmesg) and exposes
+`wheel_serial` / `wheel_firmware` in sysfs.
 
 **Feature-type flags** (per Logitech's official x0000/x0001 specs,
 which define the full byte): bit 7 `obsl` (obsolete), bit 6 `hidden`,
@@ -1322,15 +1337,18 @@ directly and reframe open questions in this section:
   semantics (horizontal, reverse-horizontal, center-out, center-in),
   differently encoded.
 - **The 9.3.2 fn1 response `00 02 01 03 04 05 06 07 08 09`**,
-  currently labeled "zone IDs?", better matches the official
-  getZoneEffectInfo model as byte 0 = zone/cluster index and bytes
-  1..9 = the list of supported effect IDs. Testable with a capture
-  experiment.
+  previously labeled "zone IDs?", is byte 0 = zone/cluster index and
+  bytes 1..9 = the list of supported effect IDs - CONFIRMED live
+  2026-07-02 by re-reading fn1 on the wheel. Effect IDs 1..9 exist
+  (the driver's named effects are 1-5; 6-9 are accepted on the wire
+  and appear in G Hub effect-change broadcasts but are not yet
+  visually labeled).
 
-x8071 also defines an `rgbClusterChangedEvent` announcing
-firmware-initiated effect changes; whether 0x807A inherited an
-equivalent broadcast (e.g. for OLED-menu LED changes) has not been
-checked in captures.
+x8071's `rgbClusterChangedEvent` DOES have a 0x807A equivalent,
+confirmed across seven captures and now consumed by the driver:
+`12ff<idx>00 <effect>` (sw_id 0) fires on every effect change with
+the new effect ID as the single payload byte. The driver updates its
+led_effect cache and notifies wheel_led_effect pollers.
 
 ### 9.11 Capture Files
 

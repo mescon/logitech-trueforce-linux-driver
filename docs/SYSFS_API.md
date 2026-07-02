@@ -527,7 +527,7 @@ desktop mode, per the aliasing described there), and notifies
 
 ### wheel_led_effect
 **Access**: Read/Write
-**Values**: `1` to `5`
+**Values**: `1` to `9`
 
 Selects the LED animation mode. Values match feature 0x807A fn3 on
 the wire:
@@ -539,11 +539,17 @@ the wire:
 | `3` | Right to left |
 | `4` | Left to right |
 | `5` | Static/Custom (use custom slot colors) |
+| `6`-`9` | Advertised by the wheel's supported-effect list (live-verified) but not yet visually labeled - try them and watch the LEDs |
 
 Writing `5` re-applies the active slot's stored RGB so the new mode
-has something to render; writes for animated modes 1..4 just switch
-the effect and leave the cached colors untouched. Writes outside
-`1..5` are clamped to the nearest end of the range.
+has something to render; writes for other modes just switch the
+effect and leave the cached colors untouched. Writes outside `1..9`
+are clamped to the nearest end of the range.
+
+Effect changed from outside the driver (G Hub-style tools, or the
+wheel itself) is tracked: the driver consumes the LIGHTSYNC
+effect-change broadcast, updates this attribute, and notifies
+`poll()`ers.
 
 ```bash
 # Use custom slot colors
@@ -552,6 +558,29 @@ echo 5 > wheel_led_effect
 # Animate right to left
 echo 3 > wheel_led_effect
 ```
+
+### wheel_serial
+**Access**: Read-only
+**Values**: 12-character device serial
+
+The wheel's real serial number, read from HID++ DeviceInfo (feature
+0x0003 fn2) at init. Matches the USB `iSerial` descriptor.
+
+### wheel_firmware
+**Access**: Read-only
+
+Firmware versions read from DeviceInfo at init: the wheel base's
+active main firmware and the motor unit's servo firmware (from
+sub-device 0x05's own DeviceInfo).
+
+```bash
+cat wheel_firmware
+# base: U1 65.03.B0038
+# motor: SC 02.01.B0042
+```
+
+Include this output in bug reports - firmware-dependent behaviour
+(feature index drift, settings quirks) is tracked against it.
 
 ### wheel_led_apply
 **Access**: Write-only

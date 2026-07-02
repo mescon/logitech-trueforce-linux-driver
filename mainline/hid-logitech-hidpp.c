@@ -4329,6 +4329,11 @@ struct rs50_ff_data {
 	u8 led_brightness;		/* LED brightness (0-100) */
 	u8 brightness_caps;		/* x8040 getInfo capabilities byte */
 	bool brightness_info_read;	/* fn0 getInfo probed once */
+
+	/* Device identity (DeviceInfo 0x0003; read once at init) */
+	char serial[13];		/* 12-char Base34 serial + NUL */
+	char fw_main[16];		/* base firmware, e.g. "U1 65.03.B0038" */
+	char fw_motor[16];		/* motor firmware (sub-device 0x05) */
 	u8 led_effect;			/* LED effect mode (1-5, 5=custom) */
 
 	/* LIGHTSYNC per-slot configuration (full RGB control) */
@@ -4468,6 +4473,7 @@ static bool rs50_ff_effect_is_texture(const struct ff_effect *eff);
 static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
 			 const s32 *samples);
 static void rs50_tf_init_work_handler(struct work_struct *work);
+static void rs50_query_device_identity(struct rs50_ff_data *ff);
 static void rs50_ff_effect_timer_callback(struct timer_list *t);
 static void rs50_process_pedals(struct hidpp_device *hidpp, u8 *data, int size);
 static struct rs50_ff_data *rs50_find_ff_data(struct hid_device *hdev);
@@ -6114,6 +6120,30 @@ static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 		return 1;
 	}
 
+	/*
+	 * LIGHTSYNC effect-change broadcast: `12ff<idx>00 <effect>` fires
+	 * whenever the active LED effect changes (G Hub writes, and
+	 * presumably the wheel's own UI). Confirmed across seven captures
+	 * (2026-01-26_lightsync, 2026-01-30_onboard_led_effect, ...) with
+	 * effect values 1-9 - the same ID space the fn1 supported-effect
+	 * list advertises. Keeps the led_effect cache honest.
+	 */
+	if (ff->idx_lightsync != RS50_FEATURE_NOT_FOUND &&
+	    data[2] == ff->idx_lightsync &&
+	    data[3] == 0x00 && size >= 5) {
+		u8 effect = data[4];
+
+		if (effect >= 1 && effect <= 9) {
+			WRITE_ONCE(ff->led_effect, effect);
+			hid_info(hidpp->hid_dev,
+				 "RS50: LED effect change broadcast -> %u\n",
+				 effect);
+			sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL,
+				     "wheel_led_effect");
+		}
+		return 1;
+	}
+
 	return 0;
 }
 
@@ -6200,6 +6230,110 @@ static void rs50_discover_settings_features(struct rs50_ff_data *ff)
 	if (ret == 0)
 		hid_dbg(hid, "RS50: Calibrate feature at dev 0x%02x index 0x%02x\n",
 			ff->calibrate_dev_idx, ff->idx_calibrate);
+
+	rs50_query_device_identity(ff);
+}
+
+/*
+ * Format one DeviceInfo getFwInfo response (official x0003 layout:
+ * type, 3-char ASCII prefix, BCD number, BCD revision, BE16 BCD build)
+ * as e.g. "U1 65.03.B0038". Non-printable prefix bytes are skipped
+ * (the wheel pads short names with NULs).
+ */
+static void rs50_format_fw_entity(const u8 *p, char *out, size_t len)
+{
+	char name[4];
+	int i, n = 0;
+
+	for (i = 1; i <= 3; i++)
+		if (p[i] >= 0x20 && p[i] < 0x7f)
+			name[n++] = p[i];
+	name[n] = '\0';
+	scnprintf(out, len, "%s %02x.%02x.B%02x%02x",
+		  name, p[4], p[5], p[6], p[7]);
+}
+
+/*
+ * Read the wheel's identity from DeviceInfo (feature 0x0003): the real
+ * 12-character serial number (fn2, gated on the capabilities bit;
+ * live-verified identical to the USB iSerial descriptor) and the
+ * active main-firmware version, plus the motor unit's own firmware
+ * from sub-device 0x05's DeviceInfo (entity type 0 = active FW; the
+ * base reports e.g. "U1 65.03.B0038", the motor "SC 02.01.B0042").
+ * Logged once at init - invaluable for correlating firmware-dependent
+ * behaviour in issue reports - and exposed via the wheel_serial /
+ * wheel_firmware attributes. All reads; failures leave fields empty.
+ */
+static void rs50_query_device_identity(struct rs50_ff_data *ff)
+{
+	struct hidpp_device *hidpp = ff->hidpp;
+	struct hid_device *hid = hidpp->hid_dev;
+	struct hidpp_report response;
+	u8 params[3] = { 0, 0, 0 };
+	u8 idx, entities;
+	int ret, i;
+
+	ret = hidpp_root_get_feature(hidpp, 0x0003, &idx);
+	if (ret)
+		return;
+
+	ret = hidpp_send_fap_command_sync(hidpp, idx, RS50_HIDPP_FN_GET_INFO,
+					  params, 0, &response);
+	if (ret)
+		return;
+	entities = response.fap.params[0];
+
+	/* capabilities byte 14, bit 0 = serialNumber (fn2) supported */
+	if (response.fap.params[14] & 0x01) {
+		ret = hidpp_send_fap_command_sync(hidpp, idx,
+						  RS50_HIDPP_FN_SET /* fn2 getDeviceSerialNumber */,
+						  params, 0, &response);
+		if (ret == 0) {
+			for (i = 0; i < 12; i++) {
+				u8 c = response.fap.params[i];
+
+				if (c < 0x20 || c >= 0x7f)
+					break;
+				ff->serial[i] = c;
+			}
+			ff->serial[i] = '\0';
+		}
+	}
+
+	for (i = 0; i < min_t(int, entities, 4); i++) {
+		params[0] = i;
+		ret = hidpp_send_fap_command_sync(hidpp, idx,
+						  RS50_HIDPP_FN_GET,
+						  params, 1, &response);
+		if (ret)
+			continue;
+		if (response.fap.params[0] == 0x00)	/* main application FW */
+			rs50_format_fw_entity(response.fap.params,
+					      ff->fw_main, sizeof(ff->fw_main));
+	}
+
+	/* Motor unit firmware: sub-device 0x05 has its own DeviceInfo. */
+	if (hidpp_root_get_feature_on_device(hidpp, 0x05, 0x0003, &idx) == 0) {
+		for (i = 0; i < 4; i++) {
+			params[0] = i;
+			ret = hidpp_send_fap_to_device_sync(hidpp, 0x05, idx,
+							    RS50_HIDPP_FN_GET,
+							    params, 1, &response);
+			if (ret)
+				break;
+			if (response.fap.params[0] == 0x00) {
+				rs50_format_fw_entity(response.fap.params,
+						      ff->fw_motor,
+						      sizeof(ff->fw_motor));
+				break;
+			}
+		}
+	}
+
+	hid_info(hid, "RS50: serial %s, base FW %s, motor FW %s\n",
+		 ff->serial[0] ? ff->serial : "?",
+		 ff->fw_main[0] ? ff->fw_main : "?",
+		 ff->fw_motor[0] ? ff->fw_motor : "?");
 }
 
 /*
@@ -8743,8 +8877,17 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 	if (ff->idx_lightsync == RS50_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
-	/* Effect values: 1=Inside→Out, 2=Outside→In, 3=Right→Left, 4=Left→Right, 5=Custom */
-	effect = clamp(effect, 1, 5);
+	/*
+	 * Effect values 1-5 are labeled: 1=Inside->Out, 2=Outside->In,
+	 * 3=Right->Left, 4=Left->Right, 5=Custom. The wheel's fn1
+	 * supported-effect list additionally advertises 6-9
+	 * (live-verified 2026-07-02: `12ff0b18 00 02 01 03 04 05 06 07
+	 * 08 09` = cluster 0 + effect IDs 1..9), and effect-change
+	 * broadcasts with values 6 and 9 appear in the G Hub captures.
+	 * Accept the full advertised range; 6-9 remain visually
+	 * unlabeled until someone watches the LEDs while cycling them.
+	 */
+	effect = clamp(effect, 1, 9);
 
 	params[0] = effect;
 	params[1] = 0x00;
@@ -9751,6 +9894,54 @@ static DEVICE_ATTR(wheel_texture_route, 0664,
 		   wheel_texture_route_store);
 
 /*
+ * wheel_serial / wheel_firmware: read-only identity from DeviceInfo
+ * (feature 0x0003), read once at init. The serial is the real
+ * 12-character device serial (matches the USB iSerial); firmware shows
+ * the base main FW and the motor unit's servo FW (sub-device 0x05).
+ */
+static ssize_t wheel_serial_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (!ff->serial[0])
+		return -EOPNOTSUPP;
+	return sysfs_emit(buf, "%s\n", ff->serial);
+}
+static DEVICE_ATTR(wheel_serial, 0444, wheel_serial_show, NULL);
+
+static ssize_t wheel_firmware_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (!ff->fw_main[0] && !ff->fw_motor[0])
+		return -EOPNOTSUPP;
+	return sysfs_emit(buf, "base: %s\nmotor: %s\n",
+			  ff->fw_main[0] ? ff->fw_main : "?",
+			  ff->fw_motor[0] ? ff->fw_motor : "?");
+}
+static DEVICE_ATTR(wheel_firmware, 0444, wheel_firmware_show, NULL);
+
+/*
  * Sysfs attribute groups.
  *
  * Each wheel carries its own attribute set. Keeping the list in one place
@@ -9798,6 +9989,8 @@ static struct attribute *rs50_wheel_group_attrs[] = {
 	&dev_attr_wheel_ffb_constant_sign.attr,
 	&dev_attr_wheel_spring_damping.attr,
 	&dev_attr_wheel_texture_route.attr,
+	&dev_attr_wheel_serial.attr,
+	&dev_attr_wheel_firmware.attr,
 	&dev_attr_wheel_compat_range.attr,
 	&dev_attr_wheel_compat_gain.attr,
 	&dev_attr_wheel_compat_autocenter.attr,
