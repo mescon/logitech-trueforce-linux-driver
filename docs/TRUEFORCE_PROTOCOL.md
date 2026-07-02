@@ -68,7 +68,8 @@ The sequence counter is rewritten at send time from a session-local counter. Eac
 | `0x06` | Effect slot configuration (6 slots) |
 | `0x07` | Query / handshake |
 | `0x09` | Runtime parameter update |
-| `0x0e` | Frequency / sample rate config |
+| `0x0b` | Unknown (observed from AC EVO's session init with float `1.0`) |
+| `0x0e` | **Operating range, IEEE 754 LE float degrees** (previously misread as a frequency config) |
 
 ## Initialisation Sequence (sent twice)
 
@@ -80,7 +81,7 @@ The 68 packets are stored verbatim in `userspace/libtrueforce/src/tf_init_data.h
 |---------|------|---------|
 | 1-48 | `0x05` | 48 parameters (indices `0x00`-`0x1d` and `0x2b`-`0x3c`) as IEEE 754 LE floats |
 | 49 | `0x01` | Neutral sample (primes the stream) |
-| 50 | `0x0e` | Frequency / Nyquist config (IEEE 754 float `2700.0`) |
+| 50 | `0x0e` | Operating range = float `2700.0` (the wheel's max range; previously misread as a frequency) |
 | 51 | `0x01` | Neutral sample |
 | 52 | `0x07` | Handshake / query |
 | 53 | `0x01` | Neutral sample |
@@ -141,6 +142,34 @@ byte[60-63]: window[12]
 - Bytes 10 (`0x04`) and 11 (`0x0d`) are constants per capture.
 
 Packet cadence in libtrueforce is 250 Hz (4 new samples * 250 Hz = 1000 sample/s effective). If userspace can't keep up the thread repeats the previous window (Windows does the same under input starvation) and the wheel gradually unwinds. If userspace overruns the ring, `logitf_stream_push_s16()` blocks on `ring_space`.
+
+## Type `0x0e`: Operating Range (root cause of the "90 degrees on game launch" bug)
+
+Decoded 2026-07-02 from a live usbmon capture of an AC EVO launch on
+Linux: type-`0x0e` carries the wheel's operating range as an IEEE 754
+LE float in degrees at payload bytes 6-9. Evidence:
+
+- The canonical init's packet 50 carries `2700.0` - exactly the
+  wheel's maximum range, not a plausible sample rate.
+- AC EVO's SDK session init appends a second `0x0e` with `90.0`
+  (`01000000 0e <seq> 0000b442`), and the wheel's physical range
+  flips 900 -> 90 in the same 20-second window with ZERO HID++
+  traffic on interface 1 (confirmed: the only interface-1 range
+  packets in the entire capture are the Linux driver's own polls,
+  whose replies flip from 900 to 90).
+
+This is `logiWheelSetOperatingRange*()` on the wire, and it explains
+why the launch-time range reset never produced a HID++ broadcast: it
+does not go through the HID++ range feature at all. Games push their
+configured steering rotation here at session start; a game whose
+rotation setting is 90 (or defaulted) locks the wheel to 90 degrees.
+The kernel driver's 20 s range poll detects the change and updates
+`wheel_range`; re-applying the desired range via HID++ afterwards
+sticks (the SDK write is one-shot at session init).
+
+AC EVO's init also differs from the canonical G Hub init in two more
+packets: a type-`0x0b` with float `1.0` (purpose unknown) and a
+type-`0x09` carrying floats `1.0` and `350.0`.
 
 ## Device Response (Type `0x02`, endpoint `0x83` -> host)
 
