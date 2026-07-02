@@ -73,6 +73,22 @@ echo 0 > wheel_profile
 
 ## Force Feedback Settings
 
+### wheel_profile_names
+**Access**: Read-only
+
+The five onboard slots' user-assigned names (set via G Hub or the
+wheel's OLED menu), queried live from the wheel. Use this to know
+which slot number `wheel_profile` should get.
+
+```bash
+cat wheel_profile_names
+# 1: AC EVO
+# 2: GT7
+# 3: PROFILE 3
+# 4: PROFILE 4
+# 5: TEST
+```
+
 ### wheel_range
 **Access**: Read/Write
 **Values**: `90` to `2700` (degrees)

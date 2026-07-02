@@ -6414,19 +6414,15 @@ static int rs50_get_current_mode(struct rs50_ff_data *ff)
 	}
 
 	/*
-	 * Decode mirrors the SET encoding in rs50_set_mode: native RS50
-	 * (c276) returns the plain profile index in params[0]; the G PRO
-	 * PID returns [mode_class, slot] where mode_class 0x02 means
-	 * onboard with the slot in params[1]. Without the compat decode,
-	 * the settings refresh queued right after an onboard SET read
-	 * mode_class 0x02 back as "profile 2" and clobbered the slot the
-	 * user had just selected.
+	 * fn=1 GET response layout, settled live 2026-07-02 against the
+	 * wheel's own OLED: params[0] = profile index (0 = desktop,
+	 * 1..5 = onboard slot), params[1] = mode flag. An earlier
+	 * capture note misread this as [mode_class, slot] and a decode
+	 * based on it reported "profile 1" while the wheel sat on slot 2;
+	 * the plain params[0] read (matching the SET encoding and the
+	 * native spec) is correct on both native and compat.
 	 */
-	if (hidpp->hid_dev->product != USB_DEVICE_ID_LOGITECH_RS50 &&
-	    response.fap.params[0] == 0x02)
-		ff->current_profile = response.fap.params[1];
-	else
-		ff->current_profile = response.fap.params[0];
+	ff->current_profile = response.fap.params[0];
 	ff->current_mode = (ff->current_profile == 0) ? 0 : 1;
 	ff->mode_known = true;
 
@@ -6460,31 +6456,18 @@ static int rs50_set_mode(struct rs50_ff_data *ff, u8 profile)
 	}
 
 	/*
-	 * Two wire formats exist for feature 0x8137 fn=2:
-	 *
-	 * - Native RS50 (c276): [ProfileIndex, 0, 0], per the native-mode
-	 *   section of docs/RS50_PROTOCOL_SPECIFICATION.md.
-	 * - G PRO PID (c272/c268, both real G Pro and RS50-in-compat):
-	 *   [mode_class, slot, 0] where mode_class 0x00 = desktop and
-	 *   0x02 = onboard with the 1-based slot in params[1], from the
-	 *   GHUB capture notes at RS50_COMPAT_FEATURE_ID_ANGLE. The
-	 *   previous code sent [N, 0, 0] here, which put the slot number
-	 *   in the mode_class byte - only desktop (N=0) happened to be
-	 *   encoded correctly.
-	 *
-	 * Gate by product so the compat encoding is never applied to the
-	 * native wheel whose documented format is the plain index.
+	 * Feature 0x8137 fn=2 wire format, settled live 2026-07-02
+	 * against the wheel's OLED and the raw G Hub packets: the SET
+	 * takes the plain profile number in params[0] (`10ff172d 03` =
+	 * slot 3, empty/0 = desktop) - same on native and compat, and
+	 * symmetric with the fn=1 GET ([profile][mode], see
+	 * rs50_get_current_mode). An earlier revision briefly encoded
+	 * the SET as [0x02, slot, 0] after a capture-note misparse; the
+	 * wheel reads that params[0]=2 as "profile 2" (verified: the
+	 * OLED landed on slot 2's name).
 	 */
-	if (hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_RS50) {
-		params[0] = profile;
-		params[1] = 0;
-	} else if (profile == 0) {
-		params[0] = 0x00;
-		params[1] = 0;
-	} else {
-		params[0] = 0x02;
-		params[1] = profile;
-	}
+	params[0] = profile;
+	params[1] = 0;
 	params[2] = 0;
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile,
@@ -7033,10 +7016,10 @@ static ssize_t wheel_range_show(struct device *dev, struct device_attribute *att
  *
  * Mode switch in compat mode goes through feature 0x8137 (Profile,
  * already wired by rs50_discover_settings_features as ff->idx_profile)
- * with fn=2 and params [mode_class, slot, 0]. mode_class=0x00 is
- * desktop, 0x02 is onboard with the 1-based slot in the second byte;
- * rs50_set_mode encodes both cases (slot encoding pending on-wheel
- * confirmation). The wheel boots in onboard mode in compat,
+ * with fn=2 and params [profile, 0, 0]: 0 = desktop, 1..5 = onboard
+ * slot (live-verified against the OLED 2026-07-02; an interim
+ * [mode_class, slot] reading of the captures was wrong).
+ * The wheel boots in onboard mode in compat,
  * onboard ignores the live host SETs below, so userspace must
  * write 0 to wheel_profile first to enter desktop mode and have
  * these SETs take effect on the motor.
@@ -9942,6 +9925,56 @@ static ssize_t wheel_firmware_show(struct device *dev,
 static DEVICE_ATTR(wheel_firmware, 0444, wheel_firmware_show, NULL);
 
 /*
+ * wheel_profile_names: the onboard slots' user-assigned names, from
+ * feature 0x8137 fn=3 (from the G Hub captures: `10ff173c 01` ->
+ * `12ff173c 01 06 "AC EVO"` = [slot][length][ASCII name]; verified
+ * against the wheel's OLED profile list). One line per slot. Reads
+ * query the wheel live - they are rare and the names can change from
+ * the wheel's own menu.
+ */
+static ssize_t wheel_profile_names_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+	struct hidpp_report response;
+	ssize_t len = 0;
+	u8 slot;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_profile == RS50_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	for (slot = 1; slot <= 5; slot++) {
+		u8 params[3] = { slot, 0, 0 };
+		char name[17];
+		int ret, n;
+
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile,
+						  0x30 /* fn3 getProfileName */,
+						  params, 1, &response);
+		if (ret) {
+			len += sysfs_emit_at(buf, len, "%u: ?\n", slot);
+			continue;
+		}
+		n = min_t(int, response.fap.params[1], sizeof(name) - 1);
+		memcpy(name, &response.fap.params[2], n);
+		name[n] = '\0';
+		len += sysfs_emit_at(buf, len, "%u: %s\n", slot, name);
+	}
+	return len;
+}
+static DEVICE_ATTR(wheel_profile_names, 0444, wheel_profile_names_show, NULL);
+
+/*
  * Sysfs attribute groups.
  *
  * Each wheel carries its own attribute set. Keeping the list in one place
@@ -9991,6 +10024,7 @@ static struct attribute *rs50_wheel_group_attrs[] = {
 	&dev_attr_wheel_texture_route.attr,
 	&dev_attr_wheel_serial.attr,
 	&dev_attr_wheel_firmware.attr,
+	&dev_attr_wheel_profile_names.attr,
 	&dev_attr_wheel_compat_range.attr,
 	&dev_attr_wheel_compat_gain.attr,
 	&dev_attr_wheel_compat_autocenter.attr,
