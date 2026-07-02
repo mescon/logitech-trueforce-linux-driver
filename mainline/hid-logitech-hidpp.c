@@ -4327,6 +4327,8 @@ struct rs50_ff_data {
 	u8 ffb_filter;			/* FFB filter level (1-15) */
 	u8 ffb_filter_auto;		/* Auto FFB filter (0=off, 1=on) */
 	u8 led_brightness;		/* LED brightness (0-100) */
+	u8 brightness_caps;		/* x8040 getInfo capabilities byte */
+	bool brightness_info_read;	/* fn0 getInfo probed once */
 	u8 led_effect;			/* LED effect mode (1-5, 5=custom) */
 
 	/* LIGHTSYNC per-slot configuration (full RGB control) */
@@ -6076,6 +6078,42 @@ static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 		return 1;
 	}
 
+	/*
+	 * BrightnessControl events (x8040 official spec): event 0 is
+	 * brightnessChangeEvent with a BE16 brightness, fired on
+	 * user-initiated changes (the wheel's OLED menu) and after a
+	 * rounded setBrightness; event 1 is illuminationChangeEvent.
+	 * Without this handler the led_brightness / sensitivity caches
+	 * went stale whenever brightness was changed on the wheel itself.
+	 * Same sw_id==0 unsolicited-broadcast gate as the handlers above.
+	 */
+	if (ff->idx_brightness != RS50_FEATURE_NOT_FOUND &&
+	    data[2] == ff->idx_brightness &&
+	    (data[3] & 0x0F) == 0x00) {
+		u8 evt = data[3] >> 4;
+
+		if (evt == 0 && size >= 6) {
+			u16 raw = ((u16)data[4] << 8) | data[5];
+			u8 val = min_t(u16, raw, 100);
+
+			WRITE_ONCE(ff->led_brightness, val);
+			if (ff->mode_known && ff->current_mode == 0)
+				WRITE_ONCE(ff->sensitivity, val);
+			hid_info(hidpp->hid_dev,
+				 "RS50: Brightness change broadcast -> %u%%\n",
+				 val);
+			sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL,
+				     "wheel_led_brightness");
+		} else if (evt == 1) {
+			hid_dbg(hidpp->hid_dev,
+				"RS50: Illumination change broadcast -> %u\n",
+				data[4]);
+		} else {
+			return 0;	/* unknown event: let others look */
+		}
+		return 1;
+	}
+
 	return 0;
 }
 
@@ -6448,12 +6486,48 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 	 * as brightness unconditionally and as sensitivity only when
 	 * mode_known confirms desktop, so a failed mode query does not
 	 * alias a brightness value onto the sensitivity cache (SYS.F35).
+	 *
+	 * Officially this feature is x8040 BrightnessControl; the
+	 * sensitivity meaning is wheel-firmware behaviour layered on top
+	 * (the official feature has no sensitivity function). Values are
+	 * 16-bit big-endian per the official spec - decode both bytes,
+	 * not just the LSB.
 	 */
 	if (ff->idx_brightness != RS50_FEATURE_NOT_FOUND) {
+		/*
+		 * One-time getInfo probe (fn0): official layout is
+		 * maxBrightness (BE16), steps LSB, capabilities,
+		 * minBrightness (BE16). Validates the driver's 0-100
+		 * assumption instead of hardcoding it, and captures the
+		 * capability bits (events / illumination / transient).
+		 */
+		if (!ff->brightness_info_read) {
+			ret = hidpp_send_fap_command_sync(hidpp,
+					ff->idx_brightness,
+					RS50_HIDPP_FN_GET_INFO, params, 0,
+					&response);
+			if (ret == 0) {
+				u16 max = (response.fap.params[0] << 8) |
+					  response.fap.params[1];
+
+				ff->brightness_caps = response.fap.params[3];
+				ff->brightness_info_read = true;
+				hid_dbg(hid,
+					"Wheel: BrightnessControl max=%u caps=0x%02x\n",
+					max, ff->brightness_caps);
+				if (max != 100)
+					hid_warn(hid,
+						 "Wheel: BrightnessControl maxBrightness=%u (driver assumes 100)\n",
+						 max);
+			}
+		}
+
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_brightness,
 						  RS50_HIDPP_FN_GET, params, 0, &response);
 		if (ret == 0) {
-			u8 val = response.fap.params[1];
+			u16 raw = (response.fap.params[0] << 8) |
+				  response.fap.params[1];
+			u8 val = min_t(u16, raw, 100);
 
 			ff->led_brightness = val;
 			hid_dbg(hid, "Wheel: LED brightness = %d%%\n", val);

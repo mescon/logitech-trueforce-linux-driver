@@ -266,13 +266,17 @@ Maximum force RIGHT, sequence 0x01:
 
 ## 5. HID++ Protocol (Interface 1)
 
-The RS50 uses HID++ 4.2 protocol for configuration. First-party
-confirmation (2026-07-02): decoding IRoot `GetProtocolVersion` (fn1)
-per Logitech's official cpg-docs spec, the capture traffic
+The RS50 uses the HID++ 2.0-family protocol for configuration,
+reporting protocol number 4. Decoding IRoot `GetProtocolVersion` (fn1)
+per Logitech's official x0000 spec, the capture traffic
 `10ff001d 0000 39` -> `12ff001d 04 02 39` (`2026-01-26_ghub_startup`)
-reads protocolMajor=4, protocolMinor=2, with the trailing byte being
-echoed pingData - G Hub uses this call with random pingData as a
-liveness ping throughout every session.
+reads: byte 0 `protocolNum` = 4, byte 1 `targetSw` = 0x02 (bit 1 =
+"Logitech Gaming Software is the intended target SW"), byte 2 = echoed
+pingData. Officially this is NOT a major.minor version - "4.2" is the
+Linux kernel driver's de-facto major.minor reading of the same two
+bytes, kept elsewhere in this document for consistency with kernel
+terminology. G Hub uses this call with random pingData as a liveness
+ping throughout every session.
 
 ### Message Formats
 
@@ -358,15 +362,21 @@ Device → Host: Interrupt IN (endpoint 0x82)
 | **0x19** | **`0x8139`** | **TRUEFORCE** | TRUEFORCE slider |
 | **0x1A** | **`0x8140`** | **FFBFilter** | FFB Filter + Auto toggle |
 
-**Feature-type flags** (per Logitech's official cpg-docs `GetFeature`
-spec: bit 7 = obsolete, bit 6 = hidden/engineering): every feature the
-Linux driver touches (0x8040, 0x807A/B, 0x80A4, 0x8133-0x8140, and the
+**Feature-type flags** (per Logitech's official x0000/x0001 specs,
+which define the full byte): bit 7 `obsl` (obsolete), bit 6 `hidden`,
+bit 5 `eng` (engineering), bit 4 `manuf_deact`
+(manufacturing-deactivatable), bit 3 `compl_deact`
+(compliance-deactivatable), bits 2-0 reserved. Every feature the Linux
+driver touches (0x8040, 0x807A/B, 0x80A4, 0x8133-0x8140, and the
 dev-0x05 calibration cluster 0x812B/0x812C) advertises flags 0x00 =
-public. The undocumented catalog entries not listed above (0x18xx,
-0x1Exx, 0x92xx, 0x812A) carry flags 0x40-0x70, i.e. hidden or
-engineering features deliberately not exposed to normal software - a
-useful signal that the driver's surface sits entirely on Logitech's
-public feature set.
+public. The undocumented catalog entries not listed above decode as:
+0x40 = hidden; 0x60 = hidden + engineering; 0x70 = hidden +
+engineering + manufacturing-deactivatable - features deliberately not
+exposed to normal software. A useful signal that the driver's surface
+sits entirely on Logitech's public feature set. (IFeatureSet
+`getFeatureID` also returns a featureVersion byte the catalog dumps in
+this section do not record; versions gate function availability, e.g.
+x8040 gained its illumination on/off functions in v1.)
 
 ### Setting Commands (All Verified)
 
@@ -1284,7 +1294,45 @@ cat wheel_led_colors
 3. Writes to `wheel_led_direction` or `wheel_led_colors` auto-apply
 4. Each slot maintains independent direction and color config
 
-### 9.10 Capture Files
+### 9.10 Official Lineage: x8070 ColorLedEffects / x8071 RGBEffects
+
+LIGHTSYNC 0x807A/0x807B has no public documentation, but Logitech's
+published x8070 (ColorLedEffects) and x8071 (RGBEffects) specs are its
+clear conceptual ancestors. The packet layouts do NOT carry over
+(function numbering, effect ID enumerations, and the RS50's 64-byte
+very-long RGB frames are all different), but four concepts map
+directly and reframe open questions in this section:
+
+- **SW/FW ownership arbitration.** x8070 fn8 `setSwControl` ("SW takes
+  control of the color and the effect") and x8071 fn5
+  `manageSwControl` ("disables all FW RGB clusters handling") are the
+  official concept behind 0x807A's fn6 (pre-config) + fn7 (enable)
+  being required before LED writes work. It also reframes the "First
+  Update Works, Subsequent Updates Don't" mystery of 9.3.2: if fn6 is
+  an ownership grab the firmware later reclaims, re-arbitrating before
+  every update - exactly what G Hub's per-change sequence does - is
+  the officially expected pattern, not a workaround.
+- **Custom slots.** 0x807B's 5 named slots correspond to x8071's
+  effect 12 "Custom Onboard Stored" ("stored and played frame by frame
+  at/from a memory chunk in the device", with a "several slots"
+  capability bit and per-slot state/defaults/UUID/name metadata) -
+  promoted from getInfo-multiplexing into a dedicated feature.
+- **Direction vocabulary.** The RS50's directions 0-3 (L-to-R, R-to-L,
+  inside-out, outside-in) match the official Color Wave direction
+  semantics (horizontal, reverse-horizontal, center-out, center-in),
+  differently encoded.
+- **The 9.3.2 fn1 response `00 02 01 03 04 05 06 07 08 09`**,
+  currently labeled "zone IDs?", better matches the official
+  getZoneEffectInfo model as byte 0 = zone/cluster index and bytes
+  1..9 = the list of supported effect IDs. Testable with a capture
+  experiment.
+
+x8071 also defines an `rgbClusterChangedEvent` announcing
+firmware-initiated effect changes; whether 0x807A inherited an
+equivalent broadcast (e.g. for OLED-menu LED changes) has not been
+checked in captures.
+
+### 9.11 Capture Files
 
 | File | Description |
 |------|-------------|
@@ -1292,7 +1340,7 @@ cat wheel_led_colors
 | `2026-01-29_lightsync_custom_save.pcapng` | Save/apply custom slot configuration |
 | `2026-01-26_lightsync.pcapng` | Basic LED effect + brightness |
 
-### 9.11 LIGHTSYNC Command Sequence
+### 9.12 LIGHTSYNC Command Sequence
 
 LIGHTSYNC requires a **specific 6-step sequence** using **both features** (0x0B and 0x0C).
 fn6 (pre-config) and fn6/fn7 (commit/enable) must go to feature 0x0B, while RGB data goes to feature 0x0C.

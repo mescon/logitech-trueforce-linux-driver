@@ -519,6 +519,12 @@ Sets the global LED brightness.
 echo 50 > wheel_led_brightness
 ```
 
+Brightness changed from the wheel itself (OLED menu) is tracked: the
+driver consumes the official x8040 `brightnessChangeEvent` broadcast,
+updates this attribute's value (and `wheel_sensitivity` when in
+desktop mode, per the aliasing described there), and notifies
+`poll()`ers on `wheel_led_brightness`.
+
 ### wheel_led_effect
 **Access**: Read/Write
 **Values**: `1` to `5`
