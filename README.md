@@ -12,6 +12,10 @@
 > **Warning**
 > This driver is under active development and may contain bugs or incomplete features. Use at your own risk. This disclaimer will be removed once the driver reaches a stable release.
 
+> **New here with a wheel and a sim to race?** Start with the
+> step-by-step guide: [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)
+> - from download to driving in about 15 minutes.
+
 Linux kernel driver for **Logitech TrueForce direct-drive racing
 wheels**:
 
@@ -255,7 +259,7 @@ the SDK DLL installation into your wine prefixes.
 1. **Clone the repo.**
    ```bash
    git clone https://github.com/mescon/logitech-trueforce-linux-driver.git
-   cd logitech-rs50-linux-driver
+   cd logitech-trueforce-linux-driver
    ```
 
 2. **(TrueForce only) Stage the Logitech SDK DLLs.** These are
