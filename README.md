@@ -146,13 +146,15 @@ All effects are routed to the wheel's single direct-drive motor
 
 > **Caveats:**
 > - Some sims (AC EVO observed) reset the wheel's rotation range to
->   **90° once at session start**, via the game's own SDK path. The
->   driver detects this within 20 seconds, corrects the reported
->   `wheel_range`, and logs `rotation range changed externally` in
->   dmesg. Recover by re-applying it from the game's pause menu:
->   `wheel_profile=0` then `wheel_range=<degrees>` - the re-applied
->   range sticks for the rest of the session (verified through full
->   laps). The in-game FFB gain is the master force control;
+>   **90° once at session start**, via the game's own SDK path (a
+>   TrueForce operating-range packet, usbmon-verified). The driver
+>   detects this within 20 seconds and **restores your range
+>   automatically** (`wheel_range_restore`, default on, heavily
+>   safety-gated - see `docs/SYSFS_API.md`), logging both the
+>   external change and the restore in dmesg. Also check the game's
+>   own steering-rotation setting (AC EVO: "Steering lock") - once
+>   touched and re-applied, the game pushes its configured value
+>   itself. The in-game FFB gain is the master force control;
 >   `wheel_strength` is the wheel-side multiplier.
 > - AC EVO's **map-load centring force** has once been observed ringing
 >   the wheel into its over-torque failsafe (the base shuts itself off;

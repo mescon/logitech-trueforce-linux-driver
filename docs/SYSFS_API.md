@@ -123,12 +123,40 @@ stall the force stream; it catches up within one interval of the
 effects stopping); if it changed externally,
 the reported `wheel_range` value is updated to the real one, the
 change is logged in dmesg (`rotation range changed externally`), and
-`poll()`ers on the attribute are notified via `sysfs_notify()`. The
-driver deliberately does NOT write the old range back on its own:
-re-applying range or mode while a game holds active FFB desyncs the
-centre on a direct-drive wheel. To recover, write `0` to
-`wheel_profile` and re-set `wheel_range` yourself (safe once FFB is
-idle, e.g. in the game's menus).
+`poll()`ers on the attribute are notified via `sysfs_notify()`.
+When the external value is exactly 90 (the known SDK session-init
+pathology - see `wheel_range_restore` below), the driver also
+restores the previous range automatically.
+
+### wheel_range_restore
+**Access**: Read/Write
+**Values**: `0` or `1`
+**Default**: `1`
+
+Automatic recovery from the launch-time 90-degree reset. Root cause
+(usbmon-verified): some games' SDK sessions push an operating range
+of 90 degrees once at session start via a TrueForce interface-2
+packet, invisible to HID++. With this enabled, the driver restores
+the pre-reset range automatically. Verified end-to-end against a
+faithful reproduction of the game traffic: detection to restore in
+under 100 ms once the poll samples the change.
+
+Safety gates, each earned from a real incident:
+- fires only for an EXTERNAL silent change landing exactly on 90;
+  any other externally-set value (a game applying its configured
+  steering lock: 540, 850, ...) is respected as legitimate intent;
+- desktop mode only, and never an automatic mode switch;
+- the wheel must be stationary (two encoder reads 50 ms apart);
+  restores only ever widen the range, which cannot snap the wheel;
+- at most 3 restores per session, then the driver logs and yields
+  (`an external writer keeps changing the rotation range`);
+- an explicit `wheel_range` write supersedes any pending restore
+  and resets the strike counter.
+
+`0` = detect-and-report only (the pre-2026-07-03 behaviour): the
+change is still logged and `wheel_range` stays honest, but recovery
+is manual (`wheel_profile=0` then `wheel_range=<degrees>` once FFB
+is idle).
 
 ### wheel_strength
 **Access**: Read/Write

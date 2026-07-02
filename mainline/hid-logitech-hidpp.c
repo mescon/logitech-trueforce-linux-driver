@@ -10,6 +10,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/input.h>
 #include <linux/usb.h>
@@ -4435,6 +4436,21 @@ struct rs50_ff_data {
 	 * never stall force delivery. Skipped while effects play.
 	 */
 	struct delayed_work range_poll_work;
+	/*
+	 * Auto-restore of externally-reset ranges (see
+	 * rs50_ff_range_maybe_restore). Default on; strike counter caps
+	 * restores at 3 per session and is reset by an explicit
+	 * wheel_range write.
+	 */
+	bool range_restore;
+	u8 range_restore_attempts;
+	/*
+	 * Nonzero = a restore is owed: the range the wheel had before an
+	 * external reset to 90. Set at detection, retried on every poll
+	 * tick until it succeeds / strikes out / becomes moot (poll-work
+	 * context only). Cleared by an explicit wheel_range write.
+	 */
+	u16 restore_want;
 	u16 gain;			/* Global FF_GAIN multiplier (0..0xFFFF = 0..100%); lockless, READ_ONCE/WRITE_ONCE */
 
 	/* Track whether we opened HID device for runtime HID++ communication */
@@ -4474,6 +4490,7 @@ static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
 			 const s32 *samples);
 static void rs50_tf_init_work_handler(struct work_struct *work);
 static void rs50_query_device_identity(struct rs50_ff_data *ff);
+static int rs50_set_range_hw(struct rs50_ff_data *ff, int range);
 static void rs50_ff_effect_timer_callback(struct timer_list *t);
 static void rs50_process_pedals(struct hidpp_device *hidpp, u8 *data, int size);
 static struct rs50_ff_data *rs50_find_ff_data(struct hid_device *hdev);
@@ -5829,6 +5846,132 @@ static void rs50_ff_work_handler(struct work_struct *work)
  * update the cache, log it, and sysfs_notify() poll()ers on wheel_range
  * so userspace tools can surface or handle it.
  */
+/*
+ * Gated auto-restore for externally-reset ranges.
+ *
+ * Root cause (usbmon, 2026-07-02): some games' SDK sessions push an
+ * operating range once at session start via a TrueForce type-0x0e
+ * packet on interface 2 (AC EVO pushes 90.0), invisible to HID++. The
+ * push is one-shot and a HID++ re-apply afterwards sticks - verified
+ * through full laps - so restoring the previous range is safe and is
+ * what the user expects ("I set 900; why is it suddenly 90?").
+ *
+ * Every gate below exists because of a real incident:
+ * - desktop mode only, and NEVER an automatic mode switch (mode churn
+ *   under active FFB caused violent centre desync, twice);
+ * - wheel near centre and stationary (a range change while the wheel
+ *   is deflected/held is what desyncs the centre) - if not, skip
+ *   without consuming a strike and let the next poll retry;
+ * - at most 3 restore attempts per session (a persistent external
+ *   writer wins; we log and stop rather than fight);
+ * - runs only from the sleepable range poll, which itself pauses
+ *   while evdev effects play.
+ *
+ * Opt out via wheel_range_restore=0.
+ */
+/*
+ * Read the wheel's raw encoder position over HID++ (calibration
+ * feature, sub-device 0x05, fn=1 GET - the same read
+ * wheel_calibrate_here uses). Sleepable context. 0x8000 = centre.
+ */
+static int rs50_ff_read_encoder(struct rs50_ff_data *ff, u16 *pos)
+{
+	struct hidpp_report response;
+	u8 params[3] = { 0, 0, 0 };
+	int ret;
+
+	if (ff->idx_calibrate == RS50_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+	ret = hidpp_send_fap_to_device_sync(ff->hidpp, ff->calibrate_dev_idx,
+					    ff->idx_calibrate,
+					    0x10 /* fn=1 */,
+					    params, 3, &response);
+	if (ret)
+		return ret;
+	*pos = (response.fap.params[0] << 8) | response.fap.params[1];
+	return 0;
+}
+
+static void rs50_ff_range_maybe_restore(struct rs50_ff_data *ff)
+{
+	struct hidpp_device *hidpp = ff->hidpp;
+	u16 want = ff->restore_want;
+	u16 p1, p2;
+
+	if (!want)
+		return;
+	if (!READ_ONCE(ff->range_restore)) {
+		hid_dbg(hidpp->hid_dev, "RS50: range restore skipped (disabled)\n");
+		return;
+	}
+	/*
+	 * Moot: the range moved off 90 by other means (the game applied
+	 * its own configured value, the user wrote one, ...). Drop the
+	 * pending restore rather than overriding whatever won.
+	 */
+	if (READ_ONCE(ff->range) != 90) {
+		hid_dbg(hidpp->hid_dev, "RS50: range restore moot (range now %u)\n",
+			READ_ONCE(ff->range));
+		ff->restore_want = 0;
+		return;
+	}
+	if (!ff->mode_known || ff->current_mode != 0) {
+		hid_dbg(hidpp->hid_dev, "RS50: range restore skipped (mode_known=%d mode=%d)\n",
+			ff->mode_known, ff->current_mode);
+		return;
+	}
+	if (ff->range_restore_attempts >= 3) {
+		ff->restore_want = 0;
+		return;
+	}
+
+	/*
+	 * The wheel must be stationary: never move the soft stops while
+	 * the user is actively turning. Stillness is measured with two
+	 * on-demand HID++ encoder reads 50 ms apart. The reads return
+	 * RAW absolute encoder values (centre is wherever calibration
+	 * put it, NOT 0x8000 - an earlier centred-ness check compared
+	 * against 0x8000 and deferred forever), so only the delta is
+	 * meaningful; the cached ff->wheel_pos is unusable here as it
+	 * only updates when the wheel emits input reports.
+	 *
+	 * No centred-ness requirement is needed: restores only ever
+	 * WIDEN the range (90 -> the pre-reset value), and a position
+	 * within the old +/-45 degrees is by definition inside any wider
+	 * range's stops, so a widening write cannot snap the wheel.
+	 */
+	if (rs50_ff_read_encoder(ff, &p1)) {
+		hid_dbg(hidpp->hid_dev, "RS50: range restore skipped (encoder read failed)\n");
+		return;
+	}
+	msleep(50);
+	if (rs50_ff_read_encoder(ff, &p2))
+		return;
+	if (abs((int)p2 - (int)p1) > 200) {
+		hid_dbg(hidpp->hid_dev,
+			"RS50: range restore deferred (wheel moving)\n");
+		return;
+	}
+
+	ff->range_restore_attempts++;
+	if (rs50_set_range_hw(ff, want) == 0) {
+		ff->restore_want = 0;
+		hid_info(hidpp->hid_dev,
+			 "RS50: rotation range auto-restored to %u degrees (attempt %u/3; disable via wheel_range_restore)\n",
+			 want, ff->range_restore_attempts);
+		sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL, "wheel_range");
+	} else {
+		hid_warn(hidpp->hid_dev,
+			 "RS50: rotation range auto-restore to %u degrees failed\n",
+			 want);
+	}
+	if (ff->range_restore_attempts == 3) {
+		ff->restore_want = 0;
+		hid_warn(hidpp->hid_dev,
+			 "RS50: an external writer keeps changing the rotation range; giving up on auto-restore for this session\n");
+	}
+}
+
 static void rs50_ff_range_readback(struct rs50_ff_data *ff)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
@@ -5859,6 +6002,15 @@ static void rs50_ff_range_readback(struct rs50_ff_data *ff)
 		 "RS50: rotation range changed externally: %u -> %u degrees (not set via this driver; typically a game launch). wheel_range now reports the real value\n",
 		 cached, hw_range);
 	sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL, "wheel_range");
+
+	/*
+	 * Only the known pathology earns a pending restore: an external
+	 * reset landing exactly on 90 (the SDK session-init push). Any
+	 * other externally-set value is a game applying its configured
+	 * steering lock - legitimate intent, respected as-is.
+	 */
+	if (hw_range == 90 && cached != 90)
+		ff->restore_want = cached;
 }
 
 /*
@@ -5877,8 +6029,11 @@ static void rs50_ff_range_poll_work(struct work_struct *work)
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
 
-	if (!READ_ONCE(ff->any_effect_playing))
+	if (!READ_ONCE(ff->any_effect_playing)) {
 		rs50_ff_range_readback(ff);
+		/* Retry any owed restore until it lands or strikes out. */
+		rs50_ff_range_maybe_restore(ff);
+	}
 
 	if (!atomic_read_acquire(&ff->stopping) && atomic_read(&ff->initialized))
 		queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
@@ -7172,14 +7327,56 @@ static int rs50_compat_set_damping(struct hidpp_device *hidpp,
 		RS50_COMPAT_FN_DAMPING, value, "compat set damping");
 }
 
+/*
+ * Send a rotation range to the wheel (native or compat path) and update
+ * the cache on success. Shared by wheel_range_store and the range
+ * auto-restore. Sleepable context.
+ */
+static int rs50_set_range_hw(struct rs50_ff_data *ff, int range)
+{
+	struct hidpp_device *hidpp = ff->hidpp;
+	struct hidpp_report response;
+	u8 params[3];
+	int ret;
+
+	if (ff->idx_range == RS50_FEATURE_NOT_FOUND) {
+		/*
+		 * Compat-mode fallback: the standard 0x812F-style range
+		 * feature is not advertised when the RS50 enumerates as a
+		 * G Pro, but a different feature index pair (0x18 / 0x1a)
+		 * accepts the same range as a live host-pushed value. See
+		 * rs50_compat_set_range() for the protocol notes.
+		 */
+		ret = rs50_compat_set_range(hidpp, ff, range);
+		if (ret)
+			return ret;
+	} else {
+		params[0] = (range >> 8) & 0xFF;	/* High byte */
+		params[1] = range & 0xFF;	/* Low byte */
+		params[2] = 0;
+
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_range,
+						  ff->fn_set_range, params, 3,
+						  &response);
+		ret = hidpp_errno(hidpp->hid_dev, ret, "set range");
+		if (ret)
+			return ret;
+	}
+
+	/*
+	 * Pair with the READ_ONCE in wheel_range_show and the WRITE_ONCE
+	 * in the rotation-change broadcast handler.
+	 */
+	WRITE_ONCE(ff->range, range);
+	return 0;
+}
+
 static ssize_t wheel_range_store(struct device *dev, struct device_attribute *attr,
 				const char *buf, size_t count)
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
 	struct rs50_ff_data *ff;
-	struct hidpp_report response;
-	u8 params[3];
 	int range, ret;
 
 	if (!hidpp)
@@ -7202,35 +7399,13 @@ static ssize_t wheel_range_store(struct device *dev, struct device_attribute *at
 	 */
 	range = clamp(range, 90, 2700);
 
-	if (ff->idx_range == RS50_FEATURE_NOT_FOUND) {
-		/*
-		 * Compat-mode fallback: the standard 0x812F-style range
-		 * feature is not advertised when the RS50 enumerates as a
-		 * G Pro, but a different feature index pair (0x18 / 0x1a)
-		 * accepts the same range as a live host-pushed value. See
-		 * rs50_compat_set_range() for the protocol notes.
-		 */
-		ret = rs50_compat_set_range(hidpp, ff, range);
-		if (ret)
-			return ret;
-	} else {
-		params[0] = (range >> 8) & 0xFF;	/* High byte */
-		params[1] = range & 0xFF;	/* Low byte */
-		params[2] = 0;
+	ret = rs50_set_range_hw(ff, range);
+	if (ret)
+		return ret;
 
-		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_range,
-						  ff->fn_set_range, params, 3,
-						  &response);
-		ret = hidpp_errno(hid, ret, "set range");
-		if (ret)
-			return ret;
-	}
-
-	/*
-	 * Pair with the READ_ONCE in wheel_range_show and the WRITE_ONCE
-	 * in the rotation-change broadcast handler.
-	 */
-	WRITE_ONCE(ff->range, range);
+	/* A fresh explicit intent supersedes any owed auto-restore. */
+	ff->range_restore_attempts = 0;
+	ff->restore_want = 0;
 	hid_info(hid, "RS50: Rotation range set to %d degrees\n", range);
 	return count;
 }
@@ -9877,6 +10052,61 @@ static DEVICE_ATTR(wheel_texture_route, 0664,
 		   wheel_texture_route_store);
 
 /*
+ * wheel_range_restore: automatically restore the rotation range after
+ * an external silent reset (games' SDK sessions pushing an operating
+ * range at start - AC EVO pushes 90). Heavily gated; see
+ * rs50_ff_range_maybe_restore. 1 = on (default), 0 = detect-only.
+ */
+static ssize_t wheel_range_restore_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ff->range_restore) ? 1U : 0U);
+}
+
+static ssize_t wheel_range_restore_store(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct rs50_ff_data *ff;
+	unsigned int val;
+	int ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+	if (val > 1)
+		return -EINVAL;
+	WRITE_ONCE(ff->range_restore, val != 0);
+	if (val)
+		ff->range_restore_attempts = 0;
+	return count;
+}
+
+static DEVICE_ATTR(wheel_range_restore, 0664,
+		   wheel_range_restore_show, wheel_range_restore_store);
+
+/*
  * wheel_serial / wheel_firmware: read-only identity from DeviceInfo
  * (feature 0x0003), read once at init. The serial is the real
  * 12-character device serial (matches the USB iSerial); firmware shows
@@ -10025,6 +10255,7 @@ static struct attribute *rs50_wheel_group_attrs[] = {
 	&dev_attr_wheel_serial.attr,
 	&dev_attr_wheel_firmware.attr,
 	&dev_attr_wheel_profile_names.attr,
+	&dev_attr_wheel_range_restore.attr,
 	&dev_attr_wheel_compat_range.attr,
 	&dev_attr_wheel_compat_gain.attr,
 	&dev_attr_wheel_compat_autocenter.attr,
@@ -10353,6 +10584,8 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	ff->ffb_constant_sign = true;	/* invert by default; Wine/Proton games rely on this */
 	ff->spring_damping = RS50_FF_SPRING_DAMPING_DEFAULT;
 	ff->texture_route = RS50_TEXTURE_ROUTE_TF;
+	ff->range_restore = true;
+	ff->range_restore_attempts = 0;
 	ff->tf_ready = false;
 	ff->tf_init_queued = false;
 	ff->tf_streaming = false;
