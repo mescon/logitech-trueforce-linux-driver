@@ -4033,6 +4033,9 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define RS50_TEXTURE_ROUTE_KF		0	/* legacy: sum into steering */
 #define RS50_TEXTURE_ROUTE_TF		1	/* stream via TrueForce */
 
+/* Hard-failure cap for the lazy TF session init before giving up. */
+#define RS50_TF_INIT_MAX_ATTEMPTS	3
+
 /*
  * RS50 HID++ feature PAGE IDs for wheel settings.
  * These are used with hidpp_root_get_feature() to discover the actual
@@ -4203,6 +4206,17 @@ struct rs50_ff_effect {
 	unsigned long play_start;
 	/* Replay count remaining after the current window; 0 == one-shot. */
 	int replays_left;
+	/*
+	 * Channel assignment for this playback: true = TrueForce texture
+	 * stream, false = steering-force sum. Decided ONCE in
+	 * rs50_ff_playback when the effect starts (route enabled, TF
+	 * session ready, effect texture-class) and held stable for the
+	 * whole play cycle, so neither the lazy TF init completing nor a
+	 * mid-play SetParameters across the texture crossover can yank a
+	 * live effect between channels (which stepped the steering force
+	 * by the effect's amplitude in one 2 ms tick).
+	 */
+	bool use_tf;
 };
 
 /* RS50 FFB output report structure (64 bytes to endpoint 0x03) */
@@ -4399,13 +4413,21 @@ struct rs50_ff_data {
 	 */
 	u8 texture_route;		/* RS50_TEXTURE_ROUTE_KF / _TF */
 	bool tf_ready;			/* two-pass session init completed */
-	bool tf_init_queued;		/* init work queued (once per session) */
+	bool tf_init_queued;		/* init work queued/running; cleared for retry on failure */
 	bool tf_streaming;		/* between START and STOP */
 	u8 tf_seq;			/* TF stream sequence counter */
 	u8 tf_staged;			/* samples staged toward next packet */
+	u8 tf_init_attempts;		/* hard init failures so far (cap: RS50_TF_INIT_MAX_ATTEMPTS) */
 	u16 tf_stage[RS50_TF_NEW_SAMPLES];
 	u16 tf_window[RS50_TF_WINDOW];	/* rolling window, offset binary */
-	struct work_struct tf_init_work; /* runs the 2x68-packet init */
+	struct work_struct tf_init_work; /* runs the 2x68-packet init (system_unbound_wq) */
+	/*
+	 * Honest-range poll: re-reads the physical rotation range every
+	 * RS50_FF_REFRESH_INTERVAL_MS on system_unbound_wq, decoupled from
+	 * the force-stream workqueue so its synchronous HID++ GET can
+	 * never stall force delivery. Skipped while effects play.
+	 */
+	struct delayed_work range_poll_work;
 	u16 gain;			/* Global FF_GAIN multiplier (0..0xFFFF = 0..100%); lockless, READ_ONCE/WRITE_ONCE */
 
 	/* Track whether we opened HID device for runtime HID++ communication */
@@ -4722,8 +4744,19 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 					abs((s32)c->left_coeff));
 			s32 vel_metric = clamp(wheel_vel * 256,
 					       (s32)S16_MIN, (s32)S16_MAX);
+			/*
+			 * The game's saturation caps bound the WHOLE spring
+			 * output, damping included: without this clamp the
+			 * damping term bypassed the per-effect saturation
+			 * that rs50_condition_force applies, so a spring the
+			 * game deliberately capped gentle could deliver up
+			 * to 25% of full scale in velocity resistance.
+			 */
+			s32 sat = max_t(s32, c->right_saturation,
+					c->left_saturation);
 
 			fs -= ((coeff * vel_metric) >> 15) * damping / 100;
+			fs = clamp(fs, -sat, sat);
 		}
 		return fs;
 	}
@@ -5047,30 +5080,46 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 		elapsed_ms = (u32)elapsed_ms_long;
 		any_playing = true;
 
-		if (route_tf && rs50_ff_effect_is_texture(&e->effect)) {
-			any_texture = true;
-			if (smp_load_acquire(&ff->tf_ready)) {
-				/*
-				 * Texture-class effect: generate this tick's
-				 * two 1 kHz samples (1 ms apart inside the
-				 * 2 ms tick) for the TrueForce channel
-				 * instead of summing into the steering
-				 * force.
-				 */
-				tf_sample[0] += rs50_ff_effect_tick(ff, e,
-						elapsed_ms, wheel_pos_signed,
-						wheel_vel, wheel_accel);
-				tf_sample[1] += rs50_ff_effect_tick(ff, e,
-						elapsed_ms + 1,
-						wheel_pos_signed,
-						wheel_vel, wheel_accel);
-				continue;
-			}
+		/*
+		 * Lazy TF bring-up trigger: a texture-class effect is
+		 * playing but the session isn't ready. This playback keeps
+		 * riding the steering channel (route was decided at
+		 * playback start); once the session is up, the NEXT
+		 * playback moves to the TF stream - no mid-play channel
+		 * migration. The init work runs on system_unbound_wq so
+		 * its 2x68 blocking sends never head-of-line-block the
+		 * force stream on ff->wq.
+		 */
+		if (route_tf && !smp_load_acquire(&ff->tf_ready) &&
+		    !READ_ONCE(ff->tf_init_queued) &&
+		    rs50_ff_effect_is_texture(&e->effect)) {
+			WRITE_ONCE(ff->tf_init_queued, true);
+			queue_work(system_unbound_wq, &ff->tf_init_work);
+		}
+
+		if (e->use_tf) {
 			/*
-			 * TF session not up yet (init work in flight):
-			 * fall through so the steering channel carries the
-			 * texture meanwhile - degraded, never lost.
+			 * Texture effect on the TrueForce channel: generate
+			 * this tick's two 1 kHz samples (1 ms apart inside
+			 * the 2 ms tick). A fast periodic's DC offset is a
+			 * steering component, not texture - the TF audio
+			 * path cannot hold a sustained torque - so the
+			 * offset stays on the steering sum and only the AC
+			 * part streams.
 			 */
+			s32 dc = e->effect.type == FF_PERIODIC ?
+				 e->effect.u.periodic.offset : 0;
+
+			any_texture = true;
+			tf_sample[0] += rs50_ff_effect_tick(ff, e,
+					elapsed_ms, wheel_pos_signed,
+					wheel_vel, wheel_accel) - dc;
+			tf_sample[1] += rs50_ff_effect_tick(ff, e,
+					elapsed_ms + 1,
+					wheel_pos_signed,
+					wheel_vel, wheel_accel) - dc;
+			force += dc;
+			continue;
 		}
 
 		force += rs50_ff_effect_tick(ff, e, elapsed_ms,
@@ -5100,12 +5149,13 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	spin_unlock_irqrestore(&ff->effects_lock, flags);
 
 	/*
-	 * Drive the TrueForce texture channel. Also runs one last time
-	 * after a route flip back to KF so an in-flight stream gets its
-	 * STOP instead of looping the stale window.
+	 * Drive the TrueForce texture channel. Also runs while a stream
+	 * is still open with no texture playing so the STOP gets sent
+	 * (and re-sent if it was dropped) instead of the wheel looping
+	 * the stale window.
 	 */
-	if (route_tf || ff->tf_streaming)
-		rs50_tf_tick(ff, route_tf && any_texture, tf_sample);
+	if (any_texture || ff->tf_streaming)
+		rs50_tf_tick(ff, any_texture, tf_sample);
 
 	/*
 	 * Always push the current force on each timer tick. The wheel
@@ -5122,9 +5172,10 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	 * Keep the timer alive as long as any effect is playing, even if
 	 * the instantaneous net force is zero (e.g. a DAMPER at rest, or
 	 * a SPRING at exact centre). Without this, the wheel would stop
-	 * sampling and the condition effects would never fire.
+	 * sampling and the condition effects would never fire. Also stay
+	 * alive while a TF stream is open so a dropped STOP can retry.
 	 */
-	if (any_playing &&
+	if ((any_playing || ff->tf_streaming) &&
 	    !atomic_read_acquire(&ff->stopping) &&
 	    atomic_read(&ff->initialized))
 		mod_timer(&ff->effect_timer,
@@ -5201,23 +5252,29 @@ static bool rs50_ff_effect_is_texture(const struct ff_effect *eff)
 
 /*
  * Queue a pre-built 64-byte interface-2 packet for sending. Safe from
- * atomic (timer) context; mirrors rs50_ff_send_force's guards.
+ * atomic (timer) context; mirrors rs50_ff_send_force's guards. Returns
+ * false when the packet was dropped (queue pressure, allocation
+ * failure, teardown) so callers can keep their stream state honest.
+ *
+ * TF packets keep two slots of the shared pending budget free for the
+ * steering-force stream: KF is also the firmware's host-alive signal,
+ * so under queue pressure texture is the stream to shed first.
  */
-static void rs50_tf_queue_raw(struct rs50_ff_data *ff, const u8 *pkt)
+static bool rs50_tf_queue_raw(struct rs50_ff_data *ff, const u8 *pkt)
 {
 	struct rs50_ff_work *ff_work;
 
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
-		return;
-	if (atomic_read(&ff->pending_work) >= RS50_FF_MAX_PENDING_WORK) {
+		return false;
+	if (atomic_read(&ff->pending_work) >= RS50_FF_MAX_PENDING_WORK - 2) {
 		ff->err_count++;
-		return;
+		return false;
 	}
 
 	ff_work = kmalloc(sizeof(*ff_work), GFP_ATOMIC);
 	if (!ff_work) {
 		ff->err_count++;
-		return;
+		return false;
 	}
 
 	ff_work->ff_data = ff;
@@ -5227,17 +5284,25 @@ static void rs50_tf_queue_raw(struct rs50_ff_data *ff, const u8 *pkt)
 
 	atomic_inc(&ff->pending_work);
 	queue_work(ff->wq, &ff_work->work);
+	return true;
 }
 
-/* Queue a TF control packet (START/STOP). Timer context only (tf_seq). */
-static void rs50_tf_queue_ctrl(struct rs50_ff_data *ff, u8 cmd)
+/*
+ * Queue a TF control packet (START/STOP). Timer context only (tf_seq).
+ * tf_seq only advances when the packet was actually queued, so drops
+ * do not leave gaps in the wire sequence.
+ */
+static bool rs50_tf_queue_ctrl(struct rs50_ff_data *ff, u8 cmd)
 {
 	u8 pkt[RS50_FF_REPORT_SIZE] = { 0 };
 
 	pkt[0] = RS50_FF_REPORT_ID;
 	pkt[4] = cmd;
-	pkt[5] = ff->tf_seq++;
-	rs50_tf_queue_raw(ff, pkt);
+	pkt[5] = ff->tf_seq;
+	if (!rs50_tf_queue_raw(ff, pkt))
+		return false;
+	ff->tf_seq++;
+	return true;
 }
 
 /*
@@ -5247,7 +5312,7 @@ static void rs50_tf_queue_ctrl(struct rs50_ff_data *ff, u8 cmd)
  * 13 window slots oldest-first, each u16 duplicated L/R. Timer context
  * only (tf_seq, tf_window).
  */
-static void rs50_tf_queue_stream(struct rs50_ff_data *ff)
+static bool rs50_tf_queue_stream(struct rs50_ff_data *ff)
 {
 	u8 pkt[RS50_FF_REPORT_SIZE] = { 0 };
 	u16 newest = ff->tf_window[RS50_TF_WINDOW - 1];
@@ -5255,7 +5320,7 @@ static void rs50_tf_queue_stream(struct rs50_ff_data *ff)
 
 	pkt[0] = RS50_FF_REPORT_ID;
 	pkt[4] = RS50_TF_CMD_STREAM;
-	pkt[5] = ff->tf_seq++;
+	pkt[5] = ff->tf_seq;
 	put_unaligned_le16(newest, &pkt[6]);
 	put_unaligned_le16(newest, &pkt[8]);
 	pkt[10] = RS50_TF_NEW_SAMPLES;
@@ -5264,7 +5329,10 @@ static void rs50_tf_queue_stream(struct rs50_ff_data *ff)
 		put_unaligned_le16(ff->tf_window[i], &pkt[12 + i * 4]);
 		put_unaligned_le16(ff->tf_window[i], &pkt[14 + i * 4]);
 	}
-	rs50_tf_queue_raw(ff, pkt);
+	if (!rs50_tf_queue_raw(ff, pkt))
+		return false;
+	ff->tf_seq++;
+	return true;
 }
 
 /*
@@ -5287,19 +5355,30 @@ static void rs50_tf_init_work_handler(struct work_struct *work)
 
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
-	hdev = READ_ONCE(ff->ff_hdev);
-	if (!hdev)
-		return;
 
 	pkt = kmalloc(RS50_FF_REPORT_SIZE, GFP_KERNEL);
-	if (!pkt)
+	if (!pkt) {
+		/* Retryable: let a later texture playback try again. */
+		WRITE_ONCE(ff->tf_init_queued, false);
 		return;
+	}
 
 	for (pass = 0; pass < 2 && ret >= 0; pass++) {
 		u8 seq = 1;
 
 		for (i = 0; i < RS50_TF_INIT_PACKET_COUNT; i++) {
 			if (atomic_read_acquire(&ff->stopping)) {
+				kfree(pkt);
+				return;
+			}
+			/*
+			 * Re-read the interface-2 device every packet: its
+			 * remove path clears ff_hdev (and cancels this work,
+			 * but a racing clear must not leave us sending to a
+			 * stopped device for the rest of a 136-packet loop).
+			 */
+			hdev = READ_ONCE(ff->ff_hdev);
+			if (!hdev) {
 				kfree(pkt);
 				return;
 			}
@@ -5321,16 +5400,33 @@ static void rs50_tf_init_work_handler(struct work_struct *work)
 	kfree(pkt);
 
 	if (ret < 0) {
-		hid_warn(hdev,
-			 "RS50: TrueForce texture channel init failed (%d); texture effects stay on the steering channel\n",
-			 ret);
+		/*
+		 * Bounded retry: a transient USB error should not pin
+		 * texture effects to the steering channel for the whole
+		 * session (the pre-retry behaviour). Clearing
+		 * tf_init_queued lets the next texture playback re-queue
+		 * this work; after RS50_TF_INIT_MAX_ATTEMPTS hard failures
+		 * the flag stays set and the session runs degraded.
+		 */
+		ff->tf_init_attempts++;
+		if (ff->tf_init_attempts < RS50_TF_INIT_MAX_ATTEMPTS) {
+			hid_warn(ff->hidpp->hid_dev,
+				 "RS50: TrueForce texture channel init failed (%d), attempt %u/%u; will retry on the next texture effect\n",
+				 ret, ff->tf_init_attempts,
+				 RS50_TF_INIT_MAX_ATTEMPTS);
+			WRITE_ONCE(ff->tf_init_queued, false);
+		} else {
+			hid_warn(ff->hidpp->hid_dev,
+				 "RS50: TrueForce texture channel init failed (%d); giving up for this session, texture effects stay on the steering channel\n",
+				 ret);
+		}
 		return;
 	}
 
 	ff->tf_seq = RS50_TF_INIT_PACKET_COUNT + 1;
 	/* Publish tf_seq (and the init itself) before tf_ready. */
 	smp_store_release(&ff->tf_ready, true);
-	hid_info(hdev,
+	hid_info(ff->hidpp->hid_dev,
 		 "RS50: TrueForce texture channel ready (vibration effects ride the TF stream)\n");
 }
 
@@ -5346,39 +5442,44 @@ static void rs50_tf_init_work_handler(struct work_struct *work)
 static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
 			 const s32 *samples)
 {
-	u16 gain;
+	u16 gain, strength;
 	int i;
 
 	if (!any_texture) {
 		if (ff->tf_streaming) {
-			for (i = 0; i < RS50_TF_WINDOW; i++)
-				ff->tf_window[i] = 0x8000;
+			/*
+			 * Recentre and stop. Only mark the stream stopped
+			 * once the STOP actually queued: queue_raw can drop
+			 * packets under queue pressure, and a dropped STOP
+			 * would leave the wheel's DSP looping the last
+			 * window while the driver believes the stream is
+			 * down. The timer keeps ticking while tf_streaming
+			 * is set (see its reschedule condition), so a
+			 * failed STOP retries on the next tick.
+			 */
+			memset16(ff->tf_window, 0x8000, RS50_TF_WINDOW);
 			ff->tf_staged = 0;
 			rs50_tf_queue_stream(ff);
-			rs50_tf_queue_ctrl(ff, RS50_TF_CMD_STOP);
-			ff->tf_streaming = false;
-		}
-		return;
-	}
-
-	if (!smp_load_acquire(&ff->tf_ready)) {
-		/* Bring the session up once; KF carries texture meanwhile. */
-		if (!ff->tf_init_queued) {
-			ff->tf_init_queued = true;
-			queue_work(ff->wq, &ff->tf_init_work);
+			if (rs50_tf_queue_ctrl(ff, RS50_TF_CMD_STOP))
+				ff->tf_streaming = false;
 		}
 		return;
 	}
 
 	if (!ff->tf_streaming) {
-		rs50_tf_queue_ctrl(ff, RS50_TF_CMD_START);
+		/*
+		 * START must land before stream packets mean anything; if
+		 * it was dropped, skip this tick's samples and retry.
+		 */
+		if (!rs50_tf_queue_ctrl(ff, RS50_TF_CMD_START))
+			return;
 		ff->tf_streaming = true;
 	}
 
 	gain = READ_ONCE(ff->gain);
+	strength = READ_ONCE(ff->strength);
 	for (i = 0; i < 2; i++) {
 		s32 s = samples[i];
-		u16 strength = READ_ONCE(ff->strength);
 
 		if (gain != 0xFFFF)
 			s = (s32)(((s64)s * gain) / 0xFFFF);
@@ -5392,7 +5493,8 @@ static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
 		 */
 		if (strength != 0xFFFF)
 			s = (s32)(((s64)s * strength) / 0xFFFF);
-		ff->tf_stage[ff->tf_staged++] = rs50_force_to_offset_binary(s);
+		ff->tf_stage[ff->tf_staged++] =
+			rs50_force_to_offset_binary(s);
 
 		if (ff->tf_staged == RS50_TF_NEW_SAMPLES) {
 			memmove(&ff->tf_window[0],
@@ -5553,6 +5655,17 @@ static int rs50_ff_playback(struct input_dev *dev, int id, int value)
 		ff->effects[id].play_start = jiffies +
 			msecs_to_jiffies(ff->effects[id].effect.replay.delay);
 		ff->effects[id].replays_left = value > 0 ? value - 1 : 0;
+		/*
+		 * Channel decision for this play cycle (see the use_tf
+		 * field comment): TF only when the route selects it AND
+		 * the session is already up. If the session is still
+		 * initialising, this playback stays on the steering
+		 * channel for its whole duration.
+		 */
+		ff->effects[id].use_tf =
+			READ_ONCE(ff->texture_route) == RS50_TEXTURE_ROUTE_TF &&
+			smp_load_acquire(&ff->tf_ready) &&
+			rs50_ff_effect_is_texture(&ff->effects[id].effect);
 	}
 	ff->effects[id].playing = (value != 0);
 
@@ -5741,6 +5854,30 @@ static void rs50_ff_range_readback(struct rs50_ff_data *ff)
 }
 
 /*
+ * Self-arming range poll, on system_unbound_wq: the synchronous HID++
+ * GET above can block for seconds if the wheel stops answering, so it
+ * must never share a queue with the 500 Hz force stream. Skipped while
+ * effects play - the silent range reset this poll hunts happens at
+ * game launch (FFB idle), and a stale reading during a race is
+ * corrected within one interval of the effects stopping.
+ */
+static void rs50_ff_range_poll_work(struct work_struct *work)
+{
+	struct rs50_ff_data *ff = container_of(work, struct rs50_ff_data,
+					       range_poll_work.work);
+
+	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
+		return;
+
+	if (!READ_ONCE(ff->any_effect_playing))
+		rs50_ff_range_readback(ff);
+
+	if (!atomic_read_acquire(&ff->stopping) && atomic_read(&ff->initialized))
+		queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
+				   msecs_to_jiffies(RS50_FF_REFRESH_INTERVAL_MS));
+}
+
+/*
  * Periodic FFB refresh handler - sends the 05 07 command to maintain FFB state.
  * Our cadence is RS50_FF_REFRESH_INTERVAL_MS (20 s); G Hub runs a similar
  * keepalive to prevent FFB timeout during idle periods.
@@ -5797,9 +5934,6 @@ static void rs50_ff_refresh_work(struct work_struct *work)
 			ff->last_err_log = jiffies;
 		}
 	}
-
-	/* Keep the reported rotation range honest (see helper above). */
-	rs50_ff_range_readback(ff);
 
 	/* Reschedule if still running - use dedicated workqueue for consistency */
 	if (!atomic_read_acquire(&ff->stopping) && atomic_read(&ff->initialized)) {
@@ -6107,7 +6241,20 @@ static int rs50_get_current_mode(struct rs50_ff_data *ff)
 		return ret;
 	}
 
-	ff->current_profile = response.fap.params[0];
+	/*
+	 * Decode mirrors the SET encoding in rs50_set_mode: native RS50
+	 * (c276) returns the plain profile index in params[0]; the G PRO
+	 * PID returns [mode_class, slot] where mode_class 0x02 means
+	 * onboard with the slot in params[1]. Without the compat decode,
+	 * the settings refresh queued right after an onboard SET read
+	 * mode_class 0x02 back as "profile 2" and clobbered the slot the
+	 * user had just selected.
+	 */
+	if (hidpp->hid_dev->product != USB_DEVICE_ID_LOGITECH_RS50 &&
+	    response.fap.params[0] == 0x02)
+		ff->current_profile = response.fap.params[1];
+	else
+		ff->current_profile = response.fap.params[0];
 	ff->current_mode = (ff->current_profile == 0) ? 0 : 1;
 	ff->mode_known = true;
 
@@ -6141,15 +6288,25 @@ static int rs50_set_mode(struct rs50_ff_data *ff, u8 profile)
 	}
 
 	/*
-	 * Wire format (feature 0x8137 fn=2, from the GHUB capture notes at
-	 * RS50_COMPAT_FEATURE_ID_ANGLE): [mode_class, slot, 0] where
-	 * mode_class 0x00 = desktop and 0x02 = onboard with the 1-based
-	 * slot in params[1]. The previous encoding sent [N, 0, 0] for
-	 * onboard slot N, which put the slot number in the mode_class
-	 * byte - only desktop (N=0) happened to be encoded correctly, and
-	 * onboard selection always landed on the wheel's own default slot.
+	 * Two wire formats exist for feature 0x8137 fn=2:
+	 *
+	 * - Native RS50 (c276): [ProfileIndex, 0, 0], per the native-mode
+	 *   section of docs/RS50_PROTOCOL_SPECIFICATION.md.
+	 * - G PRO PID (c272/c268, both real G Pro and RS50-in-compat):
+	 *   [mode_class, slot, 0] where mode_class 0x00 = desktop and
+	 *   0x02 = onboard with the 1-based slot in params[1], from the
+	 *   GHUB capture notes at RS50_COMPAT_FEATURE_ID_ANGLE. The
+	 *   previous code sent [N, 0, 0] here, which put the slot number
+	 *   in the mode_class byte - only desktop (N=0) happened to be
+	 *   encoded correctly.
+	 *
+	 * Gate by product so the compat encoding is never applied to the
+	 * native wheel whose documented format is the plain index.
 	 */
-	if (profile == 0) {
+	if (hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_RS50) {
+		params[0] = profile;
+		params[1] = 0;
+	} else if (profile == 0) {
 		params[0] = 0x00;
 		params[1] = 0;
 	} else {
@@ -6551,6 +6708,8 @@ static void rs50_ff_init_work(struct work_struct *work)
 	 */
 	/* Send refresh immediately, then schedule periodic refreshes */
 	queue_delayed_work(ff->wq, &ff->refresh_work, 0);
+	queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
+			   msecs_to_jiffies(RS50_FF_REFRESH_INTERVAL_MS));
 	hid_info(hid, "RS50: FFB refresh command queued (then every %dms)\n",
 		RS50_FF_REFRESH_INTERVAL_MS);
 
@@ -9897,12 +10056,8 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	ff->tf_init_queued = false;
 	ff->tf_streaming = false;
 	ff->tf_staged = 0;
-	{
-		int w;
-
-		for (w = 0; w < RS50_TF_WINDOW; w++)
-			ff->tf_window[w] = 0x8000;	/* offset-binary centre */
-	}
+	ff->tf_init_attempts = 0;
+	memset16(ff->tf_window, 0x8000, RS50_TF_WINDOW); /* offset-binary centre */
 	spin_lock_init(&ff->effects_lock);
 	atomic_set(&ff->sequence, 0);
 	atomic_set(&ff->pending_work, 0);
@@ -9970,6 +10125,7 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	 */
 	INIT_DELAYED_WORK(&ff->init_work, rs50_ff_init_work);
 	INIT_DELAYED_WORK(&ff->refresh_work, rs50_ff_refresh_work);
+	INIT_DELAYED_WORK(&ff->range_poll_work, rs50_ff_range_poll_work);
 	INIT_WORK(&ff->settings_refresh_work, rs50_ff_settings_refresh_work);
 	INIT_WORK(&ff->tf_init_work, rs50_tf_init_work_handler);
 
@@ -10070,6 +10226,7 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 
 	hid_dbg(hid, "RS50: Cancelling refresh timer\n");
 	cancel_delayed_work_sync(&ff->refresh_work);
+	cancel_delayed_work_sync(&ff->range_poll_work);
 	cancel_work_sync(&ff->settings_refresh_work);
 	cancel_work_sync(&ff->tf_init_work);
 
@@ -12760,6 +12917,18 @@ static void hidpp_remove(struct hid_device *hdev)
 		if (ff && ff->ff_hdev == hdev) {
 			WRITE_ONCE(ff->ff_hdev, NULL);
 			ff->ff_hdev_open = false;
+			/*
+			 * Workers that cached this hdev may be mid-flight
+			 * (the TF session init sends up to 136 packets over
+			 * ~100+ ms; the keepalive fires every 20 s). They
+			 * re-read ff_hdev per send, but that still races
+			 * the hid_hw_stop below - and on physical unplug
+			 * this hid_device is freed right after. Flush them
+			 * while the device is still valid; the owner's
+			 * rs50_ff_destroy cancels again later (no-op).
+			 */
+			cancel_work_sync(&ff->tf_init_work);
+			cancel_delayed_work_sync(&ff->refresh_work);
 		}
 		return hid_hw_stop(hdev);
 	}

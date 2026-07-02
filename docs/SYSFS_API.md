@@ -101,7 +101,10 @@ on the motor.
 **External-change detection**: some game launches (observed with
 Assetto Corsa EVO under Proton) reset the wheel's physical range to
 90 degrees without any HID++ notification. The driver re-reads the
-true range from the wheel every 20 seconds; if it changed externally,
+true range from the wheel every 20 seconds (paused while force
+feedback is actively playing, so the synchronous query can never
+stall the force stream; it catches up within one interval of the
+effects stopping); if it changed externally,
 the reported `wheel_range` value is updated to the real one, the
 change is logged in dmesg (`rotation range changed externally`), and
 `poll()`ers on the attribute are notified via `sysfs_notify()`. The
@@ -342,7 +345,16 @@ texture-class effect actually plays, the driver replays the captured
 250 Hz window packets while texture effects are active (dmesg:
 `TrueForce texture channel ready`). Wheels that never see texture
 effects never see TF traffic. If the init fails, texture effects
-fall back to the steering channel - degraded feel, never lost.
+fall back to the steering channel - degraded feel, never lost - and
+the driver retries on a later texture playback (up to 3 attempts per
+session, logged in dmesg).
+
+An effect's channel is decided when its playback starts and held for
+the whole play cycle, so re-parametrising a playing effect across the
+20 Hz crossover (or the session init completing mid-play) never yanks
+a live effect between channels. Playbacks started before the session
+is ready ride the steering channel for their duration; the next
+playback moves to the TF stream.
 
 Texture amplitude respects `FF_GAIN` and `wheel_strength` (the wheel
 firmware scales steering forces by the strength setting itself but
