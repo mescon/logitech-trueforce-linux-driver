@@ -126,7 +126,7 @@ if you ever do, that is a bug we want reported.
 | No `wheel_*` files, no FFB (wheel grabbed by `hid-generic`) | `sudo ./tools/rebind-wheel.sh` |
 | A game stops seeing the wheel / hangs loading after the driver was reloaded | Quit the game, **restart Steam completely**, relaunch |
 | Steering feels off-center | Hold the rim physically straight, then `echo 1 > "$H/wheel_calibrate_here"` |
-| Rumble feels like it shakes the steering itself | You are on the legacy path; check `cat "$H/wheel_texture_route"` says `tf` |
+| Rumble shakes the steering instead of buzzing the rim | Check `cat "$H/wheel_texture_route"` says `tf` (texture belongs on the haptic channel) |
 | Reporting a bug | Include `dmesg | grep -i rs50` and `cat "$H/wheel_firmware"` output |
 
 More in the README's Troubleshooting section. Settings reference:
