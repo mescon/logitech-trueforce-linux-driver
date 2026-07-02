@@ -560,7 +560,14 @@ The driver exposes standard wheel attributes for [Oversteer](https://github.com/
 
 > **Note on autocenter:** The `autocenter` attribute is a stub that stores values locally but doesn't communicate with the device. G Hub doesn't expose an autocenter setting for the RS50, and modern direct-drive wheels don't need hardware centering - games calculate their own centering forces using FF_CONSTANT effects.
 
-**Note:** Oversteer requires a patch for RS50 support. This patch has been submitted upstream; until merged, you can apply it manually.
+**Note:** Oversteer requires a patch for full support (native RS50
+detection, and attribute discovery for all three PIDs - stock
+Oversteer looks for the settings on the joystick interface, but this
+driver exposes them on the HID++ sibling interface). The patch ships
+in this repo and applies cleanly to current Oversteer master; the
+full round trip (detect, read settings, set range) is verified
+against a live wheel as of 2026-07-03. Upstreaming is planned; until
+merged, apply it manually.
 
 The patch (`oversteer-rs50-support.patch`) adds:
 - RS50 device detection (USB ID `046d:c276`)

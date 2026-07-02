@@ -33,6 +33,6 @@ TAG+="uaccess", GROUP="input", MODE="0660"
 
 # wheel_* sysfs attributes (only exist on the HID++ interface's hidraw
 # node; the RUN invocation is a no-op on interfaces that lack them).
-RUN+="/bin/sh -c 'for f in /sys/class/hidraw/%k/device/wheel_*; do [ -e \"$f\" ] || continue; chgrp input \"$f\"; chmod g+w \"$f\"; done'"
+RUN+="/bin/sh -c 'for f in /sys/class/hidraw/%k/device/wheel_* /sys/class/hidraw/%k/device/range /sys/class/hidraw/%k/device/gain /sys/class/hidraw/%k/device/autocenter /sys/class/hidraw/%k/device/combine_pedals /sys/class/hidraw/%k/device/damper_level; do [ -e \"$f\" ] || continue; chgrp input \"$f\"; chmod g+w \"$f\"; done'"
 
 LABEL="rs50_end"
