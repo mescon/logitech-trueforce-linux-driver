@@ -68,6 +68,21 @@ struct logitf_device {
 	uint16_t tf_window[LOGITF_TF_WINDOW]; /* offset-binary, newest at [WINDOW-1] */
 	uint16_t tf_last_current;             /* bytes 6-9 of each packet */
 
+	/*
+	 * Interface-2 feedback (device type-0x02 responses on ep 0x83).
+	 * The stream thread drains them opportunistically each cycle;
+	 * fields hold the most recent packet, under `lock`. fb_packets
+	 * counts responses consumed since open (never reset), so callers
+	 * can detect a stalled feedback path.
+	 */
+	bool     fb_valid;
+	uint16_t fb_wheel_pos;     /* raw encoder, 0x8000 = centre */
+	uint16_t fb_wheel_pos2;    /* ~1 sample older than fb_wheel_pos */
+	uint32_t fb_counter;       /* device-side sample/timestamp counter */
+	uint16_t fb_motor_raw;     /* undecoded (motor current/temperature?) */
+	uint8_t  fb_status;        /* undecoded status byte */
+	uint64_t fb_packets;
+
 	pthread_mutex_t ring_lock;
 	pthread_cond_t  ring_space;
 	pthread_cond_t  ring_data;
@@ -98,6 +113,8 @@ int  logitf_stream_start(struct logitf_device *dev);
 int  logitf_stream_stop(struct logitf_device *dev);
 int  logitf_stream_push_s16(struct logitf_device *dev, const int16_t *samples, int count);
 int  logitf_stream_clear(struct logitf_device *dev);
+int  logitf_stream_feedback_read(struct logitf_device *dev,
+				 struct logitf_stream_feedback *fb);
 
 /* kf.c */
 int    logitf_evdev_ensure_open(struct logitf_device *dev);

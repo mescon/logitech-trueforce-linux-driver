@@ -158,7 +158,7 @@ byte[18-32]: status/counters
 byte[33-63]: zeros
 ```
 
-Responses arrive at the same cadence as the host's packet rate, giving real-time wheel-position feedback for synchronisation. libtrueforce does not currently consume these (Rank 22.x work item); the kernel driver ignores them.
+Responses arrive at the same cadence as the host's packet rate, giving real-time wheel-position feedback for synchronisation. libtrueforce's stream thread consumes them while a stream is active (since 2026-07-02) and exposes the latest snapshot via the Linux-native `logitf_get_stream_feedback()` API (wheel position, device counter, and the still-undecoded motor/status fields); the kernel driver ignores them.
 
 ## PID FFB Commands (report `0x10`/`0x11`, for reference)
 
@@ -208,6 +208,6 @@ Used for constant force values with extended precision.
 
 ## Open Items
 
-- libtrueforce does not yet consume type-`0x02` device responses for synchronisation or wheel-position feedback (would be useful for closed-loop effects).
+- libtrueforce consumes type-`0x02` device responses while a stream is active and exposes them via `logitf_get_stream_feedback()` (2026-07-02). The motor field (bytes 6-7), status byte (8), and byte 17 checksum-like field are still undecoded; correlating the motor field against commanded torque on a live wheel would pin it down.
 - The constant flag word at byte 11 (`0x0d`) is passed through verbatim; its exact meaning is still not decoded. Value `0x05` has been seen instead of `0x04` in byte 10 in some captures, corresponding to 5 new samples; libtrueforce uses the 4-new-samples variant exclusively.
 - Per-title parameter variation (are the 48 init floats game-specific or universal?) is unconfirmed. So far the same data produces audible TRUEFORCE across BeamNG and ACC.

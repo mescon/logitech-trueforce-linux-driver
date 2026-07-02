@@ -215,18 +215,88 @@ static int stream_tick(struct logitf_device *dev)
 	return 0;
 }
 
+/* ---------- device feedback (type-0x02 responses, ep 0x83) ---------- */
+
+/*
+ * The wheel answers interface-2 traffic with type-0x02 responses at the
+ * host's packet rate. Layout per docs/TRUEFORCE_PROTOCOL.md:
+ *
+ *     4       0x02                        response type
+ *     5       sequence echo
+ *     6..7    u16 LE                      motor current/temperature?
+ *     8       status byte
+ *     9..10   u16 LE                      wheel position (matches ABS_X)
+ *     11..12  u16 LE                      wheel position, ~1 sample older
+ *     13..16  u32 LE                      device-side counter
+ *
+ * Drain everything pending (zero-timeout poll per read so the blocking
+ * fd never parks the stream thread) and keep the newest packet. If
+ * nobody drained these, the kernel hidraw ring would just drop the
+ * oldest - consuming them costs nothing and buys closed-loop feedback.
+ */
+static void drain_feedback(struct logitf_device *dev)
+{
+	uint8_t buf[64];
+
+	for (;;) {
+		struct pollfd p = { .fd = dev->hidraw_fd, .events = POLLIN };
+		ssize_t n;
+
+		if (poll(&p, 1, 0) <= 0 || !(p.revents & POLLIN))
+			break;
+		n = read(dev->hidraw_fd, buf, sizeof(buf));
+		if (n < 17)
+			break;
+		if (buf[4] != 0x02)
+			continue;	/* 0x10/0x14/... : not stream feedback */
+
+		pthread_mutex_lock(&dev->lock);
+		dev->fb_motor_raw = (uint16_t)(buf[6] | (buf[7] << 8));
+		dev->fb_status    = buf[8];
+		dev->fb_wheel_pos = (uint16_t)(buf[9] | (buf[10] << 8));
+		dev->fb_wheel_pos2 = (uint16_t)(buf[11] | (buf[12] << 8));
+		dev->fb_counter = (uint32_t)buf[13] | ((uint32_t)buf[14] << 8) |
+				  ((uint32_t)buf[15] << 16) |
+				  ((uint32_t)buf[16] << 24);
+		dev->fb_packets++;
+		dev->fb_valid = true;
+		pthread_mutex_unlock(&dev->lock);
+	}
+}
+
+int logitf_stream_feedback_read(struct logitf_device *dev,
+				struct logitf_stream_feedback *fb)
+{
+	int rc = LOGITF_OK;
+
+	pthread_mutex_lock(&dev->lock);
+	if (!dev->fb_valid) {
+		rc = LOGITF_ERR_BUSY;
+	} else {
+		fb->wheel_position  = dev->fb_wheel_pos;
+		fb->wheel_position2 = dev->fb_wheel_pos2;
+		fb->sample_counter  = dev->fb_counter;
+		fb->motor_raw       = dev->fb_motor_raw;
+		fb->status          = dev->fb_status;
+		fb->packets         = dev->fb_packets;
+	}
+	pthread_mutex_unlock(&dev->lock);
+	return rc;
+}
+
 /* ---------- thread ---------- */
 
 static void *stream_thread_fn(void *arg)
 {
 	struct logitf_device *dev = arg;
-	struct pollfd pfds[2] = {
+	struct pollfd pfds[3] = {
 		{ .fd = dev->stream_timerfd, .events = POLLIN },
 		{ .fd = dev->stream_stopfd,  .events = POLLIN },
+		{ .fd = dev->hidraw_fd,      .events = POLLIN },
 	};
 
 	for (;;) {
-		int pr = poll(pfds, 2, -1);
+		int pr = poll(pfds, 3, -1);
 
 		if (pr < 0) {
 			if (errno == EINTR)
@@ -235,6 +305,8 @@ static void *stream_thread_fn(void *arg)
 		}
 		if (pfds[1].revents & POLLIN)
 			break;  /* stop requested */
+		if (pfds[2].revents & POLLIN)
+			drain_feedback(dev);
 		if (pfds[0].revents & POLLIN) {
 			uint64_t expiries;
 

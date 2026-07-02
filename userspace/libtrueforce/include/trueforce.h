@@ -144,6 +144,34 @@ int  logiTrueForceSync(int index);
 
 int  logiAdvancedGetThreadHandles(int index, void **handles, int max);
 
+/* ---- Linux-native extensions (NOT part of the Windows SDK) ----
+ *
+ * The wheel answers every outgoing interface-2 packet with a type-0x02
+ * response on ep 0x83 carrying real-time feedback: the wheel position
+ * as the firmware sees it (matching the joystick axis, but sampled on
+ * the same path and cadence as the Trueforce stream) and a device-side
+ * counter. Useful for closed-loop haptic effects and for measuring the
+ * wheel's consumption rate. The stream thread consumes these
+ * opportunistically while it runs; without an active stream no
+ * feedback is collected.
+ */
+
+struct logitf_stream_feedback {
+	uint16_t wheel_position;   /* raw encoder, 0x8000 = centre */
+	uint16_t wheel_position2;  /* ~1 sample older */
+	uint32_t sample_counter;   /* device-side counter (bytes 13-16) */
+	uint16_t motor_raw;        /* undecoded field (current/temperature?) */
+	uint8_t  status;           /* undecoded status byte */
+	uint64_t packets;          /* responses consumed since open */
+};
+
+/*
+ * Latest feedback snapshot. Returns LOGITF_OK, LOGITF_ERR_NOT_FOUND
+ * for a bad index, or LOGITF_ERR_BUSY if no response has been
+ * consumed yet (stream not started, or the wheel has not answered).
+ */
+int logitf_get_stream_feedback(int index, struct logitf_stream_feedback *fb);
+
 #ifdef __cplusplus
 }
 #endif

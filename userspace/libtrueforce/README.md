@@ -12,6 +12,13 @@ The library talks to the wheel's interface-2 hidraw node directly; no
 custom kernel driver is required beyond what the in-tree
 `hid-logitech-hidpp` fork already provides.
 
+While a stream is active the library also consumes the wheel's
+type-0x02 responses (real-time wheel position and a device-side
+sample counter) and exposes the latest snapshot via the Linux-native
+`logitf_get_stream_feedback()` call - useful for closed-loop haptic
+effects and for measuring the wheel's consumption rate. This API is
+an extension; it has no Windows SDK counterpart.
+
 ## Safety
 
 The RS50 can produce up to 8 Nm of torque. The wheel may self-

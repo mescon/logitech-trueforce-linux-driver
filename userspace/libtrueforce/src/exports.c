@@ -625,3 +625,16 @@ int logiAdvancedGetThreadHandles(int index, void **handles, int max)
 		handles[0] = NULL;
 	return 0; /* Zero handles exposed. */
 }
+
+/* ---- Linux-native extensions ---- */
+
+int logitf_get_stream_feedback(int index, struct logitf_stream_feedback *fb)
+{
+	struct logitf_device *dev;
+
+	if (!fb)
+		return LOGITF_ERR_INVALID_ARG;
+	if (logitf_find_by_index(index, &dev))
+		return LOGITF_ERR_NOT_FOUND;
+	return logitf_stream_feedback_read(dev, fb);
+}
