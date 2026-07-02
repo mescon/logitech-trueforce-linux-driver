@@ -1,7 +1,7 @@
 # Logitech RS50 Protocol Specification
 
-**Document Version**: 6.2
-**Date**: 2026-06-29
+**Document Version**: 6.3
+**Date**: 2026-07-02
 **Author**: Verified from USB capture analysis
 **Status**: Protocol reference for Linux driver development
 
@@ -592,7 +592,20 @@ The G PRO Racing Wheel for Xbox/PC (`046d:c272`) and PS/PC (`046d:c268`) PIDs co
 
 Both wheels are direct-drive and run the same modern firmware architecture. They share the same HID++ 4.2 feature catalog at the same indices and the same dedicated 64-byte FFB endpoint on interface 2. The driver gives both `HIDPP_QUIRK_RS50_FFB` from the id-table (no iProduct-string sniff), so both go through the `rs50_ff_*` code path rather than the inherited G920 HID++ FFB path. This is what makes basic FFB, TrueForce streaming, and the wheel-config sysfs surface all work on a real G PRO without the queue-saturation / "Failed to send command" failures the G920 path inherits from the older belt-driven generation (issue #8).
 
-The compat / G-PRO-PID HID++ feature catalog is reduced compared to native RS50: most of the 0x812F-class settings features are not advertised at the indices the native RS50 code expects, but the same wheel-config functionality is reachable via a parallel feature set. The driver tries both: native-mode IDs in `rs50_ff_init` (which still find their indices in the G PRO catalog because the canonical Logitech feature IDs are the same), and compat-mode fallback indices via the `RS50_COMPAT_*` table (range / strength / trueforce / damping / FFB filter / profile-mode switch / LIGHTSYNC / centre calibration all wired) when the native path didn't pick up an index.
+Catalog note (corrected 2026-07-02 after a full IFeatureSet cross-capture
+comparison): the RS50's compat-mode device-0xff feature catalog is
+**byte-identical to its native catalog** (the full index 0x04-0x25 table
+matches between `2026-01-26_ghub_startup` and
+`2026-04-26_compat_ghub_init`). Only the **real G PRO's** catalog differs
+- same canonical feature IDs, shifted to different indices (e.g. what
+sits at index 0x0d on the RS50 is at 0x0b on the G Pro). An earlier
+revision of this section described the compat catalog as "reduced";
+that was wrong. What remains true operationally: `ROOT.GetFeature(<id>)`
+lookups did not reliably return the expected indices on the G PRO PID in
+early bring-up, so the driver still tries native-mode IDs first and then
+the `RS50_COMPAT_*` fallback indices (range / strength / trueforce /
+damping / FFB filter / profile-mode switch / LIGHTSYNC / centre
+calibration all wired).
 
 A different feature set, observed only in compat mode, controls live host-pushed wheel settings. All commands below are short HID++ reports (`0x10`) sent on the corded device index `0xff` with sw_id `d`.
 
@@ -610,7 +623,7 @@ The fallback indices in the table are what GHUB uses on a 2026-04-26 firmware re
 
 - `fn=1` with no parameters reads `[mode_class, slot, ...]` where `mode_class = 0x00` is desktop and `mode_class = 0x02` is onboard.
 - `fn=2` with `[0x00, 0x00, 0x00]` switches the wheel into desktop mode. Subsequent live host SETs (range, strength, trueforce, damping, filter) take effect on the motor immediately. Verified end-to-end on 2026-04-26 against the live wheel.
-- `fn=2` with `[0x02, slot, 0x00]` is expected to select onboard slot 1..5; the byte encoding is not fully verified yet (the driver currently sends `[N, 0, 0]` which produces a profile-broadcast cascade rather than a clean transition). Decoded against `dev/captures/2026-04-26_compat_take_control_onboard.pcapng`.
+- `fn=2` with `[0x02, slot, 0x00]` selects onboard slot 1..5. The driver sends this encoding on the G PRO PID since 2026-07-02 (and the plain `[ProfileIndex, 0, 0]` on native c276, per section 5's native profile documentation); on-wheel confirmation of the slot landing is still pending. Decoded against `dev/captures/2026-04-26_compat_take_control_onboard.pcapng`.
 
 The wheel boots in onboard mode by default. The OLED menu cycles between onboard profile slots only; it does not expose a desktop indicator separately, but the slot name displayed reflects the active state.
 
@@ -622,11 +635,49 @@ An earlier draft of this document and the driver shipped with a "force_desktop_m
 - FFB filter wire format in compat mode is simpler than native: bytes 0-1 are zero, byte 2 carries the 1..15 level. There is no `flags` byte and no observable auto-mode encoding from compat-mode captures, so the driver leaves `wheel_ffb_filter_auto` as `-EOPNOTSUPP` in compat.
 - Onboard mode silently ignores live host-pushed SETs. Compat-mode sysfs writes only take physical effect on the motor while the wheel is in desktop mode; the wheel boots in onboard, so write `0` to `wheel_profile` first to switch into desktop.
 
-**Caveats observed but not yet productised**:
+**Previously-unknown features, resolved 2026-07-02** (full cross-capture
+analysis; index-to-ID mapping derived from IFeatureSet fn1 pairing in
+`ghub_startup`, `compat_ghub_init`, and the G Pro contributor captures):
 
-- Feature index `0x0d` (likely ID `0x80a4`, AxisCalibration in native) appears as a write-curve interface in compat mode (fn 3 = open, fn 4 = chunk write, fn 5 = commit, fn 6 = use built-in LUT). GHUB uploads a 22-chunk torque LUT before every angle change. Reverse-engineering this would unlock per-game custom FFB curves but is deferred.
-- Feature index `0x09` (likely ID `0x1bc0`) is sent before every config push by GHUB (`10ff 09 2c 00 00 00`). Our driver does not send it and the SETs still work without it; treat it as optional.
-- Feature index `0x15` is used by GHUB in compat mode but with sw_id `c` (read) and sw_id `a` (some other subsystem) - never `d`. Sweeps of unrelated GHUB sliders show 16-bit BE values pushed via `10ff152a`. Purpose unknown; not currently exposed as a sysfs.
+- **Feature `0x80A4` (AxisResponseCurve; index `0x0d` on RS50 native AND
+  compat, `0x0b` on the real G Pro; also present on pedal sub-device
+  `0x02`).** Per-axis 64-point response-curve store, NOT a torque LUT.
+  `fn0` caps returns `[axes=7][3][3]` on the wheel base (`[3][3][3][1]`
+  on the pedal unit); `fn1 [axis]` returns `[axis][00 01 00][HID usage]
+  [bit width 0x10][loaded_points u16][max_points u16 = 0x0040]`; an
+  upload is `fn3 [axis]` (open; empty param = axis 0 / steering),
+  22x `fn4 [n][(in,out) u16-BE x n]` chunks (n <= 3; 64 monotonic points
+  from `(0,0)` to `(0xFFFF,0xFFFF)`), then `fn5` commit (echoes
+  `[axis][00][0040]`); `fn6 [axis]` reverts an axis to the built-in
+  curve. This is what G Hub's **Sensitivity** slider uploads for the
+  steering axis - verified in `2026-01-30_desktop_sensitivity`, where a
+  slider sweep produced distinct, mutually inverse curves, while sweeps
+  of unrelated sliders re-upload a bit-identical curve on every config
+  apply. Exposing this would unlock custom steering/pedal response
+  curves from Linux. Unknowns: the second `03` in caps, pedal-unit
+  `fn9 [axis]` (called on every G Hub init; possibly axis refresh), and
+  whether curves persist across power cycles.
+- **Feature `0x1BC0` (REPORT_HID_USAGE; index `0x09` on RS50, `0x07` on
+  G Pro).** On every config apply, G Hub sends `fn2` (empty) followed by
+  LONG `fn1` writes of `01 0009 00XX` with XX iterating `{0x0d..0x12,
+  0x15}` on the RS50 PID and `{0x0d..0x13, 0x15}` on the G PRO PID -
+  byte-identical across wheels, so XX is not a feature index. Given the
+  registered feature name, the likely reading is "enable reporting of
+  Button-page (usage page 0x0009) usages 13..21"; the effect on the HID
+  interface was never isolated in captures. Optional: every SET works
+  without it, and the Linux driver omits it with no observed downside.
+- **Compat index `0x15` = `0x8134` Brake Force - mystery closed.** The
+  compat catalog is identical to native (see above), so index 0x15 is
+  the already-documented Brake Force feature. The previously mysterious
+  `10ff152a XXXX` pushes during "unrelated" slider sweeps are the G Hub
+  Brake Force slider (u16 BE, 0..0xFFFF = 0..100%), e.g. `028f / 4ccc /
+  7fff / ffff` in `compat_range_other_sliders_desktop`, each answered by
+  broadcast `12ff1500 XXXX` - wire-identical to the native
+  `2026-01-26_brake_force_sweep`. The sw_id byte carries no protocol
+  meaning: G Hub runs parallel client sessions on sw_ids `a`..`e` (plus
+  `f` for DFU checks) and the wheel broadcasts with sw_id 0. Note these
+  captures show brake-force writes accepted in DESKTOP mode too, so the
+  native section's "onboard mode only" restriction deserves a re-check.
 - Mode-change broadcasts: when the wheel transitions between onboard profiles (via the OLED) or between onboard and desktop modes (when Windows G Hub takes / releases control), the wheel may emit an unsolicited notification on EP 0x82. Not yet captured or consumed.
 
 **Evidence**: `dev/captures/2026-04-26_compat_ghub_init.pcapng` (full GHUB bring-up enumeration); `..._compat_range_ghub_slider_{desktop,onboard}.pcapng` (steering angle 90→1080°); `..._compat_range_strength_slider_{desktop,onboard}.pcapng` (FFB strength 0→100%); `..._compat_range_damping_only_desktop.pcapng` (isolated damping sweep, source for the 0x14/fn=1 wiring); `..._compat_range_filter_only_desktop.pcapng` (isolated filter sweep, source for the 0x1a/fn=2 wiring and proof that "force_desktop_mode" was actually the filter setter).
@@ -638,6 +689,42 @@ A few behaviors observed in compat mode look like driver problems but are firmwa
 - **Default centering spring**: in compat mode the wheel applies its own self-centering spring whenever it is in onboard mode and no game / host-side FFB is actively writing. This is the same on Windows with GHUB running. There is no known host command to disable it; users see it as "the wheel won't stop pushing back to center" when nothing is talking to the wheel.
 - **Default steering angle is 90°**: the factory default angle in compat mode is 90°, not the wheel's 1080° hardware maximum. This is correct firmware behavior. Set it from Linux via `wheel_profile=0` then `wheel_range=<degrees>`, or from the OLED by editing the active onboard profile.
 - **LIGHTSYNC works in compat mode**: feature `0x807A` is advertised in compat at the same index discovery picks up in native, and `wheel_led_*` writes drive the LED strip end-to-end (verified 2026-04-29). An earlier draft of this document claimed otherwise; that claim was incorrect.
+
+### 5.3 Sub-device Addressing (HID++ dev_idx 0x01 / 0x02 / 0x05)
+
+Cross-capture census (2026-07-02, all 62 captures): besides the wheel
+base at dev_idx `0xff` (~100k packets each way), three sub-devices carry
+real HID++ traffic on BOTH the RS50 and the real G Pro - dev `0x01`
+(~390 packets each way), dev `0x02` (~560), dev `0x05` (~420). No other
+sub-index appears. Each has its own feature catalog, enumerated by G Hub
+on every init:
+
+- **dev `0x01`** - display / rim module: `0x8091` (per-key/LED matrix),
+  `0x18A2`, `0x9315`.
+- **dev `0x02`** - pedal base: `0x80A4` (axis response curves, 3 axes
+  with HID usages 0x31/0x33/0x32), `0x80D0`, **`0x8134` Brake Force**,
+  `0x8135`, `0x9209`/`0x9215`. G Hub calls `0x80A4` fn0/fn1/fn9 here on
+  every init. Pedal-curve and brake-force support for the G Pro's
+  modular pedals should target this dev_idx.
+- **dev `0x05`** - motor / base unit: `0x8128`, `0x8129`, `0x812B`,
+  **`0x812C` centre calibration**, `0x92D1`. The whole 0x812x
+  calibration cluster lives here; live calibrate traffic confirmed on
+  both wheels (`2026-04-22_re_calibrate` on RS50: `10050f1a` read
+  position -> `10050f3a` write centre; same pattern at index 0x0c on the
+  G Pro contributor captures). The driver's `wheel_calibrate*` already
+  targets this dev_idx.
+
+Two driver-relevant quirks:
+
+- **Sub-device responses arrive as report ID `0x11`**, not the `0x12`
+  the wheel base uses for its responses.
+- **Feature ID `0x0009`** (unregistered; index `0x08` on RS50, `0x06` on
+  G Pro, at dev `0xff`) looks like the sub-device topology/presence
+  feature: G Hub calls its `fn2` (empty) and the wheel answers with a
+  burst of unsolicited events `12ff0800 [unit][flags] 14` for units
+  01/02 (flags 0xf0), 03/04 (0x60), 05 (0xc0) - likely how G Hub learns
+  which dev_idx values exist. Units 3-4 are announced but never
+  addressed via HID++ in any capture.
 
 ---
 
