@@ -337,13 +337,13 @@ Device → Host: Interrupt IN (endpoint 0x82)
 | 0x02 | `0x0002` | IFeatureInfo | Feature metadata |
 | 0x03 | `0x0003` | DeviceInfo | Device name, firmware |
 | 0x04 | `0x00C3` | SecureDFU | Firmware update |
-| **0x09** | **`0x1BC0`** | **Sync?** | Called before LED changes (purpose unknown) |
-| 0x0A | `0x8040` | AxisResponseCurve | Sensitivity + **Brightness** |
+| **0x09** | **`0x1BC0`** | **ReportHidUsages** | Enables extra Button-page HID usages; optional (see 5.1) |
+| 0x0A | `0x8040` | Brightness/Sensitivity | Sensitivity (desktop) + **Brightness** (onboard) |
 | **0x0B** | **`0x807A`** | **LIGHTSYNC** | LED effect mode selection |
 | **0x0C** | **`0x807B`** | **RGBZoneConfig** | LED RGB color data (see Section 9) |
-| 0x0D | `0x80A4` | AxisCalibration | Response curves |
-| 0x0F | `0x8120` | FFBExtended | Internal FFB config |
-| 0x10 | `0x8123` | ForceFeedback | HID++ FFB (unused) |
+| 0x0D | `0x80A4` | AxisResponseCurve | Per-axis 64-point response curves (see 5.1) |
+| 0x0F | `0x8120` | GamingAttachments | Attachment/module management (openlogi registry name) |
+| 0x10 | `0x8123` | ForceFeedback | HID++ FFB (unused by this driver; documented at openlogi.org) |
 | **0x14** | **`0x8133`** | **Damping** | Damping slider |
 | **0x15** | **`0x8134`** | **BrakeForce** | Brake Force slider |
 | **0x16** | **`0x8136`** | **FFBStrength** | Strength slider |
@@ -666,6 +666,13 @@ analysis; index-to-ID mapping derived from IFeatureSet fn1 pairing in
   Button-page (usage page 0x0009) usages 13..21"; the effect on the HID
   interface was never isolated in captures. Optional: every SET works
   without it, and the Linux driver omits it with no observed downside.
+  Naming sources: Solaar's feature registry and openlogi.org both list
+  `0x1BC0` as REPORT_HID_USAGE / "report HID usage pages to host"
+  (corroborating the payload reading); cvuchener/hidpp's older table
+  calls it "Persistent remappable action", but Solaar places that
+  feature at `0x1C00` - we follow the two agreeing sources. No public
+  registry documents its functions; the fn map above (from captures) is
+  the best available.
 - **Compat index `0x15` = `0x8134` Brake Force - mystery closed.** The
   compat catalog is identical to native (see above), so index 0x15 is
   the already-documented Brake Force feature. The previously mysterious
@@ -725,6 +732,12 @@ Two driver-relevant quirks:
   01/02 (flags 0xf0), 03/04 (0x60), 05 (0xc0) - likely how G Hub learns
   which dev_idx values exist. Units 3-4 are announced but never
   addressed via HID++ in any capture.
+
+To enumerate a sub-device's catalog on a live wheel from Linux (no
+Windows capture round-trip needed), the `hidpp-list-features` tool from
+cvuchener/hidpp works over hidraw and takes a `--device-index` option -
+useful for verifying the dev `0x02` pedal-base map on contributors' G
+Pro hardware.
 
 ---
 
