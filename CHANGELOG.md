@@ -7,9 +7,13 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
-Over one hundred commits since the `v0.9-pre-simplification` tag on
-2026-02-02. Rather than enumerate all of them, this entry groups them
-by theme. See `git log v0.9-pre-simplification..HEAD` for the full
+(nothing yet)
+
+## 0.10.0 - 2026-07-03
+
+188 commits since the `v0.9-pre-simplification` tag on 2026-02-02.
+Rather than enumerate all of them, this entry groups them by theme.
+See `git log v0.9-pre-simplification..v0.10.0` for the full
 chronology.
 
 ### The 90-degree saga closed; profile slots done right (2026-07-03)

@@ -167,6 +167,36 @@ All effects are routed to the wheel's single direct-drive motor
 >   after the driver was reloaded while Steam ran: **restart Steam
 >   fully** - its device list goes stale across driver reloads.
 
+### State of the driver (v0.10.0, 2026-07-03)
+
+An honest calibration of what "supported" means today:
+
+**Verified on hardware** (one RS50, G PRO compatibility mode, plus
+extensive USB-capture cross-checks): everything marked with a check in
+the matrix above, including full-lap gameplay in ACC and AC EVO with
+simultaneous steering FFB and TrueForce.
+
+**Expected but awaiting independent confirmation:**
+- A **real G PRO Racing Wheel** runs the identical code path and
+  protocol (byte-verified against contributor captures), but no
+  field report has confirmed the new texture routing or range
+  auto-restore on one yet. If you have a G PRO, your report is the
+  most valuable thing you can contribute (issue #8).
+- **Other Logitech-SDK sims** (Le Mans Ultimate, AMS2, Assetto Corsa,
+  rFactor 2, iRacing) link against the same SDK as the two verified
+  titles and should behave identically. One confirmation each is all
+  it takes to move them into the verified column.
+
+**Not there yet, compared to G Hub on Windows:**
+- No GUI; configuration is sysfs (and partially Oversteer).
+- Setup is manual: DKMS module, per-prefix TrueForce shim install,
+  `PROTON_ENABLE_HIDRAW=1`, Steam Input off. Documented, not
+  automatic.
+- No firmware updates (SecureDFU untouched by design), no onboard
+  profile *editing* (slots can be selected and their names read, not
+  written), no per-game automatic profiles, and the response-curve /
+  Sensitivity upload feature is protocol-mapped but not implemented.
+
 ## Button Mapping
 
 ![RS50 Button Layout](rs-wheel-hub-button-layout.png)
