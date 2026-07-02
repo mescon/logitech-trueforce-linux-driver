@@ -145,19 +145,25 @@ All effects are routed to the wheel's single direct-drive motor
   yet confirmed.
 
 > **Caveats:**
-> - Some sims (AC EVO observed) silently reset the wheel's rotation
->   range to **90° on launch**. The driver detects this within 20
->   seconds, corrects the reported `wheel_range`, and logs
->   `rotation range changed externally` in dmesg. Recover by
->   re-applying it once FFB is idle (e.g. in the game's menus):
->   `wheel_profile=0` then `wheel_range=<degrees>`. The in-game FFB
->   gain is the master force control; `wheel_strength` is the
->   wheel-side multiplier.
-> - AC EVO's **map-load centring force** has been observed ringing the
->   wheel into its over-torque failsafe (the base shuts itself off;
->   power-cycle to recover). The default `wheel_spring_damping=25` is
->   the mitigation; keep hands clear of the wheel during map loads
->   until this is fully root-caused.
+> - Some sims (AC EVO observed) reset the wheel's rotation range to
+>   **90° once at session start**, via the game's own SDK path. The
+>   driver detects this within 20 seconds, corrects the reported
+>   `wheel_range`, and logs `rotation range changed externally` in
+>   dmesg. Recover by re-applying it from the game's pause menu:
+>   `wheel_profile=0` then `wheel_range=<degrees>` - the re-applied
+>   range sticks for the rest of the session (verified through full
+>   laps). The in-game FFB gain is the master force control;
+>   `wheel_strength` is the wheel-side multiplier.
+> - AC EVO's **map-load centring force** has once been observed ringing
+>   the wheel into its over-torque failsafe (the base shuts itself off;
+>   power-cycle to recover). Instrumented sessions show AC EVO drives
+>   all its forces through the Logitech SDK stream rather than the
+>   kernel FFB path, so this is game/SDK-side behaviour; if it occurs,
+>   lower the in-game FFB gain or `wheel_strength`. Keep hands clear
+>   during map loads as a precaution.
+> - If a game stops seeing the wheel (dead bindings, hung map loads)
+>   after the driver was reloaded while Steam ran: **restart Steam
+>   fully** - its device list goes stale across driver reloads.
 
 ## Button Mapping
 
