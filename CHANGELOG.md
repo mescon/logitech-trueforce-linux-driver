@@ -12,6 +12,41 @@ Over one hundred commits since the `v0.9-pre-simplification` tag on
 by theme. See `git log v0.9-pre-simplification..HEAD` for the full
 chronology.
 
+### Hardening, identity, and protocol resolutions (2026-07-02, later)
+
+- **Ten review findings fixed** (commit `c2b3a65`) after an adversarial
+  self-review of the KF/TF work: the TF session init and the range
+  read-back no longer share a workqueue with the 500 Hz force stream
+  (either could stall steering forces); a use-after-free window on
+  unplug during TF init is closed; an effect's channel is decided at
+  playback start and held (no mid-play migration); fast periodics keep
+  their DC offset on the steering axis; spring damping respects the
+  effect's saturation caps; TF START/STOP state only advances when the
+  packet actually queued; failed TF init retries (bounded); steering
+  packets get queue priority over texture; and the profile SET/GET
+  wire format is per-device (the GET had been reading onboard slots
+  back as "profile 2").
+- **New sysfs: `wheel_serial` and `wheel_firmware`** - the real
+  12-character serial (matches the USB descriptor) and the firmware
+  versions of the wheel base and the motor unit, read from HID++
+  DeviceInfo at init and logged in dmesg. Include `wheel_firmware`
+  output in bug reports.
+- **LED effects 6-9 accepted** - the wheel advertises nine effects,
+  not five (live-verified supported-effect list); 6-9 are not yet
+  visually labeled. External LED-effect and brightness changes (G Hub
+  style tools, the wheel's own menu) now update the sysfs values via
+  the wheel's broadcasts instead of going stale.
+- **libtrueforce: `logitf_get_stream_feedback()`** - the stream thread
+  consumes the wheel's type-0x02 responses (real-time position,
+  device-side sample counter); a Linux-native API extension.
+- **Protocol documentation majorly extended** - the three
+  long-standing unknown features resolved (axis response curves /
+  report-HID-usages / brake force), the sub-device map (display
+  module, pedal base, motor unit), HID++ error packets, SW_ID and
+  0x12-report semantics from Logitech's official specs, DeviceInfo
+  identity decode, and corrected feature-catalog rows. See
+  docs/RS50_PROTOCOL_SPECIFICATION.md sections 5 and 9.
+
 ### Project renamed (2026-07-02)
 
 `logitech-rs50-linux-driver` is now **`logitech-trueforce-linux-driver`**:
