@@ -6040,6 +6040,15 @@ static void rs50_ff_range_maybe_restore(struct rs50_ff_data *ff)
 		return;
 	}
 
+	/*
+	 * Re-validate after the stillness window: an explicit wheel_range
+	 * write during the ~100 ms of encoder reads clears restore_want
+	 * (and may have moved the range off 90). Honour it rather than
+	 * overwriting the user's fresh intent with the stale snapshot.
+	 */
+	if (ff->restore_want != want || READ_ONCE(ff->range) != 90)
+		return;
+
 	ff->range_restore_attempts++;
 	if (rs50_set_range_hw(ff, want) == 0) {
 		ff->restore_want = 0;
@@ -6262,6 +6271,21 @@ static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	is_long = data[0] == REPORT_ID_HIDPP_LONG ||
 		  data[0] == REPORT_ID_HIDPP_VERY_LONG;
 	if (!is_long)
+		return 0;
+
+	/*
+	 * HID++ feature indices are per-device-index tables, so a feature
+	 * index only means what we think it means on the wheel BASE
+	 * (device index 0xff). We actively talk to sub-devices 0x01/0x02/
+	 * 0x05 (pedal base, motor unit), which have their own feature
+	 * tables; an unsolicited event from one of those could carry a
+	 * feature index that happens to collide with idx_brightness /
+	 * idx_lightsync / idx_profile_notify / idx_range on the base and
+	 * be misparsed. Gate every handler below on the base index
+	 * (0xff = the corded wheel itself, as seen on every base GET
+	 * response and broadcast in the captures).
+	 */
+	if (data[1] != 0xff)
 		return 0;
 
 	/*
@@ -7645,8 +7669,14 @@ static ssize_t wheel_compat_gain_store(struct device *dev,
 	ret = wheel_strength_store(dev, attr, pct, strlen(pct));
 	if (ret < 0)
 		return ret;
-	/* Keep the exact raw value rather than the percent rounding. */
-	ff->strength = val;
+	/*
+	 * wheel_strength_store already set ff->strength to the value it
+	 * actually sent (percent -> u16). Leave it at that: caching the
+	 * caller's exact raw value here would disagree with the hardware
+	 * and with what the next settings re-query reads back, making
+	 * Oversteer see a phantom external change. The <=0.15% rounding
+	 * is below Oversteer's percent display resolution.
+	 */
 	return count;
 }
 
@@ -10391,6 +10421,14 @@ static ssize_t wheel_profile_names_show(struct device *dev,
 		char name[17];
 		int ret, n;
 
+		/*
+		 * Zero the response first: on a SHORT/LONG reply only the
+		 * first few params bytes are received, and the device-
+		 * reported length byte is untrusted. Without this, a length
+		 * spanning unreceived bytes would emit stale stack contents
+		 * through this world-readable attribute (infoleak).
+		 */
+		memset(&response, 0, sizeof(response));
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile,
 						  0x30 /* fn3 getProfileName */,
 						  params, 1, &response);
