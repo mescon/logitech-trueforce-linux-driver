@@ -669,6 +669,16 @@ static inline bool hidpp_match_answer(struct hidpp_report *question,
 		struct hidpp_report *answer)
 {
 	/*
+	 * Answers always echo the device index of the question. Without
+	 * this check a question addressed to the base device (0xff) can be
+	 * "answered" by a late or unsolicited report from a sub-device
+	 * (RS50: 0x01 display / 0x02 pedal base / 0x05 motor) that happens
+	 * to share the feature index and function nibble.
+	 */
+	if (answer->device_index != question->device_index)
+		return false;
+
+	/*
 	 * Some devices (e.g., RS50 racing wheel) don't echo back the software
 	 * ID in the response's funcindex_clientid field - they only return
 	 * the function index in the upper nibble, leaving the lower nibble
@@ -689,7 +699,8 @@ static inline bool hidpp_match_answer(struct hidpp_report *question,
 static inline bool hidpp_match_error(struct hidpp_report *question,
 		struct hidpp_report *answer)
 {
-	return ((answer->rap.sub_id == HIDPP_ERROR) ||
+	return (answer->device_index == question->device_index) &&
+	    ((answer->rap.sub_id == HIDPP_ERROR) ||
 	    (answer->fap.feature_index == HIDPP20_ERROR)) &&
 	    (answer->fap.funcindex_clientid == question->fap.feature_index) &&
 	    (answer->fap.params[0] == question->fap.funcindex_clientid);
@@ -5201,6 +5212,21 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	spin_unlock_irqrestore(&ff->effects_lock, flags);
 
 	/*
+	 * Apply FF_GAIN to the game-effect sum HERE (it used to live in
+	 * rs50_ff_send_force) so the autocenter term below stays
+	 * gain-independent: hardware autocenter on other wheels is not
+	 * scaled by the game's gain, and a game that exits leaving
+	 * FF_GAIN low must not silently disable the user's centring
+	 * spring.
+	 */
+	{
+		u16 gain = READ_ONCE(ff->gain);
+
+		if (gain != 0xFFFF)
+			force = (s32)(((s64)force * gain) / 0xFFFF);
+	}
+
+	/*
 	 * Emulated autocenter: a centring spring summed on top of any
 	 * game effects, active while the sysfs/evdev autocenter value is
 	 * nonzero (raw 0-65535; the evdev FF_AUTOCENTER scale). Gated on
@@ -5208,7 +5234,7 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	 * reads 0 ("hard left") and an ungated spring would yank an
 	 * untouched wheel. Damped with the same coefficient-proportional
 	 * term as emulated FF_SPRING so it cannot ring the direct-drive
-	 * motor.
+	 * motor. Deliberately added AFTER the gain scaling above.
 	 */
 	{
 		u16 ac = READ_ONCE(ff->autocenter);
@@ -5279,7 +5305,6 @@ static void rs50_ff_send_force(struct rs50_ff_data *ff, s32 force)
 {
 	struct rs50_ff_work *ff_work;
 	int pending;
-	u16 gain;
 
 	if (!ff || atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
@@ -5302,11 +5327,11 @@ static void rs50_ff_send_force(struct rs50_ff_data *ff, s32 force)
 		return;
 	}
 
-	/* Apply FF_GAIN (u16, 0xFFFF = 100%) before the clamp+cast. */
-	gain = READ_ONCE(ff->gain);
-	if (gain != 0xFFFF)
-		force = (s32)(((s64)force * gain) / 0xFFFF);
-
+	/*
+	 * FF_GAIN is applied by the caller (the effect timer scales the
+	 * game-effect sum before adding the gain-independent autocenter
+	 * term); this function sends the force as given.
+	 */
 	ff_work->force = rs50_force_to_offset_binary(force);
 	ff_work->ff_data = ff;
 	ff_work->raw = false;
@@ -5987,6 +6012,8 @@ static void rs50_ff_range_maybe_restore(struct rs50_ff_data *ff)
 
 	if (!want)
 		return;
+	if (atomic_read_acquire(&ff->stopping))
+		return;
 	if (!READ_ONCE(ff->range_restore)) {
 		hid_dbg(hidpp->hid_dev, "RS50: range restore skipped (disabled)\n");
 		return;
@@ -6032,6 +6059,13 @@ static void rs50_ff_range_maybe_restore(struct rs50_ff_data *ff)
 		return;
 	}
 	msleep(50);
+	/*
+	 * Teardown may have started during the sleep; each further sync
+	 * send would then ride its full timeout against a dead device and
+	 * stall the workqueue flush in rs50_ff_destroy.
+	 */
+	if (atomic_read_acquire(&ff->stopping))
+		return;
 	if (rs50_ff_read_encoder(ff, &p2))
 		return;
 	if (abs((int)p2 - (int)p1) > 200) {
@@ -10422,6 +10456,14 @@ static ssize_t wheel_profile_names_show(struct device *dev,
 		int ret, n;
 
 		/*
+		 * Re-check between slots: teardown can start mid-loop, and
+		 * each remaining sync send would then ride its full timeout
+		 * against a dead device (5 slots back to back).
+		 */
+		if (atomic_read_acquire(&ff->stopping))
+			return -ENODEV;
+
+		/*
 		 * Zero the response first: on a SHORT/LONG reply only the
 		 * first few params bytes are received, and the device-
 		 * reported length byte is untrusted. Without this, a length
@@ -10974,6 +11016,20 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 	atomic_set_release(&ff->stopping, 1);
 
 	/*
+	 * Remove the sysfs surface EARLY, right after stopping is set:
+	 * sysfs_remove_group waits out any in-flight attribute handler,
+	 * and once it returns no new handler can run. Several stores can
+	 * re-arm the effect timer (wheel_autocenter_store) or queue work
+	 * (profile/mode stores) - removing the group before the timer
+	 * deletes and workqueue teardown below closes the window where a
+	 * store that passed its stopping check pre-teardown re-arms a
+	 * timer after the final timer_delete_sync (which would then fire
+	 * on freed memory). Previously the group was removed AFTER the
+	 * last timer delete, which the FFB.F4 double-delete did not cover.
+	 */
+	sysfs_remove_group(&hidpp->hid_dev->dev.kobj, &rs50_wheel_group);
+
+	/*
 	 * NOTE: We do NOT access ff->input->ff->private here because
 	 * ff->input may already be freed if interface 0 was removed first.
 	 * The input->ff->private pointer is handled in hidpp_remove()
@@ -10986,6 +11042,27 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 	 * cancel timers/work so late callbacks see the NULL and bail.
 	 */
 	ff_hdev_cached = ff->ff_hdev;
+
+	/*
+	 * Invalidate interface 0's cached copy of the shared ff pointer
+	 * BEFORE this struct is freed: rs50_process_pedals caches ff into
+	 * the input interface's hidpp->private_data, and if that iface
+	 * stays bound while the owner is torn down, its 500 Hz raw-event
+	 * path would keep writing wheel_pos through a dangling pointer.
+	 * The owner's own private_data was already NULLed above, so a
+	 * concurrent report that re-walks the siblings finds nothing and
+	 * cannot re-cache.
+	 */
+	if (ff->input && ff->input->dev.parent) {
+		struct hid_device *in_hdev =
+			to_hid_device(ff->input->dev.parent);
+		struct hidpp_device *in_hidpp =
+			in_hdev ? hid_get_drvdata(in_hdev) : NULL;
+
+		if (in_hidpp && in_hidpp != hidpp &&
+		    READ_ONCE(in_hidpp->private_data) == (void *)ff)
+			WRITE_ONCE(in_hidpp->private_data, NULL);
+	}
 
 	/*
 	 * Clear cross-interface pointers using WRITE_ONCE so timer callback
@@ -11028,9 +11105,6 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 	 * such late re-arm is gone before we destroy the workqueue and kfree.
 	 */
 	timer_delete_sync(&ff->effect_timer);
-
-	hid_dbg(hid, "RS50: Removing sysfs attributes\n");
-	sysfs_remove_group(&hidpp->hid_dev->dev.kobj, &rs50_wheel_group);
 
 	hid_dbg(hid, "RS50: Destroying workqueue\n");
 	/*
@@ -13724,6 +13798,22 @@ static void hidpp_remove(struct hid_device *hdev)
 	 */
 	if (hidpp->quirks & HIDPP_QUIRK_RS50_FFB) {
 		ff = READ_ONCE(hidpp->private_data);
+		/*
+		 * Only the OWNER takes the full-teardown path. Interface 0
+		 * also carries a non-NULL private_data these days - the
+		 * pedal/steering raw-event path caches the shared ff there
+		 * (rs50_process_pedals) - and letting it in here made its
+		 * removal set the global stopping flag (killing FFB for a
+		 * still-alive owner) and run an unbalanced hid_hw_close on
+		 * itself (ff->hid_open tracks the OWNER's hid_hw_open from
+		 * deferred init, not ours). Non-owners with a cached pointer
+		 * just drop the cache and fall into the input-interface
+		 * branch below.
+		 */
+		if (ff && ff->owner_hidpp != hidpp) {
+			WRITE_ONCE(hidpp->private_data, NULL);
+			ff = NULL;
+		}
 		if (ff) {
 			/* Signal shutdown immediately */
 			atomic_set_release(&ff->stopping, 1);
