@@ -43,7 +43,9 @@ printf "blacklist hid-logitech-hidpp\nblacklist hid-logitech\n" | sudo tee /etc/
 sudo depmod -a
 sudo modprobe -r hid-logitech-hidpp 2>/dev/null; sudo modprobe hid-logitech-hidpp
 # replug the wheel's USB cable, then:
-sudo dmesg | grep -i rs50   # expect: "RS50: Force feedback initialized"
+sudo dmesg | grep -iE 'rs50|g pro'   # expect: "... Force feedback initialized"
+# (log lines are tagged with your wheel model: "RS50 (native):",
+#  "RS50 (G PRO compatibility mode):", or "G PRO:")
 ```
 
 > **Safety**: this is a direct-drive wheel producing up to 8 Nm. Keep
@@ -127,7 +129,7 @@ if you ever do, that is a bug we want reported.
 | A game stops seeing the wheel / hangs loading after the driver was reloaded | Quit the game, **restart Steam completely**, relaunch |
 | Steering feels off-center | Hold the rim physically straight, then `echo 1 > "$H/wheel_calibrate_here"` |
 | Rumble shakes the steering instead of buzzing the rim | Check `cat "$H/wheel_texture_route"` says `tf` (texture belongs on the haptic channel) |
-| Reporting a bug | Include `dmesg | grep -i rs50` and `cat "$H/wheel_firmware"` output |
+| Reporting a bug | Include `dmesg | grep -iE 'rs50|g pro'` and `cat "$H/wheel_firmware"` output |
 
 More in the README's Troubleshooting section. Settings reference:
 `docs/SYSFS_API.md`.

@@ -126,8 +126,8 @@ snapshot() {
 		echo "=== modinfo version ==="
 		modinfo -F version hid-logitech-hidpp 2>/dev/null || echo "(unknown)"
 		echo
-		echo "=== recent RS50 dmesg ==="
-		dmesg --since '60 seconds ago' 2>/dev/null | grep -E 'RS50|hidpp|046d' | tail -30 || true
+		echo "=== recent wheel dmesg ==="
+		dmesg --since '60 seconds ago' 2>/dev/null | grep -E 'RS50|G PRO|hidpp|046d' | tail -30 || true
 	} > "$out"
 }
 

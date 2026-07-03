@@ -116,7 +116,7 @@ tested on that exact model) · — not applicable.
 | Mode / profile switching | ✅ | 🟢 |
 
 The RS50 is the development hardware, so its column is verified directly.
-A real G PRO runs the **same `rs50_ff_*` code path** as an RS50 in G PRO
+A real G PRO runs the **same `hidpp_dd_ff_*` code path** as an RS50 in G PRO
 compatibility mode (which *is* verified), so it is expected to work; we
 just do not have one to confirm against. **G920 / G923** keep working as
 a drop-in through the inherited upstream HID++ `0x8123` FFB path, but the
@@ -320,8 +320,9 @@ the SDK DLL installation into your wine prefixes.
    sudo modprobe hid-logitech-hidpp
    ```
    Physically unplug then replug the wheel's USB cable (or reboot).
-   `dmesg | grep -i rs50` should show `RS50: Force feedback
-   initialized`.
+   `dmesg | grep -i "force feedback"` should show
+   `Force feedback initialized`, prefixed with your wheel's model tag:
+   `RS50 (native):`, `RS50 (G PRO compatibility mode):`, or `G PRO:`.
 
 6. **Smoke test.**
    ```bash
@@ -644,7 +645,7 @@ In-repo references for users and contributors:
 - [`docs/SYSFS_API.md`](docs/SYSFS_API.md) - every `wheel_*` sysfs
   attribute, with examples and per-mode availability (native vs.
   compat).
-- [`docs/RS50_PROTOCOL_SPECIFICATION.md`](docs/RS50_PROTOCOL_SPECIFICATION.md) -
+- [`docs/PROTOCOL_SPECIFICATION.md`](docs/PROTOCOL_SPECIFICATION.md) -
   HID++ feature catalog for both native and compat modes, the
   dedicated-endpoint FFB protocol, and the G PRO compat-mode
   feature decoding.
@@ -731,9 +732,9 @@ The RS50 is a multi-interface USB device:
 | Interface Layout | Unified | 3 separate interfaces |
 | Max Rotation | 900° | 2700° |
 
-**Critical Implementation Detail:** The RS50 driver must initialize FFB only on Interface 1 (HID++), not Interface 0 (joystick). Interface 0 lacks HID++ support and attempting FFB initialization there causes joystick input to fail. The driver uses `HIDPP_QUIRK_RS50_FFB` to differentiate from the standard G920 code path.
+**Critical Implementation Detail:** The RS50 driver must initialize FFB only on Interface 1 (HID++), not Interface 0 (joystick). Interface 0 lacks HID++ support and attempting FFB initialization there causes joystick input to fail. The driver uses `HIDPP_QUIRK_DD_FFB` to differentiate from the standard G920 code path.
 
-See `docs/RS50_PROTOCOL_SPECIFICATION.md` for complete protocol documentation.
+See `docs/PROTOCOL_SPECIFICATION.md` for complete protocol documentation.
 
 ## Troubleshooting
 
@@ -766,7 +767,7 @@ in-kernel `hid-logitech-hidpp` is loaded instead of this fork - run
 1. Verify the driver is *bound to the wheel*, not just loaded:
    `ls /sys/class/hidraw/*/device/wheel_range` should list a path. If it
    does not, see "stuck on hid-generic" above.
-2. Check dmesg for errors: `dmesg | grep -i rs50`
+2. Check dmesg for errors: `dmesg | grep -iE 'rs50|g pro'`
 3. Ensure you're testing with a game/app that supports FFB
 
 ### FFB "pulls the wrong way" / wheel feels unstable under Wine/Proton

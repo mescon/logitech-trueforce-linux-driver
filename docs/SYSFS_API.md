@@ -108,7 +108,7 @@ On the G PRO PID (`046d:c272` / `046d:c268`) - both real G PRO and
 RS50-in-compat - the standard HID++ range feature is not advertised
 at the index the native code expects; the driver falls back to
 feature `0x8138` (index 0x18, fn 2) captured from G Hub. See
-`docs/RS50_PROTOCOL_SPECIFICATION.md` section 5.1. The fallback
+`docs/PROTOCOL_SPECIFICATION.md` section 5.1. The fallback
 write only takes effect while the wheel is in desktop mode; the
 wheel boots in onboard mode, so write `0` to `wheel_profile` first
 to enter desktop mode and have subsequent range writes take effect
@@ -183,7 +183,7 @@ echo 50 > wheel_strength
 
 Sets the wheel damping (resistance when turning).
 
-**Internal encoding**: The driver scales the 0-100 percentage to a 16-bit big-endian value (`value = percentage * 65535 / 100`) and writes it to page `0x8133` with SET fn=1. See `docs/RS50_PROTOCOL_SPECIFICATION.md` section 5.
+**Internal encoding**: The driver scales the 0-100 percentage to a 16-bit big-endian value (`value = percentage * 65535 / 100`) and writes it to page `0x8133` with SET fn=1. See `docs/PROTOCOL_SPECIFICATION.md` section 5.
 
 ```bash
 # Read current damping
@@ -269,7 +269,7 @@ echo 11 > wheel_ffb_filter
 
 Enables automatic FFB filter adjustment based on game output.
 
-The driver splits the two on-wire meanings of the filter flag byte across two sysfs writes: writing to `wheel_ffb_filter` stamps the "user set this level right now" bit, writing here toggles only the "auto mode" bit. See `docs/RS50_PROTOCOL_SPECIFICATION.md` section 5 (FFB Filter) for the bitfield decode.
+The driver splits the two on-wire meanings of the filter flag byte across two sysfs writes: writing to `wheel_ffb_filter` stamps the "user set this level right now" bit, writing here toggles only the "auto mode" bit. See `docs/PROTOCOL_SPECIFICATION.md` section 5 (FFB Filter) for the bitfield decode.
 
 ```bash
 # Enable auto filter
@@ -424,7 +424,7 @@ echo kf > wheel_texture_route   # A/B back to the legacy mixing
 Low-level primitive: writes the given raw 16-bit encoder value to adopt
 as the new centre. The driver sends `10 05 <idx> 3D <hi> <lo> 00` to
 HID++ sub-device `0x05`, feature page `0x812C` (see
-`docs/RS50_PROTOCOL_SPECIFICATION.md` section 5 for the wire format).
+`docs/PROTOCOL_SPECIFICATION.md` section 5 for the wire format).
 Verified on RS50 from `2026-04-22_re_calibrate.pcapng`.
 
 Use this only if you already have the raw encoder value you want to
@@ -465,7 +465,7 @@ The RS50 wheel base has 10 RGB LEDs arranged in a strip. The driver provides per
 
 > **G Pro**: the driver does not currently expose `wheel_led_*` attributes for the G Pro wheel; we haven't confirmed the LIGHTSYNC protocol matches byte-for-byte on that hardware yet. The feature is RS50-only for now.
 >
-> **G PRO PID (`046d:c272` / `046d:c268`)**: covers both real G PRO Racing Wheel and RS50-in-G-PRO-compat-mode. Both run through the same `rs50_ff_*` code path and expose the same sysfs surface. LIGHTSYNC works the same way as native RS50 - feature `0x807A` is advertised at the same index discovery picks up in native, and `wheel_led_*` writes drive the LED strip end-to-end (verified against the live wheel 2026-04-29). Wheel-config attributes that work via fallback feature paths (see `docs/RS50_PROTOCOL_SPECIFICATION.md` section 5.1): `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`, `wheel_ffb_filter`, `wheel_profile` (write `0` to enter desktop mode), and `wheel_calibrate`. The remaining attributes (`wheel_brake_force`, `wheel_ffb_filter_auto`, `wheel_sensitivity`) are unsupported by this firmware: once their mode gating is satisfied the store returns `-EOPNOTSUPP` (note `wheel_brake_force` still returns `-EPERM` in desktop mode and `wheel_sensitivity` in onboard mode before that check). For those, configure via the wheel's OLED menu or via Windows G Hub on a Windows host.
+> **G PRO PID (`046d:c272` / `046d:c268`)**: covers both real G PRO Racing Wheel and RS50-in-G-PRO-compat-mode. Both run through the same `hidpp_dd_ff_*` code path and expose the same sysfs surface. LIGHTSYNC works the same way as native RS50 - feature `0x807A` is advertised at the same index discovery picks up in native, and `wheel_led_*` writes drive the LED strip end-to-end (verified against the live wheel 2026-04-29). Wheel-config attributes that work via fallback feature paths (see `docs/PROTOCOL_SPECIFICATION.md` section 5.1): `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`, `wheel_ffb_filter`, `wheel_profile` (write `0` to enter desktop mode), and `wheel_calibrate`. The remaining attributes (`wheel_brake_force`, `wheel_ffb_filter_auto`, `wheel_sensitivity`) are unsupported by this firmware: once their mode gating is satisfied the store returns `-EOPNOTSUPP` (note `wheel_brake_force` still returns `-EPERM` in desktop mode and `wheel_sensitivity` in onboard mode before that check). For those, configure via the wheel's OLED menu or via Windows G Hub on a Windows host.
 
 ### LED Control Workflow
 
@@ -830,7 +830,7 @@ fi
 ## Protocol Details
 
 For developers interested in the HID++ protocol details, see:
-- `RS50_PROTOCOL_SPECIFICATION.md` - Full protocol documentation
+- `PROTOCOL_SPECIFICATION.md` - Full protocol documentation
 - `dev/docs/CAPTURE_ANALYSIS_*.md` - USB capture analysis
 
 ### Feature Pages Used

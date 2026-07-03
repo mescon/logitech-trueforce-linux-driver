@@ -214,9 +214,9 @@ a sine on TRUEFORCE while holding a constant-torque KF effect).
 Note on interfaces: on the G920-class HID++ path these PID reports are
 addressed to interface 1, but the **RS50 has no FFB OUT endpoint on
 interface 1**. The Linux driver actuates the RS50's constant force by
-writing to **interface 2 endpoint `0x03`** (the dedicated `rs50_ff_*`
+writing to **interface 2 endpoint `0x03`** (the dedicated `hidpp_dd_ff_*`
 path), the same interface TRUEFORCE uses; the two are still separated by
-report ID. See the RS50 FFB section of `RS50_PROTOCOL_SPECIFICATION.md`.
+report ID. See the RS50 FFB section of `PROTOCOL_SPECIFICATION.md`.
 
 ### Report 0x10 (7 bytes)
 

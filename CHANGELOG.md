@@ -7,7 +7,58 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
-(nothing yet)
+### Naming generalized to the whole direct-drive family
+
+- **dmesg lines are now tagged with the actual wheel model** instead
+  of a hardcoded `RS50:`: `RS50 (native):`, `RS50 (G PRO compatibility
+  mode):`, or `G PRO:`, resolved from the bound identity at log time.
+  The RS50 spoofs the G PRO product ID in compatibility mode but keeps
+  its own USB product string (verified live); a real G PRO reports
+  "PRO Racing Wheel" (verified from contributor captures) - so the
+  compat tag doubles as a mode indicator when debugging.
+- Driver symbols renamed `rs50_*` -> `hidpp_dd_*` ("dd" = direct
+  drive), quirk `HIDPP_QUIRK_RS50_FFB` -> `HIDPP_QUIRK_DD_FFB`. No
+  functional change; no sysfs name changes (those were already
+  generic).
+- User-facing artifacts renamed: udev rule
+  `70-logitech-rs50.rules` -> `70-logitech-trueforce.rules`
+  (`dkms-update.sh` removes the old installed filename),
+  `oversteer-rs50-support.patch` -> `oversteer-logitech-trueforce.patch`,
+  `docs/RS50_PROTOCOL_SPECIFICATION.md` ->
+  `docs/PROTOCOL_SPECIFICATION.md` (redirect stub kept).
+
+### Fixed
+
+- **udev permissions race**: the permissions rule fires on the hidraw
+  "add" event, which is emitted before probe creates the `wheel_*` /
+  compat attribute files, so a plug or driver load could leave the
+  settings root-only until a manual `udevadm trigger`. The driver now
+  emits a "change" uevent after creating its sysfs group so udev
+  replays the rule with the files present.
+- **Teardown and concurrency fixes** from adversarial review:
+  HID++ answers are matched to questions by device index (a late
+  sub-device reply can no longer satisfy a base-device wait and vice
+  versa); the wheel sysfs group is removed at the start of teardown,
+  closing a window where a store could re-arm the effect timer after
+  the final delete (use-after-free); interface 0 no longer takes the
+  owner teardown path via its cached FF pointer, and the owner
+  invalidates that cache before freeing (use-after-free on partial
+  unbind); sysfs handlers and the range-restore worker re-check the
+  teardown flag between sync HID++ sends (teardown could stall for
+  the full send-timeout multiple).
+- **Autocenter is now independent of the game's FF_GAIN**: gain is
+  applied to the summed game effects only, then the autocenter spring
+  is added - a leftover low gain from a game no longer silently kills
+  the user's centring force (matches hardware-autocenter semantics on
+  other wheels).
+
+### Oversteer
+
+- The bundled Oversteer patch now unlocks the full settings set
+  (`gain`, `autocenter`, `spring_level`/`damper_level`/
+  `friction_level`, `combine_pedals`) for both G PRO product IDs, not
+  just `range` - real G PRO owners get the same Oversteer integration
+  as the RS50.
 
 ## 0.10.0 - 2026-07-03
 
