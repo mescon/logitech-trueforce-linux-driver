@@ -53,7 +53,11 @@ doctor() {
 	else
 		bad "hid_logitech_hidpp is not loaded (run: sudo ./tools/setup.sh)"
 	fi
-	if dkms status 2>/dev/null | grep -q '^hid-logitech-hidpp.*installed'; then
+	# No `grep -q` here: under `set -o pipefail`, -q exits on the first
+	# match (our module sorts first in dkms output), dkms catches SIGPIPE
+	# mid-print and the successful pipeline reports failure. Reading the
+	# full stream avoids the race.
+	if dkms status 2>/dev/null | grep '^hid-logitech-hidpp.*installed' >/dev/null; then
 		ok "DKMS package installed (survives kernel updates)"
 	else
 		wrn "no DKMS install found - a manually insmod'ed module will not survive a reboot or kernel update (run: sudo ./tools/setup.sh)"
