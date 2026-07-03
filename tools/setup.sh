@@ -18,7 +18,7 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BLACKLIST_FILE="/etc/modprobe.d/blacklist-hid-logitech-hidpp.conf"
-UDEV_DST="/etc/udev/rules.d/70-logitech-rs50.rules"
+UDEV_DST="/etc/udev/rules.d/70-logitech-trueforce.rules"
 WHEEL_PIDS="c276 c272 c268"
 # Steam appids of the Logitech-SDK sims for launch-option checks:
 #   ACC, AC EVO, AC, AMS2, Le Mans Ultimate, rFactor 2

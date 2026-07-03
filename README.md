@@ -286,7 +286,7 @@ the SDK DLL installation into your wine prefixes.
    - Registers the source under `/usr/src/hid-logitech-hidpp-1.0/`
      and runs `dkms install` so the kernel module rebuilds
      automatically on every kernel update.
-   - Installs `udev/70-logitech-rs50.rules`, which hands `wheel_*`
+   - Installs `udev/70-logitech-trueforce.rules`, which hands `wheel_*`
      sysfs and the wheel's hidraw nodes to your session user (no
      `sudo` needed for Oversteer or `echo > wheel_*`).
    - If `winegcc` is available **and** the SDK DLLs are staged
@@ -571,11 +571,16 @@ full round trip (detect, read settings, set range) is verified
 against a live wheel as of 2026-07-03. Upstreaming is planned; until
 merged, apply it manually.
 
-The patch (`oversteer-rs50-support.patch`) adds:
+The patch (`oversteer-logitech-trueforce.patch`) adds:
 - RS50 device detection (USB ID `046d:c276`)
-- 2700° rotation range support
+- 2700° rotation range support (range slider marks at 1800/2700)
 - Correct pedal axis mapping
-- udev permissions for non-root access
+- udev permissions for the full settings set (`gain`, `autocenter`,
+  `spring_level`/`damper_level`/`friction_level`, `combine_pedals`) on
+  the RS50 **and both G PRO variants** (`c268`/`c272`) - stock
+  Oversteer only unlocks `range` for the G PRO, so without the patch
+  the other controls stay greyed out even though this driver provides
+  them
 
 #### Applying the Patch
 
@@ -588,7 +593,7 @@ python3 -c "import oversteer; print(oversteer.__file__)"
 
 # Apply patch (adjust path as needed)
 cd /usr/lib/python3.x/site-packages/
-sudo patch -p1 < /path/to/oversteer-rs50-support.patch
+sudo patch -p1 < /path/to/oversteer-logitech-trueforce.patch
 ```
 
 **Option 2: From git source**
@@ -596,7 +601,7 @@ sudo patch -p1 < /path/to/oversteer-rs50-support.patch
 ```bash
 git clone https://github.com/berarma/oversteer.git
 cd oversteer
-git apply /path/to/oversteer-rs50-support.patch
+git apply /path/to/oversteer-logitech-trueforce.patch
 sudo pip install .
 ```
 

@@ -1,13 +1,26 @@
 diff --git a/data/udev/99-logitech-wheel-perms.rules b/data/udev/99-logitech-wheel-perms.rules
-index 9207c2f..acea14d 100644
+index 9207c2f..af3d6a3 100644
 --- a/data/udev/99-logitech-wheel-perms.rules
 +++ b/data/udev/99-logitech-wheel-perms.rules
+@@ -13,10 +13,10 @@ DRIVER=="logitech", GOTO="logitech-driver"
+ DRIVER!="logitech-hidpp-device", GOTO="end"
+ 
+ # Logitech G PRO Racing Wheel for PlayStation and PC
+-ATTRS{idProduct}=="c268", RUN+="/bin/sh -c 'cd %S%p; chmod 666 range leds/*/brightness; chmod 777 leds/ leds/*'"
++ATTRS{idProduct}=="c268", RUN+="/bin/sh -c 'cd %S%p; chmod 666 range gain autocenter combine_pedals spring_level damper_level friction_level leds/*/brightness; chmod 777 leds/ leds/*'"
+ 
+ # Logitech G PRO Racing Wheel for Xbox One and PC
+-ATTRS{idProduct}=="c272", RUN+="/bin/sh -c 'cd %S%p; chmod 666 range leds/*/brightness; chmod 777 leds/ leds/*'"
++ATTRS{idProduct}=="c272", RUN+="/bin/sh -c 'cd %S%p; chmod 666 range gain autocenter combine_pedals spring_level damper_level friction_level leds/*/brightness; chmod 777 leds/ leds/*'"
+ 
+ # Logitech G923 Racing Wheel for Xbox One and PC
+ ATTRS{idProduct}=="c26e", RUN+="/bin/sh -c 'cd %S%p; chmod 666 range leds/*/brightness; chmod 777 leds/ leds/*'"
 @@ -24,6 +24,9 @@ ATTRS{idProduct}=="c26e", RUN+="/bin/sh -c 'cd %S%p; chmod 666 range leds/*/brig
  # Logitech G920 Driving Force Racing Wheel
  ATTRS{idProduct}=="c262", RUN+="/bin/sh -c 'cd %S%p; chmod 666 range'"
  
 +# Logitech RS50 Base for PlayStation/PC
-+ATTRS{idProduct}=="c276", RUN+="/bin/sh -c 'cd %S%p; chmod 666 range gain autocenter combine_pedals damper_level'"
++ATTRS{idProduct}=="c276", RUN+="/bin/sh -c 'cd %S%p; chmod 666 range gain autocenter combine_pedals spring_level damper_level friction_level'"
 +
  GOTO="end"
  

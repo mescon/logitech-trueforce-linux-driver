@@ -19,8 +19,8 @@ VER="1.0"
 SRC_DIR="/usr/src/${PKG}-${VER}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_SRC="$REPO_ROOT/mainline"
-UDEV_SRC="$REPO_ROOT/udev/70-logitech-rs50.rules"
-UDEV_DST="/etc/udev/rules.d/70-logitech-rs50.rules"
+UDEV_SRC="$REPO_ROOT/udev/70-logitech-trueforce.rules"
+UDEV_DST="/etc/udev/rules.d/70-logitech-trueforce.rules"
 
 if [ "$EUID" -ne 0 ]; then
 	echo "error: run as root (sudo $0)" >&2
@@ -68,6 +68,9 @@ dkms install -m "$PKG" -v "$VER"
 # not just root. Without this every Oversteer knob and every echo >
 # wheel_* needs sudo.
 if [ -f "$UDEV_SRC" ]; then
+	# Pre-rename installs used this filename; drop it so the rules
+	# don't run twice.
+	rm -f /etc/udev/rules.d/70-logitech-rs50.rules
 	if ! cmp -s "$UDEV_SRC" "$UDEV_DST" 2>/dev/null; then
 		echo "== installing udev rule to $UDEV_DST =="
 		install -m 0644 "$UDEV_SRC" "$UDEV_DST"

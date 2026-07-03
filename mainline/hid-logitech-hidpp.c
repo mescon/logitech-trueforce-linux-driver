@@ -15,6 +15,7 @@
 #include <linux/input.h>
 #include <linux/usb.h>
 #include <linux/hid.h>
+#include <linux/hidraw.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
@@ -10629,6 +10630,30 @@ static int rs50_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 	return 0;
 }
 
+/*
+ * Replay udev rules now that the wheel_* / compat sysfs attributes exist.
+ *
+ * The permissions rule (udev/70-logitech-trueforce.rules) RUNs a chmod/chgrp
+ * over the attribute files when the hidraw device appears. That "add"
+ * uevent is emitted from hid_connect(), BEFORE probe reaches the
+ * sysfs_create_group() calls below, so udev can (and in practice does)
+ * execute the RUN while the files don't exist yet, leaving them
+ * root-only until a manual `udevadm trigger`. Emitting a "change"
+ * uevent on the hidraw device after the group is in place makes udev
+ * run the rule a second time with the files present. udev serialises
+ * events per device, so this cannot race the original "add".
+ */
+static void rs50_sysfs_uevent_replay(struct hid_device *hid)
+{
+#if IS_ENABLED(CONFIG_HIDRAW)
+	/* hid_device.hidraw is declared void * (opaque outside hidraw.c) */
+	struct hidraw *hidraw = hid->hidraw;
+
+	if (hidraw && hidraw->dev)
+		kobject_uevent(&hidraw->dev->kobj, KOBJ_CHANGE);
+#endif
+}
+
 /* -------------------------------------------------------------------------- */
 /* G Pro Racing Wheel: sysfs settings (reuses rs50_ff_data for settings only) */
 /* -------------------------------------------------------------------------- */
@@ -10750,6 +10775,8 @@ static int gpro_sysfs_init(struct hidpp_device *hidpp)
 	ret = sysfs_create_group(&hid->dev.kobj, &gpro_wheel_group);
 	if (ret)
 		hid_warn(hid, "G Pro: sysfs group creation failed: %d\n", ret);
+	else
+		rs50_sysfs_uevent_replay(hid);
 
 	hid_info(hid, "G Pro: Settings initialized\n");
 	return 0;
@@ -10958,6 +10985,8 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	ret = sysfs_create_group(&hid->dev.kobj, &rs50_wheel_group);
 	if (ret)
 		hid_warn(hid, "RS50: sysfs group creation failed: %d\n", ret);
+	else
+		rs50_sysfs_uevent_replay(hid);
 
 	/*
 	 * Schedule deferred initialization with event-based retry.
