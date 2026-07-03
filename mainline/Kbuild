@@ -8,7 +8,7 @@ obj-m := hid-logitech-hidpp.o
 #      (in-tree developer build via `make` on the repo)
 #   3. literal "unknown" so the build still succeeds for tarballs etc.
 GIT_HASH := $(shell cat $(src)/.git_hash 2>/dev/null || git -C $(src) rev-parse --short HEAD 2>/dev/null || echo unknown)
-ccflags-y += -DRS50_GIT_HASH=\"$(GIT_HASH)\"
+ccflags-y += -DHIDPP_DD_GIT_HASH=\"$(GIT_HASH)\"
 
 # hid_report_raw_event() gained a `size_t bufsize` parameter in
 # "HID: pass the buffer size to hid_report_raw_event" (mainline v7.1, and -

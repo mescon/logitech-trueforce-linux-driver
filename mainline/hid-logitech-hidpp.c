@@ -67,21 +67,56 @@
 	to_usb_device((hid_dev)->dev.parent->parent)
 #endif
 #include "hid-ids.h"
-#include "rs50_tf_init.h"
 
 /*
- * Build-time identifier supplied by Kbuild (-DRS50_GIT_HASH=...). Falls
+ * Model tag for kernel log messages, resolved from the bound identity.
+ *
+ * Every wheel of the direct-drive (DD) family shares one code path, so
+ * a hardcoded model name in log strings would lie on half the hardware.
+ * The RS50 in G PRO compatibility mode spoofs the G PRO product ID but
+ * keeps its own USB product string ("RS50 Base for PlayStation/PC",
+ * verified live), while a real G PRO reports "PRO Racing Wheel"
+ * (verified from contributor captures on real hardware), so the
+ * substring check below separates the two reliably.
+ */
+static const char *dd_wheel_name(struct hid_device *hdev)
+{
+	switch (hdev->product) {
+	case USB_DEVICE_ID_LOGITECH_RS50:
+		return "RS50 (native)";
+	case USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL:
+	case USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL:
+		if (strstr(hdev->name, "RS50"))
+			return "RS50 (G PRO compatibility mode)";
+		return "G PRO";
+	default:
+		return "DD wheel";
+	}
+}
+
+#define dd_info(hdev, fmt, ...) \
+	hid_info(hdev, "%s: " fmt, dd_wheel_name(hdev), ##__VA_ARGS__)
+#define dd_warn(hdev, fmt, ...) \
+	hid_warn(hdev, "%s: " fmt, dd_wheel_name(hdev), ##__VA_ARGS__)
+#define dd_err(hdev, fmt, ...) \
+	hid_err(hdev, "%s: " fmt, dd_wheel_name(hdev), ##__VA_ARGS__)
+#define dd_dbg(hdev, fmt, ...) \
+	hid_dbg(hdev, "%s: " fmt, dd_wheel_name(hdev), ##__VA_ARGS__)
+#include "hidpp_dd_tf_init.h"
+
+/*
+ * Build-time identifier supplied by Kbuild (-DHIDPP_DD_GIT_HASH=...). Falls
  * back to "unknown" so the module still builds when the source dir is
  * neither a git checkout nor stamped by tools/dkms-update.sh (e.g.
  * tarball install).
  */
-#ifndef RS50_GIT_HASH
-#define RS50_GIT_HASH "unknown"
+#ifndef HIDPP_DD_GIT_HASH
+#define HIDPP_DD_GIT_HASH "unknown"
 #endif
 
 MODULE_DESCRIPTION("Support for Logitech devices relying on the HID++ specification");
 MODULE_LICENSE("GPL");
-MODULE_VERSION(RS50_GIT_HASH);
+MODULE_VERSION(HIDPP_DD_GIT_HASH);
 MODULE_AUTHOR("Benjamin Tissoires <benjamin.tissoires@gmail.com>");
 MODULE_AUTHOR("Nestor Lopez Casado <nlopezcasad@logitech.com>");
 MODULE_AUTHOR("Bastien Nocera <hadess@hadess.net>");
@@ -103,7 +138,7 @@ MODULE_PARM_DESC(disable_tap_to_click,
  *   1 = dry-run: inject descriptor, install override, LOG every PID output
  *       report we receive, but do NOT drive the wheel. Lets us observe
  *       what Wine actually writes before we trust our translations.
- *   2 = actuate: full translation, calls rs50_ff_upload/playback to drive
+ *   2 = actuate: full translation, calls hidpp_dd_ff_upload/playback to drive
  *       the wheel via interface 2.
  *
  * Dry-run exists specifically so we can bring this up on a live wheel
@@ -112,7 +147,7 @@ MODULE_PARM_DESC(disable_tap_to_click,
 static uint inject_pid;
 module_param(inject_pid, uint, 0644);
 MODULE_PARM_DESC(inject_pid,
-	"PID injection on interface 0 of RS50-class wheels: 0=off (default), 1=dry-run (log only), 2=actuate (drive the wheel).");
+	"PID injection on interface 0 of direct-drive (RS50/G PRO) wheels: 0=off (default), 1=dry-run (log only), 2=actuate (drive the wheel).");
 
 /* Define a non-zero software ID to identify our own requests */
 #define LINUX_KERNEL_SW_ID			0x01
@@ -152,7 +187,7 @@ MODULE_PARM_DESC(inject_pid,
 #define HIDPP_QUIRK_HI_RES_SCROLL_1P0		BIT(28)
 #define HIDPP_QUIRK_WIRELESS_STATUS		BIT(29)
 #define HIDPP_QUIRK_RESET_HI_RES_SCROLL		BIT(30)
-#define HIDPP_QUIRK_RS50_FFB			BIT(31)
+#define HIDPP_QUIRK_DD_FFB			BIT(31)
 
 /* These are just aliases for now */
 #define HIDPP_QUIRK_KBD_SCROLL_WHEEL HIDPP_QUIRK_HIDPP_WHEELS
@@ -256,7 +291,7 @@ struct hidpp_scroll_counter {
 	unsigned long long last_time;
 };
 
-struct rs50_pid_state;	/* defined later, PID injection translator */
+struct hidpp_dd_pid_state;	/* defined later, PID injection translator */
 
 struct hidpp_device {
 	struct hid_device *hid_dev;
@@ -294,19 +329,19 @@ struct hidpp_device {
 	 * Scratch buffer for the PID-injected interface-0 descriptor. Filled
 	 * in hidpp_report_fixup when inject_pid=1; devm-allocated on hdev so
 	 * it lives as long as hdev does. NULL means no injection happened
-	 * on this device. See rs50_pid_rdesc.
+	 * on this device. See hidpp_dd_pid_rdesc.
 	 */
 	u8 *pid_fixup_buf;
 
 	/*
 	 * Per-device PID translator state, kept here (rather than via
 	 * private_data) because interface 0 of RS50-in-compat-mode also
-	 * has HIDPP_QUIRK_RS50_FFB set and that quirk's existing teardown
-	 * path assumes private_data points at rs50_ff_data. Using a
+	 * has HIDPP_QUIRK_DD_FFB set and that quirk's existing teardown
+	 * path assumes private_data points at hidpp_dd_ff_data. Using a
 	 * dedicated field keeps the two concerns independent. devm-
-	 * allocated on hdev; cleared by rs50_pid_uninstall on teardown.
+	 * allocated on hdev; cleared by hidpp_dd_pid_uninstall on teardown.
 	 */
-	struct rs50_pid_state *pid_state;
+	struct hidpp_dd_pid_state *pid_state;
 };
 
 /* HID++ 1.0 error codes */
@@ -371,7 +406,7 @@ static int __hidpp_send_report(struct hid_device *hdev,
 		ret = hid_hw_output_report(hdev, (u8 *)hidpp_report, fields_count);
 		/*
 		 * RS50 in G Pro compatibility mode (PID c272/c268 with the
-		 * RS50_FFB quirk promoted) inherits the FORCE_OUTPUT_REPORTS
+		 * HIDPP_DD_FFB quirk promoted) inherits the FORCE_OUTPUT_REPORTS
 		 * quirk from the G Pro id-table entry but has no interrupt
 		 * OUT endpoint on interface 1, so usbhid_output_report
 		 * returns -ENOSYS. Mirror the fallback hidraw_write does in
@@ -502,9 +537,9 @@ static int hidpp_send_message_sync(struct hidpp_device *hidpp,
  *
  * A handful of exceptions carry a real value in byte 2:
  *   - FFB filter SET writes auto / explicit flags in byte 0 and the
- *     filter level in byte 2 (see rs50_ff_write_filter).
+ *     filter level in byte 2 (see hidpp_dd_ff_write_filter).
  *   - LIGHTSYNC SETs pack type / direction / commit markers into the
- *     tail of the short message (see rs50_lightsync_apply_slot).
+ *     tail of the short message (see hidpp_dd_lightsync_apply_slot).
  * Those sites assign byte 2 explicitly and document the value inline.
  *
  * Canonical HID++ error handler for the RS50 / G Pro settings paths.
@@ -522,10 +557,10 @@ static int hidpp_errno(struct hid_device *hid, int ret, const char *op)
 	if (ret == 0)
 		return 0;
 	if (ret > 0) {
-		hid_err(hid, "RS50: HID++ error 0x%02x on %s\n", ret, op);
+		dd_err(hid, "HID++ error 0x%02x on %s\n", ret, op);
 		return -EIO;
 	}
-	hid_err(hid, "RS50: Failed to %s: %d\n", op, ret);
+	dd_err(hid, "Failed to %s: %d\n", op, ret);
 	return ret;
 }
 
@@ -561,7 +596,7 @@ static int hidpp_send_fap_command_sync(struct hidpp_device *hidpp,
 	 * reports and only responds to SHORT. It always responds with VERY_LONG
 	 * (0x12) regardless of input report type. Use SHORT when possible.
 	 */
-	if ((hidpp->quirks & HIDPP_QUIRK_RS50_FFB) &&
+	if ((hidpp->quirks & HIDPP_QUIRK_DD_FFB) &&
 	    param_count <= (HIDPP_REPORT_SHORT_LENGTH - 4))
 		message->report_id = REPORT_ID_HIDPP_SHORT;
 	else if (param_count > (HIDPP_REPORT_LONG_LENGTH - 4))
@@ -3991,15 +4026,15 @@ static void hidpp_ff_retry_work(struct work_struct *work)
  * FFB commands are sent via a workqueue to avoid blocking in callback context.
  */
 
-#define RS50_FF_REPORT_ID		0x01
-#define RS50_FF_EFFECT_CONSTANT		0x01
-#define RS50_FF_REPORT_SIZE		64
-#define RS50_INPUT_REPORT_SIZE		30	/* Interface 0 joystick report */
+#define HIDPP_DD_FF_REPORT_ID		0x01
+#define HIDPP_DD_FF_EFFECT_CONSTANT		0x01
+#define HIDPP_DD_FF_REPORT_SIZE		64
+#define HIDPP_DD_INPUT_REPORT_SIZE		30	/* Interface 0 joystick report */
 
 /* RS50 FFB refresh command (sent periodically to maintain FFB state) */
-#define RS50_FF_REFRESH_ID		0x05
-#define RS50_FF_REFRESH_CMD		0x07
-#define RS50_FF_REFRESH_INTERVAL_MS	20000	/* 20 seconds */
+#define HIDPP_DD_FF_REFRESH_ID		0x05
+#define HIDPP_DD_FF_REFRESH_CMD		0x07
+#define HIDPP_DD_FF_REFRESH_INTERVAL_MS	20000	/* 20 seconds */
 
 /*
  * In-kernel TrueForce texture channel (KF/TF separation, issue #8).
@@ -4007,7 +4042,7 @@ static void hidpp_ff_retry_work(struct work_struct *work)
  * The wheel's interface-2 type-0x01 report carries BOTH force channels,
  * demultiplexed by byte 10 ("new samples this packet"):
  *   - byte10 = 0: plain constant-force (KF) update - the force in the
- *     bytes 6-9 preamble is held. This is what struct rs50_ff_report has
+ *     bytes 6-9 preamble is held. This is what struct hidpp_dd_ff_report has
  *     always sent; our steering stream is a TrueForce stream with an
  *     empty sample window.
  *   - byte10 = 4: audio-stream (TF) packet - bytes 12..63 carry a
@@ -4024,49 +4059,49 @@ static void hidpp_ff_retry_work(struct work_struct *work)
  * modulates ("grits") the steering axis.
  *
  * The TF session needs a one-time init: the 68-packet sequence in
- * rs50_tf_init.h sent twice (G Hub behaviour). We run it lazily from a
+ * hidpp_dd_tf_init.h sent twice (G Hub behaviour). We run it lazily from a
  * workqueue the first time a texture effect actually plays, so wheels
  * that never see texture effects never see TF traffic either.
  */
-#define RS50_TF_CMD_STREAM		0x01	/* audio window packet */
-#define RS50_TF_CMD_START		0x03	/* start / play */
-#define RS50_TF_CMD_STOP		0x04	/* stop / clear */
-#define RS50_TF_WINDOW			13	/* rolling window slots */
-#define RS50_TF_NEW_SAMPLES		4	/* new samples per packet */
-#define RS50_TF_FLAG_BYTE		0x0d	/* constant per captures */
+#define HIDPP_DD_TF_CMD_STREAM		0x01	/* audio window packet */
+#define HIDPP_DD_TF_CMD_START		0x03	/* start / play */
+#define HIDPP_DD_TF_CMD_STOP		0x04	/* stop / clear */
+#define HIDPP_DD_TF_WINDOW			13	/* rolling window slots */
+#define HIDPP_DD_TF_NEW_SAMPLES		4	/* new samples per packet */
+#define HIDPP_DD_TF_FLAG_BYTE		0x0d	/* constant per captures */
 /*
  * Crossover between "steering-shaping" and "texture" periodics: period
  * at or below this (>= 20 Hz) is texture and routes to TF; slower
  * periodic effects keep contributing to the steering force. FF_RUMBLE
  * is always texture.
  */
-#define RS50_TF_CROSSOVER_PERIOD_MS	50
+#define HIDPP_DD_TF_CROSSOVER_PERIOD_MS	50
 
 /* texture_route values */
-#define RS50_TEXTURE_ROUTE_KF		0	/* legacy: sum into steering */
-#define RS50_TEXTURE_ROUTE_TF		1	/* stream via TrueForce */
+#define HIDPP_DD_TEXTURE_ROUTE_KF		0	/* legacy: sum into steering */
+#define HIDPP_DD_TEXTURE_ROUTE_TF		1	/* stream via TrueForce */
 
 /* Hard-failure cap for the lazy TF session init before giving up. */
-#define RS50_TF_INIT_MAX_ATTEMPTS	3
+#define HIDPP_DD_TF_INIT_MAX_ATTEMPTS	3
 
 /*
  * RS50 HID++ feature PAGE IDs for wheel settings.
  * These are used with hidpp_root_get_feature() to discover the actual
  * feature indices, which vary per device. Never use hardcoded indices!
  */
-#define RS50_PAGE_BRIGHTNESS		0x8040	/* LED Brightness Control */
-#define RS50_PAGE_LIGHTSYNC		0x807A	/* LIGHTSYNC LED Effects */
-#define RS50_PAGE_RGB_CONFIG		0x807B	/* RGB Zone Config (LED color data) */
-#define RS50_PAGE_PROFILE_NOTIFY	0x80D0	/* Emits profile-change broadcast event */
-#define RS50_PAGE_DAMPING		0x8133	/* Wheel Damping */
-#define RS50_PAGE_BRAKEFORCE		0x8134	/* Brake Force Threshold */
-#define RS50_PAGE_STRENGTH		0x8136	/* FFB Strength */
-#define RS50_PAGE_PROFILE		0x8137	/* Profile Switching */
-#define RS50_PAGE_RANGE			0x8138	/* Rotation Range (emits rotation-change broadcast event) */
-#define RS50_PAGE_TRUEFORCE		0x8139	/* TRUEFORCE Bass Shaker */
-#define RS50_PAGE_FILTER		0x8140	/* FFB Filter */
-#define RS50_PAGE_CALIBRATE		0x812C	/* Centre calibration (G Pro sub-device 0x05) */
-#define RS50_PAGE_SYNC			0x1BC0	/* Unknown sync/prepare feature */
+#define HIDPP_DD_PAGE_BRIGHTNESS		0x8040	/* LED Brightness Control */
+#define HIDPP_DD_PAGE_LIGHTSYNC		0x807A	/* LIGHTSYNC LED Effects */
+#define HIDPP_DD_PAGE_RGB_CONFIG		0x807B	/* RGB Zone Config (LED color data) */
+#define HIDPP_DD_PAGE_PROFILE_NOTIFY	0x80D0	/* Emits profile-change broadcast event */
+#define HIDPP_DD_PAGE_DAMPING		0x8133	/* Wheel Damping */
+#define HIDPP_DD_PAGE_BRAKEFORCE		0x8134	/* Brake Force Threshold */
+#define HIDPP_DD_PAGE_STRENGTH		0x8136	/* FFB Strength */
+#define HIDPP_DD_PAGE_PROFILE		0x8137	/* Profile Switching */
+#define HIDPP_DD_PAGE_RANGE			0x8138	/* Rotation Range (emits rotation-change broadcast event) */
+#define HIDPP_DD_PAGE_TRUEFORCE		0x8139	/* TRUEFORCE Bass Shaker */
+#define HIDPP_DD_PAGE_FILTER		0x8140	/* FFB Filter */
+#define HIDPP_DD_PAGE_CALIBRATE		0x812C	/* Centre calibration (G Pro sub-device 0x05) */
+#define HIDPP_DD_PAGE_SYNC			0x1BC0	/* Unknown sync/prepare feature */
 
 /*
  * RS50 HID descriptor declares buttons 1-92 but only ~20 are physically present.
@@ -4074,20 +4109,20 @@ static void hidpp_ff_retry_work(struct work_struct *work)
  * "Invalid code" kernel messages. We ignore these phantom buttons during input
  * mapping.
  */
-#define RS50_MAX_BUTTON_USAGE	0x50	/* Accept buttons 1-80, ignore 81+ */
+#define HIDPP_DD_MAX_BUTTON_USAGE	0x50	/* Accept buttons 1-80, ignore 81+ */
 
 /* RS50 HID++ function IDs for settings */
-#define RS50_HIDPP_FN_GET_INFO		0x00	/* Function 0: get capabilities/limits */
-#define RS50_HIDPP_FN_GET		0x10	/* Function 1: get current value */
-#define RS50_HIDPP_FN_SET		0x20	/* Function 2: set value */
+#define HIDPP_DD_HIDPP_FN_GET_INFO		0x00	/* Function 0: get capabilities/limits */
+#define HIDPP_DD_HIDPP_FN_GET		0x10	/* Function 1: get current value */
+#define HIDPP_DD_HIDPP_FN_SET		0x20	/* Function 2: set value */
 
 /*
  * RS50 LIGHTSYNC LED Effects (feature page 0x807A)
  * Supports 5 custom slots with 10 individually addressable RGB LEDs each.
  * Each slot has a direction (animation style) and per-LED color config.
  */
-#define RS50_LIGHTSYNC_NUM_LEDS		10	/* Physical LEDs on the wheel */
-#define RS50_LIGHTSYNC_NUM_SLOTS	5	/* Custom slots (CUSTOM 1-5) */
+#define HIDPP_DD_LIGHTSYNC_NUM_LEDS		10	/* Physical LEDs on the wheel */
+#define HIDPP_DD_LIGHTSYNC_NUM_SLOTS	5	/* Custom slots (CUSTOM 1-5) */
 
 /*
  * LIGHTSYNC function codes.
@@ -4108,54 +4143,54 @@ static void hidpp_ff_retry_work(struct work_struct *work)
  * Values are function_number << 4, with sw_id added by hidpp_send_fap_command_sync.
  * G Hub coldstart queries fn0/fn1/fn2 before fn4/fn7 - device may need this init.
  */
-#define RS50_LIGHTSYNC_FN_GET_INFO	0x00	/* fn0: Get feature info */
-#define RS50_LIGHTSYNC_FN_GET_CAPS	0x10	/* fn1: Get capabilities */
-#define RS50_LIGHTSYNC_FN_GET_STATE	0x20	/* fn2: Get current state */
-#define RS50_LIGHTSYNC_FN_SET_EFFECT	0x30	/* fn3: Set effect mode */
-#define RS50_LIGHTSYNC_FN_SET_LEDS	0x40	/* fn4: Set LED count/config */
-#define RS50_LIGHTSYNC_FN_SET_CONFIG	0x60	/* fn6: Set effect config (LONG report) */
-#define RS50_LIGHTSYNC_FN_ENABLE	0x70	/* fn7: Enable LED display/preview */
+#define HIDPP_DD_LIGHTSYNC_FN_GET_INFO	0x00	/* fn0: Get feature info */
+#define HIDPP_DD_LIGHTSYNC_FN_GET_CAPS	0x10	/* fn1: Get capabilities */
+#define HIDPP_DD_LIGHTSYNC_FN_GET_STATE	0x20	/* fn2: Get current state */
+#define HIDPP_DD_LIGHTSYNC_FN_SET_EFFECT	0x30	/* fn3: Set effect mode */
+#define HIDPP_DD_LIGHTSYNC_FN_SET_LEDS	0x40	/* fn4: Set LED count/config */
+#define HIDPP_DD_LIGHTSYNC_FN_SET_CONFIG	0x60	/* fn6: Set effect config (LONG report) */
+#define HIDPP_DD_LIGHTSYNC_FN_ENABLE	0x70	/* fn7: Enable LED display/preview */
 
 /*
  * Feature 0x0C (RGB Config) functions.
  * Values are function_number << 4, with sw_id added by hidpp_send_fap_command_sync.
  */
-#define RS50_RGB_FN_GET_CONFIG		0x10	/* fn1: Get slot config */
-#define RS50_RGB_FN_SET_CONFIG		0x20	/* fn2: Set RGB colors (VERY_LONG) */
-#define RS50_RGB_FN_GET_NAME		0x30	/* fn3: Get slot name (also activates) */
-#define RS50_RGB_FN_ACTIVATE		0x30	/* fn3: Activate slot (same as GET_NAME) */
-#define RS50_RGB_FN_SET_NAME		0x40	/* fn4: Set slot name */
-#define RS50_RGB_FN_PRE_CONFIG		0x60	/* fn6: Pre-config before RGB data */
-#define RS50_RGB_FN_COMMIT		0x70	/* fn7: Commit after RGB data */
+#define HIDPP_DD_RGB_FN_GET_CONFIG		0x10	/* fn1: Get slot config */
+#define HIDPP_DD_RGB_FN_SET_CONFIG		0x20	/* fn2: Set RGB colors (VERY_LONG) */
+#define HIDPP_DD_RGB_FN_GET_NAME		0x30	/* fn3: Get slot name (also activates) */
+#define HIDPP_DD_RGB_FN_ACTIVATE		0x30	/* fn3: Activate slot (same as GET_NAME) */
+#define HIDPP_DD_RGB_FN_SET_NAME		0x40	/* fn4: Set slot name */
+#define HIDPP_DD_RGB_FN_PRE_CONFIG		0x60	/* fn6: Pre-config before RGB data */
+#define HIDPP_DD_RGB_FN_COMMIT		0x70	/* fn7: Commit after RGB data */
 
 /* LIGHTSYNC direction values (animation effect direction) */
-#define RS50_LIGHTSYNC_DIR_LEFT_RIGHT	0	/* Left to Right sweep */
-#define RS50_LIGHTSYNC_DIR_RIGHT_LEFT	1	/* Right to Left sweep */
-#define RS50_LIGHTSYNC_DIR_INSIDE_OUT	2	/* Center outward (expand) */
-#define RS50_LIGHTSYNC_DIR_OUTSIDE_IN	3	/* Edges inward (contract) */
+#define HIDPP_DD_LIGHTSYNC_DIR_LEFT_RIGHT	0	/* Left to Right sweep */
+#define HIDPP_DD_LIGHTSYNC_DIR_RIGHT_LEFT	1	/* Right to Left sweep */
+#define HIDPP_DD_LIGHTSYNC_DIR_INSIDE_OUT	2	/* Center outward (expand) */
+#define HIDPP_DD_LIGHTSYNC_DIR_OUTSIDE_IN	3	/* Edges inward (contract) */
 
 /* LIGHTSYNC per-slot configuration */
-#define RS50_SLOT_NAME_MAX_LEN	8	/* Max slot name length (from device info) */
+#define HIDPP_DD_SLOT_NAME_MAX_LEN	8	/* Max slot name length (from device info) */
 
 /*
  * Slot name SET uses fn4 on 0x0C with payload { slot, len, name[len] }.
- * That's 2 + RS50_SLOT_NAME_MAX_LEN = 10 bytes, which must fit in the
+ * That's 2 + HIDPP_DD_SLOT_NAME_MAX_LEN = 10 bytes, which must fit in the
  * params[16] buffer used by the store handler. Keep the assertion near
  * the define so growing the name cap without widening the buffer trips
  * at build time.
  */
-static_assert(2 + RS50_SLOT_NAME_MAX_LEN <= 16,
+static_assert(2 + HIDPP_DD_SLOT_NAME_MAX_LEN <= 16,
 	      "slot-name wire payload must fit in the 16-byte params buffer");
 
-struct rs50_lightsync_slot {
+struct hidpp_dd_lightsync_slot {
 	u8 direction;			/* Direction/animation style (0-3) */
 	u8 brightness;			/* Per-slot brightness (0-100) */
-	char name[RS50_SLOT_NAME_MAX_LEN + 1];	/* Slot name + null terminator */
-	u8 colors[RS50_LIGHTSYNC_NUM_LEDS * 3]; /* RGB for each LED (30 bytes) */
+	char name[HIDPP_DD_SLOT_NAME_MAX_LEN + 1];	/* Slot name + null terminator */
+	u8 colors[HIDPP_DD_LIGHTSYNC_NUM_LEDS * 3]; /* RGB for each LED (30 bytes) */
 };
 
 /* Marker for features that weren't discovered (not supported by device) */
-#define RS50_FEATURE_NOT_FOUND		0xFF
+#define HIDPP_DD_FEATURE_NOT_FOUND		0xFF
 
 /* RS50 FFB constants */
 /*
@@ -4175,18 +4210,18 @@ struct rs50_lightsync_slot {
  * effect per click without erasing) more headroom before they
  * exhaust slots and stop working.
  */
-#define RS50_FF_MAX_EFFECTS		63
-#define RS50_FF_TIMER_INTERVAL_MS	2	/* 500 Hz update rate */
+#define HIDPP_DD_FF_MAX_EFFECTS		63
+#define HIDPP_DD_FF_TIMER_INTERVAL_MS	2	/* 500 Hz update rate */
 
 /*
  * FRICTION stick-zone half-width, in encoder counts per timer tick.
  * Inside +/- this velocity the emulated friction force ramps linearly
  * instead of stepping to full scale (Karnopp model; see the FF_FRICTION
- * case in rs50_ff_effect_tick). 8 counts/tick ~= 22 deg/s at the default
+ * case in hidpp_dd_ff_effect_tick). 8 counts/tick ~= 22 deg/s at the default
  * 900-degree range - comfortably above encoder noise, well below any
  * deliberate steering motion.
  */
-#define RS50_FF_FRICTION_RAMP_COUNTS	8
+#define HIDPP_DD_FF_FRICTION_RAMP_COUNTS	8
 
 /*
  * Default wheel_spring_damping percent (see the spring_damping field).
@@ -4195,25 +4230,25 @@ struct rs50_lightsync_slot {
  * game-uploaded centring springs, small enough not to make springs feel
  * syrupy. Tunable at runtime; 0 disables (pre-2026-07 behaviour).
  */
-#define RS50_FF_SPRING_DAMPING_DEFAULT	25
+#define HIDPP_DD_FF_SPRING_DAMPING_DEFAULT	25
 
 /*
  * RS50 pedal response curve types.
  * These curves are applied in software to pedal axis values.
  */
-#define RS50_CURVE_LINEAR		0	/* 1:1 linear mapping */
-#define RS50_CURVE_LOW_SENS		1	/* Less sensitive at start */
-#define RS50_CURVE_HIGH_SENS		2	/* More sensitive at start */
+#define HIDPP_DD_CURVE_LINEAR		0	/* 1:1 linear mapping */
+#define HIDPP_DD_CURVE_LOW_SENS		1	/* Less sensitive at start */
+#define HIDPP_DD_CURVE_HIGH_SENS		2	/* More sensitive at start */
 
 /* Effect state tracking */
-struct rs50_ff_effect {
+struct hidpp_dd_ff_effect {
 	struct ff_effect effect;
 	bool uploaded;
 	bool playing;
 	/*
 	 * Wall-clock start of the current playback window (jiffies). Used by
 	 * time-dependent effects (constant-with-envelope, ramp, periodic,
-	 * replay duration). Set on rs50_ff_playback(value != 0), frozen on
+	 * replay duration). Set on hidpp_dd_ff_playback(value != 0), frozen on
 	 * stop, irrelevant for condition effects (they read live wheel state).
 	 */
 	unsigned long play_start;
@@ -4222,7 +4257,7 @@ struct rs50_ff_effect {
 	/*
 	 * Channel assignment for this playback: true = TrueForce texture
 	 * stream, false = steering-force sum. Decided ONCE in
-	 * rs50_ff_playback when the effect starts (route enabled, TF
+	 * hidpp_dd_ff_playback when the effect starts (route enabled, TF
 	 * session ready, effect texture-class) and held stable for the
 	 * whole play cycle, so neither the lazy TF init completing nor a
 	 * mid-play SetParameters across the texture crossover can yank a
@@ -4233,7 +4268,7 @@ struct rs50_ff_effect {
 };
 
 /* RS50 FFB output report structure (64 bytes to endpoint 0x03) */
-struct rs50_ff_report {
+struct hidpp_dd_ff_report {
 	u8 report_id;		/* 0x01 */
 	u8 reserved[3];		/* 0x00, 0x00, 0x00 */
 	u8 effect_type;		/* 0x01 = constant force */
@@ -4243,13 +4278,13 @@ struct rs50_ff_report {
 	u8 padding[54];		/* zeros */
 } __packed;
 
-static_assert(sizeof(struct rs50_ff_report) == RS50_FF_REPORT_SIZE,
-	      "RS50 FFB report structure size mismatch");
+static_assert(sizeof(struct hidpp_dd_ff_report) == HIDPP_DD_FF_REPORT_SIZE,
+	      "DD FFB report structure size mismatch");
 
 /* RS50 FFB work item for async USB transfers */
-struct rs50_ff_work {
+struct hidpp_dd_ff_work {
 	struct work_struct work;
-	struct rs50_ff_data *ff_data;
+	struct hidpp_dd_ff_data *ff_data;
 	u16 force;
 	/*
 	 * When set, report_buf was pre-built by the queuer (TrueForce
@@ -4263,11 +4298,11 @@ struct rs50_ff_work {
 	 * before the USB transfer completes, and another work item could
 	 * overwrite a shared buffer while it's still being DMA'd.
 	 */
-	u8 report_buf[RS50_FF_REPORT_SIZE];
+	u8 report_buf[HIDPP_DD_FF_REPORT_SIZE];
 };
 
 /* RS50 FFB private data */
-struct rs50_ff_data {
+struct hidpp_dd_ff_data {
 	struct hidpp_device *hidpp;
 	struct hidpp_device *owner_hidpp;/* hidpp that allocated this ff_data */
 	struct hid_device *ff_hdev;	/* hid_device for interface 2 (FFB) */
@@ -4287,7 +4322,7 @@ struct rs50_ff_data {
 
 	/*
 	 * HID++ feature indices - discovered via hidpp_root_get_feature().
-	 * Set to RS50_FEATURE_NOT_FOUND (0xFF) if feature not supported.
+	 * Set to HIDPP_DD_FEATURE_NOT_FOUND (0xFF) if feature not supported.
 	 */
 	u8 idx_range;			/* Feature index for rotation range */
 	u8 idx_strength;		/* Feature index for FFB strength */
@@ -4303,17 +4338,17 @@ struct rs50_ff_data {
 	u8 idx_sync;			/* Feature index for sync/prepare (0x1BC0) */
 	u8 idx_calibrate;		/* Feature index for centre calibration (G Pro sub-device 0x05, page 0x812C) */
 	u8 calibrate_dev_idx;		/* HID++ device index used for calibrate sends (0x05 on G Pro) */
-	u8 idx_compat_angle;		/* Compat-mode steering angle (HID++ feature 0x8138). Discovered lazily by rs50_compat_set_range. */
-	u8 idx_compat_strength;		/* Compat-mode FFB strength (HID++ feature 0x8136). Discovered lazily by rs50_compat_set_strength. */
-	u8 idx_compat_trueforce;	/* Compat-mode TRUEFORCE strength (HID++ feature 0x8139, fn 3). Discovered lazily by rs50_compat_set_trueforce. */
-	u8 idx_compat_damping;		/* Compat-mode damping (HID++ feature 0x8133, fn 1; verified at fallback idx 0x14). Discovered lazily by rs50_compat_set_damping. */
-	u8 idx_compat_filter;		/* Compat-mode FFB filter (HID++ feature 0x8140, fn 2; verified at fallback idx 0x1a). Discovered lazily by rs50_compat_set_filter. */
+	u8 idx_compat_angle;		/* Compat-mode steering angle (HID++ feature 0x8138). Discovered lazily by hidpp_dd_compat_set_range. */
+	u8 idx_compat_strength;		/* Compat-mode FFB strength (HID++ feature 0x8136). Discovered lazily by hidpp_dd_compat_set_strength. */
+	u8 idx_compat_trueforce;	/* Compat-mode TRUEFORCE strength (HID++ feature 0x8139, fn 3). Discovered lazily by hidpp_dd_compat_set_trueforce. */
+	u8 idx_compat_damping;		/* Compat-mode damping (HID++ feature 0x8133, fn 1; verified at fallback idx 0x14). Discovered lazily by hidpp_dd_compat_set_damping. */
+	u8 idx_compat_filter;		/* Compat-mode FFB filter (HID++ feature 0x8140, fn 2; verified at fallback idx 0x1a). Discovered lazily by hidpp_dd_compat_set_filter. */
 
 	/*
 	 * Per-feature SET function numbers.
 	 * The RS50 uses fn=2 (0x20) for all SET operations, but the G Pro
 	 * uses different function numbers per feature (e.g. fn=1 for damping,
-	 * fn=3 for TRUEFORCE). Defaults set in rs50_ff_init(); device-specific
+	 * fn=3 for TRUEFORCE). Defaults set in hidpp_dd_ff_init(); device-specific
 	 * overrides applied during feature discovery.
 	 */
 	u8 fn_set_range;
@@ -4323,12 +4358,12 @@ struct rs50_ff_data {
 	u8 fn_set_brakeforce;
 	u8 fn_set_filter;
 	u8 fn_set_sensitivity;
-	u8 fn_set_brightness;		/* feature 0x8040 SET fn; default RS50_HIDPP_FN_SET */
+	u8 fn_set_brightness;		/* feature 0x8040 SET fn; default HIDPP_DD_HIDPP_FN_SET */
 
 	/* Mode and profile state (Feature 0x8137) */
 	u8 current_mode;		/* 0=desktop, 1=onboard */
 	u8 current_profile;		/* 0=desktop, 1-5=onboard profiles */
-	bool mode_known;		/* true once rs50_get_current_mode succeeded at least once; false means current_mode/current_profile are the safe-desktop default not a fresh query */
+	bool mode_known;		/* true once hidpp_dd_get_current_mode succeeded at least once; false means current_mode/current_profile are the safe-desktop default not a fresh query */
 	u8 sensitivity;			/* Desktop-only sensitivity (0-100), uses idx_brightness */
 
 	/* Wheel settings (sysfs configurable) */
@@ -4351,7 +4386,7 @@ struct rs50_ff_data {
 
 	/* LIGHTSYNC per-slot configuration (full RGB control) */
 	u8 led_active_slot;		/* Currently selected slot (0-4) */
-	struct rs50_lightsync_slot led_slots[RS50_LIGHTSYNC_NUM_SLOTS];
+	struct hidpp_dd_lightsync_slot led_slots[HIDPP_DD_LIGHTSYNC_NUM_SLOTS];
 	u8 ls_num_slots;          /* latched from 0x0C fn0; clamped <= NUM_SLOTS */
 	u8 ls_num_leds;           /* latched from 0x0C fn0; clamped <= NUM_LEDS */
 
@@ -4382,9 +4417,9 @@ struct rs50_ff_data {
 
 	/* Pedal response curve and combined mode settings */
 	u8 combined_pedals;		/* 0=off, 1=on (throttle - brake) */
-	u8 throttle_curve;		/* RS50_CURVE_* type */
-	u8 brake_curve;			/* RS50_CURVE_* type */
-	u8 clutch_curve;		/* RS50_CURVE_* type */
+	u8 throttle_curve;		/* HIDPP_DD_CURVE_* type */
+	u8 brake_curve;			/* HIDPP_DD_CURVE_* type */
+	u8 clutch_curve;		/* HIDPP_DD_CURVE_* type */
 	u8 throttle_deadzone_lower;	/* Lower deadzone 0-100% */
 	u8 throttle_deadzone_upper;	/* Upper deadzone 0-100% */
 	u8 brake_deadzone_lower;	/* Lower deadzone 0-100% */
@@ -4393,7 +4428,7 @@ struct rs50_ff_data {
 	u8 clutch_deadzone_upper;	/* Upper deadzone 0-100% */
 
 	/* FFB effects tracking */
-	struct rs50_ff_effect effects[RS50_FF_MAX_EFFECTS];
+	struct hidpp_dd_ff_effect effects[HIDPP_DD_FF_MAX_EFFECTS];
 	spinlock_t effects_lock;	/* Protects effects array */
 	s32 last_force;			/* Last force sent; used by playback() to know whether a release-to-zero packet is needed when all effects stop. */
 	s32 constant_force;		/* Cached sum of currently-playing FF_CONSTANT contributions; condition/periodic/ramp effects are computed per-tick inside the timer callback. */
@@ -4418,7 +4453,7 @@ struct rs50_ff_data {
 	 * "any effect is currently playing" short-circuit. When false the
 	 * timer stops rescheduling itself and the wheel stays idle. When
 	 * true (set under effects_lock whenever an effect transitions to
-	 * playing) the timer keeps firing at RS50_FF_TIMER_INTERVAL_MS so
+	 * playing) the timer keeps firing at HIDPP_DD_FF_TIMER_INTERVAL_MS so
 	 * condition effects get a live wheel-state sample each tick, even
 	 * if the instantaneous force they compute happens to be zero.
 	 */
@@ -4447,32 +4482,32 @@ struct rs50_ff_data {
 	 */
 	u8 spring_damping;
 	/*
-	 * In-kernel TrueForce texture channel (see the RS50_TF_* block for
+	 * In-kernel TrueForce texture channel (see the HIDPP_DD_TF_* block for
 	 * the design). texture_route selects where vibration-class effects
 	 * go; the tf_* runtime state below is touched only from the effect
 	 * timer callback (single-threaded) except tf_ready/tf_init_queued,
 	 * which the lazy init work handler sets (READ_ONCE/WRITE_ONCE).
 	 */
-	u8 texture_route;		/* RS50_TEXTURE_ROUTE_KF / _TF */
+	u8 texture_route;		/* HIDPP_DD_TEXTURE_ROUTE_KF / _TF */
 	bool tf_ready;			/* two-pass session init completed */
 	bool tf_init_queued;		/* init work queued/running; cleared for retry on failure */
 	bool tf_streaming;		/* between START and STOP */
 	u8 tf_seq;			/* TF stream sequence counter */
 	u8 tf_staged;			/* samples staged toward next packet */
-	u8 tf_init_attempts;		/* hard init failures so far (cap: RS50_TF_INIT_MAX_ATTEMPTS) */
-	u16 tf_stage[RS50_TF_NEW_SAMPLES];
-	u16 tf_window[RS50_TF_WINDOW];	/* rolling window, offset binary */
+	u8 tf_init_attempts;		/* hard init failures so far (cap: HIDPP_DD_TF_INIT_MAX_ATTEMPTS) */
+	u16 tf_stage[HIDPP_DD_TF_NEW_SAMPLES];
+	u16 tf_window[HIDPP_DD_TF_WINDOW];	/* rolling window, offset binary */
 	struct work_struct tf_init_work; /* runs the 2x68-packet init (system_unbound_wq) */
 	/*
 	 * Honest-range poll: re-reads the physical rotation range every
-	 * RS50_FF_REFRESH_INTERVAL_MS on system_unbound_wq, decoupled from
+	 * HIDPP_DD_FF_REFRESH_INTERVAL_MS on system_unbound_wq, decoupled from
 	 * the force-stream workqueue so its synchronous HID++ GET can
 	 * never stall force delivery. Skipped while effects play.
 	 */
 	struct delayed_work range_poll_work;
 	/*
 	 * Auto-restore of externally-reset ranges (see
-	 * rs50_ff_range_maybe_restore). Default on; strike counter caps
+	 * hidpp_dd_ff_range_maybe_restore). Default on; strike counter caps
 	 * restores at 3 per session and is reset by an explicit
 	 * wheel_range write.
 	 */
@@ -4495,7 +4530,7 @@ struct rs50_ff_data {
 	 * G Pro using the inherited hidpp_ff (G920) FFB with only our
 	 * sysfs-settings layer on top. FFB-only fields (wq, effects[],
 	 * timers, ...) are only populated in the RS50 path; G-Pro-marked
-	 * devices must not be handed to rs50_ff_* entry points.
+	 * devices must not be handed to hidpp_dd_ff_* entry points.
 	 */
 	bool is_gpro;
 
@@ -4509,25 +4544,25 @@ struct rs50_ff_data {
 };
 
 /* Maximum pending work items to prevent memory exhaustion */
-#define RS50_FF_MAX_PENDING_WORK	8
+#define HIDPP_DD_FF_MAX_PENDING_WORK	8
 
 /* FFB initialization timing - event-based with retry */
-#define RS50_FF_INIT_DELAY_MS		100	/* Initial delay - allows USB enumeration to settle */
-#define RS50_FF_INIT_RETRY_MS		25	/* Retry interval if interfaces not ready */
-#define RS50_FF_MAX_INIT_RETRIES	36	/* Max retries (100 + 25×36 = 1s total fallback) */
+#define HIDPP_DD_FF_INIT_DELAY_MS		100	/* Initial delay - allows USB enumeration to settle */
+#define HIDPP_DD_FF_INIT_RETRY_MS		25	/* Retry interval if interfaces not ready */
+#define HIDPP_DD_FF_MAX_INIT_RETRIES	36	/* Max retries (100 + 25×36 = 1s total fallback) */
 
 /* Forward declarations */
-static void rs50_ff_work_handler(struct work_struct *work);
-static void rs50_ff_send_force(struct rs50_ff_data *ff, s32 force);
-static bool rs50_ff_effect_is_texture(const struct ff_effect *eff);
-static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
+static void hidpp_dd_ff_work_handler(struct work_struct *work);
+static void hidpp_dd_ff_send_force(struct hidpp_dd_ff_data *ff, s32 force);
+static bool hidpp_dd_ff_effect_is_texture(const struct ff_effect *eff);
+static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 			 const s32 *samples);
-static void rs50_tf_init_work_handler(struct work_struct *work);
-static void rs50_query_device_identity(struct rs50_ff_data *ff);
-static int rs50_set_range_hw(struct rs50_ff_data *ff, int range);
-static void rs50_ff_effect_timer_callback(struct timer_list *t);
-static void rs50_process_pedals(struct hidpp_device *hidpp, u8 *data, int size);
-static struct rs50_ff_data *rs50_find_ff_data(struct hid_device *hdev);
+static void hidpp_dd_tf_init_work_handler(struct work_struct *work);
+static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff);
+static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range);
+static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t);
+static void hidpp_dd_process_pedals(struct hidpp_device *hidpp, u8 *data, int size);
+static struct hidpp_dd_ff_data *hidpp_dd_find_ff_data(struct hid_device *hdev);
 
 /*
  * Project a FF_CONSTANT effect's signed level onto the wheel's X axis.
@@ -4542,7 +4577,7 @@ static struct rs50_ff_data *rs50_find_ff_data(struct hid_device *hdev);
  * right-pushing constant force. Wine's DirectInput translation handles
  * this mapping.
  */
-static s32 rs50_project_constant(const struct ff_effect *effect)
+static s32 hidpp_dd_project_constant(const struct ff_effect *effect)
 {
 	s32 level = effect->u.constant.level;
 
@@ -4557,20 +4592,20 @@ static s32 rs50_project_constant(const struct ff_effect *effect)
  * short-circuit is also refreshed here so condition effects (which never
  * touch constant_force) still drive the timer alive.
  */
-static void rs50_ff_recompute_constant_force_locked(struct rs50_ff_data *ff)
+static void hidpp_dd_ff_recompute_constant_force_locked(struct hidpp_dd_ff_data *ff)
 {
 	s32 force = 0;
 	bool any = false;
 	int i;
 
-	for (i = 0; i < RS50_FF_MAX_EFFECTS; i++) {
-		const struct rs50_ff_effect *e = &ff->effects[i];
+	for (i = 0; i < HIDPP_DD_FF_MAX_EFFECTS; i++) {
+		const struct hidpp_dd_ff_effect *e = &ff->effects[i];
 
 		if (!e->uploaded || !e->playing)
 			continue;
 		any = true;
 		if (e->effect.type == FF_CONSTANT)
-			force += rs50_project_constant(&e->effect);
+			force += hidpp_dd_project_constant(&e->effect);
 	}
 	/*
 	 * Writer runs under effects_lock; timer callback reads lock-free
@@ -4594,7 +4629,7 @@ static void rs50_ff_recompute_constant_force_locked(struct rs50_ff_data *ff)
  * Works in signed domain so the sign of the input magnitude is preserved
  * through the attack/fade scaling.
  */
-static s32 rs50_apply_envelope(const struct ff_envelope *env,
+static s32 hidpp_dd_apply_envelope(const struct ff_envelope *env,
 			       s32 magnitude, u32 elapsed_ms, u32 length_ms)
 {
 	s32 abs_mag;
@@ -4680,7 +4715,7 @@ static s32 rs50_apply_envelope(const struct ff_envelope *env,
  * reuse struct ff_condition_effect with identical field semantics;
  * only what gets fed in as `metric` differs.
  */
-static s32 rs50_condition_force(const struct ff_condition_effect *c,
+static s32 hidpp_dd_condition_force(const struct ff_condition_effect *c,
 				s32 metric)
 {
 	s32 half_db = (s32)c->deadband >> 1;
@@ -4721,13 +4756,13 @@ static s32 rs50_condition_force(const struct ff_condition_effect *c,
 
 /*
  * Compute one effect's instantaneous contribution to the net wheel force,
- * in the same [-S16_MAX, S16_MAX] signed domain rs50_ff_send_force takes.
+ * in the same [-S16_MAX, S16_MAX] signed domain hidpp_dd_ff_send_force takes.
  * Returns 0 for types we don't yet emulate (RAMP, PERIODIC) so those
  * uploads are accepted but don't produce force until we finish wiring
  * them up. Caller iterates and sums; caller holds effects_lock.
  *
  * CONSTANT: envelope-shaped magnitude projected onto the X axis (existing
- * rs50_project_constant semantics), preserving the sign convention the
+ * hidpp_dd_project_constant semantics), preserving the sign convention the
  * earlier capture validation pinned down.
  *
  * SPRING:   condition formula fed by wheel_pos - 0x8000 (signed centred
@@ -4739,8 +4774,8 @@ static s32 rs50_condition_force(const struct ff_condition_effect *c,
  *           constant friction opposing motion direction.
  * INERTIA:  condition formula fed by wheel_accel. Opposes acceleration.
  */
-static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
-			       const struct rs50_ff_effect *e,
+static s32 hidpp_dd_ff_effect_tick(const struct hidpp_dd_ff_data *ff_state,
+			       const struct hidpp_dd_ff_effect *e,
 			       u32 elapsed_ms,
 			       s32 wheel_pos_signed,
 			       s32 wheel_vel, s32 wheel_accel)
@@ -4777,10 +4812,10 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 		 * for native-evdev apps. Toggle via the
 		 * wheel_ffb_constant_sign sysfs attribute.
 		 */
-		f = rs50_project_constant(eff);
+		f = hidpp_dd_project_constant(eff);
 		if (READ_ONCE(ff_state->ffb_constant_sign))
 			f = -f;
-		return rs50_apply_envelope(&eff->u.constant.envelope, f,
+		return hidpp_dd_apply_envelope(&eff->u.constant.envelope, f,
 					   elapsed_ms, duration);
 	case FF_SPRING: {
 		/*
@@ -4796,7 +4831,7 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 		u8 damping;
 
 		c = &eff->u.condition[0];
-		fs = rs50_condition_force(c, wheel_pos_signed);
+		fs = hidpp_dd_condition_force(c, wheel_pos_signed);
 		damping = READ_ONCE(ff_state->spring_damping);
 		if (damping) {
 			s32 coeff = max(abs((s32)c->right_coeff),
@@ -4807,7 +4842,7 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 			 * The game's saturation caps bound the WHOLE spring
 			 * output, damping included: without this clamp the
 			 * damping term bypassed the per-effect saturation
-			 * that rs50_condition_force applies, so a spring the
+			 * that hidpp_dd_condition_force applies, so a spring the
 			 * game deliberately capped gentle could deliver up
 			 * to 25% of full scale in velocity resistance.
 			 */
@@ -4824,7 +4859,7 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 		/*
 		 * Scale the raw wheel velocity up so that realistic motion
 		 * fills a useful fraction of the s16 metric range that
-		 * rs50_condition_force expects. The wheel's encoder emits
+		 * hidpp_dd_condition_force expects. The wheel's encoder emits
 		 * 65536 counts per full rotation of the range (default 900
 		 * degrees). Derived velocity therefore sits around 2..100
 		 * counts per 2 ms tick in normal driving and saturates into
@@ -4840,7 +4875,7 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 		 */
 		c = &eff->u.condition[0];
 		/* Global per-class scale (Oversteer damper_level). */
-		return rs50_condition_force(c,
+		return hidpp_dd_condition_force(c,
 			clamp(wheel_vel * 256, (s32)S16_MIN, (s32)S16_MAX)) *
 			READ_ONCE(ff_state->damper_level) / 100;
 	case FF_FRICTION: {
@@ -4861,14 +4896,14 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 		c = &eff->u.condition[0];
 		if (vel == 0)
 			return 0;
-		if (vel >= RS50_FF_FRICTION_RAMP_COUNTS)
+		if (vel >= HIDPP_DD_FF_FRICTION_RAMP_COUNTS)
 			vel = S16_MAX;
-		else if (vel <= -RS50_FF_FRICTION_RAMP_COUNTS)
+		else if (vel <= -HIDPP_DD_FF_FRICTION_RAMP_COUNTS)
 			vel = -S16_MAX;
 		else
-			vel *= S16_MAX / RS50_FF_FRICTION_RAMP_COUNTS;
+			vel *= S16_MAX / HIDPP_DD_FF_FRICTION_RAMP_COUNTS;
 		/* Global per-class scale (Oversteer friction_level). */
-		return rs50_condition_force(c, vel) *
+		return hidpp_dd_condition_force(c, vel) *
 			READ_ONCE(ff_state->friction_level) / 100;
 	}
 	case FF_INERTIA:
@@ -4879,7 +4914,7 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 		 * multiplication-not-shift rule as DAMPER above.
 		 */
 		c = &eff->u.condition[0];
-		return rs50_condition_force(c,
+		return hidpp_dd_condition_force(c,
 			clamp(wheel_accel * 4096, (s32)S16_MIN, (s32)S16_MAX));
 	case FF_RAMP: {
 		/*
@@ -4901,7 +4936,7 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 				t = duration;
 			val = start + (s32)(((end - start) * (s64)t) / duration);
 		}
-		return rs50_apply_envelope(&eff->u.ramp.envelope, val,
+		return hidpp_dd_apply_envelope(&eff->u.ramp.envelope, val,
 					   elapsed_ms, duration);
 	}
 	case FF_PERIODIC: {
@@ -4919,7 +4954,7 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 		 * fixp_sin16 takes degrees in [0, 360) and returns a
 		 * fixed-point sin in q15 format (-0x8000..+0x7fff). Our own
 		 * scaling keeps the whole pipeline in signed 16-bit, matching
-		 * the rest of rs50_ff_effect_tick's output domain.
+		 * the rest of hidpp_dd_ff_effect_tick's output domain.
 		 */
 		u16 period = eff->u.periodic.period;
 		s16 magnitude = eff->u.periodic.magnitude;
@@ -4982,7 +5017,7 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
 			break;
 		}
 
-		scaled_magnitude = rs50_apply_envelope(
+		scaled_magnitude = hidpp_dd_apply_envelope(
 			&eff->u.periodic.envelope, magnitude, elapsed_ms,
 			duration);
 		out = offset + ((scaled_magnitude * wave_q15) >> 15);
@@ -5038,7 +5073,7 @@ static s32 rs50_ff_effect_tick(const struct rs50_ff_data *ff_state,
  * s16 first: without the clamp, a strong right force summed across
  * multiple FF_CONSTANT effects overflows and wraps into a left force.
  */
-static u16 rs50_force_to_offset_binary(s32 force)
+static u16 hidpp_dd_force_to_offset_binary(s32 force)
 {
 	force = clamp(force, (s32)S16_MIN, (s32)S16_MAX);
 	return (u16)(force + 0x8000);
@@ -5048,9 +5083,9 @@ static u16 rs50_force_to_offset_binary(s32 force)
  * Timer callback - sends continuous force updates to the wheel.
  * RS50 requires periodic force commands to maintain FFB effect.
  */
-static void rs50_ff_effect_timer_callback(struct timer_list *t)
+static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t)
 {
-	struct rs50_ff_data *ff = container_of(t, struct rs50_ff_data, effect_timer);
+	struct hidpp_dd_ff_data *ff = container_of(t, struct hidpp_dd_ff_data, effect_timer);
 	s32 force = 0;
 	s32 tf_sample[2] = { 0, 0 };
 	s32 wheel_pos_signed, wheel_vel, wheel_accel;
@@ -5064,11 +5099,11 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
 
-	route_tf = READ_ONCE(ff->texture_route) == RS50_TEXTURE_ROUTE_TF;
+	route_tf = READ_ONCE(ff->texture_route) == HIDPP_DD_TEXTURE_ROUTE_TF;
 
 	/*
 	 * Refresh derived wheel state. wheel_pos is updated lock-free by
-	 * the interface-0 raw-event path (rs50_process_pedals); we derive
+	 * the interface-0 raw-event path (hidpp_dd_process_pedals); we derive
 	 * velocity and acceleration here at the fixed timer cadence so
 	 * the derivatives are stable. Two-sample priming avoids bogus
 	 * first-tick velocity spikes.
@@ -5096,8 +5131,8 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	any_playing = false;
 
 	spin_lock_irqsave(&ff->effects_lock, flags);
-	for (i = 0; i < RS50_FF_MAX_EFFECTS; i++) {
-		struct rs50_ff_effect *e = &ff->effects[i];
+	for (i = 0; i < HIDPP_DD_FF_MAX_EFFECTS; i++) {
+		struct hidpp_dd_ff_effect *e = &ff->effects[i];
 		unsigned long elapsed_ms_long;
 		u32 elapsed_ms;
 
@@ -5156,7 +5191,7 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 		 */
 		if (route_tf && !smp_load_acquire(&ff->tf_ready) &&
 		    !READ_ONCE(ff->tf_init_queued) &&
-		    rs50_ff_effect_is_texture(&e->effect)) {
+		    hidpp_dd_ff_effect_is_texture(&e->effect)) {
 			WRITE_ONCE(ff->tf_init_queued, true);
 			queue_work(system_unbound_wq, &ff->tf_init_work);
 		}
@@ -5175,10 +5210,10 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 				 e->effect.u.periodic.offset : 0;
 
 			any_texture = true;
-			tf_sample[0] += rs50_ff_effect_tick(ff, e,
+			tf_sample[0] += hidpp_dd_ff_effect_tick(ff, e,
 					elapsed_ms, wheel_pos_signed,
 					wheel_vel, wheel_accel) - dc;
-			tf_sample[1] += rs50_ff_effect_tick(ff, e,
+			tf_sample[1] += hidpp_dd_ff_effect_tick(ff, e,
 					elapsed_ms + 1,
 					wheel_pos_signed,
 					wheel_vel, wheel_accel) - dc;
@@ -5186,7 +5221,7 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 			continue;
 		}
 
-		force += rs50_ff_effect_tick(ff, e, elapsed_ms,
+		force += hidpp_dd_ff_effect_tick(ff, e, elapsed_ms,
 					     wheel_pos_signed,
 					     wheel_vel, wheel_accel);
 	}
@@ -5199,13 +5234,13 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	{
 		s32 const_only = 0;
 
-		for (i = 0; i < RS50_FF_MAX_EFFECTS; i++) {
-			const struct rs50_ff_effect *e = &ff->effects[i];
+		for (i = 0; i < HIDPP_DD_FF_MAX_EFFECTS; i++) {
+			const struct hidpp_dd_ff_effect *e = &ff->effects[i];
 
 			if (!e->uploaded || !e->playing)
 				continue;
 			if (e->effect.type == FF_CONSTANT)
-				const_only += rs50_project_constant(&e->effect);
+				const_only += hidpp_dd_project_constant(&e->effect);
 		}
 		WRITE_ONCE(ff->constant_force, const_only);
 		WRITE_ONCE(ff->any_effect_playing, any_playing);
@@ -5214,7 +5249,7 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 
 	/*
 	 * Apply FF_GAIN to the game-effect sum HERE (it used to live in
-	 * rs50_ff_send_force) so the autocenter term below stays
+	 * hidpp_dd_ff_send_force) so the autocenter term below stays
 	 * gain-independent: hardware autocenter on other wheels is not
 	 * scaled by the game's gain, and a game that exits leaving
 	 * FF_GAIN low must not silently disable the user's centring
@@ -5270,7 +5305,7 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	 * the stale window.
 	 */
 	if (any_texture || ff->tf_streaming)
-		rs50_tf_tick(ff, any_texture, tf_sample);
+		hidpp_dd_tf_tick(ff, any_texture, tf_sample);
 
 	/*
 	 * Always push the current force on each timer tick. The wheel
@@ -5280,7 +5315,7 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	 * within a couple of seconds (issue #16, ffmvforce repro). At
 	 * 500 Hz x 64 bytes the USB cost is ~32 KB/s, negligible.
 	 */
-	rs50_ff_send_force(ff, force);
+	hidpp_dd_ff_send_force(ff, force);
 	ff->last_force = force;
 
 	/*
@@ -5296,22 +5331,22 @@ static void rs50_ff_effect_timer_callback(struct timer_list *t)
 	    !atomic_read_acquire(&ff->stopping) &&
 	    atomic_read(&ff->initialized))
 		mod_timer(&ff->effect_timer,
-			  jiffies + msecs_to_jiffies(RS50_FF_TIMER_INTERVAL_MS));
+			  jiffies + msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS));
 }
 
 /*
  * Send a force value to the wheel (non-blocking, queues work).
  */
-static void rs50_ff_send_force(struct rs50_ff_data *ff, s32 force)
+static void hidpp_dd_ff_send_force(struct hidpp_dd_ff_data *ff, s32 force)
 {
-	struct rs50_ff_work *ff_work;
+	struct hidpp_dd_ff_work *ff_work;
 	int pending;
 
 	if (!ff || atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
 
 	pending = atomic_read(&ff->pending_work);
-	if (pending >= RS50_FF_MAX_PENDING_WORK)
+	if (pending >= HIDPP_DD_FF_MAX_PENDING_WORK)
 		return;
 
 	ff_work = kmalloc(sizeof(*ff_work), GFP_ATOMIC);
@@ -5320,7 +5355,7 @@ static void rs50_ff_send_force(struct rs50_ff_data *ff, s32 force)
 		 * Dropping a 500 Hz FFB sample is normally invisible, so
 		 * count the drops and let the shared last_err_log rate
 		 * limiter surface the count next time it fires. err_count
-		 * is also bumped from rs50_ff_work_handler on USB errors;
+		 * is also bumped from hidpp_dd_ff_work_handler on USB errors;
 		 * both paths feed into the same "how bad was the last
 		 * window" metric.
 		 */
@@ -5333,18 +5368,18 @@ static void rs50_ff_send_force(struct rs50_ff_data *ff, s32 force)
 	 * game-effect sum before adding the gain-independent autocenter
 	 * term); this function sends the force as given.
 	 */
-	ff_work->force = rs50_force_to_offset_binary(force);
+	ff_work->force = hidpp_dd_force_to_offset_binary(force);
 	ff_work->ff_data = ff;
 	ff_work->raw = false;
-	INIT_WORK(&ff_work->work, rs50_ff_work_handler);
+	INIT_WORK(&ff_work->work, hidpp_dd_ff_work_handler);
 
 	atomic_inc(&ff->pending_work);
 	queue_work(ff->wq, &ff_work->work);
 }
 
 /*
- * In-kernel TrueForce texture channel. See the RS50_TF_* define block
- * for the protocol/design rationale. All rs50_tf_* runtime state is
+ * In-kernel TrueForce texture channel. See the HIDPP_DD_TF_* define block
+ * for the protocol/design rationale. All hidpp_dd_tf_* runtime state is
  * timer-callback-private except tf_ready (published by the init work
  * with store-release, consumed with load-acquire).
  */
@@ -5353,14 +5388,14 @@ static void rs50_ff_send_force(struct rs50_ff_data *ff, s32 force)
  * Vibration-class effects ride the TF audio stream when texture_route
  * selects it; everything else keeps shaping the steering force.
  */
-static bool rs50_ff_effect_is_texture(const struct ff_effect *eff)
+static bool hidpp_dd_ff_effect_is_texture(const struct ff_effect *eff)
 {
 	switch (eff->type) {
 	case FF_RUMBLE:
 		return true;
 	case FF_PERIODIC:
 		return eff->u.periodic.period > 0 &&
-		       eff->u.periodic.period <= RS50_TF_CROSSOVER_PERIOD_MS;
+		       eff->u.periodic.period <= HIDPP_DD_TF_CROSSOVER_PERIOD_MS;
 	default:
 		return false;
 	}
@@ -5368,7 +5403,7 @@ static bool rs50_ff_effect_is_texture(const struct ff_effect *eff)
 
 /*
  * Queue a pre-built 64-byte interface-2 packet for sending. Safe from
- * atomic (timer) context; mirrors rs50_ff_send_force's guards. Returns
+ * atomic (timer) context; mirrors hidpp_dd_ff_send_force's guards. Returns
  * false when the packet was dropped (queue pressure, allocation
  * failure, teardown) so callers can keep their stream state honest.
  *
@@ -5376,13 +5411,13 @@ static bool rs50_ff_effect_is_texture(const struct ff_effect *eff)
  * steering-force stream: KF is also the firmware's host-alive signal,
  * so under queue pressure texture is the stream to shed first.
  */
-static bool rs50_tf_queue_raw(struct rs50_ff_data *ff, const u8 *pkt)
+static bool hidpp_dd_tf_queue_raw(struct hidpp_dd_ff_data *ff, const u8 *pkt)
 {
-	struct rs50_ff_work *ff_work;
+	struct hidpp_dd_ff_work *ff_work;
 
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return false;
-	if (atomic_read(&ff->pending_work) >= RS50_FF_MAX_PENDING_WORK - 2) {
+	if (atomic_read(&ff->pending_work) >= HIDPP_DD_FF_MAX_PENDING_WORK - 2) {
 		ff->err_count++;
 		return false;
 	}
@@ -5395,8 +5430,8 @@ static bool rs50_tf_queue_raw(struct rs50_ff_data *ff, const u8 *pkt)
 
 	ff_work->ff_data = ff;
 	ff_work->raw = true;
-	memcpy(ff_work->report_buf, pkt, RS50_FF_REPORT_SIZE);
-	INIT_WORK(&ff_work->work, rs50_ff_work_handler);
+	memcpy(ff_work->report_buf, pkt, HIDPP_DD_FF_REPORT_SIZE);
+	INIT_WORK(&ff_work->work, hidpp_dd_ff_work_handler);
 
 	atomic_inc(&ff->pending_work);
 	queue_work(ff->wq, &ff_work->work);
@@ -5408,14 +5443,14 @@ static bool rs50_tf_queue_raw(struct rs50_ff_data *ff, const u8 *pkt)
  * tf_seq only advances when the packet was actually queued, so drops
  * do not leave gaps in the wire sequence.
  */
-static bool rs50_tf_queue_ctrl(struct rs50_ff_data *ff, u8 cmd)
+static bool hidpp_dd_tf_queue_ctrl(struct hidpp_dd_ff_data *ff, u8 cmd)
 {
-	u8 pkt[RS50_FF_REPORT_SIZE] = { 0 };
+	u8 pkt[HIDPP_DD_FF_REPORT_SIZE] = { 0 };
 
-	pkt[0] = RS50_FF_REPORT_ID;
+	pkt[0] = HIDPP_DD_FF_REPORT_ID;
 	pkt[4] = cmd;
 	pkt[5] = ff->tf_seq;
-	if (!rs50_tf_queue_raw(ff, pkt))
+	if (!hidpp_dd_tf_queue_raw(ff, pkt))
 		return false;
 	ff->tf_seq++;
 	return true;
@@ -5428,24 +5463,24 @@ static bool rs50_tf_queue_ctrl(struct rs50_ff_data *ff, u8 cmd)
  * 13 window slots oldest-first, each u16 duplicated L/R. Timer context
  * only (tf_seq, tf_window).
  */
-static bool rs50_tf_queue_stream(struct rs50_ff_data *ff)
+static bool hidpp_dd_tf_queue_stream(struct hidpp_dd_ff_data *ff)
 {
-	u8 pkt[RS50_FF_REPORT_SIZE] = { 0 };
-	u16 newest = ff->tf_window[RS50_TF_WINDOW - 1];
+	u8 pkt[HIDPP_DD_FF_REPORT_SIZE] = { 0 };
+	u16 newest = ff->tf_window[HIDPP_DD_TF_WINDOW - 1];
 	int i;
 
-	pkt[0] = RS50_FF_REPORT_ID;
-	pkt[4] = RS50_TF_CMD_STREAM;
+	pkt[0] = HIDPP_DD_FF_REPORT_ID;
+	pkt[4] = HIDPP_DD_TF_CMD_STREAM;
 	pkt[5] = ff->tf_seq;
 	put_unaligned_le16(newest, &pkt[6]);
 	put_unaligned_le16(newest, &pkt[8]);
-	pkt[10] = RS50_TF_NEW_SAMPLES;
-	pkt[11] = RS50_TF_FLAG_BYTE;
-	for (i = 0; i < RS50_TF_WINDOW; i++) {
+	pkt[10] = HIDPP_DD_TF_NEW_SAMPLES;
+	pkt[11] = HIDPP_DD_TF_FLAG_BYTE;
+	for (i = 0; i < HIDPP_DD_TF_WINDOW; i++) {
 		put_unaligned_le16(ff->tf_window[i], &pkt[12 + i * 4]);
 		put_unaligned_le16(ff->tf_window[i], &pkt[14 + i * 4]);
 	}
-	if (!rs50_tf_queue_raw(ff, pkt))
+	if (!hidpp_dd_tf_queue_raw(ff, pkt))
 		return false;
 	ff->tf_seq++;
 	return true;
@@ -5459,20 +5494,20 @@ static bool rs50_tf_queue_stream(struct rs50_ff_data *ff)
  * tf_ready stays false and texture effects keep summing into the
  * steering force - degraded feel, never lost effects.
  */
-static void rs50_tf_init_work_handler(struct work_struct *work)
+static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
 {
-	struct rs50_ff_data *ff = container_of(work, struct rs50_ff_data,
+	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
 					       tf_init_work);
 	struct hid_device *hdev;
 	u8 *pkt;
 	int pass, i, ret = 0;
 
-	BUILD_BUG_ON(RS50_TF_INIT_PACKET_LEN != RS50_FF_REPORT_SIZE);
+	BUILD_BUG_ON(HIDPP_DD_TF_INIT_PACKET_LEN != HIDPP_DD_FF_REPORT_SIZE);
 
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
 
-	pkt = kmalloc(RS50_FF_REPORT_SIZE, GFP_KERNEL);
+	pkt = kmalloc(HIDPP_DD_FF_REPORT_SIZE, GFP_KERNEL);
 	if (!pkt) {
 		/* Retryable: let a later texture playback try again. */
 		WRITE_ONCE(ff->tf_init_queued, false);
@@ -5482,7 +5517,7 @@ static void rs50_tf_init_work_handler(struct work_struct *work)
 	for (pass = 0; pass < 2 && ret >= 0; pass++) {
 		u8 seq = 1;
 
-		for (i = 0; i < RS50_TF_INIT_PACKET_COUNT; i++) {
+		for (i = 0; i < HIDPP_DD_TF_INIT_PACKET_COUNT; i++) {
 			if (atomic_read_acquire(&ff->stopping)) {
 				kfree(pkt);
 				return;
@@ -5498,15 +5533,15 @@ static void rs50_tf_init_work_handler(struct work_struct *work)
 				kfree(pkt);
 				return;
 			}
-			memcpy(pkt, rs50_tf_init_packets[i],
-			       RS50_TF_INIT_PACKET_LEN);
-			pkt[RS50_TF_INIT_SEQ_OFFSET] = seq++;
+			memcpy(pkt, hidpp_dd_tf_init_packets[i],
+			       HIDPP_DD_TF_INIT_PACKET_LEN);
+			pkt[HIDPP_DD_TF_INIT_SEQ_OFFSET] = seq++;
 			ret = hid_hw_output_report(hdev, pkt,
-						   RS50_FF_REPORT_SIZE);
+						   HIDPP_DD_FF_REPORT_SIZE);
 			if (ret < 0 && ret != -EIO && ret != -ENODEV)
 				ret = hid_hw_raw_request(hdev,
-						RS50_FF_REPORT_ID, pkt,
-						RS50_FF_REPORT_SIZE,
+						HIDPP_DD_FF_REPORT_ID, pkt,
+						HIDPP_DD_FF_REPORT_SIZE,
 						HID_OUTPUT_REPORT,
 						HID_REQ_SET_REPORT);
 			if (ret < 0)
@@ -5521,29 +5556,29 @@ static void rs50_tf_init_work_handler(struct work_struct *work)
 		 * texture effects to the steering channel for the whole
 		 * session (the pre-retry behaviour). Clearing
 		 * tf_init_queued lets the next texture playback re-queue
-		 * this work; after RS50_TF_INIT_MAX_ATTEMPTS hard failures
+		 * this work; after HIDPP_DD_TF_INIT_MAX_ATTEMPTS hard failures
 		 * the flag stays set and the session runs degraded.
 		 */
 		ff->tf_init_attempts++;
-		if (ff->tf_init_attempts < RS50_TF_INIT_MAX_ATTEMPTS) {
-			hid_warn(ff->hidpp->hid_dev,
-				 "RS50: TrueForce texture channel init failed (%d), attempt %u/%u; will retry on the next texture effect\n",
+		if (ff->tf_init_attempts < HIDPP_DD_TF_INIT_MAX_ATTEMPTS) {
+			dd_warn(ff->hidpp->hid_dev,
+				 "TrueForce texture channel init failed (%d), attempt %u/%u; will retry on the next texture effect\n",
 				 ret, ff->tf_init_attempts,
-				 RS50_TF_INIT_MAX_ATTEMPTS);
+				 HIDPP_DD_TF_INIT_MAX_ATTEMPTS);
 			WRITE_ONCE(ff->tf_init_queued, false);
 		} else {
-			hid_warn(ff->hidpp->hid_dev,
-				 "RS50: TrueForce texture channel init failed (%d); giving up for this session, texture effects stay on the steering channel\n",
+			dd_warn(ff->hidpp->hid_dev,
+				 "TrueForce texture channel init failed (%d); giving up for this session, texture effects stay on the steering channel\n",
 				 ret);
 		}
 		return;
 	}
 
-	ff->tf_seq = RS50_TF_INIT_PACKET_COUNT + 1;
+	ff->tf_seq = HIDPP_DD_TF_INIT_PACKET_COUNT + 1;
 	/* Publish tf_seq (and the init itself) before tf_ready. */
 	smp_store_release(&ff->tf_ready, true);
-	hid_info(ff->hidpp->hid_dev,
-		 "RS50: TrueForce texture channel ready (vibration effects ride the TF stream)\n");
+	dd_info(ff->hidpp->hid_dev,
+		 "TrueForce texture channel ready (vibration effects ride the TF stream)\n");
 }
 
 /*
@@ -5555,7 +5590,7 @@ static void rs50_tf_init_work_handler(struct work_struct *work)
  * effect stops, re-centres the window and sends STOP so the wheel's DSP
  * returns to silence instead of looping the stale window.
  */
-static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
+static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 			 const s32 *samples)
 {
 	u16 gain, strength;
@@ -5573,10 +5608,10 @@ static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
 			 * is set (see its reschedule condition), so a
 			 * failed STOP retries on the next tick.
 			 */
-			memset16(ff->tf_window, 0x8000, RS50_TF_WINDOW);
+			memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW);
 			ff->tf_staged = 0;
-			rs50_tf_queue_stream(ff);
-			if (rs50_tf_queue_ctrl(ff, RS50_TF_CMD_STOP))
+			hidpp_dd_tf_queue_stream(ff);
+			if (hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_STOP))
 				ff->tf_streaming = false;
 		}
 		return;
@@ -5587,7 +5622,7 @@ static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
 		 * START must land before stream packets mean anything; if
 		 * it was dropped, skip this tick's samples and retry.
 		 */
-		if (!rs50_tf_queue_ctrl(ff, RS50_TF_CMD_START))
+		if (!hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_START))
 			return;
 		ff->tf_streaming = true;
 	}
@@ -5610,18 +5645,18 @@ static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
 		if (strength != 0xFFFF)
 			s = (s32)(((s64)s * strength) / 0xFFFF);
 		ff->tf_stage[ff->tf_staged++] =
-			rs50_force_to_offset_binary(s);
+			hidpp_dd_force_to_offset_binary(s);
 
-		if (ff->tf_staged == RS50_TF_NEW_SAMPLES) {
+		if (ff->tf_staged == HIDPP_DD_TF_NEW_SAMPLES) {
 			memmove(&ff->tf_window[0],
-				&ff->tf_window[RS50_TF_NEW_SAMPLES],
-				(RS50_TF_WINDOW - RS50_TF_NEW_SAMPLES) *
+				&ff->tf_window[HIDPP_DD_TF_NEW_SAMPLES],
+				(HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES) *
 					sizeof(ff->tf_window[0]));
-			memcpy(&ff->tf_window[RS50_TF_WINDOW -
-					      RS50_TF_NEW_SAMPLES],
+			memcpy(&ff->tf_window[HIDPP_DD_TF_WINDOW -
+					      HIDPP_DD_TF_NEW_SAMPLES],
 			       ff->tf_stage, sizeof(ff->tf_stage));
 			ff->tf_staged = 0;
-			rs50_tf_queue_stream(ff);
+			hidpp_dd_tf_queue_stream(ff);
 		}
 	}
 }
@@ -5629,15 +5664,15 @@ static void rs50_tf_tick(struct rs50_ff_data *ff, bool any_texture,
 /*
  * FF effect upload callback - stores effect for later playback.
  */
-static int rs50_ff_upload(struct input_dev *dev, struct ff_effect *effect,
+static int hidpp_dd_ff_upload(struct input_dev *dev, struct ff_effect *effect,
 			  struct ff_effect *old)
 {
-	struct rs50_ff_data *ff = dev->ff->private;
+	struct hidpp_dd_ff_data *ff = dev->ff->private;
 	int id = effect->id;
 	unsigned long flags;
 	bool recompute = false;
 
-	if (!ff || id < 0 || id >= RS50_FF_MAX_EFFECTS)
+	if (!ff || id < 0 || id >= HIDPP_DD_FF_MAX_EFFECTS)
 		return -EINVAL;
 
 	spin_lock_irqsave(&ff->effects_lock, flags);
@@ -5655,14 +5690,14 @@ static int rs50_ff_upload(struct input_dev *dev, struct ff_effect *effect,
 	 * ffcfstress that continuously restream the level.
 	 */
 	if (ff->effects[id].playing && effect->type == FF_CONSTANT) {
-		rs50_ff_recompute_constant_force_locked(ff);
+		hidpp_dd_ff_recompute_constant_force_locked(ff);
 		recompute = true;
 	}
 	spin_unlock_irqrestore(&ff->effects_lock, flags);
 
 	if (recompute && !atomic_read_acquire(&ff->stopping))
 		mod_timer(&ff->effect_timer,
-			  jiffies + msecs_to_jiffies(RS50_FF_TIMER_INTERVAL_MS));
+			  jiffies + msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS));
 
 	/*
 	 * Log full effect parameters, not just the type: root-causing FFB
@@ -5672,8 +5707,8 @@ static int rs50_ff_upload(struct input_dev *dev, struct ff_effect *effect,
 	 */
 	switch (effect->type) {
 	case FF_CONSTANT:
-		hid_dbg(ff->hidpp->hid_dev,
-			"RS50: Upload effect %d type=%d CONSTANT level=%d dir=0x%04x len=%u\n",
+		dd_dbg(ff->hidpp->hid_dev,
+			"Upload effect %d type=%d CONSTANT level=%d dir=0x%04x len=%u\n",
 			id, effect->type, effect->u.constant.level,
 			effect->direction, effect->replay.length);
 		break;
@@ -5681,8 +5716,8 @@ static int rs50_ff_upload(struct input_dev *dev, struct ff_effect *effect,
 	case FF_DAMPER:
 	case FF_FRICTION:
 	case FF_INERTIA:
-		hid_dbg(ff->hidpp->hid_dev,
-			"RS50: Upload effect %d type=%d CONDITION rc=%d lc=%d rs=%u ls=%u db=%u ctr=%d len=%u\n",
+		dd_dbg(ff->hidpp->hid_dev,
+			"Upload effect %d type=%d CONDITION rc=%d lc=%d rs=%u ls=%u db=%u ctr=%d len=%u\n",
 			id, effect->type,
 			effect->u.condition[0].right_coeff,
 			effect->u.condition[0].left_coeff,
@@ -5693,26 +5728,26 @@ static int rs50_ff_upload(struct input_dev *dev, struct ff_effect *effect,
 			effect->replay.length);
 		break;
 	case FF_PERIODIC:
-		hid_dbg(ff->hidpp->hid_dev,
-			"RS50: Upload effect %d type=%d PERIODIC wave=%d period=%u mag=%d off=%d len=%u\n",
+		dd_dbg(ff->hidpp->hid_dev,
+			"Upload effect %d type=%d PERIODIC wave=%d period=%u mag=%d off=%d len=%u\n",
 			id, effect->type, effect->u.periodic.waveform,
 			effect->u.periodic.period, effect->u.periodic.magnitude,
 			effect->u.periodic.offset, effect->replay.length);
 		break;
 	case FF_RUMBLE:
-		hid_dbg(ff->hidpp->hid_dev,
-			"RS50: Upload effect %d type=%d RUMBLE strong=%u weak=%u len=%u\n",
+		dd_dbg(ff->hidpp->hid_dev,
+			"Upload effect %d type=%d RUMBLE strong=%u weak=%u len=%u\n",
 			id, effect->type, effect->u.rumble.strong_magnitude,
 			effect->u.rumble.weak_magnitude, effect->replay.length);
 		break;
 	case FF_RAMP:
-		hid_dbg(ff->hidpp->hid_dev,
-			"RS50: Upload effect %d type=%d RAMP start=%d end=%d len=%u\n",
+		dd_dbg(ff->hidpp->hid_dev,
+			"Upload effect %d type=%d RAMP start=%d end=%d len=%u\n",
 			id, effect->type, effect->u.ramp.start_level,
 			effect->u.ramp.end_level, effect->replay.length);
 		break;
 	default:
-		hid_dbg(ff->hidpp->hid_dev, "RS50: Upload effect %d type=%d\n",
+		dd_dbg(ff->hidpp->hid_dev, "Upload effect %d type=%d\n",
 			id, effect->type);
 		break;
 	}
@@ -5722,35 +5757,35 @@ static int rs50_ff_upload(struct input_dev *dev, struct ff_effect *effect,
 /*
  * FF effect erase callback - removes effect.
  */
-static int rs50_ff_erase(struct input_dev *dev, int id)
+static int hidpp_dd_ff_erase(struct input_dev *dev, int id)
 {
-	struct rs50_ff_data *ff = dev->ff->private;
+	struct hidpp_dd_ff_data *ff = dev->ff->private;
 	unsigned long flags;
 
-	if (!ff || id < 0 || id >= RS50_FF_MAX_EFFECTS)
+	if (!ff || id < 0 || id >= HIDPP_DD_FF_MAX_EFFECTS)
 		return -EINVAL;
 
 	spin_lock_irqsave(&ff->effects_lock, flags);
 	ff->effects[id].uploaded = false;
 	ff->effects[id].playing = false;
 	memset(&ff->effects[id].effect, 0, sizeof(struct ff_effect));
-	rs50_ff_recompute_constant_force_locked(ff);
+	hidpp_dd_ff_recompute_constant_force_locked(ff);
 	spin_unlock_irqrestore(&ff->effects_lock, flags);
 
-	hid_dbg(ff->hidpp->hid_dev, "RS50: Erased effect %d\n", id);
+	dd_dbg(ff->hidpp->hid_dev, "Erased effect %d\n", id);
 	return 0;
 }
 
 /*
  * FF playback callback - starts or stops an effect.
  */
-static int rs50_ff_playback(struct input_dev *dev, int id, int value)
+static int hidpp_dd_ff_playback(struct input_dev *dev, int id, int value)
 {
-	struct rs50_ff_data *ff = dev->ff->private;
+	struct hidpp_dd_ff_data *ff = dev->ff->private;
 	unsigned long flags;
 	bool any_playing;
 
-	if (!ff || id < 0 || id >= RS50_FF_MAX_EFFECTS)
+	if (!ff || id < 0 || id >= HIDPP_DD_FF_MAX_EFFECTS)
 		return -EINVAL;
 
 	spin_lock_irqsave(&ff->effects_lock, flags);
@@ -5779,19 +5814,19 @@ static int rs50_ff_playback(struct input_dev *dev, int id, int value)
 		 * channel for its whole duration.
 		 */
 		ff->effects[id].use_tf =
-			READ_ONCE(ff->texture_route) == RS50_TEXTURE_ROUTE_TF &&
+			READ_ONCE(ff->texture_route) == HIDPP_DD_TEXTURE_ROUTE_TF &&
 			smp_load_acquire(&ff->tf_ready) &&
-			rs50_ff_effect_is_texture(&ff->effects[id].effect);
+			hidpp_dd_ff_effect_is_texture(&ff->effects[id].effect);
 	}
 	ff->effects[id].playing = (value != 0);
 
-	rs50_ff_recompute_constant_force_locked(ff);
+	hidpp_dd_ff_recompute_constant_force_locked(ff);
 	any_playing = READ_ONCE(ff->any_effect_playing);
 
 	spin_unlock_irqrestore(&ff->effects_lock, flags);
 
-	hid_dbg(ff->hidpp->hid_dev,
-		"RS50: FFB playback id=%d type=%d value=%d any_playing=%d\n",
+	dd_dbg(ff->hidpp->hid_dev,
+		"FFB playback id=%d type=%d value=%d any_playing=%d\n",
 		id, ff->effects[id].effect.type, value, any_playing);
 
 	/*
@@ -5804,7 +5839,7 @@ static int rs50_ff_playback(struct input_dev *dev, int id, int value)
 		return 0;
 	if (any_playing)
 		mod_timer(&ff->effect_timer,
-			  jiffies + msecs_to_jiffies(RS50_FF_TIMER_INTERVAL_MS));
+			  jiffies + msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS));
 	else if (ff->last_force != 0)
 		mod_timer(&ff->effect_timer, jiffies);
 
@@ -5814,17 +5849,17 @@ static int rs50_ff_playback(struct input_dev *dev, int id, int value)
 /*
  * Set FF gain (global force multiplier).
  *
- * Applied at send time in rs50_ff_send_force; independent of the wheel's
+ * Applied at send time in hidpp_dd_ff_send_force; independent of the wheel's
  * own strength setting (which the user controls via sysfs).
  */
-static void rs50_ff_set_gain(struct input_dev *dev, u16 gain)
+static void hidpp_dd_ff_set_gain(struct input_dev *dev, u16 gain)
 {
-	struct rs50_ff_data *ff = dev->ff->private;
+	struct hidpp_dd_ff_data *ff = dev->ff->private;
 
 	if (!ff)
 		return;
 	WRITE_ONCE(ff->gain, gain);
-	hid_dbg(ff->hidpp->hid_dev, "RS50: FF_GAIN set to %u (%u%%)\n",
+	dd_dbg(ff->hidpp->hid_dev, "FF_GAIN set to %u (%u%%)\n",
 		gain, ((u32)gain * 100) / 0xFFFF);
 }
 
@@ -5835,9 +5870,9 @@ static void rs50_ff_set_gain(struct input_dev *dev, u16 gain)
  * before taking over FFB disable it for their session, as on other
  * wheels.
  */
-static void rs50_ff_set_autocenter(struct input_dev *dev, u16 magnitude)
+static void hidpp_dd_ff_set_autocenter(struct input_dev *dev, u16 magnitude)
 {
-	struct rs50_ff_data *ff = dev->ff->private;
+	struct hidpp_dd_ff_data *ff = dev->ff->private;
 
 	if (!ff)
 		return;
@@ -5845,17 +5880,17 @@ static void rs50_ff_set_autocenter(struct input_dev *dev, u16 magnitude)
 	if (magnitude && !atomic_read_acquire(&ff->stopping) &&
 	    atomic_read(&ff->initialized))
 		mod_timer(&ff->effect_timer, jiffies +
-			  msecs_to_jiffies(RS50_FF_TIMER_INTERVAL_MS));
-	hid_dbg(ff->hidpp->hid_dev, "RS50: FF_AUTOCENTER set to %u\n",
+			  msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS));
+	dd_dbg(ff->hidpp->hid_dev, "FF_AUTOCENTER set to %u\n",
 		magnitude);
 }
 
 /* Work handler - runs in workqueue context where blocking calls are safe */
-static void rs50_ff_work_handler(struct work_struct *work)
+static void hidpp_dd_ff_work_handler(struct work_struct *work)
 {
-	struct rs50_ff_work *ff_work = container_of(work, struct rs50_ff_work, work);
-	struct rs50_ff_data *ff = ff_work->ff_data;
-	struct rs50_ff_report *report;
+	struct hidpp_dd_ff_work *ff_work = container_of(work, struct hidpp_dd_ff_work, work);
+	struct hidpp_dd_ff_data *ff = ff_work->ff_data;
+	struct hidpp_dd_ff_report *report;
 	struct hid_device *hdev;
 	int ret;
 
@@ -5890,10 +5925,10 @@ static void rs50_ff_work_handler(struct work_struct *work)
 	 * the classic constant-force report is built here.
 	 */
 	if (!ff_work->raw) {
-		report = (struct rs50_ff_report *)ff_work->report_buf;
-		memset(report, 0, RS50_FF_REPORT_SIZE);
-		report->report_id = RS50_FF_REPORT_ID;
-		report->effect_type = RS50_FF_EFFECT_CONSTANT;
+		report = (struct hidpp_dd_ff_report *)ff_work->report_buf;
+		memset(report, 0, HIDPP_DD_FF_REPORT_SIZE);
+		report->report_id = HIDPP_DD_FF_REPORT_ID;
+		report->effect_type = HIDPP_DD_FF_EFFECT_CONSTANT;
 		report->sequence = atomic_inc_return(&ff->sequence) & 0xFF;
 		report->force = cpu_to_le16(ff_work->force);
 		report->force_dup = report->force;
@@ -5905,11 +5940,11 @@ static void rs50_ff_work_handler(struct work_struct *work)
 	 * fall back to hid_hw_raw_request (uses SET_REPORT control transfer).
 	 * This mirrors what hidraw does in hidraw_write().
 	 */
-	ret = hid_hw_output_report(hdev, ff_work->report_buf, RS50_FF_REPORT_SIZE);
+	ret = hid_hw_output_report(hdev, ff_work->report_buf, HIDPP_DD_FF_REPORT_SIZE);
 	if (ret < 0 && ret != -EIO && ret != -ENODEV) {
 		/* output_report not available, try raw_request instead */
-		ret = hid_hw_raw_request(hdev, RS50_FF_REPORT_ID,
-					 ff_work->report_buf, RS50_FF_REPORT_SIZE,
+		ret = hid_hw_raw_request(hdev, HIDPP_DD_FF_REPORT_ID,
+					 ff_work->report_buf, HIDPP_DD_FF_REPORT_SIZE,
 					 HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
 	}
 
@@ -5921,8 +5956,8 @@ static void rs50_ff_work_handler(struct work_struct *work)
 		 * so a failing device produces a single steady trickle.
 		 */
 		if (time_after(jiffies, ff->last_err_log + HZ * 60)) {
-			hid_err(hdev,
-				"RS50: Force feedback command failed (error %d, %d errors since last log)\n",
+			dd_err(hdev,
+				"Force feedback command failed (error %d, %d errors since last log)\n",
 				ret, ff->err_count + 1);
 			ff->last_err_log = jiffies;
 			ff->err_count = 0;
@@ -5946,7 +5981,7 @@ static void rs50_ff_work_handler(struct work_struct *work)
  *
  * Some game launches (observed with AC EVO under Proton, 2026-06-29/30)
  * reset the wheel's physical rotation range to 90 degrees WITHOUT any
- * HID++ rotation-change broadcast, so rs50_ff_raw_hidpp_event never sees
+ * HID++ rotation-change broadcast, so hidpp_dd_ff_raw_hidpp_event never sees
  * it and the cache silently goes stale: sysfs keeps claiming 900 degrees
  * while the rim is physically locked at 90. That mismatch is what
  * confuses users ("I set 900, why does it stop at 90?").
@@ -5987,13 +6022,13 @@ static void rs50_ff_work_handler(struct work_struct *work)
  * feature, sub-device 0x05, fn=1 GET - the same read
  * wheel_calibrate_here uses). Sleepable context. 0x8000 = centre.
  */
-static int rs50_ff_read_encoder(struct rs50_ff_data *ff, u16 *pos)
+static int hidpp_dd_ff_read_encoder(struct hidpp_dd_ff_data *ff, u16 *pos)
 {
 	struct hidpp_report response;
 	u8 params[3] = { 0, 0, 0 };
 	int ret;
 
-	if (ff->idx_calibrate == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_calibrate == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 	ret = hidpp_send_fap_to_device_sync(ff->hidpp, ff->calibrate_dev_idx,
 					    ff->idx_calibrate,
@@ -6005,7 +6040,7 @@ static int rs50_ff_read_encoder(struct rs50_ff_data *ff, u16 *pos)
 	return 0;
 }
 
-static void rs50_ff_range_maybe_restore(struct rs50_ff_data *ff)
+static void hidpp_dd_ff_range_maybe_restore(struct hidpp_dd_ff_data *ff)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
 	u16 want = ff->restore_want;
@@ -6016,7 +6051,7 @@ static void rs50_ff_range_maybe_restore(struct rs50_ff_data *ff)
 	if (atomic_read_acquire(&ff->stopping))
 		return;
 	if (!READ_ONCE(ff->range_restore)) {
-		hid_dbg(hidpp->hid_dev, "RS50: range restore skipped (disabled)\n");
+		dd_dbg(hidpp->hid_dev, "range restore skipped (disabled)\n");
 		return;
 	}
 	/*
@@ -6025,13 +6060,13 @@ static void rs50_ff_range_maybe_restore(struct rs50_ff_data *ff)
 	 * pending restore rather than overriding whatever won.
 	 */
 	if (READ_ONCE(ff->range) != 90) {
-		hid_dbg(hidpp->hid_dev, "RS50: range restore moot (range now %u)\n",
+		dd_dbg(hidpp->hid_dev, "range restore moot (range now %u)\n",
 			READ_ONCE(ff->range));
 		ff->restore_want = 0;
 		return;
 	}
 	if (!ff->mode_known || ff->current_mode != 0) {
-		hid_dbg(hidpp->hid_dev, "RS50: range restore skipped (mode_known=%d mode=%d)\n",
+		dd_dbg(hidpp->hid_dev, "range restore skipped (mode_known=%d mode=%d)\n",
 			ff->mode_known, ff->current_mode);
 		return;
 	}
@@ -6055,23 +6090,23 @@ static void rs50_ff_range_maybe_restore(struct rs50_ff_data *ff)
 	 * within the old +/-45 degrees is by definition inside any wider
 	 * range's stops, so a widening write cannot snap the wheel.
 	 */
-	if (rs50_ff_read_encoder(ff, &p1)) {
-		hid_dbg(hidpp->hid_dev, "RS50: range restore skipped (encoder read failed)\n");
+	if (hidpp_dd_ff_read_encoder(ff, &p1)) {
+		dd_dbg(hidpp->hid_dev, "range restore skipped (encoder read failed)\n");
 		return;
 	}
 	msleep(50);
 	/*
 	 * Teardown may have started during the sleep; each further sync
 	 * send would then ride its full timeout against a dead device and
-	 * stall the workqueue flush in rs50_ff_destroy.
+	 * stall the workqueue flush in hidpp_dd_ff_destroy.
 	 */
 	if (atomic_read_acquire(&ff->stopping))
 		return;
-	if (rs50_ff_read_encoder(ff, &p2))
+	if (hidpp_dd_ff_read_encoder(ff, &p2))
 		return;
 	if (abs((int)p2 - (int)p1) > 200) {
-		hid_dbg(hidpp->hid_dev,
-			"RS50: range restore deferred (wheel moving)\n");
+		dd_dbg(hidpp->hid_dev,
+			"range restore deferred (wheel moving)\n");
 		return;
 	}
 
@@ -6085,25 +6120,25 @@ static void rs50_ff_range_maybe_restore(struct rs50_ff_data *ff)
 		return;
 
 	ff->range_restore_attempts++;
-	if (rs50_set_range_hw(ff, want) == 0) {
+	if (hidpp_dd_set_range_hw(ff, want) == 0) {
 		ff->restore_want = 0;
-		hid_info(hidpp->hid_dev,
-			 "RS50: rotation range auto-restored to %u degrees (attempt %u/3; disable via wheel_range_restore)\n",
+		dd_info(hidpp->hid_dev,
+			 "rotation range auto-restored to %u degrees (attempt %u/3; disable via wheel_range_restore)\n",
 			 want, ff->range_restore_attempts);
 		sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL, "wheel_range");
 	} else {
-		hid_warn(hidpp->hid_dev,
-			 "RS50: rotation range auto-restore to %u degrees failed\n",
+		dd_warn(hidpp->hid_dev,
+			 "rotation range auto-restore to %u degrees failed\n",
 			 want);
 	}
 	if (ff->range_restore_attempts == 3) {
 		ff->restore_want = 0;
-		hid_warn(hidpp->hid_dev,
-			 "RS50: an external writer keeps changing the rotation range; giving up on auto-restore for this session\n");
+		dd_warn(hidpp->hid_dev,
+			 "an external writer keeps changing the rotation range; giving up on auto-restore for this session\n");
 	}
 }
 
-static void rs50_ff_range_readback(struct rs50_ff_data *ff)
+static void hidpp_dd_ff_range_readback(struct hidpp_dd_ff_data *ff)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
 	struct hidpp_report response;
@@ -6111,11 +6146,11 @@ static void rs50_ff_range_readback(struct rs50_ff_data *ff)
 	u16 hw_range, cached;
 	int ret;
 
-	if (ff->idx_range == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_range == HIDPP_DD_FEATURE_NOT_FOUND)
 		return;
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_range,
-					  RS50_HIDPP_FN_GET, params, 0,
+					  HIDPP_DD_HIDPP_FN_GET, params, 0,
 					  &response);
 	if (ret)
 		return;
@@ -6129,8 +6164,8 @@ static void rs50_ff_range_readback(struct rs50_ff_data *ff)
 		return;
 
 	WRITE_ONCE(ff->range, hw_range);
-	hid_info(hidpp->hid_dev,
-		 "RS50: rotation range changed externally: %u -> %u degrees (not set via this driver; typically a game launch). wheel_range now reports the real value\n",
+	dd_info(hidpp->hid_dev,
+		 "rotation range changed externally: %u -> %u degrees (not set via this driver; typically a game launch). wheel_range now reports the real value\n",
 		 cached, hw_range);
 	sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL, "wheel_range");
 
@@ -6152,33 +6187,33 @@ static void rs50_ff_range_readback(struct rs50_ff_data *ff)
  * game launch (FFB idle), and a stale reading during a race is
  * corrected within one interval of the effects stopping.
  */
-static void rs50_ff_range_poll_work(struct work_struct *work)
+static void hidpp_dd_ff_range_poll_work(struct work_struct *work)
 {
-	struct rs50_ff_data *ff = container_of(work, struct rs50_ff_data,
+	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
 					       range_poll_work.work);
 
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
 
 	if (!READ_ONCE(ff->any_effect_playing)) {
-		rs50_ff_range_readback(ff);
+		hidpp_dd_ff_range_readback(ff);
 		/* Retry any owed restore until it lands or strikes out. */
-		rs50_ff_range_maybe_restore(ff);
+		hidpp_dd_ff_range_maybe_restore(ff);
 	}
 
 	if (!atomic_read_acquire(&ff->stopping) && atomic_read(&ff->initialized))
 		queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
-				   msecs_to_jiffies(RS50_FF_REFRESH_INTERVAL_MS));
+				   msecs_to_jiffies(HIDPP_DD_FF_REFRESH_INTERVAL_MS));
 }
 
 /*
  * Periodic FFB refresh handler - sends the 05 07 command to maintain FFB state.
- * Our cadence is RS50_FF_REFRESH_INTERVAL_MS (20 s); G Hub runs a similar
+ * Our cadence is HIDPP_DD_FF_REFRESH_INTERVAL_MS (20 s); G Hub runs a similar
  * keepalive to prevent FFB timeout during idle periods.
  */
-static void rs50_ff_refresh_work(struct work_struct *work)
+static void hidpp_dd_ff_refresh_work(struct work_struct *work)
 {
-	struct rs50_ff_data *ff = container_of(work, struct rs50_ff_data,
+	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
 					       refresh_work.work);
 	struct hid_device *hdev;
 	u8 *refresh_cmd;
@@ -6200,22 +6235,22 @@ static void rs50_ff_refresh_work(struct work_struct *work)
 	 * Allocate DMA-safe buffer for USB transfer.
 	 * Stack buffers are NOT DMA-safe on many architectures (ARM, VMAP_STACK).
 	 */
-	refresh_cmd = kzalloc(RS50_FF_REPORT_SIZE, GFP_KERNEL);
+	refresh_cmd = kzalloc(HIDPP_DD_FF_REPORT_SIZE, GFP_KERNEL);
 	if (!refresh_cmd)
 		return;
 
 	/* Build the 05 07 refresh command */
-	refresh_cmd[0] = RS50_FF_REFRESH_ID;	/* 0x05 */
-	refresh_cmd[1] = RS50_FF_REFRESH_CMD;	/* 0x07 */
+	refresh_cmd[0] = HIDPP_DD_FF_REFRESH_ID;	/* 0x05 */
+	refresh_cmd[1] = HIDPP_DD_FF_REFRESH_CMD;	/* 0x07 */
 	refresh_cmd[7] = 0xFF;
 	refresh_cmd[8] = 0xFF;
 
 	/* Send the refresh command */
-	ret = hid_hw_output_report(hdev, refresh_cmd, RS50_FF_REPORT_SIZE);
+	ret = hid_hw_output_report(hdev, refresh_cmd, HIDPP_DD_FF_REPORT_SIZE);
 	if (ret < 0 && ret != -EIO && ret != -ENODEV) {
 		/* output_report not available, try raw_request instead */
-		ret = hid_hw_raw_request(hdev, RS50_FF_REFRESH_ID,
-					 refresh_cmd, RS50_FF_REPORT_SIZE,
+		ret = hid_hw_raw_request(hdev, HIDPP_DD_FF_REFRESH_ID,
+					 refresh_cmd, HIDPP_DD_FF_REPORT_SIZE,
 					 HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
 	}
 
@@ -6224,7 +6259,7 @@ static void rs50_ff_refresh_work(struct work_struct *work)
 	if (ret < 0) {
 		/* Only log occasional errors to avoid flooding */
 		if (time_after(jiffies, ff->last_err_log + HZ * 60)) {
-			hid_warn(hdev, "RS50: FFB keepalive failed (error %d) - force feedback may stop working\n", ret);
+			dd_warn(hdev, "FFB keepalive failed (error %d) - force feedback may stop working\n", ret);
 			ff->last_err_log = jiffies;
 		}
 	}
@@ -6232,29 +6267,29 @@ static void rs50_ff_refresh_work(struct work_struct *work)
 	/* Reschedule if still running - use dedicated workqueue for consistency */
 	if (!atomic_read_acquire(&ff->stopping) && atomic_read(&ff->initialized)) {
 		queue_delayed_work(ff->wq, &ff->refresh_work,
-				   msecs_to_jiffies(RS50_FF_REFRESH_INTERVAL_MS));
+				   msecs_to_jiffies(HIDPP_DD_FF_REFRESH_INTERVAL_MS));
 	}
 }
 
 /* Forward declaration */
-static void rs50_ff_init_work(struct work_struct *work);
-static void rs50_ff_query_settings(struct rs50_ff_data *ff);
+static void hidpp_dd_ff_init_work(struct work_struct *work);
+static void hidpp_dd_ff_query_settings(struct hidpp_dd_ff_data *ff);
 
 /*
  * Re-query device settings after a profile change so sysfs reflects the
  * new profile's range/strength/damping/etc. Triggered from the
  * profile-change broadcast handler (user picked a profile from the
- * wheel-base Settings menu) or from rs50_set_mode after a successful
+ * wheel-base Settings menu) or from hidpp_dd_set_mode after a successful
  * sysfs-driven switch.
  */
-static void rs50_ff_settings_refresh_work(struct work_struct *work)
+static void hidpp_dd_ff_settings_refresh_work(struct work_struct *work)
 {
-	struct rs50_ff_data *ff = container_of(work, struct rs50_ff_data,
+	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
 					       settings_refresh_work);
 
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
-	rs50_ff_query_settings(ff);
+	hidpp_dd_ff_query_settings(ff);
 }
 
 /*
@@ -6275,20 +6310,20 @@ static void rs50_ff_settings_refresh_work(struct work_struct *work)
  * Runs from hidpp_raw_event in softirq context: no sync HID++ calls.
  * Returns 1 to swallow the event, 0 to let further processing continue.
  */
-static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
+static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 				   int size)
 {
-	struct rs50_ff_data *ff = READ_ONCE(hidpp->private_data);
+	struct hidpp_dd_ff_data *ff = READ_ONCE(hidpp->private_data);
 	bool is_long;
 
-	if (!ff || !(hidpp->quirks & HIDPP_QUIRK_RS50_FFB))
+	if (!ff || !(hidpp->quirks & HIDPP_QUIRK_DD_FFB))
 		return 0;
 	/*
 	 * Only gate on `stopping`. The broadcast cache updates below are
 	 * pure field writes (current_profile, mode, range); they do not
 	 * need the FFB runtime (effect timer, workqueue, input FF device)
 	 * to be ready. In particular, G Pro's settings-only
-	 * rs50_ff_data is allocated by gpro_sysfs_init which never sets
+	 * hidpp_dd_ff_data is allocated by gpro_sysfs_init which never sets
 	 * `initialized`, and gating on that flag here silently discarded
 	 * every profile- and rotation-change broadcast on G Pro until
 	 * the user manually re-queried via sysfs.
@@ -6333,7 +6368,7 @@ static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	 * uses 0xa/0xb, so any sw_id==0 packet on this feature is a device
 	 * broadcast.
 	 */
-	if (ff->idx_profile_notify != RS50_FEATURE_NOT_FOUND &&
+	if (ff->idx_profile_notify != HIDPP_DD_FEATURE_NOT_FOUND &&
 	    data[2] == ff->idx_profile_notify &&
 	    (data[3] & 0x0F) == 0x00) {
 		u8 profile = data[4];
@@ -6346,8 +6381,8 @@ static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 			 * mode-dependent caching decisions afterwards.
 			 */
 			WRITE_ONCE(ff->mode_known, true);
-			hid_info(hidpp->hid_dev,
-				 "RS50: Profile change broadcast -> %s (profile %u)\n",
+			dd_info(hidpp->hid_dev,
+				 "Profile change broadcast -> %s (profile %u)\n",
 				 profile ? "onboard" : "desktop", profile);
 			/*
 			 * Re-query profile-dependent settings if we have an
@@ -6371,15 +6406,15 @@ static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	 * responses to our own requests (which carry sw_id=1).
 	 */
 	if (size >= 6 &&
-	    ff->idx_range != RS50_FEATURE_NOT_FOUND &&
+	    ff->idx_range != HIDPP_DD_FEATURE_NOT_FOUND &&
 	    data[2] == ff->idx_range &&
 	    (data[3] & 0x0F) == 0x00) {
 		u16 range = ((u16)data[4] << 8) | data[5];
 
 		if (range > 0 && range <= 2700) {
 			WRITE_ONCE(ff->range, range);
-			hid_info(hidpp->hid_dev,
-				 "RS50: Rotation change broadcast -> %u degrees\n",
+			dd_info(hidpp->hid_dev,
+				 "Rotation change broadcast -> %u degrees\n",
 				 range);
 		}
 		return 1;
@@ -6394,7 +6429,7 @@ static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	 * went stale whenever brightness was changed on the wheel itself.
 	 * Same sw_id==0 unsolicited-broadcast gate as the handlers above.
 	 */
-	if (ff->idx_brightness != RS50_FEATURE_NOT_FOUND &&
+	if (ff->idx_brightness != HIDPP_DD_FEATURE_NOT_FOUND &&
 	    data[2] == ff->idx_brightness &&
 	    (data[3] & 0x0F) == 0x00) {
 		u8 evt = data[3] >> 4;
@@ -6406,14 +6441,14 @@ static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 			WRITE_ONCE(ff->led_brightness, val);
 			if (ff->mode_known && ff->current_mode == 0)
 				WRITE_ONCE(ff->sensitivity, val);
-			hid_info(hidpp->hid_dev,
-				 "RS50: Brightness change broadcast -> %u%%\n",
+			dd_info(hidpp->hid_dev,
+				 "Brightness change broadcast -> %u%%\n",
 				 val);
 			sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL,
 				     "wheel_led_brightness");
 		} else if (evt == 1) {
-			hid_dbg(hidpp->hid_dev,
-				"RS50: Illumination change broadcast -> %u\n",
+			dd_dbg(hidpp->hid_dev,
+				"Illumination change broadcast -> %u\n",
 				data[4]);
 		} else {
 			return 0;	/* unknown event: let others look */
@@ -6429,15 +6464,15 @@ static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	 * effect values 1-9 - the same ID space the fn1 supported-effect
 	 * list advertises. Keeps the led_effect cache honest.
 	 */
-	if (ff->idx_lightsync != RS50_FEATURE_NOT_FOUND &&
+	if (ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND &&
 	    data[2] == ff->idx_lightsync &&
 	    data[3] == 0x00 && size >= 5) {
 		u8 effect = data[4];
 
 		if (effect >= 1 && effect <= 9) {
 			WRITE_ONCE(ff->led_effect, effect);
-			hid_info(hidpp->hid_dev,
-				 "RS50: LED effect change broadcast -> %u\n",
+			dd_info(hidpp->hid_dev,
+				 "LED effect change broadcast -> %u\n",
 				 effect);
 			sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL,
 				     "wheel_led_effect");
@@ -6453,68 +6488,68 @@ static int rs50_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
  * tuning exposed as wheel_* sysfs attributes, plus profile / mode /
  * calibrate. These features are shared between RS50 and G Pro (though
  * the G Pro init path has its own inline discovery currently).
- * Per-feature failures are non-fatal; the idx stays RS50_FEATURE_NOT_FOUND
+ * Per-feature failures are non-fatal; the idx stays HIDPP_DD_FEATURE_NOT_FOUND
  * and dependent sysfs handlers return -EOPNOTSUPP.
  */
-static void rs50_discover_settings_features(struct rs50_ff_data *ff)
+static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
 	struct hid_device *hid = hidpp->hid_dev;
 	int ret;
 
-	ff->idx_range = RS50_FEATURE_NOT_FOUND;
-	ff->idx_strength = RS50_FEATURE_NOT_FOUND;
-	ff->idx_damping = RS50_FEATURE_NOT_FOUND;
-	ff->idx_trueforce = RS50_FEATURE_NOT_FOUND;
-	ff->idx_brakeforce = RS50_FEATURE_NOT_FOUND;
-	ff->idx_filter = RS50_FEATURE_NOT_FOUND;
-	ff->idx_brightness = RS50_FEATURE_NOT_FOUND;
-	ff->idx_profile = RS50_FEATURE_NOT_FOUND;
-	ff->idx_profile_notify = RS50_FEATURE_NOT_FOUND;
-	ff->idx_calibrate = RS50_FEATURE_NOT_FOUND;
-	ff->idx_compat_angle = RS50_FEATURE_NOT_FOUND;
-	ff->idx_compat_strength = RS50_FEATURE_NOT_FOUND;
-	ff->idx_compat_trueforce = RS50_FEATURE_NOT_FOUND;
-	ff->idx_compat_damping = RS50_FEATURE_NOT_FOUND;
-	ff->idx_compat_filter = RS50_FEATURE_NOT_FOUND;
+	ff->idx_range = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_strength = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_damping = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_trueforce = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_brakeforce = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_profile = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_profile_notify = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_calibrate = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_compat_angle = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_compat_strength = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_compat_trueforce = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_compat_damping = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_compat_filter = HIDPP_DD_FEATURE_NOT_FOUND;
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_RANGE, &ff->idx_range);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_RANGE, &ff->idx_range);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: Range feature at index 0x%02x\n", ff->idx_range);
+		dd_dbg(hid, "Range feature at index 0x%02x\n", ff->idx_range);
 	else if (ret != -ENOENT)
-		hid_dbg(hid, "RS50: Range feature lookup failed: %d\n", ret);
+		dd_dbg(hid, "Range feature lookup failed: %d\n", ret);
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_STRENGTH, &ff->idx_strength);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_STRENGTH, &ff->idx_strength);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: Strength feature at index 0x%02x\n", ff->idx_strength);
+		dd_dbg(hid, "Strength feature at index 0x%02x\n", ff->idx_strength);
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_DAMPING, &ff->idx_damping);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_DAMPING, &ff->idx_damping);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: Damping feature at index 0x%02x\n", ff->idx_damping);
+		dd_dbg(hid, "Damping feature at index 0x%02x\n", ff->idx_damping);
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_TRUEFORCE, &ff->idx_trueforce);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_TRUEFORCE, &ff->idx_trueforce);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: TRUEFORCE feature at index 0x%02x\n", ff->idx_trueforce);
+		dd_dbg(hid, "TRUEFORCE feature at index 0x%02x\n", ff->idx_trueforce);
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_BRAKEFORCE, &ff->idx_brakeforce);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_BRAKEFORCE, &ff->idx_brakeforce);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: Brake force feature at index 0x%02x\n", ff->idx_brakeforce);
+		dd_dbg(hid, "Brake force feature at index 0x%02x\n", ff->idx_brakeforce);
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_FILTER, &ff->idx_filter);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_FILTER, &ff->idx_filter);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: FFB filter feature at index 0x%02x\n", ff->idx_filter);
+		dd_dbg(hid, "FFB filter feature at index 0x%02x\n", ff->idx_filter);
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_BRIGHTNESS, &ff->idx_brightness);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_BRIGHTNESS, &ff->idx_brightness);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: LED brightness feature at index 0x%02x\n", ff->idx_brightness);
+		dd_dbg(hid, "LED brightness feature at index 0x%02x\n", ff->idx_brightness);
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_PROFILE, &ff->idx_profile);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_PROFILE, &ff->idx_profile);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: Profile feature at index 0x%02x\n", ff->idx_profile);
+		dd_dbg(hid, "Profile feature at index 0x%02x\n", ff->idx_profile);
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_PROFILE_NOTIFY, &ff->idx_profile_notify);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_PROFILE_NOTIFY, &ff->idx_profile_notify);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: Profile notify feature at index 0x%02x\n", ff->idx_profile_notify);
+		dd_dbg(hid, "Profile notify feature at index 0x%02x\n", ff->idx_profile_notify);
 
 	/*
 	 * Centre calibration lives on sub-device 0x05, matching the G Pro.
@@ -6526,13 +6561,13 @@ static void rs50_discover_settings_features(struct rs50_ff_data *ff)
 	 * on the 0x05 sub-device gives us the correct index at runtime.
 	 */
 	ret = hidpp_root_get_feature_on_device(hidpp, ff->calibrate_dev_idx,
-					       RS50_PAGE_CALIBRATE,
+					       HIDPP_DD_PAGE_CALIBRATE,
 					       &ff->idx_calibrate);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: Calibrate feature at dev 0x%02x index 0x%02x\n",
+		dd_dbg(hid, "Calibrate feature at dev 0x%02x index 0x%02x\n",
 			ff->calibrate_dev_idx, ff->idx_calibrate);
 
-	rs50_query_device_identity(ff);
+	hidpp_dd_query_device_identity(ff);
 }
 
 /*
@@ -6541,7 +6576,7 @@ static void rs50_discover_settings_features(struct rs50_ff_data *ff)
  * as e.g. "U1 65.03.B0038". Non-printable prefix bytes are skipped
  * (the wheel pads short names with NULs).
  */
-static void rs50_format_fw_entity(const u8 *p, char *out, size_t len)
+static void hidpp_dd_format_fw_entity(const u8 *p, char *out, size_t len)
 {
 	char name[4];
 	int i, n = 0;
@@ -6565,7 +6600,7 @@ static void rs50_format_fw_entity(const u8 *p, char *out, size_t len)
  * behaviour in issue reports - and exposed via the wheel_serial /
  * wheel_firmware attributes. All reads; failures leave fields empty.
  */
-static void rs50_query_device_identity(struct rs50_ff_data *ff)
+static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
 	struct hid_device *hid = hidpp->hid_dev;
@@ -6578,7 +6613,7 @@ static void rs50_query_device_identity(struct rs50_ff_data *ff)
 	if (ret)
 		return;
 
-	ret = hidpp_send_fap_command_sync(hidpp, idx, RS50_HIDPP_FN_GET_INFO,
+	ret = hidpp_send_fap_command_sync(hidpp, idx, HIDPP_DD_HIDPP_FN_GET_INFO,
 					  params, 0, &response);
 	if (ret)
 		return;
@@ -6587,7 +6622,7 @@ static void rs50_query_device_identity(struct rs50_ff_data *ff)
 	/* capabilities byte 14, bit 0 = serialNumber (fn2) supported */
 	if (response.fap.params[14] & 0x01) {
 		ret = hidpp_send_fap_command_sync(hidpp, idx,
-						  RS50_HIDPP_FN_SET /* fn2 getDeviceSerialNumber */,
+						  HIDPP_DD_HIDPP_FN_SET /* fn2 getDeviceSerialNumber */,
 						  params, 0, &response);
 		if (ret == 0) {
 			for (i = 0; i < 12; i++) {
@@ -6604,12 +6639,12 @@ static void rs50_query_device_identity(struct rs50_ff_data *ff)
 	for (i = 0; i < min_t(int, entities, 4); i++) {
 		params[0] = i;
 		ret = hidpp_send_fap_command_sync(hidpp, idx,
-						  RS50_HIDPP_FN_GET,
+						  HIDPP_DD_HIDPP_FN_GET,
 						  params, 1, &response);
 		if (ret)
 			continue;
 		if (response.fap.params[0] == 0x00)	/* main application FW */
-			rs50_format_fw_entity(response.fap.params,
+			hidpp_dd_format_fw_entity(response.fap.params,
 					      ff->fw_main, sizeof(ff->fw_main));
 	}
 
@@ -6618,12 +6653,12 @@ static void rs50_query_device_identity(struct rs50_ff_data *ff)
 		for (i = 0; i < 4; i++) {
 			params[0] = i;
 			ret = hidpp_send_fap_to_device_sync(hidpp, 0x05, idx,
-							    RS50_HIDPP_FN_GET,
+							    HIDPP_DD_HIDPP_FN_GET,
 							    params, 1, &response);
 			if (ret)
 				break;
 			if (response.fap.params[0] == 0x00) {
-				rs50_format_fw_entity(response.fap.params,
+				hidpp_dd_format_fw_entity(response.fap.params,
 						      ff->fw_motor,
 						      sizeof(ff->fw_motor));
 				break;
@@ -6631,7 +6666,7 @@ static void rs50_query_device_identity(struct rs50_ff_data *ff)
 		}
 	}
 
-	hid_info(hid, "RS50: serial %s, base FW %s, motor FW %s\n",
+	dd_info(hid, "serial %s, base FW %s, motor FW %s\n",
 		 ff->serial[0] ? ff->serial : "?",
 		 ff->fw_main[0] ? ff->fw_main : "?",
 		 ff->fw_motor[0] ? ff->fw_motor : "?");
@@ -6644,27 +6679,27 @@ static void rs50_query_device_identity(struct rs50_ff_data *ff)
  * Per-feature failures are non-fatal; a wheel that lacks any of these
  * simply cannot drive its RGB ring via this driver.
  */
-static void rs50_discover_lightsync_features(struct rs50_ff_data *ff)
+static void hidpp_dd_discover_lightsync_features(struct hidpp_dd_ff_data *ff)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
 	struct hid_device *hid = hidpp->hid_dev;
 	int ret;
 
-	ff->idx_lightsync = RS50_FEATURE_NOT_FOUND;
-	ff->idx_rgb_config = RS50_FEATURE_NOT_FOUND;
-	ff->idx_sync = RS50_FEATURE_NOT_FOUND;
+	ff->idx_lightsync = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_rgb_config = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_sync = HIDPP_DD_FEATURE_NOT_FOUND;
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_LIGHTSYNC, &ff->idx_lightsync);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_LIGHTSYNC, &ff->idx_lightsync);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: Lightsync feature at index 0x%02x\n", ff->idx_lightsync);
+		dd_dbg(hid, "Lightsync feature at index 0x%02x\n", ff->idx_lightsync);
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_RGB_CONFIG, &ff->idx_rgb_config);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_RGB_CONFIG, &ff->idx_rgb_config);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: RGB config feature at index 0x%02x\n", ff->idx_rgb_config);
+		dd_dbg(hid, "RGB config feature at index 0x%02x\n", ff->idx_rgb_config);
 
-	ret = hidpp_root_get_feature(hidpp, RS50_PAGE_SYNC, &ff->idx_sync);
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_SYNC, &ff->idx_sync);
 	if (ret == 0)
-		hid_dbg(hid, "RS50: Sync feature at index 0x%02x\n", ff->idx_sync);
+		dd_dbg(hid, "Sync feature at index 0x%02x\n", ff->idx_sync);
 }
 
 /*
@@ -6672,14 +6707,14 @@ static void rs50_discover_lightsync_features(struct rs50_ff_data *ff)
  * only need settings (no LIGHTSYNC ring) can call the split functions
  * directly.
  */
-static void rs50_ff_discover_features(struct rs50_ff_data *ff)
+static void hidpp_dd_ff_discover_features(struct hidpp_dd_ff_data *ff)
 {
 	struct hid_device *hid = ff->hidpp->hid_dev;
 
-	hid_dbg(hid, "RS50: Discovering HID++ features\n");
-	rs50_discover_settings_features(ff);
-	rs50_discover_lightsync_features(ff);
-	hid_dbg(hid, "RS50: Feature discovery completed\n");
+	dd_dbg(hid, "Discovering HID++ features\n");
+	hidpp_dd_discover_settings_features(ff);
+	hidpp_dd_discover_lightsync_features(ff);
+	dd_dbg(hid, "Feature discovery completed\n");
 }
 
 /*
@@ -6687,7 +6722,7 @@ static void rs50_ff_discover_features(struct rs50_ff_data *ff)
  * Feature 0x8137 fn1 returns: [profile] [mode?] ...
  * Profile 0 = Desktop mode, Profiles 1-5 = Onboard mode
  */
-static int rs50_get_current_mode(struct rs50_ff_data *ff)
+static int hidpp_dd_get_current_mode(struct hidpp_dd_ff_data *ff)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
 	struct hid_device *hid = hidpp->hid_dev;
@@ -6695,8 +6730,8 @@ static int rs50_get_current_mode(struct rs50_ff_data *ff)
 	u8 params[3] = {0, 0, 0};
 	int ret;
 
-	if (ff->idx_profile == RS50_FEATURE_NOT_FOUND) {
-		hid_dbg(hid, "RS50: Profile feature not found, defaulting to desktop mode\n");
+	if (ff->idx_profile == HIDPP_DD_FEATURE_NOT_FOUND) {
+		dd_dbg(hid, "Profile feature not found, defaulting to desktop mode\n");
 		ff->current_profile = 0;
 		ff->current_mode = 0;
 		ff->mode_known = false;
@@ -6704,9 +6739,9 @@ static int rs50_get_current_mode(struct rs50_ff_data *ff)
 	}
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile,
-					  RS50_HIDPP_FN_GET, params, 0, &response);
+					  HIDPP_DD_HIDPP_FN_GET, params, 0, &response);
 	if (ret) {
-		hid_warn(hid, "RS50: Failed to query mode: %d, assuming desktop\n",
+		dd_warn(hid, "Failed to query mode: %d, assuming desktop\n",
 			 ret);
 		ff->current_profile = 0;
 		ff->current_mode = 0;
@@ -6727,7 +6762,7 @@ static int rs50_get_current_mode(struct rs50_ff_data *ff)
 	ff->current_mode = (ff->current_profile == 0) ? 0 : 1;
 	ff->mode_known = true;
 
-	hid_info(hid, "RS50: Current mode: %s (profile %d)\n",
+	dd_info(hid, "Current mode: %s (profile %d)\n",
 		 ff->current_mode ? "onboard" : "desktop", ff->current_profile);
 
 	return 0;
@@ -6738,7 +6773,7 @@ static int rs50_get_current_mode(struct rs50_ff_data *ff)
  * Profile 0 = Desktop mode
  * Profiles 1-5 = Onboard profiles
  */
-static int rs50_set_mode(struct rs50_ff_data *ff, u8 profile)
+static int hidpp_dd_set_mode(struct hidpp_dd_ff_data *ff, u8 profile)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
 	struct hid_device *hid = hidpp->hid_dev;
@@ -6746,13 +6781,13 @@ static int rs50_set_mode(struct rs50_ff_data *ff, u8 profile)
 	u8 params[3];
 	int ret;
 
-	if (ff->idx_profile == RS50_FEATURE_NOT_FOUND) {
-		hid_warn(hid, "RS50: Profile feature not found\n");
+	if (ff->idx_profile == HIDPP_DD_FEATURE_NOT_FOUND) {
+		dd_warn(hid, "Profile feature not found\n");
 		return -ENODEV;
 	}
 
 	if (profile > 5) {
-		hid_warn(hid, "RS50: Invalid profile %d (must be 0-5)\n", profile);
+		dd_warn(hid, "Invalid profile %d (must be 0-5)\n", profile);
 		return -EINVAL;
 	}
 
@@ -6762,7 +6797,7 @@ static int rs50_set_mode(struct rs50_ff_data *ff, u8 profile)
 	 * takes the plain profile number in params[0] (`10ff172d 03` =
 	 * slot 3, empty/0 = desktop) - same on native and compat, and
 	 * symmetric with the fn=1 GET ([profile][mode], see
-	 * rs50_get_current_mode). An earlier revision briefly encoded
+	 * hidpp_dd_get_current_mode). An earlier revision briefly encoded
 	 * the SET as [0x02, slot, 0] after a capture-note misparse; the
 	 * wheel reads that params[0]=2 as "profile 2" (verified: the
 	 * OLED landed on slot 2's name).
@@ -6772,16 +6807,16 @@ static int rs50_set_mode(struct rs50_ff_data *ff, u8 profile)
 	params[2] = 0;
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile,
-					  RS50_HIDPP_FN_SET, params, 3, &response);
+					  HIDPP_DD_HIDPP_FN_SET, params, 3, &response);
 	if (ret) {
-		hid_warn(hid, "RS50: Failed to set profile %d: %d\n", profile, ret);
+		dd_warn(hid, "Failed to set profile %d: %d\n", profile, ret);
 		return ret;
 	}
 
 	ff->current_profile = profile;
 	ff->current_mode = (profile == 0) ? 0 : 1;
 
-	hid_info(hid, "RS50: Switched to %s mode (profile %d)\n",
+	dd_info(hid, "Switched to %s mode (profile %d)\n",
 		 ff->current_mode ? "onboard" : "desktop", profile);
 
 	/*
@@ -6791,7 +6826,7 @@ static int rs50_set_mode(struct rs50_ff_data *ff, u8 profile)
 	 * but the settings we read via HID++ GETs don't trigger their own
 	 * events.
 	 *
-	 * G Pro's settings-only rs50_ff_data leaves ff->wq NULL; skip the
+	 * G Pro's settings-only hidpp_dd_ff_data leaves ff->wq NULL; skip the
 	 * re-query there to avoid a NULL-deref in queue_work. Callers on
 	 * that path already updated the cache fields above and the
 	 * per-sysfs-handler get will re-fetch on the next read.
@@ -6803,13 +6838,13 @@ static int rs50_set_mode(struct rs50_ff_data *ff, u8 profile)
 }
 
 /* Forward declarations for LIGHTSYNC functions */
-static int rs50_lightsync_enable(struct hidpp_device *hidpp, struct rs50_ff_data *ff);
-static void rs50_lightsync_query_slot_names(struct hidpp_device *hidpp,
-					    struct rs50_ff_data *ff);
-static void rs50_lightsync_query_slot_configs(struct hidpp_device *hidpp,
-					      struct rs50_ff_data *ff);
-static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
-				     struct rs50_ff_data *ff, u8 slot);
+static int hidpp_dd_lightsync_enable(struct hidpp_device *hidpp, struct hidpp_dd_ff_data *ff);
+static void hidpp_dd_lightsync_query_slot_names(struct hidpp_device *hidpp,
+					    struct hidpp_dd_ff_data *ff);
+static void hidpp_dd_lightsync_query_slot_configs(struct hidpp_device *hidpp,
+					      struct hidpp_dd_ff_data *ff);
+static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
+				     struct hidpp_dd_ff_data *ff, u8 slot);
 
 /*
  * Query current device settings using discovered feature indices.
@@ -6822,7 +6857,7 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
  * default alone. Shared by the RS50 and G Pro settings init paths so
  * they cannot drift on which settings get queried (SYS.F15).
  */
-static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
+static void hidpp_dd_ff_query_common_settings(struct hidpp_dd_ff_data *ff)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
 	struct hid_device *hid = hidpp->hid_dev;
@@ -6831,9 +6866,9 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 	int ret;
 	u16 value;
 
-	if (ff->idx_range != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_range != HIDPP_DD_FEATURE_NOT_FOUND) {
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_range,
-						  RS50_HIDPP_FN_GET, params, 0, &response);
+						  HIDPP_DD_HIDPP_FN_GET, params, 0, &response);
 		if (ret == 0) {
 			value = (response.fap.params[0] << 8) | response.fap.params[1];
 			if (value >= 90 && value <= 2700) {
@@ -6843,9 +6878,9 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 		}
 	}
 
-	if (ff->idx_strength != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_strength != HIDPP_DD_FEATURE_NOT_FOUND) {
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_strength,
-						  RS50_HIDPP_FN_GET, params, 0, &response);
+						  HIDPP_DD_HIDPP_FN_GET, params, 0, &response);
 		if (ret == 0) {
 			value = (response.fap.params[0] << 8) | response.fap.params[1];
 			ff->strength = value;
@@ -6854,9 +6889,9 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 		}
 	}
 
-	if (ff->idx_damping != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_damping != HIDPP_DD_FEATURE_NOT_FOUND) {
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_damping,
-						  RS50_HIDPP_FN_GET, params, 0, &response);
+						  HIDPP_DD_HIDPP_FN_GET, params, 0, &response);
 		if (ret == 0) {
 			value = (response.fap.params[0] << 8) | response.fap.params[1];
 			ff->damping = value;
@@ -6865,9 +6900,9 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 		}
 	}
 
-	if (ff->idx_trueforce != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_trueforce != HIDPP_DD_FEATURE_NOT_FOUND) {
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_trueforce,
-						  RS50_HIDPP_FN_GET, params, 0, &response);
+						  HIDPP_DD_HIDPP_FN_GET, params, 0, &response);
 		if (ret == 0) {
 			value = (response.fap.params[0] << 8) | response.fap.params[1];
 			ff->trueforce = value;
@@ -6876,9 +6911,9 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 		}
 	}
 
-	if (ff->idx_brakeforce != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_brakeforce != HIDPP_DD_FEATURE_NOT_FOUND) {
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_brakeforce,
-						  RS50_HIDPP_FN_GET, params, 0, &response);
+						  HIDPP_DD_HIDPP_FN_GET, params, 0, &response);
 		if (ret == 0) {
 			value = (response.fap.params[0] << 8) | response.fap.params[1];
 			ff->brake_force = value;
@@ -6887,9 +6922,9 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 		}
 	}
 
-	if (ff->idx_filter != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_filter != HIDPP_DD_FEATURE_NOT_FOUND) {
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_filter,
-						  RS50_HIDPP_FN_GET, params, 0, &response);
+						  HIDPP_DD_HIDPP_FN_GET, params, 0, &response);
 		if (ret == 0) {
 			ff->ffb_filter_auto = (response.fap.params[0] == 0x05) ? 1 : 0;
 			ff->ffb_filter = response.fap.params[2];
@@ -6911,7 +6946,7 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 	 * 16-bit big-endian per the official spec - decode both bytes,
 	 * not just the LSB.
 	 */
-	if (ff->idx_brightness != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_brightness != HIDPP_DD_FEATURE_NOT_FOUND) {
 		/*
 		 * One-time getInfo probe (fn0): official layout is
 		 * maxBrightness (BE16), steps LSB, capabilities,
@@ -6922,7 +6957,7 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 		if (!ff->brightness_info_read) {
 			ret = hidpp_send_fap_command_sync(hidpp,
 					ff->idx_brightness,
-					RS50_HIDPP_FN_GET_INFO, params, 0,
+					HIDPP_DD_HIDPP_FN_GET_INFO, params, 0,
 					&response);
 			if (ret == 0) {
 				u16 max = (response.fap.params[0] << 8) |
@@ -6941,7 +6976,7 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 		}
 
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_brightness,
-						  RS50_HIDPP_FN_GET, params, 0, &response);
+						  HIDPP_DD_HIDPP_FN_GET, params, 0, &response);
 		if (ret == 0) {
 			u16 raw = (response.fap.params[0] << 8) |
 				  response.fap.params[1];
@@ -6958,7 +6993,7 @@ static void rs50_ff_query_common_settings(struct rs50_ff_data *ff)
 	}
 }
 
-static void rs50_ff_query_settings(struct rs50_ff_data *ff)
+static void hidpp_dd_ff_query_settings(struct hidpp_dd_ff_data *ff)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
 	struct hid_device *hid;
@@ -6970,20 +7005,20 @@ static void rs50_ff_query_settings(struct rs50_ff_data *ff)
 		return;
 
 	hid = hidpp->hid_dev;
-	hid_dbg(hid, "RS50: Querying device settings\n");
+	dd_dbg(hid, "Querying device settings\n");
 
 	/* Query mode/profile first - this affects which settings are available */
-	rs50_get_current_mode(ff);
+	hidpp_dd_get_current_mode(ff);
 
-	rs50_ff_query_common_settings(ff);
+	hidpp_dd_ff_query_common_settings(ff);
 
-	hid_dbg(hid, "RS50: Settings query completed\n");
+	dd_dbg(hid, "Settings query completed\n");
 
 	/* Enable LIGHTSYNC LED subsystem - required before LED commands work */
-	if (ff->idx_lightsync != RS50_FEATURE_NOT_FOUND) {
-		ret = rs50_lightsync_enable(hidpp, ff);
+	if (ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND) {
+		ret = hidpp_dd_lightsync_enable(hidpp, ff);
 		if (ret) {
-			hid_warn(hid, "RS50: Failed to enable LIGHTSYNC: %d\n", ret);
+			dd_warn(hid, "Failed to enable LIGHTSYNC: %d\n", ret);
 		} else {
 			/* Query slot names and RGB configs from the device
 			 * so the in-driver cache reflects device state before
@@ -6991,20 +7026,20 @@ static void rs50_ff_query_settings(struct rs50_ff_data *ff)
 			 * holds driver default white and the apply below would
 			 * overwrite any G Hub-saved colors (PROBE.F4).
 			 */
-			rs50_lightsync_query_slot_names(hidpp, ff);
-			rs50_lightsync_query_slot_configs(hidpp, ff);
+			hidpp_dd_lightsync_query_slot_names(hidpp, ff);
+			hidpp_dd_lightsync_query_slot_configs(hidpp, ff);
 
 			/*
 			 * After enabling, send initial configuration to the device.
 			 * Without this, LEDs are enabled but have no config, staying dark.
 			 * The sequence must be: enable (0x6C) -> set config (0x2C) -> activate (0x3C)
 			 */
-			hid_dbg(hid, "RS50: Sending initial LED configuration\n");
-			ret = rs50_lightsync_apply_slot(hidpp, ff, ff->led_active_slot);
+			dd_dbg(hid, "Sending initial LED configuration\n");
+			ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, ff->led_active_slot);
 			if (ret)
-				hid_warn(hid, "RS50: Failed to apply initial LED config: %d\n", ret);
+				dd_warn(hid, "Failed to apply initial LED config: %d\n", ret);
 			else
-				hid_dbg(hid, "RS50: Initial LED configuration applied\n");
+				dd_dbg(hid, "Initial LED configuration applied\n");
 		}
 	}
 }
@@ -7013,9 +7048,9 @@ static void rs50_ff_query_settings(struct rs50_ff_data *ff)
  * Deferred FFB initialization - waits for all USB interfaces to be ready.
  * Uses event-based retry logic instead of fixed delay.
  */
-static void rs50_ff_init_work(struct work_struct *work)
+static void hidpp_dd_ff_init_work(struct work_struct *work)
 {
-	struct rs50_ff_data *ff = container_of(work, struct rs50_ff_data,
+	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
 					       init_work.work);
 	struct hidpp_device *hidpp = ff->hidpp;
 	struct hid_device *hid = hidpp->hid_dev;
@@ -7027,12 +7062,12 @@ static void rs50_ff_init_work(struct work_struct *work)
 	int ret;
 	int total_wait_ms;
 
-	hid_dbg(hid, "RS50: FFB init attempt %d/%d\n",
-		ff->init_retries + 1, RS50_FF_MAX_INIT_RETRIES);
+	dd_dbg(hid, "FFB init attempt %d/%d\n",
+		ff->init_retries + 1, HIDPP_DD_FF_MAX_INIT_RETRIES);
 
 	/* Check if we're being shut down */
 	if (atomic_read_acquire(&ff->stopping)) {
-		hid_dbg(hid, "RS50: FFB init aborted - driver shutting down\n");
+		dd_dbg(hid, "FFB init aborted - driver shutting down\n");
 		return;
 	}
 
@@ -7042,20 +7077,20 @@ static void rs50_ff_init_work(struct work_struct *work)
 	 */
 	iface2 = usb_ifnum_to_if(hid_to_usb_dev(hid), 2);
 	if (!iface2) {
-		hid_err(hid, "RS50: FFB init failed - USB device structure invalid\n");
+		dd_err(hid, "FFB init failed - USB device structure invalid\n");
 		return;
 	}
 
 	ff_hdev = usb_get_intfdata(iface2);
 	if (!ff_hdev) {
-		if (ff->init_retries++ < RS50_FF_MAX_INIT_RETRIES) {
+		if (ff->init_retries++ < HIDPP_DD_FF_MAX_INIT_RETRIES) {
 			queue_delayed_work(ff->wq, &ff->init_work,
-					   msecs_to_jiffies(RS50_FF_INIT_RETRY_MS));
+					   msecs_to_jiffies(HIDPP_DD_FF_INIT_RETRY_MS));
 			return;
 		}
-		total_wait_ms = RS50_FF_INIT_DELAY_MS +
-				(RS50_FF_MAX_INIT_RETRIES * RS50_FF_INIT_RETRY_MS);
-		hid_err(hid, "RS50: Force feedback unavailable - FFB endpoint did not initialize after %dms\n",
+		total_wait_ms = HIDPP_DD_FF_INIT_DELAY_MS +
+				(HIDPP_DD_FF_MAX_INIT_RETRIES * HIDPP_DD_FF_INIT_RETRY_MS);
+		dd_err(hid, "Force feedback unavailable - FFB endpoint did not initialize after %dms\n",
 			total_wait_ms);
 		return;
 	}
@@ -7066,34 +7101,34 @@ static void rs50_ff_init_work(struct work_struct *work)
 	 */
 	iface0 = usb_ifnum_to_if(hid_to_usb_dev(hid), 0);
 	if (!iface0) {
-		hid_err(hid, "RS50: FFB init failed - USB device structure invalid\n");
+		dd_err(hid, "FFB init failed - USB device structure invalid\n");
 		return;
 	}
 
 	input_hdev = usb_get_intfdata(iface0);
 	if (!input_hdev) {
-		if (ff->init_retries++ < RS50_FF_MAX_INIT_RETRIES) {
+		if (ff->init_retries++ < HIDPP_DD_FF_MAX_INIT_RETRIES) {
 			queue_delayed_work(ff->wq, &ff->init_work,
-					   msecs_to_jiffies(RS50_FF_INIT_RETRY_MS));
+					   msecs_to_jiffies(HIDPP_DD_FF_INIT_RETRY_MS));
 			return;
 		}
-		total_wait_ms = RS50_FF_INIT_DELAY_MS +
-				(RS50_FF_MAX_INIT_RETRIES * RS50_FF_INIT_RETRY_MS);
-		hid_err(hid, "RS50: Force feedback unavailable - wheel input device did not initialize after %dms\n",
+		total_wait_ms = HIDPP_DD_FF_INIT_DELAY_MS +
+				(HIDPP_DD_FF_MAX_INIT_RETRIES * HIDPP_DD_FF_INIT_RETRY_MS);
+		dd_err(hid, "Force feedback unavailable - wheel input device did not initialize after %dms\n",
 			total_wait_ms);
 		return;
 	}
 
 	/* Check if input device has been registered */
 	if (list_empty(&input_hdev->inputs)) {
-		if (ff->init_retries++ < RS50_FF_MAX_INIT_RETRIES) {
+		if (ff->init_retries++ < HIDPP_DD_FF_MAX_INIT_RETRIES) {
 			queue_delayed_work(ff->wq, &ff->init_work,
-					   msecs_to_jiffies(RS50_FF_INIT_RETRY_MS));
+					   msecs_to_jiffies(HIDPP_DD_FF_INIT_RETRY_MS));
 			return;
 		}
-		total_wait_ms = RS50_FF_INIT_DELAY_MS +
-				(RS50_FF_MAX_INIT_RETRIES * RS50_FF_INIT_RETRY_MS);
-		hid_err(hid, "RS50: Force feedback unavailable - wheel not registered as input device after %dms\n",
+		total_wait_ms = HIDPP_DD_FF_INIT_DELAY_MS +
+				(HIDPP_DD_FF_MAX_INIT_RETRIES * HIDPP_DD_FF_INIT_RETRY_MS);
+		dd_err(hid, "Force feedback unavailable - wheel not registered as input device after %dms\n",
 			total_wait_ms);
 		return;
 	}
@@ -7101,22 +7136,22 @@ static void rs50_ff_init_work(struct work_struct *work)
 	hidinput = list_entry(input_hdev->inputs.next, struct hid_input, list);
 	input = hidinput->input;
 	if (!input) {
-		hid_err(hid, "RS50: Force feedback unavailable - input device structure is invalid\n");
+		dd_err(hid, "Force feedback unavailable - input device structure is invalid\n");
 		return;
 	}
 
 	/* Success - log how long initialization took */
 	if (ff->init_retries > 0) {
-		hid_info(hid, "RS50: Device ready after %d retries (%dms)\n",
+		dd_info(hid, "Device ready after %d retries (%dms)\n",
 			 ff->init_retries,
-			 RS50_FF_INIT_DELAY_MS + (ff->init_retries * RS50_FF_INIT_RETRY_MS));
+			 HIDPP_DD_FF_INIT_DELAY_MS + (ff->init_retries * HIDPP_DD_FF_INIT_RETRY_MS));
 	}
 
 	/* Store references */
 	ff->ff_hdev = ff_hdev;
 	ff->input = input;
 
-	hid_dbg(hid, "RS50: Setting FF capability bits\n");
+	dd_dbg(hid, "Setting FF capability bits\n");
 
 	/*
 	 * Advertised effect surface. Set these BEFORE input_ff_create so
@@ -7135,7 +7170,7 @@ static void rs50_ff_init_work(struct work_struct *work)
 	 * interface 0 input reports; the RS50 firmware itself only
 	 * understands raw constant forces on interface 2 endpoint 0x03.
 	 * FF_CONSTANT is the fundamental one; everything else layers on
-	 * top at the rs50_ff_effect_tick level.
+	 * top at the hidpp_dd_ff_effect_tick level.
 	 *
 	 * FF_RUMBLE is a gamepad effect (strong + weak motor pair); not
 	 * native to a direct-drive wheel. We approximate it as a slow
@@ -7167,18 +7202,18 @@ static void rs50_ff_init_work(struct work_struct *work)
 	set_bit(FF_AUTOCENTER, input->ffbit);
 
 	/* Create FF device with our custom handlers */
-	ret = input_ff_create(input, RS50_FF_MAX_EFFECTS);
+	ret = input_ff_create(input, HIDPP_DD_FF_MAX_EFFECTS);
 	if (ret) {
-		hid_err(hid, "RS50: Force feedback unavailable - kernel FF subsystem error %d\n", ret);
+		dd_err(hid, "Force feedback unavailable - kernel FF subsystem error %d\n", ret);
 		return;
 	}
 
 	input->ff->private = ff;
-	input->ff->upload = rs50_ff_upload;
-	input->ff->erase = rs50_ff_erase;
-	input->ff->playback = rs50_ff_playback;
-	input->ff->set_gain = rs50_ff_set_gain;
-	input->ff->set_autocenter = rs50_ff_set_autocenter;
+	input->ff->upload = hidpp_dd_ff_upload;
+	input->ff->erase = hidpp_dd_ff_erase;
+	input->ff->playback = hidpp_dd_ff_playback;
+	input->ff->set_gain = hidpp_dd_ff_set_gain;
+	input->ff->set_autocenter = hidpp_dd_ff_set_autocenter;
 
 	/*
 	 * Open interface 2's HID device for FFB I/O.
@@ -7187,18 +7222,18 @@ static void rs50_ff_init_work(struct work_struct *work)
 	 */
 	ret = hid_hw_open(ff_hdev);
 	if (ret) {
-		hid_err(hid, "RS50: Cannot open FFB interface (error %d) - FFB disabled\n", ret);
+		dd_err(hid, "Cannot open FFB interface (error %d) - FFB disabled\n", ret);
 		input_ff_destroy(input);
 		return;
 	}
 	ff->ff_hdev_open = true;
 
-	/* Mark as fully initialized - timer was already set up in rs50_ff_init() */
+	/* Mark as fully initialized - timer was already set up in hidpp_dd_ff_init() */
 	atomic_set(&ff->initialized, 1);
 
 	/*
 	 * Start the periodic FFB refresh timer (05 07 command).
-	 * Runs every RS50_FF_REFRESH_INTERVAL_MS (20 s) during playback.
+	 * Runs every HIDPP_DD_FF_REFRESH_INTERVAL_MS (20 s) during playback.
 	 *
 	 * Note: The refresh command uses Report ID 0x05, which is not declared
 	 * in interface 2's HID descriptor (only Report ID 0x01 is declared).
@@ -7209,16 +7244,16 @@ static void rs50_ff_init_work(struct work_struct *work)
 	/* Send refresh immediately, then schedule periodic refreshes */
 	queue_delayed_work(ff->wq, &ff->refresh_work, 0);
 	queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
-			   msecs_to_jiffies(RS50_FF_REFRESH_INTERVAL_MS));
-	hid_info(hid, "RS50: FFB refresh command queued (then every %dms)\n",
-		RS50_FF_REFRESH_INTERVAL_MS);
+			   msecs_to_jiffies(HIDPP_DD_FF_REFRESH_INTERVAL_MS));
+	dd_info(hid, "FFB refresh command queued (then every %dms)\n",
+		HIDPP_DD_FF_REFRESH_INTERVAL_MS);
 
 	/*
 	 * Effect timer is started on-demand when effects play.
 	 * The RS50 wheel requires continuous FFB commands to maintain force.
 	 * Timer will be started by playback callback when needed.
 	 */
-	hid_info(hid, "RS50: Effect timer ready (interval=%dms, starts on effect play)\n", RS50_FF_TIMER_INTERVAL_MS);
+	dd_info(hid, "Effect timer ready (interval=%dms, starts on effect play)\n", HIDPP_DD_FF_TIMER_INTERVAL_MS);
 
 	/*
 	 * Re-open the HID device for IO before sending HID++ commands.
@@ -7226,25 +7261,25 @@ static void rs50_ff_init_work(struct work_struct *work)
 	 * the interrupt IN endpoint. We need it active to receive responses.
 	 *
 	 * IMPORTANT: We do NOT close it here - we keep it open for runtime
-	 * HID++ communication via sysfs. It will be closed in rs50_ff_destroy().
+	 * HID++ communication via sysfs. It will be closed in hidpp_dd_ff_destroy().
 	 */
 	ret = hid_hw_open(hid);
 	if (ret) {
-		hid_err(hid, "RS50: Cannot read wheel settings (error %d) - using defaults\n", ret);
+		dd_err(hid, "Cannot read wheel settings (error %d) - using defaults\n", ret);
 		goto skip_hidpp;
 	}
 	ff->hid_open = true;
 
 	/* Discover HID++ feature indices before querying settings */
-	rs50_ff_discover_features(ff);
+	hidpp_dd_ff_discover_features(ff);
 
 	/* Query device settings to sync our cached values */
-	rs50_ff_query_settings(ff);
+	hidpp_dd_ff_query_settings(ff);
 
 skip_hidpp:
 
-	hid_info(hid, "RS50: Force feedback initialized (full effect palette; conditions emulated host-side, textures via TrueForce)\n");
-	hid_dbg(hid, "RS50: Init work completed successfully\n");
+	dd_info(hid, "Force feedback initialized (full effect palette; conditions emulated host-side, textures via TrueForce)\n");
+	dd_dbg(hid, "Init work completed successfully\n");
 }
 
 /*
@@ -7257,7 +7292,7 @@ static ssize_t wheel_range_show(struct device *dev, struct device_attribute *att
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -7288,7 +7323,7 @@ static ssize_t wheel_range_show(struct device *dev, struct device_attribute *att
  *   HID++ feature 0x8138 fn 2 - set live steering angle
  *       params: [angle_hi, angle_lo, 0x00] (16-bit big-endian degrees)
  *   HID++ feature 0x8137 fn 2 - switch profile / mode (already wired
- *       as ff->idx_profile by rs50_discover_settings_features)
+ *       as ff->idx_profile by hidpp_dd_discover_settings_features)
  *       params: [0x00, 0x00, 0x00] = desktop mode (verified)
  *               [0x02, slot, 0x00] = onboard slot 1..5 (encoding for
  *                                    N>0 not yet fully verified)
@@ -7297,7 +7332,7 @@ static ssize_t wheel_range_show(struct device *dev, struct device_attribute *att
  * driving this wheel firmware (dev/captures/2026-04-26_compat_*.pcapng).
  * They are looked up via ROOT.GetFeature so the driver still works if
  * a future firmware revision reorders the feature table; the resulting
- * indices are cached on rs50_ff_data so we only pay the discovery cost
+ * indices are cached on hidpp_dd_ff_data so we only pay the discovery cost
  * once per wheel session.
  *
  * The wheel must be in desktop mode for the live angle command to
@@ -7324,7 +7359,7 @@ static ssize_t wheel_range_show(struct device *dev, struct device_attribute *att
  * dependent, hence the hardcoded fallback indices.
  *
  * Mode switch in compat mode goes through feature 0x8137 (Profile,
- * already wired by rs50_discover_settings_features as ff->idx_profile)
+ * already wired by hidpp_dd_discover_settings_features as ff->idx_profile)
  * with fn=2 and params [profile, 0, 0]: 0 = desktop, 1..5 = onboard
  * slot (live-verified against the OLED 2026-07-02; an interim
  * [mode_class, slot] reading of the captures was wrong).
@@ -7339,17 +7374,17 @@ static ssize_t wheel_range_show(struct device *dev, struct device_attribute *att
  * the FFB filter level to 11, not switching modes. Removed and
  * replaced with the wheel_profile path above.
  */
-#define RS50_COMPAT_FEATURE_ID_ANGLE		0x8138
-#define RS50_COMPAT_FALLBACK_IDX_ANGLE		0x18
-#define RS50_COMPAT_FN_ANGLE			(2 << 4)
+#define HIDPP_DD_COMPAT_FEATURE_ID_ANGLE		0x8138
+#define HIDPP_DD_COMPAT_FALLBACK_IDX_ANGLE		0x18
+#define HIDPP_DD_COMPAT_FN_ANGLE			(2 << 4)
 
-#define RS50_COMPAT_FEATURE_ID_STRENGTH		0x8136
-#define RS50_COMPAT_FALLBACK_IDX_STRENGTH	0x16
-#define RS50_COMPAT_FN_STRENGTH			(2 << 4)
+#define HIDPP_DD_COMPAT_FEATURE_ID_STRENGTH		0x8136
+#define HIDPP_DD_COMPAT_FALLBACK_IDX_STRENGTH	0x16
+#define HIDPP_DD_COMPAT_FN_STRENGTH			(2 << 4)
 
-#define RS50_COMPAT_FEATURE_ID_TRUEFORCE	0x8139
-#define RS50_COMPAT_FALLBACK_IDX_TRUEFORCE	0x19
-#define RS50_COMPAT_FN_TRUEFORCE		(3 << 4)
+#define HIDPP_DD_COMPAT_FEATURE_ID_TRUEFORCE	0x8139
+#define HIDPP_DD_COMPAT_FALLBACK_IDX_TRUEFORCE	0x19
+#define HIDPP_DD_COMPAT_FN_TRUEFORCE		(3 << 4)
 
 /*
  * Damping verified at idx 0x14 fn=1 from the isolated damping-only
@@ -7359,9 +7394,9 @@ static ssize_t wheel_range_show(struct device *dev, struct device_attribute *att
  * capture, only 10ff152c (read) and 10ff152a (other subsystem).
  * Feature ID 0x8133 matches the canonical native damping page.
  */
-#define RS50_COMPAT_FEATURE_ID_DAMPING		0x8133
-#define RS50_COMPAT_FALLBACK_IDX_DAMPING	0x14
-#define RS50_COMPAT_FN_DAMPING			(1 << 4)
+#define HIDPP_DD_COMPAT_FEATURE_ID_DAMPING		0x8133
+#define HIDPP_DD_COMPAT_FALLBACK_IDX_DAMPING	0x14
+#define HIDPP_DD_COMPAT_FN_DAMPING			(1 << 4)
 
 /*
  * FFB filter verified at idx 0x1a fn=2 from the isolated filter-only
@@ -7369,11 +7404,11 @@ static ssize_t wheel_range_show(struct device *dev, struct device_attribute *att
  * Compat-mode parameter format is simpler than native (no flags
  * byte): bytes 0-1 zero, byte 2 carries the 1..15 level.
  */
-#define RS50_COMPAT_FEATURE_ID_FILTER		0x8140
-#define RS50_COMPAT_FALLBACK_IDX_FILTER		0x1A
-#define RS50_COMPAT_FN_FILTER			(2 << 4)
+#define HIDPP_DD_COMPAT_FEATURE_ID_FILTER		0x8140
+#define HIDPP_DD_COMPAT_FALLBACK_IDX_FILTER		0x1A
+#define HIDPP_DD_COMPAT_FN_FILTER			(2 << 4)
 
-static u8 rs50_compat_lookup(struct hidpp_device *hidpp, u16 feature_id,
+static u8 hidpp_dd_compat_lookup(struct hidpp_device *hidpp, u16 feature_id,
 			     u8 fallback_idx, const char *what)
 {
 	struct hid_device *hid = hidpp->hid_dev;
@@ -7383,8 +7418,8 @@ static u8 rs50_compat_lookup(struct hidpp_device *hidpp, u16 feature_id,
 	ret = hidpp_root_get_feature(hidpp, feature_id, &idx);
 	if (ret == 0 && idx != 0)
 		return idx;
-	hid_dbg(hid,
-		"RS50 compat: ROOT.GetFeature(0x%04x) for %s returned %d, falling back to index 0x%02x\n",
+	dd_dbg(hid,
+		"compat: ROOT.GetFeature(0x%04x) for %s returned %d, falling back to index 0x%02x\n",
 		feature_id, what, ret, fallback_idx);
 	return fallback_idx;
 }
@@ -7399,8 +7434,8 @@ static u8 rs50_compat_lookup(struct hidpp_device *hidpp, u16 feature_id,
  * take physical effect on the motor. The compat-mode mode-switch was
  * decoded 2026-04-26 and verified end-to-end against the live wheel.
  */
-static int rs50_compat_set_u16(struct hidpp_device *hidpp,
-			       struct rs50_ff_data *ff,
+static int hidpp_dd_compat_set_u16(struct hidpp_device *hidpp,
+			       struct hidpp_dd_ff_data *ff,
 			       u8 *cached_idx, u16 feature_id, u8 fallback_idx,
 			       u8 fn, u16 value, const char *what)
 {
@@ -7408,8 +7443,8 @@ static int rs50_compat_set_u16(struct hidpp_device *hidpp,
 	u8 params[3];
 	int ret;
 
-	if (*cached_idx == RS50_FEATURE_NOT_FOUND)
-		*cached_idx = rs50_compat_lookup(hidpp, feature_id,
+	if (*cached_idx == HIDPP_DD_FEATURE_NOT_FOUND)
+		*cached_idx = hidpp_dd_compat_lookup(hidpp, feature_id,
 						 fallback_idx, what);
 
 	params[0] = (value >> 8) & 0xFF;
@@ -7421,64 +7456,64 @@ static int rs50_compat_set_u16(struct hidpp_device *hidpp,
 }
 
 /*
- * Compat-mode FFB filter setter. Distinct from rs50_compat_set_u16
+ * Compat-mode FFB filter setter. Distinct from hidpp_dd_compat_set_u16
  * because the wire format puts the level in params[2], not as a
  * BE16 in params[0..1].
  */
-static int rs50_compat_set_filter(struct hidpp_device *hidpp,
-				  struct rs50_ff_data *ff, u8 level)
+static int hidpp_dd_compat_set_filter(struct hidpp_device *hidpp,
+				  struct hidpp_dd_ff_data *ff, u8 level)
 {
 	struct hidpp_report response;
 	u8 params[3];
 	int ret;
 
-	if (ff->idx_compat_filter == RS50_FEATURE_NOT_FOUND)
-		ff->idx_compat_filter = rs50_compat_lookup(hidpp,
-			RS50_COMPAT_FEATURE_ID_FILTER,
-			RS50_COMPAT_FALLBACK_IDX_FILTER, "compat set filter");
+	if (ff->idx_compat_filter == HIDPP_DD_FEATURE_NOT_FOUND)
+		ff->idx_compat_filter = hidpp_dd_compat_lookup(hidpp,
+			HIDPP_DD_COMPAT_FEATURE_ID_FILTER,
+			HIDPP_DD_COMPAT_FALLBACK_IDX_FILTER, "compat set filter");
 	params[0] = 0x00;
 	params[1] = 0x00;
 	params[2] = level;
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_compat_filter,
-					  RS50_COMPAT_FN_FILTER,
+					  HIDPP_DD_COMPAT_FN_FILTER,
 					  params, 3, &response);
 	return hidpp_errno(hidpp->hid_dev, ret, "compat set filter");
 }
 
-static int rs50_compat_set_range(struct hidpp_device *hidpp,
-				 struct rs50_ff_data *ff, int range)
+static int hidpp_dd_compat_set_range(struct hidpp_device *hidpp,
+				 struct hidpp_dd_ff_data *ff, int range)
 {
-	return rs50_compat_set_u16(hidpp, ff, &ff->idx_compat_angle,
-		RS50_COMPAT_FEATURE_ID_ANGLE,
-		RS50_COMPAT_FALLBACK_IDX_ANGLE,
-		RS50_COMPAT_FN_ANGLE, (u16)range, "compat set range");
+	return hidpp_dd_compat_set_u16(hidpp, ff, &ff->idx_compat_angle,
+		HIDPP_DD_COMPAT_FEATURE_ID_ANGLE,
+		HIDPP_DD_COMPAT_FALLBACK_IDX_ANGLE,
+		HIDPP_DD_COMPAT_FN_ANGLE, (u16)range, "compat set range");
 }
 
-static int rs50_compat_set_strength(struct hidpp_device *hidpp,
-				    struct rs50_ff_data *ff, u16 value)
+static int hidpp_dd_compat_set_strength(struct hidpp_device *hidpp,
+				    struct hidpp_dd_ff_data *ff, u16 value)
 {
-	return rs50_compat_set_u16(hidpp, ff, &ff->idx_compat_strength,
-		RS50_COMPAT_FEATURE_ID_STRENGTH,
-		RS50_COMPAT_FALLBACK_IDX_STRENGTH,
-		RS50_COMPAT_FN_STRENGTH, value, "compat set strength");
+	return hidpp_dd_compat_set_u16(hidpp, ff, &ff->idx_compat_strength,
+		HIDPP_DD_COMPAT_FEATURE_ID_STRENGTH,
+		HIDPP_DD_COMPAT_FALLBACK_IDX_STRENGTH,
+		HIDPP_DD_COMPAT_FN_STRENGTH, value, "compat set strength");
 }
 
-static int rs50_compat_set_trueforce(struct hidpp_device *hidpp,
-				     struct rs50_ff_data *ff, u16 value)
+static int hidpp_dd_compat_set_trueforce(struct hidpp_device *hidpp,
+				     struct hidpp_dd_ff_data *ff, u16 value)
 {
-	return rs50_compat_set_u16(hidpp, ff, &ff->idx_compat_trueforce,
-		RS50_COMPAT_FEATURE_ID_TRUEFORCE,
-		RS50_COMPAT_FALLBACK_IDX_TRUEFORCE,
-		RS50_COMPAT_FN_TRUEFORCE, value, "compat set trueforce");
+	return hidpp_dd_compat_set_u16(hidpp, ff, &ff->idx_compat_trueforce,
+		HIDPP_DD_COMPAT_FEATURE_ID_TRUEFORCE,
+		HIDPP_DD_COMPAT_FALLBACK_IDX_TRUEFORCE,
+		HIDPP_DD_COMPAT_FN_TRUEFORCE, value, "compat set trueforce");
 }
 
-static int rs50_compat_set_damping(struct hidpp_device *hidpp,
-				   struct rs50_ff_data *ff, u16 value)
+static int hidpp_dd_compat_set_damping(struct hidpp_device *hidpp,
+				   struct hidpp_dd_ff_data *ff, u16 value)
 {
-	return rs50_compat_set_u16(hidpp, ff, &ff->idx_compat_damping,
-		RS50_COMPAT_FEATURE_ID_DAMPING,
-		RS50_COMPAT_FALLBACK_IDX_DAMPING,
-		RS50_COMPAT_FN_DAMPING, value, "compat set damping");
+	return hidpp_dd_compat_set_u16(hidpp, ff, &ff->idx_compat_damping,
+		HIDPP_DD_COMPAT_FEATURE_ID_DAMPING,
+		HIDPP_DD_COMPAT_FALLBACK_IDX_DAMPING,
+		HIDPP_DD_COMPAT_FN_DAMPING, value, "compat set damping");
 }
 
 /*
@@ -7486,22 +7521,22 @@ static int rs50_compat_set_damping(struct hidpp_device *hidpp,
  * the cache on success. Shared by wheel_range_store and the range
  * auto-restore. Sleepable context.
  */
-static int rs50_set_range_hw(struct rs50_ff_data *ff, int range)
+static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range)
 {
 	struct hidpp_device *hidpp = ff->hidpp;
 	struct hidpp_report response;
 	u8 params[3];
 	int ret;
 
-	if (ff->idx_range == RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_range == HIDPP_DD_FEATURE_NOT_FOUND) {
 		/*
 		 * Compat-mode fallback: the standard 0x812F-style range
 		 * feature is not advertised when the RS50 enumerates as a
 		 * G Pro, but a different feature index pair (0x18 / 0x1a)
 		 * accepts the same range as a live host-pushed value. See
-		 * rs50_compat_set_range() for the protocol notes.
+		 * hidpp_dd_compat_set_range() for the protocol notes.
 		 */
-		ret = rs50_compat_set_range(hidpp, ff, range);
+		ret = hidpp_dd_compat_set_range(hidpp, ff, range);
 		if (ret)
 			return ret;
 	} else {
@@ -7530,7 +7565,7 @@ static ssize_t wheel_range_store(struct device *dev, struct device_attribute *at
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int range, ret;
 
 	if (!hidpp)
@@ -7553,14 +7588,14 @@ static ssize_t wheel_range_store(struct device *dev, struct device_attribute *at
 	 */
 	range = clamp(range, 90, 2700);
 
-	ret = rs50_set_range_hw(ff, range);
+	ret = hidpp_dd_set_range_hw(ff, range);
 	if (ret)
 		return ret;
 
 	/* A fresh explicit intent supersedes any owed auto-restore. */
 	ff->range_restore_attempts = 0;
 	ff->restore_want = 0;
-	hid_info(hid, "RS50: Rotation range set to %d degrees\n", range);
+	dd_info(hid, "Rotation range set to %d degrees\n", range);
 	return count;
 }
 
@@ -7579,7 +7614,7 @@ static ssize_t wheel_strength_show(struct device *dev, struct device_attribute *
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -7598,7 +7633,7 @@ static ssize_t wheel_strength_store(struct device *dev, struct device_attribute 
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	int strength, ret;
@@ -7622,11 +7657,11 @@ static ssize_t wheel_strength_store(struct device *dev, struct device_attribute 
 	/* Convert percentage to 0-65535 range */
 	value = (strength * 65535) / 100;
 
-	if (ff->idx_strength == RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_strength == HIDPP_DD_FEATURE_NOT_FOUND) {
 		/* Compat-mode fallback: same encoding as native (Nm * 8192
 		 * scale, capped at u16 max), different feature index. See
-		 * docs/RS50_PROTOCOL_SPECIFICATION.md section 5.1. */
-		ret = rs50_compat_set_strength(hidpp, ff, value);
+		 * docs/HIDPP_DD_PROTOCOL_SPECIFICATION.md section 5.1. */
+		ret = hidpp_dd_compat_set_strength(hidpp, ff, value);
 		if (ret)
 			return ret;
 	} else {
@@ -7643,7 +7678,7 @@ static ssize_t wheel_strength_store(struct device *dev, struct device_attribute 
 	}
 
 	ff->strength = value;
-	hid_info(hid, "RS50: FFB strength set to %d%%\n", strength);
+	dd_info(hid, "FFB strength set to %d%%\n", strength);
 	return count;
 }
 
@@ -7664,7 +7699,7 @@ static ssize_t wheel_compat_gain_show(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -7682,7 +7717,7 @@ static ssize_t wheel_compat_gain_store(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	char pct[8];
 	int val, ret;
 
@@ -7730,7 +7765,7 @@ static ssize_t wheel_autocenter_show(struct device *dev, struct device_attribute
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -7748,7 +7783,7 @@ static ssize_t wheel_autocenter_store(struct device *dev, struct device_attribut
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int val, ret;
 
 	if (!hidpp)
@@ -7766,7 +7801,7 @@ static ssize_t wheel_autocenter_store(struct device *dev, struct device_attribut
 	WRITE_ONCE(ff->autocenter, clamp(val, 0, 65535));
 	if (val && atomic_read(&ff->initialized))
 		mod_timer(&ff->effect_timer, jiffies +
-			  msecs_to_jiffies(RS50_FF_TIMER_INTERVAL_MS));
+			  msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS));
 	return count;
 }
 
@@ -7781,14 +7816,14 @@ static struct device_attribute dev_attr_wheel_compat_autocenter =
  * EFFECTS from games; the wheel's own firmware damping stays on
  * wheel_damping.
  */
-#define RS50_LEVEL_ATTR(_name)						\
+#define HIDPP_DD_LEVEL_ATTR(_name)						\
 static ssize_t wheel_##_name##_show(struct device *dev,		\
 				    struct device_attribute *attr,	\
 				    char *buf)				\
 {									\
 	struct hid_device *hid = to_hid_device(dev);			\
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);		\
-	struct rs50_ff_data *ff;					\
+	struct hidpp_dd_ff_data *ff;					\
 									\
 	if (!hidpp)							\
 		return -ENODEV;						\
@@ -7805,7 +7840,7 @@ static ssize_t wheel_##_name##_store(struct device *dev,		\
 {									\
 	struct hid_device *hid = to_hid_device(dev);			\
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);		\
-	struct rs50_ff_data *ff;					\
+	struct hidpp_dd_ff_data *ff;					\
 	int val, ret;							\
 									\
 	if (!hidpp)							\
@@ -7824,16 +7859,16 @@ static ssize_t wheel_##_name##_store(struct device *dev,		\
 static struct device_attribute dev_attr_wheel_compat_##_name =		\
 	__ATTR(_name, 0664, wheel_##_name##_show, wheel_##_name##_store)
 
-RS50_LEVEL_ATTR(spring_level);
-RS50_LEVEL_ATTR(friction_level);
-RS50_LEVEL_ATTR(damper_level);
+HIDPP_DD_LEVEL_ATTR(spring_level);
+HIDPP_DD_LEVEL_ATTR(friction_level);
+HIDPP_DD_LEVEL_ATTR(damper_level);
 
 static ssize_t wheel_damping_show(struct device *dev, struct device_attribute *attr,
 				 char *buf)
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -7852,7 +7887,7 @@ static ssize_t wheel_damping_store(struct device *dev, struct device_attribute *
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	int damping, ret;
@@ -7876,11 +7911,11 @@ static ssize_t wheel_damping_store(struct device *dev, struct device_attribute *
 	/* Convert to 0-65535 range */
 	value = (damping * 65535) / 100;
 
-	if (ff->idx_damping == RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_damping == HIDPP_DD_FEATURE_NOT_FOUND) {
 		/* Compat-mode fallback: best-guess feature 0x8137 / fallback
-		 * index 0x15 fn 2. See docs/RS50_PROTOCOL_SPECIFICATION.md
+		 * index 0x15 fn 2. See docs/HIDPP_DD_PROTOCOL_SPECIFICATION.md
 		 * section 5.1. */
-		ret = rs50_compat_set_damping(hidpp, ff, value);
+		ret = hidpp_dd_compat_set_damping(hidpp, ff, value);
 		if (ret)
 			return ret;
 	} else {
@@ -7897,7 +7932,7 @@ static ssize_t wheel_damping_store(struct device *dev, struct device_attribute *
 	}
 
 	ff->damping = value;
-	hid_info(hid, "RS50: Damping set to %d%%\n", damping);
+	dd_info(hid, "Damping set to %d%%\n", damping);
 	return count;
 }
 
@@ -7913,7 +7948,7 @@ static ssize_t wheel_trueforce_show(struct device *dev, struct device_attribute 
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -7931,7 +7966,7 @@ static ssize_t wheel_trueforce_store(struct device *dev, struct device_attribute
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	int trueforce, ret;
@@ -7952,11 +7987,11 @@ static ssize_t wheel_trueforce_store(struct device *dev, struct device_attribute
 	trueforce = clamp(trueforce, 0, 100);
 	value = (trueforce * 65535) / 100;
 
-	if (ff->idx_trueforce == RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_trueforce == HIDPP_DD_FEATURE_NOT_FOUND) {
 		/* Compat-mode fallback: feature index 0x19 fn 3 with the
-		 * same 0..0xffff scale. See docs/RS50_PROTOCOL_SPECIFICATION.md
+		 * same 0..0xffff scale. See docs/HIDPP_DD_PROTOCOL_SPECIFICATION.md
 		 * section 5.1. */
-		ret = rs50_compat_set_trueforce(hidpp, ff, value);
+		ret = hidpp_dd_compat_set_trueforce(hidpp, ff, value);
 		if (ret)
 			return ret;
 	} else {
@@ -7973,7 +8008,7 @@ static ssize_t wheel_trueforce_store(struct device *dev, struct device_attribute
 	}
 
 	ff->trueforce = value;
-	hid_info(hid, "RS50: TRUEFORCE set to %d%%\n", trueforce);
+	dd_info(hid, "TRUEFORCE set to %d%%\n", trueforce);
 	return count;
 }
 
@@ -7986,7 +8021,7 @@ static ssize_t wheel_brake_force_show(struct device *dev, struct device_attribut
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -8010,7 +8045,7 @@ static ssize_t wheel_brake_force_store(struct device *dev, struct device_attribu
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	int brake_force, ret;
@@ -8026,7 +8061,7 @@ static ssize_t wheel_brake_force_store(struct device *dev, struct device_attribu
 
 	/* Brake force is only available in onboard mode (profiles 1-5) */
 	if (ff->current_mode == 0) {
-		hid_dbg(hid, "RS50: Brake force is only available in onboard mode\n");
+		dd_dbg(hid, "Brake force is only available in onboard mode\n");
 		return -EPERM;
 	}
 
@@ -8034,7 +8069,7 @@ static ssize_t wheel_brake_force_store(struct device *dev, struct device_attribu
 	if (ret)
 		return ret;
 
-	if (ff->idx_brakeforce == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_brakeforce == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	brake_force = clamp(brake_force, 0, 100);
@@ -8051,7 +8086,7 @@ static ssize_t wheel_brake_force_store(struct device *dev, struct device_attribu
 		return ret;
 
 	ff->brake_force = value;
-	hid_info(hid, "RS50: Brake force set to %d%%\n", brake_force);
+	dd_info(hid, "Brake force set to %d%%\n", brake_force);
 	return count;
 }
 
@@ -8064,7 +8099,7 @@ static ssize_t wheel_sensitivity_show(struct device *dev, struct device_attribut
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -8088,7 +8123,7 @@ static ssize_t wheel_sensitivity_store(struct device *dev, struct device_attribu
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	int sensitivity, ret;
@@ -8103,7 +8138,7 @@ static ssize_t wheel_sensitivity_store(struct device *dev, struct device_attribu
 
 	/* Sensitivity is only available in desktop mode (profile 0) */
 	if (ff->current_mode != 0) {
-		hid_dbg(hid, "RS50: Sensitivity is only available in desktop mode\n");
+		dd_dbg(hid, "Sensitivity is only available in desktop mode\n");
 		return -EPERM;
 	}
 
@@ -8111,7 +8146,7 @@ static ssize_t wheel_sensitivity_store(struct device *dev, struct device_attribu
 	if (ret)
 		return ret;
 
-	if (ff->idx_brightness == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_brightness == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	sensitivity = clamp(sensitivity, 0, 100);
@@ -8136,7 +8171,7 @@ static ssize_t wheel_sensitivity_store(struct device *dev, struct device_attribu
 	 */
 	ff->sensitivity = sensitivity;
 	ff->led_brightness = sensitivity;
-	hid_info(hid, "RS50: Sensitivity set to %d%% (aliases LED brightness)\n", sensitivity);
+	dd_info(hid, "Sensitivity set to %d%% (aliases LED brightness)\n", sensitivity);
 	return count;
 }
 
@@ -8149,7 +8184,7 @@ static ssize_t wheel_ffb_filter_show(struct device *dev, struct device_attribute
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -8167,7 +8202,7 @@ static ssize_t wheel_ffb_filter_store(struct device *dev, struct device_attribut
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	int filter, ret;
@@ -8187,7 +8222,7 @@ static ssize_t wheel_ffb_filter_store(struct device *dev, struct device_attribut
 	/* Filter range: 1-15 (0x01-0x0F) */
 	filter = clamp(filter, 1, 15);
 
-	if (ff->idx_filter == RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_filter == HIDPP_DD_FEATURE_NOT_FOUND) {
 		/*
 		 * Compat-mode fallback: wheel does not advertise the
 		 * native filter feature 0x8140 in the same place, but
@@ -8196,7 +8231,7 @@ static ssize_t wheel_ffb_filter_store(struct device *dev, struct device_attribut
 		 * flags byte and no auto-mode encoding); compat mode
 		 * has no auto path observable from the host.
 		 */
-		ret = rs50_compat_set_filter(hidpp, ff, (u8)filter);
+		ret = hidpp_dd_compat_set_filter(hidpp, ff, (u8)filter);
 		if (ret)
 			return ret;
 	} else {
@@ -8230,7 +8265,7 @@ static ssize_t wheel_ffb_filter_store(struct device *dev, struct device_attribut
 	}
 
 	ff->ffb_filter = filter;
-	hid_info(hid, "RS50: FFB filter set to %d\n", filter);
+	dd_info(hid, "FFB filter set to %d\n", filter);
 	return count;
 }
 
@@ -8243,7 +8278,7 @@ static ssize_t wheel_ffb_filter_auto_show(struct device *dev, struct device_attr
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -8261,7 +8296,7 @@ static ssize_t wheel_ffb_filter_auto_store(struct device *dev, struct device_att
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	int auto_mode, ret;
@@ -8278,7 +8313,7 @@ static ssize_t wheel_ffb_filter_auto_store(struct device *dev, struct device_att
 	if (ret)
 		return ret;
 
-	if (ff->idx_filter == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_filter == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	auto_mode = !!auto_mode; /* Normalize to 0 or 1 */
@@ -8299,7 +8334,7 @@ static ssize_t wheel_ffb_filter_auto_store(struct device *dev, struct device_att
 		return ret;
 
 	ff->ffb_filter_auto = auto_mode;
-	hid_info(hid, "RS50: FFB filter auto %s\n", auto_mode ? "enabled" : "disabled");
+	dd_info(hid, "FFB filter auto %s\n", auto_mode ? "enabled" : "disabled");
 	return count;
 }
 
@@ -8328,17 +8363,17 @@ static DEVICE_ATTR(wheel_ffb_filter_auto, 0664,
  *   - Feature 0x0C, Function 2 (0x2C): SetConfig with [slot, effect_type, colors...]
  *   - Feature 0x0C, Function 3 (0x3C): Activate slot
  */
-static int rs50_lightsync_enable(struct hidpp_device *hidpp, struct rs50_ff_data *ff)
+static int hidpp_dd_lightsync_enable(struct hidpp_device *hidpp, struct hidpp_dd_ff_data *ff)
 {
 	struct hid_device *hid = hidpp->hid_dev;
 	struct hidpp_report response;
 	u8 params[16];
 	int ret;
 
-	if (ff->idx_lightsync == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_lightsync == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
-	hid_dbg(hid, "RS50: Enabling LIGHTSYNC (idx_ls=0x%02x, idx_rgb=0x%02x)\n",
+	dd_dbg(hid, "Enabling LIGHTSYNC (idx_ls=0x%02x, idx_rgb=0x%02x)\n",
 		ff->idx_lightsync, ff->idx_rgb_config);
 
 	memset(params, 0, sizeof(params));
@@ -8350,21 +8385,21 @@ static int rs50_lightsync_enable(struct hidpp_device *hidpp, struct rs50_ff_data
 	 * the compile-time maxima that size led_slots[]. Defaults stay
 	 * in place if the query fails.
 	 */
-	ff->ls_num_slots = RS50_LIGHTSYNC_NUM_SLOTS;
-	ff->ls_num_leds  = RS50_LIGHTSYNC_NUM_LEDS;
-	if (ff->idx_rgb_config != RS50_FEATURE_NOT_FOUND) {
+	ff->ls_num_slots = HIDPP_DD_LIGHTSYNC_NUM_SLOTS;
+	ff->ls_num_leds  = HIDPP_DD_LIGHTSYNC_NUM_LEDS;
+	if (ff->idx_rgb_config != HIDPP_DD_FEATURE_NOT_FOUND) {
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_rgb_config,
 						  0x00, params, 3, &response);
 		if (ret == 0) {
 			u8 slots = response.fap.params[0];
 			u8 leds  = response.fap.params[4];
 
-			if (slots > 0 && slots <= RS50_LIGHTSYNC_NUM_SLOTS)
+			if (slots > 0 && slots <= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 				ff->ls_num_slots = slots;
-			if (leds > 0 && leds <= RS50_LIGHTSYNC_NUM_LEDS)
+			if (leds > 0 && leds <= HIDPP_DD_LIGHTSYNC_NUM_LEDS)
 				ff->ls_num_leds = leds;
-			hid_dbg(hid,
-				"RS50: LIGHTSYNC reports slots=%u leds=%u\n",
+			dd_dbg(hid,
+				"LIGHTSYNC reports slots=%u leds=%u\n",
 				ff->ls_num_slots, ff->ls_num_leds);
 		}
 	}
@@ -8380,8 +8415,8 @@ static int rs50_lightsync_enable(struct hidpp_device *hidpp, struct rs50_ff_data
 	params[2] = 0x00;
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
-					  RS50_LIGHTSYNC_FN_SET_LEDS, params, 3, &response);
-	hid_dbg(hid, "RS50: 0x0B fn4(setLEDs) ret=%d resp: %02x %02x %02x %02x\n",
+					  HIDPP_DD_LIGHTSYNC_FN_SET_LEDS, params, 3, &response);
+	dd_dbg(hid, "0x0B fn4(setLEDs) ret=%d resp: %02x %02x %02x %02x\n",
 		ret, response.fap.params[0], response.fap.params[1],
 		response.fap.params[2], response.fap.params[3]);
 
@@ -8393,13 +8428,13 @@ static int rs50_lightsync_enable(struct hidpp_device *hidpp, struct rs50_ff_data
 	memset(params, 0, 3);
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
-					  RS50_LIGHTSYNC_FN_ENABLE, params, 3, &response);
-	hid_dbg(hid, "RS50: 0x0B fn7(enable) ret=%d resp: %02x %02x %02x %02x\n",
+					  HIDPP_DD_LIGHTSYNC_FN_ENABLE, params, 3, &response);
+	dd_dbg(hid, "0x0B fn7(enable) ret=%d resp: %02x %02x %02x %02x\n",
 		ret, response.fap.params[0], response.fap.params[1],
 		response.fap.params[2], response.fap.params[3]);
 
 	if (ret)
-		hid_warn(hid, "RS50: LIGHTSYNC enable failed, but continuing\n");
+		dd_warn(hid, "LIGHTSYNC enable failed, but continuing\n");
 
 	return 0;  /* Continue even if enable fails */
 }
@@ -8408,18 +8443,18 @@ static int rs50_lightsync_enable(struct hidpp_device *hidpp, struct rs50_ff_data
  * Query slot name from device.
  * fn3 (0x30) on feature 0x0C returns: [slot] [len] [name...]
  */
-static int rs50_lightsync_get_slot_name(struct hidpp_device *hidpp,
-					struct rs50_ff_data *ff, u8 slot)
+static int hidpp_dd_lightsync_get_slot_name(struct hidpp_device *hidpp,
+					struct hidpp_dd_ff_data *ff, u8 slot)
 {
 	struct hid_device *hid = hidpp->hid_dev;
 	struct hidpp_report response;
 	u8 params[3];
 	int ret, len;
 
-	if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -EINVAL;
 
-	if (ff->idx_rgb_config == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_rgb_config == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	params[0] = slot;
@@ -8427,22 +8462,22 @@ static int rs50_lightsync_get_slot_name(struct hidpp_device *hidpp,
 	params[2] = 0;
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_rgb_config,
-					  RS50_RGB_FN_GET_NAME, params, 3, &response);
+					  HIDPP_DD_RGB_FN_GET_NAME, params, 3, &response);
 	if (ret) {
-		hid_dbg(hid, "RS50: Failed to get slot %d name: %d\n", slot, ret);
+		dd_dbg(hid, "Failed to get slot %d name: %d\n", slot, ret);
 		return ret;
 	}
 
 	/* Response: [slot] [len] [name...] */
 	len = response.fap.params[1];
-	if (len > RS50_SLOT_NAME_MAX_LEN)
-		len = RS50_SLOT_NAME_MAX_LEN;
+	if (len > HIDPP_DD_SLOT_NAME_MAX_LEN)
+		len = HIDPP_DD_SLOT_NAME_MAX_LEN;
 
 	memset(ff->led_slots[slot].name, 0, sizeof(ff->led_slots[slot].name));
 	if (len > 0)
 		memcpy(ff->led_slots[slot].name, &response.fap.params[2], len);
 
-	hid_dbg(hid, "RS50: Slot %d name: \"%s\" (len=%d)\n",
+	dd_dbg(hid, "Slot %d name: \"%s\" (len=%d)\n",
 		slot, ff->led_slots[slot].name, len);
 
 	return 0;
@@ -8451,21 +8486,21 @@ static int rs50_lightsync_get_slot_name(struct hidpp_device *hidpp,
 /*
  * Query all slot names from device.
  */
-static void rs50_lightsync_query_slot_names(struct hidpp_device *hidpp,
-					    struct rs50_ff_data *ff)
+static void hidpp_dd_lightsync_query_slot_names(struct hidpp_device *hidpp,
+					    struct hidpp_dd_ff_data *ff)
 {
 	int i;
 
-	for (i = 0; i < RS50_LIGHTSYNC_NUM_SLOTS; i++)
-		rs50_lightsync_get_slot_name(hidpp, ff, i);
+	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_SLOTS; i++)
+		hidpp_dd_lightsync_get_slot_name(hidpp, ff, i);
 }
 
 /*
  * Query a slot's RGB config + direction from the device.
  * Closes PROBE.F4: without this we'd initialise the cache to all-white
- * and the first rs50_lightsync_apply_slot on load would stomp any
+ * and the first hidpp_dd_lightsync_apply_slot on load would stomp any
  * user-saved (or G Hub-programmed) colors. Response format is inferred
- * as the inverse of the SET wire format in rs50_lightsync_apply_slot:
+ * as the inverse of the SET wire format in hidpp_dd_lightsync_apply_slot:
  *   params[0]   = slot echo
  *   params[1]   = direction + 2
  *   params[2..] = 10 * RGB, LED10 first
@@ -8473,17 +8508,17 @@ static void rs50_lightsync_query_slot_names(struct hidpp_device *hidpp,
  * call errors), leave the driver-default cache alone so the existing
  * behaviour is preserved.
  */
-static int rs50_lightsync_get_slot_config(struct hidpp_device *hidpp,
-					  struct rs50_ff_data *ff, u8 slot)
+static int hidpp_dd_lightsync_get_slot_config(struct hidpp_device *hidpp,
+					  struct hidpp_dd_ff_data *ff, u8 slot)
 {
 	struct hid_device *hid = hidpp->hid_dev;
 	struct hidpp_report response;
 	u8 params[3];
 	int ret, i;
 
-	if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -EINVAL;
-	if (ff->idx_rgb_config == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_rgb_config == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	params[0] = slot;
@@ -8491,24 +8526,24 @@ static int rs50_lightsync_get_slot_config(struct hidpp_device *hidpp,
 	params[2] = 0;
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_rgb_config,
-					  RS50_RGB_FN_GET_CONFIG, params, 3,
+					  HIDPP_DD_RGB_FN_GET_CONFIG, params, 3,
 					  &response);
 	if (ret) {
-		hid_dbg(hid, "RS50: GET RGB slot %d ret=%d (keeping cached defaults)\n",
+		dd_dbg(hid, "GET RGB slot %d ret=%d (keeping cached defaults)\n",
 			slot, ret);
 		return ret;
 	}
 
 	if (response.fap.params[0] != slot) {
-		hid_dbg(hid, "RS50: GET RGB slot %d: echo mismatch (got %02x); keeping defaults\n",
+		dd_dbg(hid, "GET RGB slot %d: echo mismatch (got %02x); keeping defaults\n",
 			slot, response.fap.params[0]);
 		return -EPROTO;
 	}
 
 	ff->led_slots[slot].direction = response.fap.params[1] >= 2 ?
 		response.fap.params[1] - 2 : 0;
-	for (i = 0; i < RS50_LIGHTSYNC_NUM_LEDS; i++) {
-		int src = 2 + (RS50_LIGHTSYNC_NUM_LEDS - 1 - i) * 3;
+	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_LEDS; i++) {
+		int src = 2 + (HIDPP_DD_LIGHTSYNC_NUM_LEDS - 1 - i) * 3;
 		int dst = i * 3;
 
 		ff->led_slots[slot].colors[dst + 0] = response.fap.params[src + 0];
@@ -8520,15 +8555,15 @@ static int rs50_lightsync_get_slot_config(struct hidpp_device *hidpp,
 
 /*
  * Populate the in-driver RGB cache for every slot from the device,
- * so rs50_lightsync_apply_slot doesn't stomp user-saved state.
+ * so hidpp_dd_lightsync_apply_slot doesn't stomp user-saved state.
  */
-static void rs50_lightsync_query_slot_configs(struct hidpp_device *hidpp,
-					      struct rs50_ff_data *ff)
+static void hidpp_dd_lightsync_query_slot_configs(struct hidpp_device *hidpp,
+					      struct hidpp_dd_ff_data *ff)
 {
 	int i;
 
-	for (i = 0; i < RS50_LIGHTSYNC_NUM_SLOTS; i++)
-		rs50_lightsync_get_slot_config(hidpp, ff, i);
+	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_SLOTS; i++)
+		hidpp_dd_lightsync_get_slot_config(hidpp, ff, i);
 }
 
 /*
@@ -8539,20 +8574,20 @@ static void rs50_lightsync_query_slot_configs(struct hidpp_device *hidpp,
  *   3. Set RGB config on feature 0x0C
  *   4. Activate slot on feature 0x0C
  */
-static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
-				     struct rs50_ff_data *ff, u8 slot)
+static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
+				     struct hidpp_dd_ff_data *ff, u8 slot)
 {
 	struct hid_device *hid = hidpp->hid_dev;
 	struct hidpp_report response;
 	u8 params[32];  /* slot + direction + 30 bytes RGB */
-	struct rs50_lightsync_slot *ls;
+	struct hidpp_dd_lightsync_slot *ls;
 	int i, ret;
 
-	if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -EINVAL;
 
-	if (ff->idx_rgb_config == RS50_FEATURE_NOT_FOUND) {
-		hid_warn(hid, "RS50: RGB config feature (0x807B) not found\n");
+	if (ff->idx_rgb_config == HIDPP_DD_FEATURE_NOT_FOUND) {
+		dd_warn(hid, "RGB config feature (0x807B) not found\n");
 		return -EOPNOTSUPP;
 	}
 
@@ -8574,24 +8609,24 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 	 * Step 1: Query Profile feature (G Hub does this before effect changes).
 	 * From capture: 10 FF 17 0C ...
 	 */
-	if (ff->idx_profile != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_profile != HIDPP_DD_FEATURE_NOT_FOUND) {
 		memset(params, 0, 3);
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile,
 						  0x0C, params, 3, &response);
-		hid_dbg(hid, "RS50: Profile query ret=%d\n", ret);
+		dd_dbg(hid, "Profile query ret=%d\n", ret);
 	}
 
 	/*
 	 * Step 2: Call Sync feature (G Hub does this before effect changes).
 	 * From capture: 10 FF 09 0C 00 03 00
 	 */
-	if (ff->idx_sync != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_sync != HIDPP_DD_FEATURE_NOT_FOUND) {
 		params[0] = 0x00;
 		params[1] = 0x03;
 		params[2] = 0x00;
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_sync,
 						  0x0C, params, 3, &response);
-		hid_dbg(hid, "RS50: Sync call ret=%d\n", ret);
+		dd_dbg(hid, "Sync call ret=%d\n", ret);
 	}
 
 	/*
@@ -8599,14 +8634,14 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 	 * From capture: 10 FF 0B 3C 05 00 00
 	 * This tells the device we're using custom colors, not an animation.
 	 */
-	if (ff->idx_lightsync != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND) {
 		params[0] = 0x05;  /* Effect mode 5 = static/custom */
 		params[1] = 0x00;
 		params[2] = 0x00;
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
-						  RS50_LIGHTSYNC_FN_SET_EFFECT,
+						  HIDPP_DD_LIGHTSYNC_FN_SET_EFFECT,
 						  params, 3, &response);
-		hid_dbg(hid, "RS50: 0x0B fn3(effect=5) ret=%d\n", ret);
+		dd_dbg(hid, "0x0B fn3(effect=5) ret=%d\n", ret);
 	}
 
 	/*
@@ -8614,16 +8649,16 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 	 * This seems required before sending RGB config to 0x0C.
 	 * From capture: 11 ff 0b 6c 00 01 00 0a 00 00 00 00 00 00 00 00 00 00 00 00
 	 */
-	if (ff->idx_lightsync != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND) {
 		memset(params, 0, 16);
 		params[0] = 0x00;
 		params[1] = 0x01;
 		params[2] = 0x00;
 		params[3] = 0x0a;  /* 10 LEDs */
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
-						  RS50_LIGHTSYNC_FN_SET_CONFIG,
+						  HIDPP_DD_LIGHTSYNC_FN_SET_CONFIG,
 						  params, 16, &response);
-		hid_dbg(hid, "RS50: 0x0B fn6(pre-config) ret=%d\n", ret);
+		dd_dbg(hid, "0x0B fn6(pre-config) ret=%d\n", ret);
 	}
 
 	/*
@@ -8639,8 +8674,8 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 	params[1] = ls->direction + 2;  /* Direction encoding: 0->0x02, 1->0x03, etc. */
 
 	/* LED colors reversed (LED10 first in protocol) */
-	for (i = 0; i < RS50_LIGHTSYNC_NUM_LEDS; i++) {
-		int src = (RS50_LIGHTSYNC_NUM_LEDS - 1 - i) * 3;
+	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_LEDS; i++) {
+		int src = (HIDPP_DD_LIGHTSYNC_NUM_LEDS - 1 - i) * 3;
 		int dst = 2 + i * 3;
 
 		params[dst + 0] = ls->colors[src + 0];  /* R */
@@ -8648,16 +8683,16 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 		params[dst + 2] = ls->colors[src + 2];  /* B */
 	}
 
-	hid_dbg(hid, "RS50: 0x0C fn2(RGB) slot=%d dir=%d RGB[0-2]: %02x%02x%02x %02x%02x%02x %02x%02x%02x\n",
+	dd_dbg(hid, "0x0C fn2(RGB) slot=%d dir=%d RGB[0-2]: %02x%02x%02x %02x%02x%02x %02x%02x%02x\n",
 		 params[0], params[1],
 		 params[2], params[3], params[4],
 		 params[5], params[6], params[7],
 		 params[8], params[9], params[10]);
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_rgb_config,
-					  RS50_RGB_FN_SET_CONFIG, params,
+					  HIDPP_DD_RGB_FN_SET_CONFIG, params,
 					  sizeof(params), &response);
-	hid_dbg(hid, "RS50: 0x0C fn2(setConfig) ret=%d\n", ret);
+	dd_dbg(hid, "0x0C fn2(setConfig) ret=%d\n", ret);
 	ret = hidpp_errno(hid, ret, "set RGB config");
 	if (ret)
 		return ret;
@@ -8671,14 +8706,14 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 	params[2] = 0x00;
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_rgb_config,
-					  RS50_RGB_FN_ACTIVATE, params, 3, &response);
+					  HIDPP_DD_RGB_FN_ACTIVATE, params, 3, &response);
 	if (ret < 0) {
-		hid_err(hid, "RS50: LIGHTSYNC activate bus error on slot %d: %d\n",
+		dd_err(hid, "LIGHTSYNC activate bus error on slot %d: %d\n",
 			slot, ret);
 		return ret;
 	}
 	if (ret > 0)
-		hid_warn(hid, "RS50: LIGHTSYNC activate HID++ error 0x%02x on slot %d\n",
+		dd_warn(hid, "LIGHTSYNC activate HID++ error 0x%02x on slot %d\n",
 			 ret, slot);
 
 	/*
@@ -8686,7 +8721,7 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 	 * From G Hub capture: 11 ff 0b 6c 00 01 00 0a 00 0a 00 ...
 	 * Note: params[5] = 0x0a this time (was 0x00 in pre-config).
 	 */
-	if (ff->idx_lightsync != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND) {
 		memset(params, 0, 16);
 		params[0] = 0x00;
 		params[1] = 0x01;
@@ -8695,9 +8730,9 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 		params[4] = 0x00;
 		params[5] = 0x0a;  /* 10 LEDs - commit flag? */
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
-						  RS50_LIGHTSYNC_FN_SET_CONFIG,
+						  HIDPP_DD_LIGHTSYNC_FN_SET_CONFIG,
 						  params, 16, &response);
-		hid_dbg(hid, "RS50: 0x0B fn6(commit) ret=%d\n", ret);
+		dd_dbg(hid, "0x0B fn6(commit) ret=%d\n", ret);
 
 		/*
 		 * Step 7: Call fn7 (enable refresh) on 0x0B.
@@ -8705,16 +8740,16 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 		 */
 		memset(params, 0, 3);
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
-						  RS50_LIGHTSYNC_FN_ENABLE,
+						  HIDPP_DD_LIGHTSYNC_FN_ENABLE,
 						  params, 3, &response);
-		hid_dbg(hid, "RS50: 0x0B fn7(enable) ret=%d\n", ret);
+		dd_dbg(hid, "0x0B fn7(enable) ret=%d\n", ret);
 	}
 
 	/*
 	 * Step 8: Apply per-slot brightness.
 	 * Each custom slot can have its own brightness stored locally.
 	 */
-	if (ff->idx_brightness != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_brightness != HIDPP_DD_FEATURE_NOT_FOUND) {
 		params[0] = 0x00;
 		params[1] = ls->brightness;
 		params[2] = 0x00;
@@ -8723,7 +8758,7 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 						  ff->fn_set_brightness, params, 3, &response);
 		if (ret == 0) {
 			ff->led_brightness = ls->brightness;
-			hid_dbg(hid, "RS50: Slot %d brightness applied: %d%%\n",
+			dd_dbg(hid, "Slot %d brightness applied: %d%%\n",
 				slot, ls->brightness);
 		}
 	}
@@ -8738,7 +8773,7 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 	 * occasional desktop-only LED update that doesn't stick.
 	 */
 	if (ff->current_mode == 0 &&
-	    ff->idx_sync != RS50_FEATURE_NOT_FOUND) {
+	    ff->idx_sync != HIDPP_DD_FEATURE_NOT_FOUND) {
 		static const u8 desktop_sync_zones[] = {
 			0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x15,
 		};
@@ -8757,17 +8792,17 @@ static int rs50_lightsync_apply_slot(struct hidpp_device *hidpp,
 							  sizeof(sync_params),
 							  &response);
 			if (ret)
-				hid_dbg(hid,
-					"RS50: desktop sync zone 0x%02x ret=%d\n",
+				dd_dbg(hid,
+					"desktop sync zone 0x%02x ret=%d\n",
 					desktop_sync_zones[i], ret);
 			else
 				ok++;
 		}
-		hid_dbg(hid, "RS50: desktop sync sequence sent (%d/%zu ok)\n",
+		dd_dbg(hid, "desktop sync sequence sent (%d/%zu ok)\n",
 			ok, ARRAY_SIZE(desktop_sync_zones));
 	}
 
-	hid_dbg(hid, "RS50: apply_slot complete\n");
+	dd_dbg(hid, "apply_slot complete\n");
 	return 0;
 }
 
@@ -8777,7 +8812,7 @@ static ssize_t wheel_led_slot_show(struct device *dev, struct device_attribute *
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -8795,7 +8830,7 @@ static ssize_t wheel_led_slot_store(struct device *dev, struct device_attribute 
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	unsigned int slot;
 	int ret;
 
@@ -8811,11 +8846,11 @@ static ssize_t wheel_led_slot_store(struct device *dev, struct device_attribute 
 	if (ret)
 		return ret;
 
-	if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -EINVAL;
 
 	/* Apply the selected slot configuration to the device */
-	ret = rs50_lightsync_apply_slot(hidpp, ff, slot);
+	ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot);
 	if (ret)
 		return ret;
 
@@ -8827,7 +8862,7 @@ static ssize_t wheel_led_slot_store(struct device *dev, struct device_attribute 
 	 * the bound check above caught anything else.
 	 */
 	WRITE_ONCE(ff->led_active_slot, (u8)slot);
-	hid_info(hid, "RS50: LIGHTSYNC slot set to %u\n", slot);
+	dd_info(hid, "LIGHTSYNC slot set to %u\n", slot);
 	return count;
 }
 
@@ -8839,7 +8874,7 @@ static ssize_t wheel_led_slot_name_show(struct device *dev, struct device_attrib
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	u8 slot;
 
 	if (!hidpp)
@@ -8851,7 +8886,7 @@ static ssize_t wheel_led_slot_name_show(struct device *dev, struct device_attrib
 		return -ENODEV;
 
 	slot = READ_ONCE(ff->led_active_slot);
-	if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -ERANGE;
 
 	return sysfs_emit(buf, "%s\n", ff->led_slots[slot].name);
@@ -8862,7 +8897,7 @@ static ssize_t wheel_led_slot_name_store(struct device *dev, struct device_attri
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[16];
 	u8 slot;
@@ -8878,11 +8913,11 @@ static ssize_t wheel_led_slot_name_store(struct device *dev, struct device_attri
 	if (atomic_read_acquire(&ff->stopping))
 		return -ENODEV;
 
-	if (ff->idx_rgb_config == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_rgb_config == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	slot = READ_ONCE(ff->led_active_slot);
-	if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -ERANGE;
 
 	/* Strip trailing newline */
@@ -8890,8 +8925,8 @@ static ssize_t wheel_led_slot_name_store(struct device *dev, struct device_attri
 	if (len > 0 && buf[len - 1] == '\n')
 		len--;
 
-	if (len > RS50_SLOT_NAME_MAX_LEN)
-		len = RS50_SLOT_NAME_MAX_LEN;
+	if (len > HIDPP_DD_SLOT_NAME_MAX_LEN)
+		len = HIDPP_DD_SLOT_NAME_MAX_LEN;
 
 	/*
 	 * Reject embedded control bytes (including further newlines) so
@@ -8914,7 +8949,7 @@ static ssize_t wheel_led_slot_name_store(struct device *dev, struct device_attri
 		memcpy(&params[2], buf, len);
 
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_rgb_config,
-					  RS50_RGB_FN_SET_NAME, params,
+					  HIDPP_DD_RGB_FN_SET_NAME, params,
 					  2 + len, &response);
 	if (ret) {
 		char op[24];
@@ -8928,7 +8963,7 @@ static ssize_t wheel_led_slot_name_store(struct device *dev, struct device_attri
 	if (len > 0)
 		memcpy(ff->led_slots[slot].name, buf, len);
 
-	hid_info(hid, "RS50: Slot %d name set to \"%s\"\n", slot, ff->led_slots[slot].name);
+	dd_info(hid, "Slot %d name set to \"%s\"\n", slot, ff->led_slots[slot].name);
 	return count;
 }
 
@@ -8942,7 +8977,7 @@ static ssize_t wheel_led_slot_brightness_show(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	u8 slot;
 
 	if (!hidpp)
@@ -8954,7 +8989,7 @@ static ssize_t wheel_led_slot_brightness_show(struct device *dev,
 		return -ENODEV;
 
 	slot = READ_ONCE(ff->led_active_slot);
-	if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -ERANGE;
 
 	return sysfs_emit(buf, "%u\n", ff->led_slots[slot].brightness);
@@ -8966,7 +9001,7 @@ static ssize_t wheel_led_slot_brightness_store(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	unsigned int brightness;
@@ -8989,13 +9024,13 @@ static ssize_t wheel_led_slot_brightness_store(struct device *dev,
 		brightness = 100;
 
 	slot = READ_ONCE(ff->led_active_slot);
-	if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -ERANGE;
 
 	/* Apply to device first; cache on success so a failed write doesn't
 	 * leave sysfs reporting a value the wheel never accepted.
 	 */
-	if (ff->idx_brightness != RS50_FEATURE_NOT_FOUND) {
+	if (ff->idx_brightness != HIDPP_DD_FEATURE_NOT_FOUND) {
 		params[0] = 0x00;
 		params[1] = brightness;
 		params[2] = 0x00;
@@ -9011,7 +9046,7 @@ static ssize_t wheel_led_slot_brightness_store(struct device *dev,
 	/* Global brightness tracks the last-applied slot brightness */
 	ff->led_brightness = brightness;
 
-	hid_info(hid, "RS50: Slot %d brightness set to %u%%\n", slot, brightness);
+	dd_info(hid, "Slot %d brightness set to %u%%\n", slot, brightness);
 	return count;
 }
 
@@ -9024,7 +9059,7 @@ static ssize_t wheel_led_direction_show(struct device *dev, struct device_attrib
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	u8 slot, dir;
 
 	if (!hidpp)
@@ -9036,7 +9071,7 @@ static ssize_t wheel_led_direction_show(struct device *dev, struct device_attrib
 		return -ENODEV;
 
 	slot = READ_ONCE(ff->led_active_slot);
-	if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -ERANGE;
 	dir = ff->led_slots[slot].direction;
 
@@ -9048,7 +9083,7 @@ static ssize_t wheel_led_direction_store(struct device *dev, struct device_attri
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	unsigned int dir;
 	u8 slot;
 	int ret;
@@ -9065,11 +9100,11 @@ static ssize_t wheel_led_direction_store(struct device *dev, struct device_attri
 	if (ret)
 		return ret;
 
-	if (dir > RS50_LIGHTSYNC_DIR_OUTSIDE_IN)
+	if (dir > HIDPP_DD_LIGHTSYNC_DIR_OUTSIDE_IN)
 		return -EINVAL;
 
 	slot = READ_ONCE(ff->led_active_slot);
-	if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -ERANGE;
 
 	/*
@@ -9081,14 +9116,14 @@ static ssize_t wheel_led_direction_store(struct device *dev, struct device_attri
 		u8 prev = ff->led_slots[slot].direction;
 
 		ff->led_slots[slot].direction = dir;
-		ret = rs50_lightsync_apply_slot(hidpp, ff, slot);
+		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot);
 		if (ret) {
 			ff->led_slots[slot].direction = prev;
 			return ret;
 		}
 	}
 
-	hid_info(hid, "RS50: LIGHTSYNC direction set to %u\n", dir);
+	dd_info(hid, "LIGHTSYNC direction set to %u\n", dir);
 	return count;
 }
 
@@ -9105,8 +9140,8 @@ static ssize_t wheel_led_colors_show(struct device *dev, struct device_attribute
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
-	struct rs50_lightsync_slot *ls;
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_dd_lightsync_slot *ls;
 	int i, len = 0;
 
 	if (!hidpp)
@@ -9120,12 +9155,12 @@ static ssize_t wheel_led_colors_show(struct device *dev, struct device_attribute
 	{
 		u8 slot = READ_ONCE(ff->led_active_slot);
 
-		if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+		if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 			return -ERANGE;
 		ls = &ff->led_slots[slot];
 	}
 
-	for (i = 0; i < RS50_LIGHTSYNC_NUM_LEDS; i++) {
+	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_LEDS; i++) {
 		u8 r = ls->colors[i * 3 + 0];
 		u8 g = ls->colors[i * 3 + 1];
 		u8 b = ls->colors[i * 3 + 2];
@@ -9143,9 +9178,9 @@ static ssize_t wheel_led_colors_store(struct device *dev, struct device_attribut
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
-	struct rs50_lightsync_slot *ls;
-	u8 colors[RS50_LIGHTSYNC_NUM_LEDS * 3];
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_dd_lightsync_slot *ls;
+	u8 colors[HIDPP_DD_LIGHTSYNC_NUM_LEDS * 3];
 	const char *p = buf;
 	int i, ret;
 
@@ -9158,7 +9193,7 @@ static ssize_t wheel_led_colors_store(struct device *dev, struct device_attribut
 		return -ENODEV;
 
 	/* Parse 10 hex color values */
-	for (i = 0; i < RS50_LIGHTSYNC_NUM_LEDS; i++) {
+	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_LEDS; i++) {
 		unsigned int color;
 		char hex[7];
 		int parsed;
@@ -9199,21 +9234,21 @@ static ssize_t wheel_led_colors_store(struct device *dev, struct device_attribut
 	 */
 	{
 		u8 slot = READ_ONCE(ff->led_active_slot);
-		u8 prev[RS50_LIGHTSYNC_NUM_LEDS * 3];
+		u8 prev[HIDPP_DD_LIGHTSYNC_NUM_LEDS * 3];
 
-		if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+		if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 			return -ERANGE;
 		ls = &ff->led_slots[slot];
 		memcpy(prev, ls->colors, sizeof(prev));
 		memcpy(ls->colors, colors, sizeof(colors));
-		ret = rs50_lightsync_apply_slot(hidpp, ff, slot);
+		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot);
 		if (ret) {
 			memcpy(ls->colors, prev, sizeof(prev));
 			return ret;
 		}
 	}
 
-	hid_info(hid, "RS50: LIGHTSYNC colors updated\n");
+	dd_info(hid, "LIGHTSYNC colors updated\n");
 	return count;
 }
 
@@ -9229,7 +9264,7 @@ static ssize_t wheel_led_apply_store(struct device *dev, struct device_attribute
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int ret;
 
 	if (!hidpp)
@@ -9243,12 +9278,12 @@ static ssize_t wheel_led_apply_store(struct device *dev, struct device_attribute
 	{
 		u8 slot = READ_ONCE(ff->led_active_slot);
 
-		if (slot >= RS50_LIGHTSYNC_NUM_SLOTS)
+		if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 			return -ERANGE;
-		ret = rs50_lightsync_apply_slot(hidpp, ff, slot);
+		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot);
 		if (ret)
 			return ret;
-		hid_info(hid, "RS50: LIGHTSYNC config applied to slot %u\n", slot);
+		dd_info(hid, "LIGHTSYNC config applied to slot %u\n", slot);
 	}
 	return count;
 }
@@ -9265,7 +9300,7 @@ static ssize_t wheel_led_effect_show(struct device *dev, struct device_attribute
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9283,7 +9318,7 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	int effect, ret;
@@ -9300,7 +9335,7 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 	if (ret)
 		return ret;
 
-	if (ff->idx_lightsync == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_lightsync == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	/*
@@ -9319,13 +9354,13 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 	params[1] = 0x00;
 	params[2] = 0x00;
 
-	hid_info(hid, "RS50: LED effect: idx=0x%02x fn=0x%02x params=[%02x %02x %02x]\n",
-		 ff->idx_lightsync, RS50_LIGHTSYNC_FN_SET_EFFECT,
+	dd_info(hid, "LED effect: idx=0x%02x fn=0x%02x params=[%02x %02x %02x]\n",
+		 ff->idx_lightsync, HIDPP_DD_LIGHTSYNC_FN_SET_EFFECT,
 		 params[0], params[1], params[2]);
 
 	/* Use SHORT report (0x10) with function 0x3C for effect selection */
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
-					  RS50_LIGHTSYNC_FN_SET_EFFECT, params, 3, &response);
+					  HIDPP_DD_LIGHTSYNC_FN_SET_EFFECT, params, 3, &response);
 	ret = hidpp_errno(hid, ret, "set LED effect");
 	if (ret)
 		return ret;
@@ -9343,11 +9378,11 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 	if (effect == 5) {
 		u8 slot = READ_ONCE(ff->led_active_slot);
 
-		if (slot < RS50_LIGHTSYNC_NUM_SLOTS)
-			rs50_lightsync_apply_slot(hidpp, ff, slot);
+		if (slot < HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
+			hidpp_dd_lightsync_apply_slot(hidpp, ff, slot);
 	}
 
-	hid_info(hid, "RS50: LED effect set to %d (success)\n", effect);
+	dd_info(hid, "LED effect set to %d (success)\n", effect);
 	return count;
 }
 
@@ -9359,7 +9394,7 @@ static ssize_t wheel_led_brightness_show(struct device *dev, struct device_attri
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9377,7 +9412,7 @@ static ssize_t wheel_led_brightness_store(struct device *dev, struct device_attr
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	int brightness, ret;
@@ -9394,7 +9429,7 @@ static ssize_t wheel_led_brightness_store(struct device *dev, struct device_attr
 	if (ret)
 		return ret;
 
-	if (ff->idx_brightness == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_brightness == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	brightness = clamp(brightness, 0, 100);
@@ -9420,7 +9455,7 @@ static ssize_t wheel_led_brightness_store(struct device *dev, struct device_attr
 	 */
 	if (ff->current_mode == 0)
 		ff->sensitivity = brightness;
-	hid_info(hid, "RS50: LED brightness set to %d%%\n", brightness);
+	dd_info(hid, "LED brightness set to %d%%\n", brightness);
 	return count;
 }
 
@@ -9443,7 +9478,7 @@ static ssize_t wheel_hidpp_debug_show(struct device *dev, struct device_attribut
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9474,7 +9509,7 @@ static ssize_t wheel_hidpp_debug_store(struct device *dev, struct device_attribu
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[16];
 	unsigned int feature, function;
@@ -9499,7 +9534,7 @@ static ssize_t wheel_hidpp_debug_store(struct device *dev, struct device_attribu
 			    &p[8], &p[9], &p[10], &p[11], &p[12], &p[13], &p[14], &p[15]);
 
 	if (num_params < 2) {
-		hid_err(hid, "RS50 debug: need at least feature and function\n");
+		dd_err(hid, "debug: need at least feature and function\n");
 		return -EINVAL;
 	}
 
@@ -9510,7 +9545,7 @@ static ssize_t wheel_hidpp_debug_store(struct device *dev, struct device_attribu
 	 * values with -EINVAL so the caller knows to retype.
 	 */
 	if (feature > 0xFF || function > 0xFF) {
-		hid_err(hid, "RS50 debug: feature/function must be 0-FF (got 0x%x / 0x%x)\n",
+		dd_err(hid, "debug: feature/function must be 0-FF (got 0x%x / 0x%x)\n",
 			feature, function);
 		return -EINVAL;
 	}
@@ -9518,14 +9553,14 @@ static ssize_t wheel_hidpp_debug_store(struct device *dev, struct device_attribu
 	num_params -= 2;  /* Subtract feature and function */
 	for (i = 0; i < num_params && i < 16; i++) {
 		if (p[i] > 0xFF) {
-			hid_err(hid, "RS50 debug: param %d must be 0-FF (got 0x%x)\n",
+			dd_err(hid, "debug: param %d must be 0-FF (got 0x%x)\n",
 				i, p[i]);
 			return -EINVAL;
 		}
 		params[i] = (u8)p[i];
 	}
 
-	hid_info(hid, "RS50 debug: feature=0x%02x fn=0x%02x params=[%02x %02x %02x %02x %02x %02x] count=%d\n",
+	dd_info(hid, "debug: feature=0x%02x fn=0x%02x params=[%02x %02x %02x %02x %02x %02x] count=%d\n",
 		 feature, function, params[0], params[1], params[2], params[3], params[4], params[5], num_params);
 
 	memset(&response, 0, sizeof(response));
@@ -9538,7 +9573,7 @@ static ssize_t wheel_hidpp_debug_store(struct device *dev, struct device_attribu
 	ff->debug_last_ret = ret;
 	memcpy(ff->debug_last_response, response.fap.params, 16);
 
-	hid_info(hid, "RS50 debug: ret=%d response=[%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x]\n",
+	dd_info(hid, "debug: ret=%d response=[%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x]\n",
 		 ret,
 		 response.fap.params[0], response.fap.params[1],
 		 response.fap.params[2], response.fap.params[3],
@@ -9561,7 +9596,7 @@ static ssize_t wheel_combined_pedals_show(struct device *dev, struct device_attr
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9579,7 +9614,7 @@ static ssize_t wheel_combined_pedals_store(struct device *dev, struct device_att
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int val, ret;
 
 	if (!hidpp)
@@ -9595,7 +9630,7 @@ static ssize_t wheel_combined_pedals_store(struct device *dev, struct device_att
 		return ret;
 
 	WRITE_ONCE(ff->combined_pedals, val ? 1 : 0);
-	hid_info(hid, "RS50: Combined pedals mode %s\n",
+	dd_info(hid, "Combined pedals mode %s\n",
 		 READ_ONCE(ff->combined_pedals) ? "enabled" : "disabled");
 	return count;
 }
@@ -9615,7 +9650,7 @@ static ssize_t wheel_throttle_curve_show(struct device *dev, struct device_attri
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9633,7 +9668,7 @@ static ssize_t wheel_throttle_curve_store(struct device *dev, struct device_attr
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int val, ret;
 
 	if (!hidpp)
@@ -9652,7 +9687,7 @@ static ssize_t wheel_throttle_curve_store(struct device *dev, struct device_attr
 		return -EINVAL;
 
 	WRITE_ONCE(ff->throttle_curve, val);
-	hid_info(hid, "RS50: Throttle curve set to %d (%s)\n", val,
+	dd_info(hid, "Throttle curve set to %d (%s)\n", val,
 		 val == 0 ? "linear" : (val == 1 ? "low sens" : "high sens"));
 	return count;
 }
@@ -9666,7 +9701,7 @@ static ssize_t wheel_brake_curve_show(struct device *dev, struct device_attribut
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9684,7 +9719,7 @@ static ssize_t wheel_brake_curve_store(struct device *dev, struct device_attribu
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int val, ret;
 
 	if (!hidpp)
@@ -9703,7 +9738,7 @@ static ssize_t wheel_brake_curve_store(struct device *dev, struct device_attribu
 		return -EINVAL;
 
 	WRITE_ONCE(ff->brake_curve, val);
-	hid_info(hid, "RS50: Brake curve set to %d (%s)\n", val,
+	dd_info(hid, "Brake curve set to %d (%s)\n", val,
 		 val == 0 ? "linear" : (val == 1 ? "low sens" : "high sens"));
 	return count;
 }
@@ -9717,7 +9752,7 @@ static ssize_t wheel_clutch_curve_show(struct device *dev, struct device_attribu
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9735,7 +9770,7 @@ static ssize_t wheel_clutch_curve_store(struct device *dev, struct device_attrib
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int val, ret;
 
 	if (!hidpp)
@@ -9754,7 +9789,7 @@ static ssize_t wheel_clutch_curve_store(struct device *dev, struct device_attrib
 		return -EINVAL;
 
 	WRITE_ONCE(ff->clutch_curve, val);
-	hid_info(hid, "RS50: Clutch curve set to %d (%s)\n", val,
+	dd_info(hid, "Clutch curve set to %d (%s)\n", val,
 		 val == 0 ? "linear" : (val == 1 ? "low sens" : "high sens"));
 	return count;
 }
@@ -9768,7 +9803,7 @@ static ssize_t wheel_throttle_deadzone_show(struct device *dev, struct device_at
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9787,7 +9822,7 @@ static ssize_t wheel_throttle_deadzone_store(struct device *dev, struct device_a
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int lower, upper;
 
 	if (!hidpp)
@@ -9808,7 +9843,7 @@ static ssize_t wheel_throttle_deadzone_store(struct device *dev, struct device_a
 
 	WRITE_ONCE(ff->throttle_deadzone_lower, lower);
 	WRITE_ONCE(ff->throttle_deadzone_upper, upper);
-	hid_info(hid, "RS50: Throttle deadzone set to %d%% - %d%%\n", lower, 100 - upper);
+	dd_info(hid, "Throttle deadzone set to %d%% - %d%%\n", lower, 100 - upper);
 	return count;
 }
 
@@ -9821,7 +9856,7 @@ static ssize_t wheel_brake_deadzone_show(struct device *dev, struct device_attri
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9840,7 +9875,7 @@ static ssize_t wheel_brake_deadzone_store(struct device *dev, struct device_attr
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int lower, upper;
 
 	if (!hidpp)
@@ -9861,7 +9896,7 @@ static ssize_t wheel_brake_deadzone_store(struct device *dev, struct device_attr
 
 	WRITE_ONCE(ff->brake_deadzone_lower, lower);
 	WRITE_ONCE(ff->brake_deadzone_upper, upper);
-	hid_info(hid, "RS50: Brake deadzone set to %d%% - %d%%\n", lower, 100 - upper);
+	dd_info(hid, "Brake deadzone set to %d%% - %d%%\n", lower, 100 - upper);
 	return count;
 }
 
@@ -9874,7 +9909,7 @@ static ssize_t wheel_clutch_deadzone_show(struct device *dev, struct device_attr
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9893,7 +9928,7 @@ static ssize_t wheel_clutch_deadzone_store(struct device *dev, struct device_att
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int lower, upper;
 
 	if (!hidpp)
@@ -9914,7 +9949,7 @@ static ssize_t wheel_clutch_deadzone_store(struct device *dev, struct device_att
 
 	WRITE_ONCE(ff->clutch_deadzone_lower, lower);
 	WRITE_ONCE(ff->clutch_deadzone_upper, upper);
-	hid_info(hid, "RS50: Clutch deadzone set to %d%% - %d%%\n", lower, 100 - upper);
+	dd_info(hid, "Clutch deadzone set to %d%% - %d%%\n", lower, 100 - upper);
 	return count;
 }
 
@@ -9932,7 +9967,7 @@ static ssize_t wheel_mode_show(struct device *dev, struct device_attribute *attr
 {
 	struct hid_device *hdev = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9951,7 +9986,7 @@ static ssize_t wheel_mode_store(struct device *dev, struct device_attribute *att
 {
 	struct hid_device *hdev = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int ret;
 
 	if (!hidpp)
@@ -9963,12 +9998,12 @@ static ssize_t wheel_mode_store(struct device *dev, struct device_attribute *att
 		return -ENODEV;
 
 	if (sysfs_streq(buf, "desktop")) {
-		ret = rs50_set_mode(ff, 0);
+		ret = hidpp_dd_set_mode(ff, 0);
 	} else if (sysfs_streq(buf, "onboard")) {
 		/* Switch to onboard - use current profile if already onboard, else profile 1 */
 		u8 profile = (ff->current_profile >= 1 && ff->current_profile <= 5)
 			     ? ff->current_profile : 1;
-		ret = rs50_set_mode(ff, profile);
+		ret = hidpp_dd_set_mode(ff, profile);
 	} else {
 		return -EINVAL;
 	}
@@ -9983,7 +10018,7 @@ static ssize_t wheel_profile_show(struct device *dev, struct device_attribute *a
 {
 	struct hid_device *hdev = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -10001,7 +10036,7 @@ static ssize_t wheel_profile_store(struct device *dev, struct device_attribute *
 {
 	struct hid_device *hdev = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	unsigned int profile;
 	int ret;
 
@@ -10018,11 +10053,11 @@ static ssize_t wheel_profile_store(struct device *dev, struct device_attribute *
 		return ret;
 
 	if (profile > 5) {
-		hid_warn(hdev, "RS50: Invalid profile %u (must be 0-5)\n", profile);
+		dd_warn(hdev, "Invalid profile %u (must be 0-5)\n", profile);
 		return -EINVAL;
 	}
 
-	ret = rs50_set_mode(ff, profile);
+	ret = hidpp_dd_set_mode(ff, profile);
 	return ret ? ret : count;
 }
 
@@ -10041,7 +10076,7 @@ static ssize_t wheel_calibrate_store(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	unsigned int value;
@@ -10055,7 +10090,7 @@ static ssize_t wheel_calibrate_store(struct device *dev,
 	if (atomic_read_acquire(&ff->stopping))
 		return -ENODEV;
 
-	if (ff->idx_calibrate == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_calibrate == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	ret = kstrtouint(buf, 0, &value);
@@ -10077,7 +10112,7 @@ static ssize_t wheel_calibrate_store(struct device *dev,
 	if (ret)
 		return ret;
 
-	hid_info(hid, "RS50: Calibrated centre to encoder value %u\n", value);
+	dd_info(hid, "Calibrated centre to encoder value %u\n", value);
 	return count;
 }
 
@@ -10097,7 +10132,7 @@ static ssize_t wheel_calibrate_here_store(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	u8 params[3];
 	u16 value;
@@ -10111,7 +10146,7 @@ static ssize_t wheel_calibrate_here_store(struct device *dev,
 	if (atomic_read_acquire(&ff->stopping))
 		return -ENODEV;
 
-	if (ff->idx_calibrate == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_calibrate == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	/* Step 1: fn=1 GET current raw encoder value. */
@@ -10138,7 +10173,7 @@ static ssize_t wheel_calibrate_here_store(struct device *dev,
 	if (ret)
 		return ret;
 
-	hid_info(hid, "RS50: Calibrated centre to current position (encoder=%u)\n",
+	dd_info(hid, "Calibrated centre to current position (encoder=%u)\n",
 		 value);
 	return count;
 }
@@ -10153,7 +10188,7 @@ static DEVICE_ATTR(wheel_calibrate_here, 0220, NULL,
  * ACC lands an inverted level at our evdev upload. Set 0 to pass
  * through, which matches Linux's documented evdev sign convention and
  * is correct for native-evdev apps that upload directly via EVIOCSFF.
- * See the FF_CONSTANT comment in rs50_ff_effect_tick for context.
+ * See the FF_CONSTANT comment in hidpp_dd_ff_effect_tick for context.
  */
 static ssize_t wheel_ffb_constant_sign_show(struct device *dev,
 					    struct device_attribute *attr,
@@ -10161,7 +10196,7 @@ static ssize_t wheel_ffb_constant_sign_show(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -10180,7 +10215,7 @@ static ssize_t wheel_ffb_constant_sign_store(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	unsigned int val;
 	int ret;
 
@@ -10216,7 +10251,7 @@ static ssize_t wheel_spring_damping_show(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -10234,7 +10269,7 @@ static ssize_t wheel_spring_damping_store(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	unsigned int val;
 	int ret;
 
@@ -10273,7 +10308,7 @@ static ssize_t wheel_texture_route_show(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -10284,7 +10319,7 @@ static ssize_t wheel_texture_route_show(struct device *dev,
 		return -ENODEV;
 	return sysfs_emit(buf, "%s\n",
 			  READ_ONCE(ff->texture_route) ==
-				  RS50_TEXTURE_ROUTE_TF ? "tf" : "kf");
+				  HIDPP_DD_TEXTURE_ROUTE_TF ? "tf" : "kf");
 }
 
 static ssize_t wheel_texture_route_store(struct device *dev,
@@ -10293,7 +10328,7 @@ static ssize_t wheel_texture_route_store(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	u8 route;
 
 	if (!hidpp)
@@ -10305,9 +10340,9 @@ static ssize_t wheel_texture_route_store(struct device *dev,
 		return -ENODEV;
 
 	if (sysfs_streq(buf, "tf") || sysfs_streq(buf, "1"))
-		route = RS50_TEXTURE_ROUTE_TF;
+		route = HIDPP_DD_TEXTURE_ROUTE_TF;
 	else if (sysfs_streq(buf, "kf") || sysfs_streq(buf, "0"))
-		route = RS50_TEXTURE_ROUTE_KF;
+		route = HIDPP_DD_TEXTURE_ROUTE_KF;
 	else
 		return -EINVAL;
 
@@ -10323,7 +10358,7 @@ static DEVICE_ATTR(wheel_texture_route, 0664,
  * wheel_range_restore: automatically restore the rotation range after
  * an external silent reset (games' SDK sessions pushing an operating
  * range at start - AC EVO pushes 90). Heavily gated; see
- * rs50_ff_range_maybe_restore. 1 = on (default), 0 = detect-only.
+ * hidpp_dd_ff_range_maybe_restore. 1 = on (default), 0 = detect-only.
  */
 static ssize_t wheel_range_restore_show(struct device *dev,
 					struct device_attribute *attr,
@@ -10331,7 +10366,7 @@ static ssize_t wheel_range_restore_show(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -10349,7 +10384,7 @@ static ssize_t wheel_range_restore_store(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	unsigned int val;
 	int ret;
 
@@ -10385,7 +10420,7 @@ static ssize_t wheel_serial_show(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -10405,7 +10440,7 @@ static ssize_t wheel_firmware_show(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -10436,7 +10471,7 @@ static ssize_t wheel_profile_names_show(struct device *dev,
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	struct hidpp_report response;
 	ssize_t len = 0;
 	u8 slot;
@@ -10448,7 +10483,7 @@ static ssize_t wheel_profile_names_show(struct device *dev,
 		return -ENODEV;
 	if (atomic_read_acquire(&ff->stopping))
 		return -ENODEV;
-	if (ff->idx_profile == RS50_FEATURE_NOT_FOUND)
+	if (ff->idx_profile == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	for (slot = 1; slot <= 5; slot++) {
@@ -10502,7 +10537,7 @@ static DEVICE_ATTR(wheel_profile_names, 0444, wheel_profile_names_show, NULL);
  * callback runs at sysfs_create_group() time, after feature discovery
  * has populated idx_calibrate, so the gate reflects the live state.
  */
-static struct attribute *rs50_wheel_group_attrs[] = {
+static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_range.attr,
 	&dev_attr_wheel_strength.attr,
 	&dev_attr_wheel_damping.attr,
@@ -10550,8 +10585,8 @@ static struct attribute *rs50_wheel_group_attrs[] = {
 	NULL,
 };
 
-static const struct attribute_group rs50_wheel_group = {
-	.attrs = rs50_wheel_group_attrs,
+static const struct attribute_group hidpp_dd_wheel_group = {
+	.attrs = hidpp_dd_wheel_group_attrs,
 };
 
 static struct attribute *gpro_wheel_group_attrs[] = {
@@ -10579,11 +10614,11 @@ static umode_t gpro_wheel_group_is_visible(struct kobject *kobj,
 	struct device *dev = kobj_to_dev(kobj);
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct rs50_ff_data *ff = hidpp ? hidpp->private_data : NULL;
+	struct hidpp_dd_ff_data *ff = hidpp ? hidpp->private_data : NULL;
 
 	if (attr == &dev_attr_wheel_calibrate.attr ||
 	    attr == &dev_attr_wheel_calibrate_here.attr) {
-		if (!ff || ff->idx_calibrate == RS50_FEATURE_NOT_FOUND)
+		if (!ff || ff->idx_calibrate == HIDPP_DD_FEATURE_NOT_FOUND)
 			return 0;
 	}
 	return attr->mode;
@@ -10605,7 +10640,7 @@ static const struct attribute_group gpro_wheel_group = {
  * with its default sequential joystick mapping (BTN_TRIGGER, BTN_THUMB, etc.).
  * This maintains button index compatibility with Windows DirectInput.
  */
-static int rs50_input_mapping(struct hid_device *hdev, struct hid_input *hi,
+static int hidpp_dd_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 			      struct hid_field *field, struct hid_usage *usage,
 			      unsigned long **bit, int *max)
 {
@@ -10621,8 +10656,8 @@ static int rs50_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 	 * Filter phantom buttons that would overflow Linux input codes.
 	 * Buttons 1-80 map to valid BTN_JOYSTICK + n codes.
 	 */
-	if (button > RS50_MAX_BUTTON_USAGE) {
-		hid_dbg(hdev, "RS50: Ignoring phantom button %u\n", button);
+	if (button > HIDPP_DD_MAX_BUTTON_USAGE) {
+		dd_dbg(hdev, "Ignoring phantom button %u\n", button);
 		return -1;
 	}
 
@@ -10643,7 +10678,7 @@ static int rs50_input_mapping(struct hid_device *hdev, struct hid_input *hi,
  * run the rule a second time with the files present. udev serialises
  * events per device, so this cannot race the original "add".
  */
-static void rs50_sysfs_uevent_replay(struct hid_device *hid)
+static void hidpp_dd_sysfs_uevent_replay(struct hid_device *hid)
 {
 #if IS_ENABLED(CONFIG_HIDRAW)
 	/* hid_device.hidraw is declared void * (opaque outside hidraw.c) */
@@ -10655,7 +10690,7 @@ static void rs50_sysfs_uevent_replay(struct hid_device *hid)
 }
 
 /* -------------------------------------------------------------------------- */
-/* G Pro Racing Wheel: sysfs settings (reuses rs50_ff_data for settings only) */
+/* G Pro Racing Wheel: sysfs settings (reuses hidpp_dd_ff_data for settings only) */
 /* -------------------------------------------------------------------------- */
 
 /*
@@ -10663,18 +10698,18 @@ static void rs50_sysfs_uevent_replay(struct hid_device *hid)
  *
  * The G Pro uses the G920 HID++ 0x8123 FFB path (handled separately in probe),
  * but shares the same HID++ settings features (range, strength, damping, etc.)
- * as the RS50. This function allocates an rs50_ff_data solely for settings
+ * as the RS50. This function allocates an hidpp_dd_ff_data solely for settings
  * management and sysfs attributes -- no workqueue, timers, or FFB state.
  */
 static int gpro_sysfs_init(struct hidpp_device *hidpp)
 {
 	struct hid_device *hid = hidpp->hid_dev;
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int ret;
 	int i, j;
 
 	if (!hid_is_usb(hid)) {
-		hid_err(hid, "G Pro: Settings require USB connection\n");
+		dd_err(hid, "Settings require USB connection\n");
 		return -ENODEV;
 	}
 
@@ -10688,21 +10723,21 @@ static int gpro_sysfs_init(struct hidpp_device *hidpp)
 	WRITE_ONCE(hidpp->private_data, ff);
 
 	/*
-	 * Feature indices get reset to RS50_FEATURE_NOT_FOUND by
-	 * rs50_discover_settings_features and rs50_discover_lightsync_features
+	 * Feature indices get reset to HIDPP_DD_FEATURE_NOT_FOUND by
+	 * hidpp_dd_discover_settings_features and hidpp_dd_discover_lightsync_features
 	 * before any lookups run, so we don't need to pre-initialise them here.
 	 */
 	ff->calibrate_dev_idx = 0x05;	/* G Pro: calibrate lives on sub-device 0x05 */
 
 	/* Default SET function numbers (RS50 pattern: fn=2 for all) */
-	ff->fn_set_range = RS50_HIDPP_FN_SET;
-	ff->fn_set_strength = RS50_HIDPP_FN_SET;
-	ff->fn_set_damping = RS50_HIDPP_FN_SET;
-	ff->fn_set_trueforce = RS50_HIDPP_FN_SET;
-	ff->fn_set_brakeforce = RS50_HIDPP_FN_SET;
-	ff->fn_set_filter = RS50_HIDPP_FN_SET;
-	ff->fn_set_sensitivity = RS50_HIDPP_FN_SET;
-	ff->fn_set_brightness = RS50_HIDPP_FN_SET;
+	ff->fn_set_range = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_strength = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_damping = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_trueforce = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_brakeforce = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_filter = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_sensitivity = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_brightness = HIDPP_DD_HIDPP_FN_SET;
 
 	/* G Pro-specific SET function overrides (verified from USB captures):
 	 * - fn_set_range: fn2 (0x20) - verified
@@ -10740,10 +10775,10 @@ static int gpro_sysfs_init(struct hidpp_device *hidpp)
 	 * expectation.
 	 */
 	ff->led_active_slot = 0;
-	for (i = 0; i < RS50_LIGHTSYNC_NUM_SLOTS; i++) {
-		ff->led_slots[i].direction = RS50_LIGHTSYNC_DIR_LEFT_RIGHT;
+	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_SLOTS; i++) {
+		ff->led_slots[i].direction = HIDPP_DD_LIGHTSYNC_DIR_LEFT_RIGHT;
 		ff->led_slots[i].brightness = 100;
-		for (j = 0; j < RS50_LIGHTSYNC_NUM_LEDS; j++) {
+		for (j = 0; j < HIDPP_DD_LIGHTSYNC_NUM_LEDS; j++) {
 			ff->led_slots[i].colors[j * 3 + 0] = 0xFF;
 			ff->led_slots[i].colors[j * 3 + 1] = 0xFF;
 			ff->led_slots[i].colors[j * 3 + 2] = 0xFF;
@@ -10758,10 +10793,10 @@ static int gpro_sysfs_init(struct hidpp_device *hidpp)
 	 * LIGHTSYNC/RGB config and the centre-calibrate sub-device, which
 	 * the G Pro supports identically.
 	 */
-	rs50_discover_settings_features(ff);
-	rs50_discover_lightsync_features(ff);
-	rs50_get_current_mode(ff);
-	rs50_ff_query_common_settings(ff);
+	hidpp_dd_discover_settings_features(ff);
+	hidpp_dd_discover_lightsync_features(ff);
+	hidpp_dd_get_current_mode(ff);
+	hidpp_dd_ff_query_common_settings(ff);
 
 	/*
 	 * Create sysfs attributes in one go. The is_visible callback on
@@ -10774,22 +10809,22 @@ static int gpro_sysfs_init(struct hidpp_device *hidpp)
 	 */
 	ret = sysfs_create_group(&hid->dev.kobj, &gpro_wheel_group);
 	if (ret)
-		hid_warn(hid, "G Pro: sysfs group creation failed: %d\n", ret);
+		dd_warn(hid, "sysfs group creation failed: %d\n", ret);
 	else
-		rs50_sysfs_uevent_replay(hid);
+		hidpp_dd_sysfs_uevent_replay(hid);
 
-	hid_info(hid, "G Pro: Settings initialized\n");
+	dd_info(hid, "Settings initialized\n");
 	return 0;
 }
 
 /*
  * Cleanup sysfs settings for the G Pro Racing Wheel.
- * Removes sysfs attributes and frees the rs50_ff_data.
+ * Removes sysfs attributes and frees the hidpp_dd_ff_data.
  */
 static void gpro_sysfs_destroy(struct hidpp_device *hidpp)
 {
 	struct hid_device *hid = hidpp->hid_dev;
-	struct rs50_ff_data *ff = READ_ONCE(hidpp->private_data);
+	struct hidpp_dd_ff_data *ff = READ_ONCE(hidpp->private_data);
 
 	if (!ff)
 		return;
@@ -10807,20 +10842,20 @@ static void gpro_sysfs_destroy(struct hidpp_device *hidpp)
 	WRITE_ONCE(hidpp->private_data, NULL);
 	kfree(ff);
 
-	hid_info(hid, "G Pro: Settings removed\n");
+	dd_info(hid, "Settings removed\n");
 }
 
-static int rs50_ff_init(struct hidpp_device *hidpp)
+static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 {
 	struct hid_device *hid = hidpp->hid_dev;
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	int i;
 	int ret;
 
-	hid_dbg(hid, "RS50: %s started\n", __func__);
+	dd_dbg(hid, "%s started\n", __func__);
 
 	if (!hid_is_usb(hid)) {
-		hid_err(hid, "RS50: Force feedback requires USB connection (Bluetooth not supported)\n");
+		dd_err(hid, "Force feedback requires USB connection (Bluetooth not supported)\n");
 		return -ENODEV;
 	}
 
@@ -10829,23 +10864,23 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	 * The RS50 has 3 HID interfaces and probe runs for each one.
 	 * We only want ONE ff_data instance with ONE timer.
 	 */
-	ff = rs50_find_ff_data(hid);
+	ff = hidpp_dd_find_ff_data(hid);
 	if (ff) {
-		hid_info(hid, "RS50: FF data already exists on sibling, skipping init\n");
+		dd_info(hid, "FF data already exists on sibling, skipping init\n");
 		/* Store reference so this interface can use the shared ff_data */
 		hidpp->private_data = ff;
 		return 0;
 	}
 
-	hid_dbg(hid, "RS50: Allocating FF data\n");
+	dd_dbg(hid, "Allocating FF data\n");
 	/* Allocate private data */
 	ff = kzalloc(sizeof(*ff), GFP_KERNEL);
 	if (!ff)
 		return -ENOMEM;
 
-	hid_dbg(hid, "RS50: Creating workqueue\n");
+	dd_dbg(hid, "Creating workqueue\n");
 	/* Create workqueue for async USB transfers */
-	ff->wq = create_singlethread_workqueue("rs50-ffb");
+	ff->wq = create_singlethread_workqueue("hidpp-dd-ffb");
 	if (!ff->wq) {
 		kfree(ff);
 		return -ENOMEM;
@@ -10865,12 +10900,12 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 
 	/* Initialize LIGHTSYNC slots with default white LEDs */
 	ff->led_active_slot = 0;
-	for (i = 0; i < RS50_LIGHTSYNC_NUM_SLOTS; i++) {
+	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_SLOTS; i++) {
 		int j;
 
-		ff->led_slots[i].direction = RS50_LIGHTSYNC_DIR_LEFT_RIGHT;
+		ff->led_slots[i].direction = HIDPP_DD_LIGHTSYNC_DIR_LEFT_RIGHT;
 		ff->led_slots[i].brightness = 100;  /* Default: 100% */
-		for (j = 0; j < RS50_LIGHTSYNC_NUM_LEDS; j++) {
+		for (j = 0; j < HIDPP_DD_LIGHTSYNC_NUM_LEDS; j++) {
 			/* Default: white (0xFF, 0xFF, 0xFF) for all LEDs */
 			ff->led_slots[i].colors[j * 3 + 0] = 0xFF;
 			ff->led_slots[i].colors[j * 3 + 1] = 0xFF;
@@ -10880,9 +10915,9 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 
 	/* Pedal response curves and combined mode defaults */
 	ff->combined_pedals = 0;	/* Default: off */
-	ff->throttle_curve = RS50_CURVE_LINEAR;
-	ff->brake_curve = RS50_CURVE_LINEAR;
-	ff->clutch_curve = RS50_CURVE_LINEAR;
+	ff->throttle_curve = HIDPP_DD_CURVE_LINEAR;
+	ff->brake_curve = HIDPP_DD_CURVE_LINEAR;
+	ff->clutch_curve = HIDPP_DD_CURVE_LINEAR;
 	ff->throttle_deadzone_lower = 0;
 	ff->throttle_deadzone_upper = 0;
 	ff->brake_deadzone_lower = 0;
@@ -10894,11 +10929,11 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	ff->last_force = 0;
 	ff->gain = 0xFFFF;		/* 100%, games scale down from here */
 	ff->ffb_constant_sign = true;	/* invert by default; Wine/Proton games rely on this */
-	ff->spring_damping = RS50_FF_SPRING_DAMPING_DEFAULT;
+	ff->spring_damping = HIDPP_DD_FF_SPRING_DAMPING_DEFAULT;
 	ff->spring_level = 100;		/* per-class scales: neutral */
 	ff->damper_level = 100;
 	ff->friction_level = 100;
-	ff->texture_route = RS50_TEXTURE_ROUTE_TF;
+	ff->texture_route = HIDPP_DD_TEXTURE_ROUTE_TF;
 	ff->range_restore = true;
 	ff->range_restore_attempts = 0;
 	ff->tf_ready = false;
@@ -10906,7 +10941,7 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	ff->tf_streaming = false;
 	ff->tf_staged = 0;
 	ff->tf_init_attempts = 0;
-	memset16(ff->tf_window, 0x8000, RS50_TF_WINDOW); /* offset-binary centre */
+	memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW); /* offset-binary centre */
 	spin_lock_init(&ff->effects_lock);
 	atomic_set(&ff->sequence, 0);
 	atomic_set(&ff->pending_work, 0);
@@ -10920,24 +10955,24 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	 * gracefully if accessed before deferred initialization completes.
 	 * discover_features() will set valid indices for supported features.
 	 */
-	ff->idx_range = RS50_FEATURE_NOT_FOUND;
-	ff->idx_strength = RS50_FEATURE_NOT_FOUND;
-	ff->idx_damping = RS50_FEATURE_NOT_FOUND;
-	ff->idx_trueforce = RS50_FEATURE_NOT_FOUND;
-	ff->idx_brakeforce = RS50_FEATURE_NOT_FOUND;
-	ff->idx_filter = RS50_FEATURE_NOT_FOUND;
-	ff->idx_brightness = RS50_FEATURE_NOT_FOUND;
-	ff->idx_lightsync = RS50_FEATURE_NOT_FOUND;
-	ff->idx_rgb_config = RS50_FEATURE_NOT_FOUND;
-	ff->idx_profile = RS50_FEATURE_NOT_FOUND;
-	ff->idx_profile_notify = RS50_FEATURE_NOT_FOUND;
-	ff->idx_sync = RS50_FEATURE_NOT_FOUND;
-	ff->idx_calibrate = RS50_FEATURE_NOT_FOUND;
-	ff->idx_compat_angle = RS50_FEATURE_NOT_FOUND;
-	ff->idx_compat_strength = RS50_FEATURE_NOT_FOUND;
-	ff->idx_compat_trueforce = RS50_FEATURE_NOT_FOUND;
-	ff->idx_compat_damping = RS50_FEATURE_NOT_FOUND;
-	ff->idx_compat_filter = RS50_FEATURE_NOT_FOUND;
+	ff->idx_range = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_strength = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_damping = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_trueforce = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_brakeforce = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_lightsync = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_rgb_config = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_profile = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_profile_notify = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_sync = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_calibrate = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_compat_angle = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_compat_strength = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_compat_trueforce = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_compat_damping = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_compat_filter = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->calibrate_dev_idx = 0x05;	/* Centre calibration sub-device (matches G Pro) */
 
 	/*
@@ -10950,71 +10985,71 @@ static int rs50_ff_init(struct hidpp_device *hidpp)
 	 *   trueforce    -> fn=3 (0x30)    trueforce_sweep shows 10ff193d...
 	 *                                  where 3d = fn=3 (matches G Pro)
 	 */
-	ff->fn_set_range = RS50_HIDPP_FN_SET;
-	ff->fn_set_strength = RS50_HIDPP_FN_SET;
+	ff->fn_set_range = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_strength = HIDPP_DD_HIDPP_FN_SET;
 	ff->fn_set_damping = 0x10;
 	ff->fn_set_trueforce = 0x30;
-	ff->fn_set_brakeforce = RS50_HIDPP_FN_SET;
-	ff->fn_set_filter = RS50_HIDPP_FN_SET;
-	ff->fn_set_sensitivity = RS50_HIDPP_FN_SET;
-	ff->fn_set_brightness = RS50_HIDPP_FN_SET;
+	ff->fn_set_brakeforce = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_filter = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_sensitivity = HIDPP_DD_HIDPP_FN_SET;
+	ff->fn_set_brightness = HIDPP_DD_HIDPP_FN_SET;
 
 	/*
 	 * Initialize effect timer early so timer_delete_sync() in destroy
 	 * is always safe, even if deferred init never runs (early unbind).
 	 * The timer callback checks 'initialized' and won't do anything
-	 * until rs50_ff_init_work() completes and calls mod_timer().
+	 * until hidpp_dd_ff_init_work() completes and calls mod_timer().
 	 */
-	timer_setup(&ff->effect_timer, rs50_ff_effect_timer_callback, 0);
+	timer_setup(&ff->effect_timer, hidpp_dd_ff_effect_timer_callback, 0);
 
 	/*
 	 * Initialize delayed works early so cancel_delayed_work_sync() in
 	 * destroy is always safe, even if unbind happens during sysfs setup.
 	 * The work functions check 'stopping' flag and exit early if set.
 	 */
-	INIT_DELAYED_WORK(&ff->init_work, rs50_ff_init_work);
-	INIT_DELAYED_WORK(&ff->refresh_work, rs50_ff_refresh_work);
-	INIT_DELAYED_WORK(&ff->range_poll_work, rs50_ff_range_poll_work);
-	INIT_WORK(&ff->settings_refresh_work, rs50_ff_settings_refresh_work);
-	INIT_WORK(&ff->tf_init_work, rs50_tf_init_work_handler);
+	INIT_DELAYED_WORK(&ff->init_work, hidpp_dd_ff_init_work);
+	INIT_DELAYED_WORK(&ff->refresh_work, hidpp_dd_ff_refresh_work);
+	INIT_DELAYED_WORK(&ff->range_poll_work, hidpp_dd_ff_range_poll_work);
+	INIT_WORK(&ff->settings_refresh_work, hidpp_dd_ff_settings_refresh_work);
+	INIT_WORK(&ff->tf_init_work, hidpp_dd_tf_init_work_handler);
 
 	/* Store for cleanup in hidpp_remove() */
 	hidpp->private_data = ff;
 
 	/* Create all wheel sysfs attributes in one pass (warnings non-fatal) */
-	ret = sysfs_create_group(&hid->dev.kobj, &rs50_wheel_group);
+	ret = sysfs_create_group(&hid->dev.kobj, &hidpp_dd_wheel_group);
 	if (ret)
-		hid_warn(hid, "RS50: sysfs group creation failed: %d\n", ret);
+		dd_warn(hid, "sysfs group creation failed: %d\n", ret);
 	else
-		rs50_sysfs_uevent_replay(hid);
+		hidpp_dd_sysfs_uevent_replay(hid);
 
 	/*
 	 * Schedule deferred initialization with event-based retry.
-	 * First attempt after RS50_FF_INIT_DELAY_MS, then retry every
-	 * RS50_FF_INIT_RETRY_MS until interfaces are ready or max retries.
+	 * First attempt after HIDPP_DD_FF_INIT_DELAY_MS, then retry every
+	 * HIDPP_DD_FF_INIT_RETRY_MS until interfaces are ready or max retries.
 	 * Note: INIT_DELAYED_WORK was done early (before private_data set)
 	 * to ensure cancel_delayed_work_sync is safe during early unbind.
 	 */
 	ff->init_retries = 0;
 	queue_delayed_work(ff->wq, &ff->init_work,
-			   msecs_to_jiffies(RS50_FF_INIT_DELAY_MS));
+			   msecs_to_jiffies(HIDPP_DD_FF_INIT_DELAY_MS));
 
-	hid_info(hid, "RS50: Initializing force feedback...\n");
-	hid_dbg(hid, "RS50: %s completed, init scheduled in %dms\n",
-		__func__, RS50_FF_INIT_DELAY_MS);
+	dd_info(hid, "Initializing force feedback...\n");
+	dd_dbg(hid, "%s completed, init scheduled in %dms\n",
+		__func__, HIDPP_DD_FF_INIT_DELAY_MS);
 	return 0;
 }
 
-static void rs50_ff_destroy(struct hidpp_device *hidpp)
+static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 {
 	struct hid_device *hid = hidpp->hid_dev;
-	struct rs50_ff_data *ff = hidpp->private_data;
+	struct hidpp_dd_ff_data *ff = hidpp->private_data;
 	struct hid_device *ff_hdev_cached;
 
-	hid_dbg(hid, "RS50: %s started\n", __func__);
+	dd_dbg(hid, "%s started\n", __func__);
 
 	if (!ff) {
-		hid_dbg(hid, "RS50: FF is NULL, nothing to destroy\n");
+		dd_dbg(hid, "FF is NULL, nothing to destroy\n");
 		return;
 	}
 
@@ -11031,11 +11066,11 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 	 * Other interfaces may share the ff_data pointer but shouldn't free it.
 	 */
 	if (ff->owner_hidpp != hidpp) {
-		hid_dbg(hid, "RS50: Not ff owner, skipping full cleanup\n");
+		dd_dbg(hid, "Not ff owner, skipping full cleanup\n");
 		return;
 	}
 
-	hid_dbg(hid, "RS50: Setting stopping flag\n");
+	dd_dbg(hid, "Setting stopping flag\n");
 	/*
 	 * Signal shutdown to prevent new work and allow in-progress work
 	 * to exit early. This must be done first.
@@ -11056,7 +11091,7 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 	 * on freed memory). Previously the group was removed AFTER the
 	 * last timer delete, which the FFB.F4 double-delete did not cover.
 	 */
-	sysfs_remove_group(&hidpp->hid_dev->dev.kobj, &rs50_wheel_group);
+	sysfs_remove_group(&hidpp->hid_dev->dev.kobj, &hidpp_dd_wheel_group);
 
 	/*
 	 * NOTE: We do NOT access ff->input->ff->private here because
@@ -11074,7 +11109,7 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 
 	/*
 	 * Invalidate interface 0's cached copy of the shared ff pointer
-	 * BEFORE this struct is freed: rs50_process_pedals caches ff into
+	 * BEFORE this struct is freed: hidpp_dd_process_pedals caches ff into
 	 * the input interface's hidpp->private_data, and if that iface
 	 * stays bound while the owner is torn down, its 500 Hz raw-event
 	 * path would keep writing wheel_pos through a dangling pointer.
@@ -11101,7 +11136,7 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 	WRITE_ONCE(ff->input, NULL);
 	WRITE_ONCE(ff->ff_hdev, NULL);
 
-	hid_dbg(hid, "RS50: Cancelling deferred init work\n");
+	dd_dbg(hid, "Cancelling deferred init work\n");
 	/*
 	 * Cancel deferred init first: if it's still in flight it can
 	 * queue refresh_work, so cancelling refresh_work before init_work
@@ -11110,16 +11145,16 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 	 */
 	cancel_delayed_work_sync(&ff->init_work);
 
-	hid_dbg(hid, "RS50: Cancelling refresh timer\n");
+	dd_dbg(hid, "Cancelling refresh timer\n");
 	cancel_delayed_work_sync(&ff->refresh_work);
 	cancel_delayed_work_sync(&ff->range_poll_work);
 	cancel_work_sync(&ff->settings_refresh_work);
 	cancel_work_sync(&ff->tf_init_work);
 
-	hid_dbg(hid, "RS50: Cancelling effect timer\n");
+	dd_dbg(hid, "Cancelling effect timer\n");
 	timer_delete_sync(&ff->effect_timer);
 
-	hid_dbg(hid, "RS50: Draining workqueue\n");
+	dd_dbg(hid, "Draining workqueue\n");
 	/*
 	 * Drain the workqueue - this waits for all pending work to complete
 	 * and prevents new work from being queued. More robust than manual polling.
@@ -11135,7 +11170,7 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 	 */
 	timer_delete_sync(&ff->effect_timer);
 
-	hid_dbg(hid, "RS50: Destroying workqueue\n");
+	dd_dbg(hid, "Destroying workqueue\n");
 	/*
 	 * Now safe to destroy workqueue.
 	 */
@@ -11152,14 +11187,14 @@ static void rs50_ff_destroy(struct hidpp_device *hidpp)
 		ff->ff_hdev_open = false;
 	}
 
-	hid_dbg(hid, "RS50: Freeing resources\n");
+	dd_dbg(hid, "Freeing resources\n");
 	/* ff_hdev was cleared by the WRITE_ONCE above; no redundant clear here. */
 
 	kfree(ff);
 	/* Note: hidpp->private_data was cleared at function start */
 
-	hid_info(hid, "RS50: Force feedback unloaded\n");
-	hid_dbg(hid, "RS50: %s completed\n", __func__);
+	dd_info(hid, "Force feedback unloaded\n");
+	dd_dbg(hid, "%s completed\n", __func__);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -11448,7 +11483,7 @@ static int hidpp_initialize_hires_scroll(struct hidpp_device *hidpp)
 /* joystick path. When inject_pid=1 we append a full PID output collection    */
 /* to interface 0's descriptor during .report_fixup, and install an ll_driver */
 /* override that intercepts userspace output_report / raw_request calls for   */
-/* the injected report IDs and translates them into our rs50_ff_* evdev FFB   */
+/* the injected report IDs and translates them into our hidpp_dd_ff_* evdev FFB   */
 /* path (which writes to the wheel via interface 2, the real FFB endpoint).  */
 /*                                                                            */
 /* The descriptor is a straight USB HID PID Page 0x0F output collection: the */
@@ -11468,8 +11503,8 @@ static int hidpp_initialize_hires_scroll(struct hidpp_device *hidpp)
  * on which numeric values to use); Wine's hid_joystick PID parser walks the
  * usages, not the IDs. We pick the 0x50..0x5D range deliberately to stay
  * clear of everything else this driver already defines on the same device:
- *   0x01 - RS50_FF_REPORT_ID         (interface 2, vendor FFB protocol)
- *   0x05 - RS50_FF_REFRESH_ID        (interface 2)
+ *   0x01 - HIDPP_DD_FF_REPORT_ID         (interface 2, vendor FFB protocol)
+ *   0x05 - HIDPP_DD_FF_REFRESH_ID        (interface 2)
  *   0x10 - REPORT_ID_HIDPP_SHORT
  *   0x11 - REPORT_ID_HIDPP_LONG
  *   0x12 - REPORT_ID_HIDPP_VERY_LONG
@@ -11477,22 +11512,22 @@ static int hidpp_initialize_hires_scroll(struct hidpp_device *hidpp)
  * synthesised reports as HID++, which is how we got a wheel-slam and a
  * "received hid++ report of bad size" storm in the first test.
  */
-#define RS50_PID_REPORT_STATE           0x50  /* Device State input (usage 0x92) */
-#define RS50_PID_REPORT_DEVICE_CONTROL  0x50  /* Device Control output (usage 0x96) - same collection as STATE */
-#define RS50_PID_REPORT_SET_EFFECT      0x51  /* Set Effect Report (usage 0x21) */
-#define RS50_PID_REPORT_SET_ENVELOPE    0x52  /* Set Envelope Report (usage 0x5A) */
-#define RS50_PID_REPORT_SET_CONDITION   0x53  /* Set Condition Report (usage 0x5F) */
-#define RS50_PID_REPORT_CREATE_NEW_EFFECT 0x54 /* Create New Effect (usage 0xAB feature) */
-#define RS50_PID_REPORT_SET_CONSTANT    0x55  /* Set Constant Force (usage 0x73) */
-#define RS50_PID_REPORT_BLOCK_LOAD      0x56  /* PID Block Load (usage 0x89 feature) */
-#define RS50_PID_REPORT_PID_POOL        0x57  /* PID Pool (usage 0x7F feature) */
-#define RS50_PID_REPORT_SET_RAMP        0x58  /* Set Ramp Force (usage 0x74) */
-#define RS50_PID_REPORT_DEVICE_GAIN     0x59  /* Device Gain (usage 0x7D) */
-#define RS50_PID_REPORT_EFFECT_OP       0x5A  /* Effect Operation (usage 0x77) */
-#define RS50_PID_REPORT_BLOCK_FREE      0x5B  /* PID Block Free (usage 0x90) */
-#define RS50_PID_REPORT_SET_PERIODIC    0x5D  /* Set Periodic (usage 0x6E) */
+#define HIDPP_DD_PID_REPORT_STATE           0x50  /* Device State input (usage 0x92) */
+#define HIDPP_DD_PID_REPORT_DEVICE_CONTROL  0x50  /* Device Control output (usage 0x96) - same collection as STATE */
+#define HIDPP_DD_PID_REPORT_SET_EFFECT      0x51  /* Set Effect Report (usage 0x21) */
+#define HIDPP_DD_PID_REPORT_SET_ENVELOPE    0x52  /* Set Envelope Report (usage 0x5A) */
+#define HIDPP_DD_PID_REPORT_SET_CONDITION   0x53  /* Set Condition Report (usage 0x5F) */
+#define HIDPP_DD_PID_REPORT_CREATE_NEW_EFFECT 0x54 /* Create New Effect (usage 0xAB feature) */
+#define HIDPP_DD_PID_REPORT_SET_CONSTANT    0x55  /* Set Constant Force (usage 0x73) */
+#define HIDPP_DD_PID_REPORT_BLOCK_LOAD      0x56  /* PID Block Load (usage 0x89 feature) */
+#define HIDPP_DD_PID_REPORT_PID_POOL        0x57  /* PID Pool (usage 0x7F feature) */
+#define HIDPP_DD_PID_REPORT_SET_RAMP        0x58  /* Set Ramp Force (usage 0x74) */
+#define HIDPP_DD_PID_REPORT_DEVICE_GAIN     0x59  /* Device Gain (usage 0x7D) */
+#define HIDPP_DD_PID_REPORT_EFFECT_OP       0x5A  /* Effect Operation (usage 0x77) */
+#define HIDPP_DD_PID_REPORT_BLOCK_FREE      0x5B  /* PID Block Free (usage 0x90) */
+#define HIDPP_DD_PID_REPORT_SET_PERIODIC    0x5D  /* Set Periodic (usage 0x6E) */
 
-static const u8 rs50_pid_rdesc[] = {
+static const u8 hidpp_dd_pid_rdesc[] = {
 	0x35, 0x00,		/* Physical Minimum (0)                      */
 	0x45, 0x00,		/* Physical Maximum (0)                      */
 	0x05, 0x0F,		/* Usage Page (PID)                          */
@@ -11684,9 +11719,9 @@ static const u8 rs50_pid_rdesc[] = {
  * End Collection of the joystick application. Pattern matches fanatec's
  * "depth==0 && previous report_id==1" hook. The joystick's report id is
  * 1 on our wheel just like fanatec's. The output buffer is pre-allocated
- * to (original_size + sizeof(rs50_pid_rdesc) + slack).
+ * to (original_size + sizeof(hidpp_dd_pid_rdesc) + slack).
  */
-static int rs50_pid_splice_rdesc(const u8 *src, unsigned int src_size,
+static int hidpp_dd_pid_splice_rdesc(const u8 *src, unsigned int src_size,
 				 u8 *dst, unsigned int dst_cap,
 				 unsigned int *out_size)
 {
@@ -11706,11 +11741,11 @@ static int rs50_pid_splice_rdesc(const u8 *src, unsigned int src_size,
 		 */
 		if (*p == 0xC0 /* End Collection */) {
 			if (depth == 1 && !spliced) {
-				if (q + sizeof(rs50_pid_rdesc) > qend)
+				if (q + sizeof(hidpp_dd_pid_rdesc) > qend)
 					return -ENOSPC;
-				memcpy(q, rs50_pid_rdesc,
-				       sizeof(rs50_pid_rdesc));
-				q += sizeof(rs50_pid_rdesc);
+				memcpy(q, hidpp_dd_pid_rdesc,
+				       sizeof(hidpp_dd_pid_rdesc));
+				q += sizeof(hidpp_dd_pid_rdesc);
 				spliced = true;
 			}
 			if (depth > 0)
@@ -11744,7 +11779,7 @@ static int rs50_pid_splice_rdesc(const u8 *src, unsigned int src_size,
  * hid_parse. On any failure (memory, splice error, wrong interface,
  * disabled by module param) returns the original rdesc unchanged.
  */
-static u8 *rs50_maybe_inject_pid_descriptor(struct hid_device *hdev,
+static u8 *hidpp_dd_maybe_inject_pid_descriptor(struct hid_device *hdev,
 					    struct hidpp_device *hidpp,
 					    u8 *rdesc, unsigned int *rsize)
 {
@@ -11765,24 +11800,24 @@ static u8 *rs50_maybe_inject_pid_descriptor(struct hid_device *hdev,
 		return rdesc;
 
 	orig_size = *rsize;
-	cap = orig_size + sizeof(rs50_pid_rdesc) + 16;
+	cap = orig_size + sizeof(hidpp_dd_pid_rdesc) + 16;
 	buf = devm_kzalloc(&hdev->dev, cap, GFP_KERNEL);
 	if (!buf) {
-		hid_warn(hdev, "RS50 PID inject: out of memory, skipping\n");
+		dd_warn(hdev, "PID inject: out of memory, skipping\n");
 		return rdesc;
 	}
-	ret = rs50_pid_splice_rdesc(rdesc, orig_size, buf, cap, &new_size);
+	ret = hidpp_dd_pid_splice_rdesc(rdesc, orig_size, buf, cap, &new_size);
 	if (ret) {
-		hid_warn(hdev,
-			 "RS50 PID inject: splice failed %d, keeping original descriptor\n",
+		dd_warn(hdev,
+			 "PID inject: splice failed %d, keeping original descriptor\n",
 			 ret);
 		devm_kfree(&hdev->dev, buf);
 		return rdesc;
 	}
 	hidpp->pid_fixup_buf = buf;
 	*rsize = new_size;
-	hid_info(hdev,
-		 "RS50 PID inject: interface 0 descriptor extended %u -> %u bytes\n",
+	dd_info(hdev,
+		 "PID inject: interface 0 descriptor extended %u -> %u bytes\n",
 		 orig_size, new_size);
 	return buf;
 }
@@ -11795,7 +11830,7 @@ static HIDPP_REPORT_FIXUP_RETURN_TYPE hidpp_report_fixup(struct hid_device *hdev
 	if (!hidpp)
 		return rdesc;
 
-	rdesc = rs50_maybe_inject_pid_descriptor(hdev, hidpp, rdesc, rsize);
+	rdesc = hidpp_dd_maybe_inject_pid_descriptor(hdev, hidpp, rdesc, rsize);
 
 	/* For 27 MHz keyboards the quirk gets set after hid_parse. */
 	if (hdev->group == HID_GROUP_LOGITECH_27MHZ_DEVICE ||
@@ -11813,29 +11848,29 @@ static HIDPP_REPORT_FIXUP_RETURN_TYPE hidpp_report_fixup(struct hid_device *hdev
 /* ll_driver->output_report(). hid_driver callbacks are NOT invoked for       */
 /* userspace-originated writes on the output path, so to intercept we must    */
 /* override the ll_driver itself. We duplicate the real one in                */
-/* rs50_pid_install(), override output_report / raw_request, and forward      */
+/* hidpp_dd_pid_install(), override output_report / raw_request, and forward      */
 /* any non-PID-report-ID calls to the saved real callbacks.                   */
 /* -------------------------------------------------------------------------- */
 
 /* Per-effect-slot state tracking. Wine's PID effect ID is 1-based (1..40);   */
-/* we allocate slots 0..RS50_FF_MAX_EFFECTS-1. Only allocated slots hold      */
+/* we allocate slots 0..HIDPP_DD_FF_MAX_EFFECTS-1. Only allocated slots hold      */
 /* meaningful data. `last_block_load_id` is the id Wine asked to be created  */
 /* most recently and is returned by the next GET_REPORT(BLOCK_LOAD feature). */
-struct rs50_pid_effect_slot {
+struct hidpp_dd_pid_effect_slot {
 	bool allocated;
 	u8 type;		/* PID effect type index (1..12) as sent in CREATE_NEW_EFFECT / SET_EFFECT */
 	u16 duration_ms;	/* 0x7FFF == infinite, per PID spec */
 	u16 direction;		/* 0..35900 (hundredths of degrees) */
 };
 
-struct rs50_pid_state {
+struct hidpp_dd_pid_state {
 	spinlock_t lock;
-	struct rs50_pid_effect_slot slots[RS50_FF_MAX_EFFECTS];
+	struct hidpp_dd_pid_effect_slot slots[HIDPP_DD_FF_MAX_EFFECTS];
 	u8 last_block_load_id;		/* 1-based PID id from last CREATE_NEW_EFFECT */
 	u8 last_block_load_status;	/* 1 == success, 2 == full, 3 == error */
 
 	/*
-	 * torn_down is flipped in rs50_pid_uninstall. Once set, our override
+	 * torn_down is flipped in hidpp_dd_pid_uninstall. Once set, our override
 	 * callbacks stop dispatching to real_* (which may be pointing at
 	 * usbhid internals that are themselves being torn down) and just
 	 * return quickly. Avoids the fragile "swap ll_driver back" pattern
@@ -11858,7 +11893,7 @@ struct rs50_pid_state {
  * CREATE_NEW_EFFECT byte 1, per USB PID spec Appendix A Usage Table) to the
  * Linux evdev FF_* constant. Undefined slots map to 0 (skipped).
  */
-static u16 rs50_pid_type_to_ff(u8 pid_type)
+static u16 hidpp_dd_pid_type_to_ff(u8 pid_type)
 {
 	switch (pid_type) {
 	case 1:  return FF_CONSTANT;
@@ -11878,7 +11913,7 @@ static u16 rs50_pid_type_to_ff(u8 pid_type)
 }
 
 /*
- * Look up rs50_ff_data (which lives on interface 1 / 2 for this wheel)
+ * Look up hidpp_dd_ff_data (which lives on interface 1 / 2 for this wheel)
  * starting from interface 0's hid_device. Returns NULL if FFB hasn't
  * finished initialising yet (which is fine - output silently dropped).
  */
@@ -11886,17 +11921,17 @@ static u16 rs50_pid_type_to_ff(u8 pid_type)
  * Sibling-walk variant that doesn't use hid_is_usb(). hid_is_usb compares
  * hdev->ll_driver against usb_hid_driver, but our PID injection swaps
  * ll_driver to point at our override copy, so hid_is_usb returns false on
- * the very interface 0 we care about. rs50_find_ff_data short-circuits as
- * "not USB" and the rs50_ff_data is unfindable. Here we know we were
+ * the very interface 0 we care about. hidpp_dd_find_ff_data short-circuits as
+ * "not USB" and the hidpp_dd_ff_data is unfindable. Here we know we were
  * called from inside our own ll_driver override, which we only install on
  * USB interface 0, so we can take to_usb_interface(hdev->dev.parent)
  * directly and iterate the USB siblings ourselves.
  */
-static struct rs50_ff_data *rs50_pid_get_ff(struct hid_device *if0_hdev)
+static struct hidpp_dd_ff_data *hidpp_dd_pid_get_ff(struct hid_device *if0_hdev)
 {
 	struct usb_interface *intf = to_usb_interface(if0_hdev->dev.parent);
 	struct usb_device *udev = interface_to_usbdev(intf);
-	struct rs50_ff_data *ff = NULL;
+	struct hidpp_dd_ff_data *ff = NULL;
 	int i;
 
 	for (i = 0; i < USB_MAXINTERFACES; i++) {
@@ -11911,7 +11946,7 @@ static struct rs50_ff_data *rs50_pid_get_ff(struct hid_device *if0_hdev)
 			continue;
 		sibling_hidpp = hid_get_drvdata(sibling_hid);
 		if (sibling_hidpp && sibling_hidpp->private_data &&
-		    (sibling_hidpp->quirks & HIDPP_QUIRK_RS50_FFB)) {
+		    (sibling_hidpp->quirks & HIDPP_QUIRK_DD_FFB)) {
 			ff = sibling_hidpp->private_data;
 			break;
 		}
@@ -11930,15 +11965,15 @@ static struct rs50_ff_data *rs50_pid_get_ff(struct hid_device *if0_hdev)
  * the wheel stays completely idle. id < 0 isn't used; slot is always the
  * Wine PID effect id minus 1.
  */
-static int rs50_pid_push_effect(struct rs50_ff_data *ff,
+static int hidpp_dd_pid_push_effect(struct hidpp_dd_ff_data *ff,
 				struct ff_effect *eff)
 {
 	struct input_dev *in = ff->input;
 	int ret;
 
 	if (inject_pid < 2) {
-		hid_info(ff->hidpp->hid_dev,
-			 "RS50 PID [dry]: would upload slot=%d type=0x%x direction=%u\n",
+		dd_info(ff->hidpp->hid_dev,
+			 "PID [dry]: would upload slot=%d type=0x%x direction=%u\n",
 			 eff->id, eff->type, eff->direction);
 		return 0;
 	}
@@ -11946,19 +11981,19 @@ static int rs50_pid_push_effect(struct rs50_ff_data *ff,
 		return -ENODEV;
 	ret = in->ff->upload(in, eff, NULL);
 	if (ret)
-		hid_dbg(ff->hidpp->hid_dev,
-			"RS50 PID: upload slot=%d type=0x%x -> %d\n",
+		dd_dbg(ff->hidpp->hid_dev,
+			"PID: upload slot=%d type=0x%x -> %d\n",
 			eff->id, eff->type, ret);
 	return ret;
 }
 
-static int rs50_pid_playback(struct rs50_ff_data *ff, int slot, int value)
+static int hidpp_dd_pid_playback(struct hidpp_dd_ff_data *ff, int slot, int value)
 {
 	struct input_dev *in = ff->input;
 
 	if (inject_pid < 2) {
-		hid_info(ff->hidpp->hid_dev,
-			 "RS50 PID [dry]: would playback slot=%d value=%d\n",
+		dd_info(ff->hidpp->hid_dev,
+			 "PID [dry]: would playback slot=%d value=%d\n",
 			 slot, value);
 		return 0;
 	}
@@ -11967,13 +12002,13 @@ static int rs50_pid_playback(struct rs50_ff_data *ff, int slot, int value)
 	return in->ff->playback(in, slot, value);
 }
 
-static int rs50_pid_erase(struct rs50_ff_data *ff, int slot)
+static int hidpp_dd_pid_erase(struct hidpp_dd_ff_data *ff, int slot)
 {
 	struct input_dev *in = ff->input;
 
 	if (inject_pid < 2) {
-		hid_info(ff->hidpp->hid_dev,
-			 "RS50 PID [dry]: would erase slot=%d\n", slot);
+		dd_info(ff->hidpp->hid_dev,
+			 "PID [dry]: would erase slot=%d\n", slot);
 		return 0;
 	}
 	if (!in->ff || !in->ff->erase)
@@ -11981,13 +12016,13 @@ static int rs50_pid_erase(struct rs50_ff_data *ff, int slot)
 	return in->ff->erase(in, slot);
 }
 
-static void rs50_pid_set_gain(struct rs50_ff_data *ff, u16 gain)
+static void hidpp_dd_pid_set_gain(struct hidpp_dd_ff_data *ff, u16 gain)
 {
 	struct input_dev *in = ff->input;
 
 	if (inject_pid < 2) {
-		hid_info(ff->hidpp->hid_dev,
-			 "RS50 PID [dry]: would set_gain=%u\n", gain);
+		dd_info(ff->hidpp->hid_dev,
+			 "PID [dry]: would set_gain=%u\n", gain);
 		return;
 	}
 	if (in->ff && in->ff->set_gain)
@@ -11995,11 +12030,11 @@ static void rs50_pid_set_gain(struct rs50_ff_data *ff, u16 gain)
 }
 
 /* Allocate / reuse / validate a slot index. Returns -1 on overflow. */
-static int rs50_pid_alloc_slot(struct rs50_pid_state *ps, u8 pid_type)
+static int hidpp_dd_pid_alloc_slot(struct hidpp_dd_pid_state *ps, u8 pid_type)
 {
 	int i;
 
-	for (i = 0; i < RS50_FF_MAX_EFFECTS; i++) {
+	for (i = 0; i < HIDPP_DD_FF_MAX_EFFECTS; i++) {
 		if (!ps->slots[i].allocated) {
 			ps->slots[i].allocated = true;
 			ps->slots[i].type = pid_type;
@@ -12018,7 +12053,7 @@ static int rs50_pid_alloc_slot(struct rs50_pid_state *ps, u8 pid_type)
  * clockwise). ACC writes direction==0 for both left-on-right and
  * centre-pull constant force, relying on sign of magnitude.
  */
-static void rs50_pid_fill_common(struct ff_effect *eff, int slot,
+static void hidpp_dd_pid_fill_common(struct ff_effect *eff, int slot,
 				 u16 pid_direction, u16 duration_ms)
 {
 	eff->id = slot;
@@ -12034,17 +12069,17 @@ static void rs50_pid_fill_common(struct ff_effect *eff, int slot,
 }
 
 /*
- * Dispatch a single PID output report from userspace to the rs50 evdev
+ * Dispatch a single PID output report from userspace to the wheel's evdev
  * pipeline. Returns the number of bytes consumed (== count on success)
  * or a negative errno on failure. Caller is responsible for bounds
  * checking buf[0] against PID report IDs.
  */
-static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
+static int hidpp_dd_pid_handle_output(struct hid_device *hdev, u8 *buf,
 				  size_t count)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
-	struct rs50_pid_state *ps;
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_pid_state *ps;
+	struct hidpp_dd_ff_data *ff;
 	unsigned long flags;
 	struct ff_effect eff = {0};
 	u8 rid, pid_id, op;
@@ -12059,24 +12094,24 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 	/* Full byte-level trace of every intercepted PID output report,
 	 * rate-limited to protect the log under ACC's ~1 kHz effect stream. */
 	if (printk_ratelimit())
-		print_hex_dump_bytes("RS50 PID out: ", DUMP_PREFIX_NONE,
+		print_hex_dump_bytes("DD PID out: ", DUMP_PREFIX_NONE,
 				     buf, min_t(size_t, count, 32));
 
-	ff = rs50_pid_get_ff(hdev);
+	ff = hidpp_dd_pid_get_ff(hdev);
 	/* If FFB isn't up yet, silently accept to keep Wine's enumeration
 	 * happy. We'll apply effects once ff comes online. */
 	switch (rid) {
-	case RS50_PID_REPORT_DEVICE_CONTROL:
+	case HIDPP_DD_PID_REPORT_DEVICE_CONTROL:
 		/* buf[1] = control op: 1=enable-actuators, 2=disable, 3=stop-all,
 		 * 4=reset, 5=pause, 6=continue. We treat reset/stop-all as
 		 * "erase all slots"; enable/disable are no-ops because the
 		 * wheel is always on. */
-		hid_dbg(hdev, "RS50 PID: DEVICE_CONTROL op=%u\n", buf[1]);
+		dd_dbg(hdev, "PID: DEVICE_CONTROL op=%u\n", buf[1]);
 		if (buf[1] == 3 /* stop-all */ || buf[1] == 4 /* reset */) {
 			spin_lock_irqsave(&ps->lock, flags);
-			for (slot = 0; slot < RS50_FF_MAX_EFFECTS; slot++) {
+			for (slot = 0; slot < HIDPP_DD_FF_MAX_EFFECTS; slot++) {
 				if (ps->slots[slot].allocated && ff)
-					rs50_pid_erase(ff, slot);
+					hidpp_dd_pid_erase(ff, slot);
 				ps->slots[slot].allocated = false;
 				ps->slots[slot].type = 0;
 			}
@@ -12084,13 +12119,13 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 		}
 		return count;
 
-	case RS50_PID_REPORT_DEVICE_GAIN:
-		hid_dbg(hdev, "RS50 PID: DEVICE_GAIN %u/255\n", buf[1]);
+	case HIDPP_DD_PID_REPORT_DEVICE_GAIN:
+		dd_dbg(hdev, "PID: DEVICE_GAIN %u/255\n", buf[1]);
 		if (ff)
-			rs50_pid_set_gain(ff, (u16)buf[1] * 0xFFFFu / 255u);
+			hidpp_dd_pid_set_gain(ff, (u16)buf[1] * 0xFFFFu / 255u);
 		return count;
 
-	case RS50_PID_REPORT_SET_EFFECT:
+	case HIDPP_DD_PID_REPORT_SET_EFFECT:
 		/*
 		 * USB PID 1.0 spec Section 5.2 "Set Effect" Report layout:
 		 *   [0]  report id
@@ -12109,7 +12144,7 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 		 */
 		if (count < 18)
 			return -EINVAL;
-		if (pid_id < 1 || pid_id > RS50_FF_MAX_EFFECTS)
+		if (pid_id < 1 || pid_id > HIDPP_DD_FF_MAX_EFFECTS)
 			return count;
 		slot = pid_id - 1;
 		spin_lock_irqsave(&ps->lock, flags);
@@ -12119,21 +12154,21 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 		ps->slots[slot].duration_ms = get_unaligned_le16(&buf[3]);
 		ps->slots[slot].direction = get_unaligned_le16(&buf[14]);
 		spin_unlock_irqrestore(&ps->lock, flags);
-		hid_dbg(hdev,
-			"RS50 PID: SET_EFFECT slot=%d type=%u dur=%u dir=%u\n",
+		dd_dbg(hdev,
+			"PID: SET_EFFECT slot=%d type=%u dur=%u dir=%u\n",
 			slot, buf[2], ps->slots[slot].duration_ms,
 			ps->slots[slot].direction);
 		return count;
 
-	case RS50_PID_REPORT_SET_CONSTANT: {
+	case HIDPP_DD_PID_REPORT_SET_CONSTANT: {
 		s16 level;
 
-		if (count < 4 || pid_id < 1 || pid_id > RS50_FF_MAX_EFFECTS)
+		if (count < 4 || pid_id < 1 || pid_id > HIDPP_DD_FF_MAX_EFFECTS)
 			return count;
 		slot = pid_id - 1;
 		level = (s16)get_unaligned_le16(&buf[2]);
 
-		hid_dbg(hdev, "RS50 PID: SET_CONSTANT slot=%d level=%d\n",
+		dd_dbg(hdev, "PID: SET_CONSTANT slot=%d level=%d\n",
 			slot, level);
 
 		if (!ff)
@@ -12147,17 +12182,17 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 			spin_unlock_irqrestore(&ps->lock, flags);
 			return count;
 		}
-		rs50_pid_fill_common(&eff, slot,
+		hidpp_dd_pid_fill_common(&eff, slot,
 				     ps->slots[slot].direction,
 				     ps->slots[slot].duration_ms);
 		spin_unlock_irqrestore(&ps->lock, flags);
 		eff.type = FF_CONSTANT;
 		eff.u.constant.level = level;
-		rs50_pid_push_effect(ff, &eff);
+		hidpp_dd_pid_push_effect(ff, &eff);
 		return count;
 	}
 
-	case RS50_PID_REPORT_SET_CONDITION: {
+	case HIDPP_DD_PID_REPORT_SET_CONDITION: {
 		s16 center, pos_coeff, neg_coeff;
 		u16 pos_sat, neg_sat, dead_band;
 		u8 block_offset;
@@ -12174,7 +12209,7 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 		 *   [13..14] dead band (u16)
 		 * Total = 15 bytes.
 		 */
-		if (count < 15 || pid_id < 1 || pid_id > RS50_FF_MAX_EFFECTS)
+		if (count < 15 || pid_id < 1 || pid_id > HIDPP_DD_FF_MAX_EFFECTS)
 			return count;
 		slot = pid_id - 1;
 		block_offset = buf[2];
@@ -12185,8 +12220,8 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 		neg_sat    = get_unaligned_le16(&buf[11]);
 		dead_band  = get_unaligned_le16(&buf[13]);
 
-		hid_dbg(hdev,
-			"RS50 PID: SET_CONDITION slot=%d blk=%u center=%d pcoef=%d ncoef=%d psat=%u nsat=%u dead=%u\n",
+		dd_dbg(hdev,
+			"PID: SET_CONDITION slot=%d blk=%u center=%d pcoef=%d ncoef=%d psat=%u nsat=%u dead=%u\n",
 			slot, block_offset, center, pos_coeff, neg_coeff,
 			pos_sat, neg_sat, dead_band);
 
@@ -12198,10 +12233,10 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 			spin_unlock_irqrestore(&ps->lock, flags);
 			return count;
 		}
-		rs50_pid_fill_common(&eff, slot,
+		hidpp_dd_pid_fill_common(&eff, slot,
 				     ps->slots[slot].direction,
 				     ps->slots[slot].duration_ms);
-		ff_type = rs50_pid_type_to_ff(ps->slots[slot].type);
+		ff_type = hidpp_dd_pid_type_to_ff(ps->slots[slot].type);
 		spin_unlock_irqrestore(&ps->lock, flags);
 		/*
 		 * If CREATE_NEW_EFFECT / SET_EFFECT didn't pin a condition
@@ -12218,16 +12253,16 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 		eff.u.condition[0].left_coeff       = neg_coeff;
 		eff.u.condition[0].deadband         = dead_band;
 		eff.u.condition[0].center           = center;
-		rs50_pid_push_effect(ff, &eff);
+		hidpp_dd_pid_push_effect(ff, &eff);
 		return count;
 	}
 
-	case RS50_PID_REPORT_SET_PERIODIC: {
+	case HIDPP_DD_PID_REPORT_SET_PERIODIC: {
 		u16 magnitude, period, phase;
 		s16 offset;
 		u16 ff_type;
 
-		if (count < 12 || pid_id < 1 || pid_id > RS50_FF_MAX_EFFECTS)
+		if (count < 12 || pid_id < 1 || pid_id > HIDPP_DD_FF_MAX_EFFECTS)
 			return count;
 		slot = pid_id - 1;
 		magnitude = get_unaligned_le16(&buf[2]);
@@ -12235,8 +12270,8 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 		phase     = get_unaligned_le16(&buf[6]);
 		period    = get_unaligned_le16(&buf[8]);
 
-		hid_dbg(hdev,
-			"RS50 PID: SET_PERIODIC slot=%d mag=%u off=%d phase=%u period=%u\n",
+		dd_dbg(hdev,
+			"PID: SET_PERIODIC slot=%d mag=%u off=%d phase=%u period=%u\n",
 			slot, magnitude, offset, phase, period);
 
 		if (!ff)
@@ -12247,10 +12282,10 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 			spin_unlock_irqrestore(&ps->lock, flags);
 			return count;
 		}
-		rs50_pid_fill_common(&eff, slot,
+		hidpp_dd_pid_fill_common(&eff, slot,
 				     ps->slots[slot].direction,
 				     ps->slots[slot].duration_ms);
-		ff_type = rs50_pid_type_to_ff(ps->slots[slot].type);
+		ff_type = hidpp_dd_pid_type_to_ff(ps->slots[slot].type);
 		spin_unlock_irqrestore(&ps->lock, flags);
 		if (ff_type != FF_SINE && ff_type != FF_SQUARE &&
 		    ff_type != FF_TRIANGLE && ff_type != FF_SAW_UP &&
@@ -12262,16 +12297,16 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 		eff.u.periodic.offset    = offset;
 		eff.u.periodic.phase     = phase;
 		eff.u.periodic.period    = period;
-		rs50_pid_push_effect(ff, &eff);
+		hidpp_dd_pid_push_effect(ff, &eff);
 		return count;
 	}
 
-	case RS50_PID_REPORT_EFFECT_OP:
-		if (count < 4 || pid_id < 1 || pid_id > RS50_FF_MAX_EFFECTS)
+	case HIDPP_DD_PID_REPORT_EFFECT_OP:
+		if (count < 4 || pid_id < 1 || pid_id > HIDPP_DD_FF_MAX_EFFECTS)
 			return count;
 		slot = pid_id - 1;
 		op = buf[2];
-		hid_dbg(hdev, "RS50 PID: EFFECT_OP slot=%d op=%u count=%u\n",
+		dd_dbg(hdev, "PID: EFFECT_OP slot=%d op=%u count=%u\n",
 			slot, op, buf[3]);
 		if (!ff)
 			return count;
@@ -12288,21 +12323,21 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 		spin_unlock_irqrestore(&ps->lock, flags);
 		/* op: 1=start, 2=start-solo, 3=stop */
 		if (op == 1 || op == 2)
-			rs50_pid_playback(ff, slot, buf[3] ? buf[3] : 1);
+			hidpp_dd_pid_playback(ff, slot, buf[3] ? buf[3] : 1);
 		else if (op == 3)
-			rs50_pid_playback(ff, slot, 0);
+			hidpp_dd_pid_playback(ff, slot, 0);
 		return count;
 
-	case RS50_PID_REPORT_SET_RAMP: {
+	case HIDPP_DD_PID_REPORT_SET_RAMP: {
 		s16 start, end;
 
-		if (count < 6 || pid_id < 1 || pid_id > RS50_FF_MAX_EFFECTS)
+		if (count < 6 || pid_id < 1 || pid_id > HIDPP_DD_FF_MAX_EFFECTS)
 			return count;
 		slot = pid_id - 1;
 		start = (s16)get_unaligned_le16(&buf[2]);
 		end   = (s16)get_unaligned_le16(&buf[4]);
 
-		hid_dbg(hdev, "RS50 PID: SET_RAMP slot=%d start=%d end=%d\n",
+		dd_dbg(hdev, "PID: SET_RAMP slot=%d start=%d end=%d\n",
 			slot, start, end);
 
 		if (!ff)
@@ -12312,14 +12347,14 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 			spin_unlock_irqrestore(&ps->lock, flags);
 			return count;
 		}
-		rs50_pid_fill_common(&eff, slot,
+		hidpp_dd_pid_fill_common(&eff, slot,
 				     ps->slots[slot].direction,
 				     ps->slots[slot].duration_ms);
 		spin_unlock_irqrestore(&ps->lock, flags);
 		eff.type = FF_RAMP;
 		eff.u.ramp.start_level = start;
 		eff.u.ramp.end_level   = end;
-		rs50_pid_push_effect(ff, &eff);
+		hidpp_dd_pid_push_effect(ff, &eff);
 		return count;
 	}
 
@@ -12331,11 +12366,11 @@ static int rs50_pid_handle_output(struct hid_device *hdev, u8 *buf,
 
 /* ll_driver override: intercept output_report. Non-PID reports are passed   */
 /* through to usbhid. Our PID report IDs (10..29) are always consumed here. */
-static int rs50_pid_ll_output_report(struct hid_device *hdev, u8 *buf,
+static int hidpp_dd_pid_ll_output_report(struct hid_device *hdev, u8 *buf,
 				     size_t count)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
-	struct rs50_pid_state *ps = hidpp ? hidpp->pid_state : NULL;
+	struct hidpp_dd_pid_state *ps = hidpp ? hidpp->pid_state : NULL;
 
 	if (!ps || ps->torn_down) {
 		/*
@@ -12346,9 +12381,9 @@ static int rs50_pid_ll_output_report(struct hid_device *hdev, u8 *buf,
 		return -ENODEV;
 	}
 
-	if (count >= 1 && buf[0] >= RS50_PID_REPORT_STATE &&
-	    buf[0] <= RS50_PID_REPORT_SET_PERIODIC) {
-		int ret = rs50_pid_handle_output(hdev, buf, count);
+	if (count >= 1 && buf[0] >= HIDPP_DD_PID_REPORT_STATE &&
+	    buf[0] <= HIDPP_DD_PID_REPORT_SET_PERIODIC) {
+		int ret = hidpp_dd_pid_handle_output(hdev, buf, count);
 
 		return ret < 0 ? ret : (int)count;
 	}
@@ -12364,13 +12399,13 @@ static int rs50_pid_ll_output_report(struct hid_device *hdev, u8 *buf,
  *   - HID_REQ_GET_REPORT for PID feature reports (BLOCK_LOAD, POOL)
  * Non-PID reports flow through to usbhid.
  */
-static int rs50_pid_ll_raw_request(struct hid_device *hdev,
+static int hidpp_dd_pid_ll_raw_request(struct hid_device *hdev,
 				   unsigned char reportnum, u8 *buf,
 				   size_t count, unsigned char rtype,
 				   int reqtype)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
-	struct rs50_pid_state *ps = hidpp ? hidpp->pid_state : NULL;
+	struct hidpp_dd_pid_state *ps = hidpp ? hidpp->pid_state : NULL;
 	unsigned long flags;
 
 	if (!ps || ps->torn_down)
@@ -12379,9 +12414,9 @@ static int rs50_pid_ll_raw_request(struct hid_device *hdev,
 	/* Output reports coming through SET_REPORT (vs write()) still target
 	 * us. Treat identically to write() path. */
 	if (reqtype == HID_REQ_SET_REPORT && rtype == HID_OUTPUT_REPORT &&
-	    count >= 1 && buf[0] >= RS50_PID_REPORT_STATE &&
-	    buf[0] <= RS50_PID_REPORT_SET_PERIODIC) {
-		int ret = rs50_pid_handle_output(hdev, buf, count);
+	    count >= 1 && buf[0] >= HIDPP_DD_PID_REPORT_STATE &&
+	    buf[0] <= HIDPP_DD_PID_REPORT_SET_PERIODIC) {
+		int ret = hidpp_dd_pid_handle_output(hdev, buf, count);
 
 		return ret < 0 ? ret : (int)count;
 	}
@@ -12393,11 +12428,11 @@ static int rs50_pid_ll_raw_request(struct hid_device *hdev,
 	 *   buf[2..3] = byte_count (ignored)
 	 */
 	if (reqtype == HID_REQ_SET_REPORT && rtype == HID_FEATURE_REPORT &&
-	    reportnum == RS50_PID_REPORT_CREATE_NEW_EFFECT && count >= 2) {
+	    reportnum == HIDPP_DD_PID_REPORT_CREATE_NEW_EFFECT && count >= 2) {
 		int slot;
 
 		spin_lock_irqsave(&ps->lock, flags);
-		slot = rs50_pid_alloc_slot(ps, buf[1]);
+		slot = hidpp_dd_pid_alloc_slot(ps, buf[1]);
 		if (slot < 0) {
 			ps->last_block_load_id = 0;
 			ps->last_block_load_status = 2; /* full */
@@ -12411,15 +12446,15 @@ static int rs50_pid_ll_raw_request(struct hid_device *hdev,
 
 	/* Feature GET: BLOCK_LOAD (22). Return id+status+ram_pool_avail. */
 	if (reqtype == HID_REQ_GET_REPORT && rtype == HID_FEATURE_REPORT &&
-	    reportnum == RS50_PID_REPORT_BLOCK_LOAD && count >= 5) {
+	    reportnum == HIDPP_DD_PID_REPORT_BLOCK_LOAD && count >= 5) {
 		int free_slots, i;
 
 		spin_lock_irqsave(&ps->lock, flags);
 		free_slots = 0;
-		for (i = 0; i < RS50_FF_MAX_EFFECTS; i++)
+		for (i = 0; i < HIDPP_DD_FF_MAX_EFFECTS; i++)
 			if (!ps->slots[i].allocated)
 				free_slots++;
-		buf[0] = RS50_PID_REPORT_BLOCK_LOAD;
+		buf[0] = HIDPP_DD_PID_REPORT_BLOCK_LOAD;
 		buf[1] = ps->last_block_load_id;
 		buf[2] = ps->last_block_load_status;
 		put_unaligned_le16(free_slots * 64, &buf[3]);
@@ -12430,28 +12465,28 @@ static int rs50_pid_ll_raw_request(struct hid_device *hdev,
 	/* Feature GET: PID_POOL (23). Return pool_size, simultaneous_max,
 	 * and device-managed flags. */
 	if (reqtype == HID_REQ_GET_REPORT && rtype == HID_FEATURE_REPORT &&
-	    reportnum == RS50_PID_REPORT_PID_POOL && count >= 5) {
-		buf[0] = RS50_PID_REPORT_PID_POOL;
-		put_unaligned_le16(RS50_FF_MAX_EFFECTS * 64, &buf[1]); /* ram pool size */
-		buf[3] = RS50_FF_MAX_EFFECTS;	/* simultaneous effects max */
+	    reportnum == HIDPP_DD_PID_REPORT_PID_POOL && count >= 5) {
+		buf[0] = HIDPP_DD_PID_REPORT_PID_POOL;
+		put_unaligned_le16(HIDPP_DD_FF_MAX_EFFECTS * 64, &buf[1]); /* ram pool size */
+		buf[3] = HIDPP_DD_FF_MAX_EFFECTS;	/* simultaneous effects max */
 		buf[4] = 0x03;	/* device-managed + shared pool flags */
 		return count;
 	}
 
 	/* BLOCK_FREE on output path - erase effect */
 	if (reqtype == HID_REQ_SET_REPORT && rtype == HID_OUTPUT_REPORT &&
-	    reportnum == RS50_PID_REPORT_BLOCK_FREE && count >= 2) {
-		struct rs50_ff_data *ff = rs50_pid_get_ff(hdev);
+	    reportnum == HIDPP_DD_PID_REPORT_BLOCK_FREE && count >= 2) {
+		struct hidpp_dd_ff_data *ff = hidpp_dd_pid_get_ff(hdev);
 		u8 pid_id = buf[1];
 
-		if (pid_id >= 1 && pid_id <= RS50_FF_MAX_EFFECTS) {
+		if (pid_id >= 1 && pid_id <= HIDPP_DD_FF_MAX_EFFECTS) {
 			int slot = pid_id - 1;
 
 			spin_lock_irqsave(&ps->lock, flags);
 			ps->slots[slot].allocated = false;
 			spin_unlock_irqrestore(&ps->lock, flags);
 			if (ff)
-				rs50_pid_erase(ff, slot);
+				hidpp_dd_pid_erase(ff, slot);
 		}
 		return count;
 	}
@@ -12468,10 +12503,10 @@ static int rs50_pid_ll_raw_request(struct hid_device *hdev,
  * calls dispatch through us. Does nothing if inject_pid is off, if we're not
  * on interface 0, or if the original ll_driver is missing key callbacks.
  */
-static int rs50_pid_install(struct hid_device *hdev)
+static int hidpp_dd_pid_install(struct hid_device *hdev)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
-	struct rs50_pid_state *ps;
+	struct hidpp_dd_pid_state *ps;
 	struct usb_interface *intf;
 	int ifnum;
 
@@ -12491,12 +12526,12 @@ static int rs50_pid_install(struct hid_device *hdev)
 		return 0;
 	}
 	if (hidpp->pid_state) {
-		hid_warn(hdev, "RS50 PID: pid_state already set, refusing to install override\n");
+		dd_warn(hdev, "PID: pid_state already set, refusing to install override\n");
 		return -EBUSY;
 	}
 	if (!hdev->ll_driver || !hdev->ll_driver->raw_request) {
-		hid_warn(hdev,
-			 "RS50 PID: cannot install override, no real ll_driver\n");
+		dd_warn(hdev,
+			 "PID: cannot install override, no real ll_driver\n");
 		return -EINVAL;
 	}
 	ps = devm_kzalloc(&hdev->dev, sizeof(*ps), GFP_KERNEL);
@@ -12507,13 +12542,13 @@ static int rs50_pid_install(struct hid_device *hdev)
 	ps->real_output_report = hdev->ll_driver->output_report;
 	ps->real_raw_request   = hdev->ll_driver->raw_request;
 	ps->over               = *hdev->ll_driver;
-	ps->over.output_report = rs50_pid_ll_output_report;
-	ps->over.raw_request   = rs50_pid_ll_raw_request;
+	ps->over.output_report = hidpp_dd_pid_ll_output_report;
+	ps->over.raw_request   = hidpp_dd_pid_ll_raw_request;
 
 	hidpp->pid_state = ps;
 	hdev->ll_driver = &ps->over;
-	hid_info(hdev,
-		 "RS50 PID: installed ll_driver override on interface 0 (real=%p over=%p)\n",
+	dd_info(hdev,
+		 "PID: installed ll_driver override on interface 0 (real=%p over=%p)\n",
 		 ps->real_ll_driver, &ps->over);
 	return 0;
 }
@@ -12531,10 +12566,10 @@ static int rs50_pid_install(struct hid_device *hdev)
  * out not to be the actual cause of the original rmmod crash; that
  * was the asymmetric gpro_sysfs_destroy issue, now fixed separately.
  */
-static void rs50_pid_uninstall(struct hid_device *hdev)
+static void hidpp_dd_pid_uninstall(struct hid_device *hdev)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
-	struct rs50_pid_state *ps;
+	struct hidpp_dd_pid_state *ps;
 
 	if (!hidpp || !hidpp->pid_state)
 		return;
@@ -12560,7 +12595,7 @@ static int hidpp_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 	if (hdev->product == USB_DEVICE_ID_LOGITECH_RS50 ||
 	    hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
 	    hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL)
-		return rs50_input_mapping(hdev, hi, field, usage, bit, max);
+		return hidpp_dd_input_mapping(hdev, hi, field, usage, bit, max);
 
 	if (!hidpp)
 		return 0;
@@ -12727,8 +12762,8 @@ static int hidpp_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 			return ret;
 	}
 
-	if (hidpp->quirks & HIDPP_QUIRK_RS50_FFB) {
-		ret = rs50_ff_raw_hidpp_event(hidpp, data, size);
+	if (hidpp->quirks & HIDPP_QUIRK_DD_FFB) {
+		ret = hidpp_dd_ff_raw_hidpp_event(hidpp, data, size);
 		if (ret != 0)
 			return ret;
 	}
@@ -12743,26 +12778,26 @@ static int hidpp_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
  * FF data stored on interface 1.
  */
 /*
- * Locate the shared rs50_ff_data allocated by the FFB-owning interface
+ * Locate the shared hidpp_dd_ff_data allocated by the FFB-owning interface
  * (interface 1) from any other interface of the same USB device.
  *
  * Serialization (PROBE.F24): USB core tears down interfaces of a
  * multi-interface device in reverse order under the usb_device's lock
- * (`usb_disable_device`), so interface 1's `rs50_ff_destroy` runs to
+ * (`usb_disable_device`), so interface 1's `hidpp_dd_ff_destroy` runs to
  * completion (WRITE_ONCE(private_data, NULL); kfree(ff)) before
  * interface 0's `hidpp_remove` starts. By then interface 1's
  * private_data is already NULL, so this lookup returns NULL on
  * interface 0's remove path and the interface-0 cleanup becomes a
  * safe no-op. No explicit module-level lock is needed.
  */
-static struct rs50_ff_data *rs50_find_ff_data(struct hid_device *hdev)
+static struct hidpp_dd_ff_data *hidpp_dd_find_ff_data(struct hid_device *hdev)
 {
 	struct usb_interface *intf;
 	struct usb_device *udev;
 	int i;
 
 	if (!hid_is_usb(hdev)) {
-		hid_dbg(hdev, "RS50: find_ff_data: not USB device\n");
+		dd_dbg(hdev, "find_ff_data: not USB device\n");
 		return NULL;
 	}
 
@@ -12781,39 +12816,39 @@ static struct rs50_ff_data *rs50_find_ff_data(struct hid_device *hdev)
 		/* Check if this interface has an hid_device */
 		sibling_hid = usb_get_intfdata(sibling);
 		if (!sibling_hid) {
-			hid_dbg(hdev, "RS50: find_ff_data: intf %d no hid_device\n", i);
+			dd_dbg(hdev, "find_ff_data: intf %d no hid_device\n", i);
 			continue;
 		}
 
 		sibling_hidpp = hid_get_drvdata(sibling_hid);
-		hid_dbg(hdev, "RS50: find_ff_data: intf %d hidpp=%p private=%p quirks=0x%lx\n",
+		dd_dbg(hdev, "find_ff_data: intf %d hidpp=%p private=%p quirks=0x%lx\n",
 			i, sibling_hidpp,
 			sibling_hidpp ? sibling_hidpp->private_data : NULL,
 			sibling_hidpp ? sibling_hidpp->quirks : 0);
 
 		if (sibling_hidpp && sibling_hidpp->private_data &&
-		    (sibling_hidpp->quirks & HIDPP_QUIRK_RS50_FFB)) {
-			struct rs50_ff_data *ff = sibling_hidpp->private_data;
+		    (sibling_hidpp->quirks & HIDPP_QUIRK_DD_FFB)) {
+			struct hidpp_dd_ff_data *ff = sibling_hidpp->private_data;
 			/*
 			 * Return the ff regardless of the sibling's stopping
 			 * flag. hidpp_remove's interface-0 path needs to clear
 			 * input->ff->private even when interface 1 has already
 			 * flipped stopping=1; otherwise hid_hw_stop's
 			 * input_ff_destroy would kfree the same pointer that
-			 * interface 1's rs50_ff_destroy is about to kfree
+			 * interface 1's hidpp_dd_ff_destroy is about to kfree
 			 * (FFB.F22). ff is kept alive by interface 1 until
-			 * its own kfree at the very end of rs50_ff_destroy,
+			 * its own kfree at the very end of hidpp_dd_ff_destroy,
 			 * which runs long after all the field accesses here
-			 * would complete. Runtime callers (rs50_ff_init,
-			 * rs50_ff_refresh_work) already re-check stopping
+			 * would complete. Runtime callers (hidpp_dd_ff_init,
+			 * hidpp_dd_ff_refresh_work) already re-check stopping
 			 * themselves, so losing the check here is safe.
 			 */
-			hid_dbg(hdev, "RS50: find_ff_data: FOUND on intf %d\n", i);
+			dd_dbg(hdev, "find_ff_data: FOUND on intf %d\n", i);
 			return ff;
 		}
 	}
 
-	hid_dbg(hdev, "RS50: find_ff_data: NOT FOUND\n");
+	dd_dbg(hdev, "find_ff_data: NOT FOUND\n");
 	return NULL;
 }
 
@@ -12874,7 +12909,7 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 	 * Only process 30-byte reports from interface 0 (joystick).
 	 * Checking the interface number first guards against a 30-byte
 	 * non-HID++ report arriving on interface 1 or 2 being rewritten
-	 * in-place as pedal axes (rs50_process_pedals writes back via
+	 * in-place as pedal axes (hidpp_dd_process_pedals writes back via
 	 * put_unaligned_le16).
 	 *
 	 * The D-pad is left to hid-input's native hat-switch mapping: the
@@ -12884,8 +12919,8 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 	 * emitted scrambled directions (e.g. Left reported as Down), so it was
 	 * removed (issue #22).
 	 */
-	if ((hidpp->quirks & HIDPP_QUIRK_RS50_FFB) &&
-	    size == RS50_INPUT_REPORT_SIZE &&
+	if ((hidpp->quirks & HIDPP_QUIRK_DD_FFB) &&
+	    size == HIDPP_DD_INPUT_REPORT_SIZE &&
 	    data[0] != REPORT_ID_HIDPP_SHORT &&
 	    data[0] != REPORT_ID_HIDPP_LONG &&
 	    data[0] != REPORT_ID_HIDPP_VERY_LONG &&
@@ -12894,7 +12929,7 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 
 		if (intf->cur_altsetting->desc.bInterfaceNumber == 0) {
 			/* Process pedals: curves, deadzones, combined mode */
-			rs50_process_pedals(hidpp, data, size);
+			hidpp_dd_process_pedals(hidpp, data, size);
 		}
 	}
 
@@ -12916,12 +12951,12 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
  * - LOW_SENS: output = input^2 / 65535 (less sensitive at start, more at end)
  * - HIGH_SENS: output = sqrt(input * 65535) (more sensitive at start, less at end)
  */
-static u16 rs50_apply_curve(u16 input, u8 curve_type)
+static u16 hidpp_dd_apply_curve(u16 input, u8 curve_type)
 {
 	u64 val;
 
 	switch (curve_type) {
-	case RS50_CURVE_LOW_SENS:
+	case HIDPP_DD_CURVE_LOW_SENS:
 		/* Quadratic curve: less responsive at start
 		 * Use u64 to prevent overflow: 65535 * 65535 = 4,294,836,225
 		 * which is close to u32 limit.
@@ -12929,14 +12964,14 @@ static u16 rs50_apply_curve(u16 input, u8 curve_type)
 		val = ((u64)input * (u64)input) / 65535;
 		return (u16)val;
 
-	case RS50_CURVE_HIGH_SENS:
+	case HIDPP_DD_CURVE_HIGH_SENS:
 		/* Square root curve: more responsive at start
 		 * Use u64 for safety in intermediate calculation.
 		 */
 		val = (u64)input * 65535;
 		return (u16)int_sqrt(val);
 
-	case RS50_CURVE_LINEAR:
+	case HIDPP_DD_CURVE_LINEAR:
 	default:
 		return input;
 	}
@@ -12948,7 +12983,7 @@ static u16 rs50_apply_curve(u16 input, u8 curve_type)
  * Upper deadzone: values above (100 - upper)% are maxed out
  * The range between deadzones is scaled to full 0-65535 range.
  */
-static u16 rs50_apply_deadzone(u16 input, u8 lower_pct, u8 upper_pct)
+static u16 hidpp_dd_apply_deadzone(u16 input, u8 lower_pct, u8 upper_pct)
 {
 	u32 lower_threshold, upper_threshold;
 	u32 effective_range;
@@ -12984,18 +13019,18 @@ static u16 rs50_apply_deadzone(u16 input, u8 lower_pct, u8 upper_pct)
  *   Offset 8-9: Brake (u16 LE)
  *   Offset 10-11: Clutch (u16 LE)
  */
-static void rs50_process_pedals(struct hidpp_device *hidpp, u8 *data, int size)
+static void hidpp_dd_process_pedals(struct hidpp_device *hidpp, u8 *data, int size)
 {
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 	u16 throttle, brake, clutch;
 	u16 combined;
 
-	if (!hidpp || !(hidpp->quirks & HIDPP_QUIRK_RS50_FFB))
+	if (!hidpp || !(hidpp->quirks & HIDPP_QUIRK_DD_FFB))
 		return;
 
 	/*
-	 * Interface 0's hidpp is brought up via rs50_minimal_probe which
-	 * doesn't run rs50_ff_init and therefore never writes to
+	 * Interface 0's hidpp is brought up via hidpp_dd_minimal_probe which
+	 * doesn't run hidpp_dd_ff_init and therefore never writes to
 	 * hidpp->private_data. At raw_event time the shared ff_data lives
 	 * on interface 1's hidpp instead. If our own slot is empty, walk
 	 * the siblings, cache the pointer, and use it. This is what kept
@@ -13005,7 +13040,7 @@ static void rs50_process_pedals(struct hidpp_device *hidpp, u8 *data, int size)
 	 */
 	ff = READ_ONCE(hidpp->private_data);
 	if (!ff) {
-		ff = rs50_find_ff_data(hidpp->hid_dev);
+		ff = hidpp_dd_find_ff_data(hidpp->hid_dev);
 		if (!ff)
 			return;
 		WRITE_ONCE(hidpp->private_data, ff);
@@ -13040,20 +13075,20 @@ static void rs50_process_pedals(struct hidpp_device *hidpp, u8 *data, int size)
 	 * Use READ_ONCE for settings that may be changed from sysfs context
 	 * while we're processing in interrupt/atomic context.
 	 */
-	throttle = rs50_apply_deadzone(throttle,
+	throttle = hidpp_dd_apply_deadzone(throttle,
 				       READ_ONCE(ff->throttle_deadzone_lower),
 				       READ_ONCE(ff->throttle_deadzone_upper));
-	brake = rs50_apply_deadzone(brake,
+	brake = hidpp_dd_apply_deadzone(brake,
 				    READ_ONCE(ff->brake_deadzone_lower),
 				    READ_ONCE(ff->brake_deadzone_upper));
-	clutch = rs50_apply_deadzone(clutch,
+	clutch = hidpp_dd_apply_deadzone(clutch,
 				     READ_ONCE(ff->clutch_deadzone_lower),
 				     READ_ONCE(ff->clutch_deadzone_upper));
 
 	/* Apply response curves */
-	throttle = rs50_apply_curve(throttle, READ_ONCE(ff->throttle_curve));
-	brake = rs50_apply_curve(brake, READ_ONCE(ff->brake_curve));
-	clutch = rs50_apply_curve(clutch, READ_ONCE(ff->clutch_curve));
+	throttle = hidpp_dd_apply_curve(throttle, READ_ONCE(ff->throttle_curve));
+	brake = hidpp_dd_apply_curve(brake, READ_ONCE(ff->brake_curve));
+	clutch = hidpp_dd_apply_curve(clutch, READ_ONCE(ff->clutch_curve));
 
 	/* Combined pedals mode: output = throttle - brake on throttle axis */
 	if (READ_ONCE(ff->combined_pedals)) {
@@ -13476,24 +13511,24 @@ static bool hidpp_application_equals(struct hid_device *hdev,
  * two-phase hid_hw_start) that would otherwise run unused on a plain
  * HID joystick interface. Used for both RS50 and G Pro interface 0.
  */
-static int rs50_minimal_probe(struct hid_device *hdev)
+static int hidpp_dd_minimal_probe(struct hid_device *hdev)
 {
 	int ret;
 
 	/*
 	 * Install the PID ll_driver override here, between hid_parse (which
-	 * already ran via hidpp_probe) and hid_hw_start. rs50_pid_install
+	 * already ran via hidpp_probe) and hid_hw_start. hidpp_dd_pid_install
 	 * no-ops when inject_pid is off or we're not on interface 0.
 	 */
-	ret = rs50_pid_install(hdev);
+	ret = hidpp_dd_pid_install(hdev);
 	if (ret)
-		hid_warn(hdev, "rs50 minimal probe: pid install failed: %d\n",
-			 ret);
+		dd_warn(hdev, "minimal probe: pid install failed: %d\n",
+			ret);
 
 	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
 	if (ret) {
-		hid_err(hdev, "rs50 minimal probe: hid_hw_start failed: %d\n", ret);
-		rs50_pid_uninstall(hdev);
+		dd_err(hdev, "minimal probe: hid_hw_start failed: %d\n", ret);
+		hidpp_dd_pid_uninstall(hdev);
 	}
 	return ret;
 }
@@ -13516,21 +13551,20 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	/*
 	 * Both the real G PRO and RS50-in-G-PRO-compat-mode enumerate
 	 * with the same VID/PID (C272 Xbox or C268 PS) and run the same
-	 * direct-drive firmware architecture. Both get HIDPP_QUIRK_RS50_FFB
-	 * directly from the id-table so rs50_ff_init runs instead of
+	 * direct-drive firmware architecture. Both get HIDPP_QUIRK_DD_FFB
+	 * directly from the id-table so hidpp_dd_ff_init runs instead of
 	 * hidpp_ff_init - avoiding the G920 HID++ 0x8123 FFB path's
 	 * transport / queue limitations on direct-drive hardware.
 	 */
 	if (hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
 	    hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL)
-		hid_info(hdev,
-			 "G PRO PID detected (RS50 in compat mode or real G PRO); using RS50 FFB path\n");
+		dd_info(hdev, "using direct-drive FFB path\n");
 
 	hid_set_drvdata(hdev, hidpp);
 
 	/*
 	 * Initialise early so cancel_work_sync in hidpp_remove is always
-	 * safe. rs50_minimal_probe returns before the full HID++ path, so
+	 * safe. hidpp_dd_minimal_probe returns before the full HID++ path, so
 	 * without this those work_structs would still be all-zero and
 	 * WARN_ON_ONCE(!work->func) would fire in __flush_work on rmmod.
 	 */
@@ -13565,16 +13599,16 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 			int ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
 
 			if (ifnum == 0) {
-				hid_info(hdev, "RS50: Claiming interface 0 for pedal processing\n");
+				dd_info(hdev, "Claiming interface 0 for pedal processing\n");
 				/*
 				 * We need raw_event for pedals but nothing HID++
 				 * below applies: take the minimal path that just
 				 * registers the input device and keeps hidpp
 				 * attached so raw_event reaches us.
 				 */
-				return rs50_minimal_probe(hdev);
+				return hidpp_dd_minimal_probe(hdev);
 			}
-			hid_info(hdev, "RS50: Letting hid-generic handle interface %d\n", ifnum);
+			dd_info(hdev, "Letting hid-generic handle interface %d\n", ifnum);
 		}
 		if ((hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
 		     hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL) &&
@@ -13583,10 +13617,10 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 			int ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
 
 			if (ifnum == 0) {
-				hid_info(hdev, "G Pro: Claiming interface 0 for input\n");
-				return rs50_minimal_probe(hdev);
+				dd_info(hdev, "Claiming interface 0 for input\n");
+				return hidpp_dd_minimal_probe(hdev);
 			}
-			hid_info(hdev, "G Pro: Letting hid-generic handle interface %d\n", ifnum);
+			dd_info(hdev, "Letting hid-generic handle interface %d\n", ifnum);
 		}
 		hid_set_drvdata(hdev, NULL);
 		devm_kfree(&hdev->dev, hidpp);
@@ -13652,7 +13686,7 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	else if (hidpp->supported_reports)
 		hidpp_non_unifying_init(hidpp);
 	else if (hdev->product == USB_DEVICE_ID_LOGITECH_RS50)
-		hid_info(hdev, "RS50: Skipping HID++ init for non-HID++ interface\n");
+		dd_info(hdev, "Skipping HID++ init for non-HID++ interface\n");
 
 	if (hidpp->quirks & HIDPP_QUIRK_DELAYED_INIT)
 		connect_mask &= ~HID_CONNECT_HIDINPUT;
@@ -13671,7 +13705,7 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	flush_work(&hidpp->work);
 
 	if (hidpp->quirks & HIDPP_QUIRK_CLASS_G920) {
-		if (hidpp->quirks & HIDPP_QUIRK_RS50_FFB) {
+		if (hidpp->quirks & HIDPP_QUIRK_DD_FFB) {
 			/*
 			 * RS50 uses dedicated endpoint FFB, not HID++ feature 0x8123.
 			 * Skip G920 config and use RS50-specific initialization.
@@ -13679,13 +13713,13 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 			 * (interface 1), not the joystick interface (interface 0).
 			 */
 			if (hidpp->supported_reports) {
-				ret = rs50_ff_init(hidpp);
+				ret = hidpp_dd_ff_init(hidpp);
 				if (ret)
-					hid_warn(hidpp->hid_dev,
-						 "RS50: Force feedback setup failed (error %d)\n", ret);
+					dd_warn(hidpp->hid_dev,
+						 "Force feedback setup failed (error %d)\n", ret);
 			} else {
-				hid_info(hidpp->hid_dev,
-					 "RS50: Skipping FFB init on non-HID++ interface\n");
+				dd_info(hidpp->hid_dev,
+					 "Skipping FFB init on non-HID++ interface\n");
 			}
 		} else if (hidpp->supported_reports) {
 			/*
@@ -13730,8 +13764,8 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 			    hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL) {
 				ret = gpro_sysfs_init(hidpp);
 				if (ret)
-					hid_warn(hidpp->hid_dev,
-						 "G Pro: Settings setup failed (error %d)\n", ret);
+					dd_warn(hidpp->hid_dev,
+						 "Settings setup failed (error %d)\n", ret);
 			}
 		}
 	}
@@ -13747,7 +13781,7 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	      !hidpp->supported_reports)) {
 		hid_hw_close(hdev);
 	} else {
-		hid_info(hdev, "RS50: Keeping interface open for raw_event\n");
+		dd_info(hdev, "Keeping interface open for raw_event\n");
 	}
 	return ret;
 
@@ -13765,7 +13799,7 @@ hid_hw_start_fail:
 static void hidpp_remove(struct hid_device *hdev)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
-	struct rs50_ff_data *ff;
+	struct hidpp_dd_ff_data *ff;
 
 	/*
 	 * Restore the real ll_driver on interface 0 BEFORE hid_hw_stop so
@@ -13774,7 +13808,7 @@ static void hidpp_remove(struct hid_device *hdev)
 	 * on interface 0, so the check is self-guarding.
 	 */
 	if (hidpp)
-		rs50_pid_uninstall(hdev);
+		hidpp_dd_pid_uninstall(hdev);
 
 	if (!hidpp) {
 		/*
@@ -13790,15 +13824,15 @@ static void hidpp_remove(struct hid_device *hdev)
 		 * interface 2's hid_device in ff->ff_hdev. If interface 2's
 		 * remove runs first during rmmod, we must invalidate that
 		 * cache before stopping this hdev. Otherwise interface 1's
-		 * later rs50_ff_destroy calls hid_hw_close on an hid_device
+		 * later hidpp_dd_ff_destroy calls hid_hw_close on an hid_device
 		 * whose ll_driver has already been cleared, producing a
 		 * KASAN null-ptr-deref at hid_hw_close+0xe9.
 		 *
-		 * rs50_find_ff_data only matches RS50_FFB quirk devices, so
+		 * hidpp_dd_find_ff_data only matches HIDPP_DD_FFB quirk devices, so
 		 * this is a no-op on G Pro which uses the G920 FFB path and
 		 * doesn't hold an ff_hdev cache of this kind.
 		 */
-		ff = rs50_find_ff_data(hdev);
+		ff = hidpp_dd_find_ff_data(hdev);
 		if (ff && ff->ff_hdev == hdev) {
 			WRITE_ONCE(ff->ff_hdev, NULL);
 			ff->ff_hdev_open = false;
@@ -13810,7 +13844,7 @@ static void hidpp_remove(struct hid_device *hdev)
 			 * the hid_hw_stop below - and on physical unplug
 			 * this hid_device is freed right after. Flush them
 			 * while the device is still valid; the owner's
-			 * rs50_ff_destroy cancels again later (no-op).
+			 * hidpp_dd_ff_destroy cancels again later (no-op).
 			 */
 			cancel_work_sync(&ff->tf_init_work);
 			cancel_delayed_work_sync(&ff->refresh_work);
@@ -13823,15 +13857,15 @@ static void hidpp_remove(struct hid_device *hdev)
 	 * lookups from accessing our data while we're tearing down.
 	 * This must happen before hid_hw_stop() because sibling interfaces
 	 * (like interface 0 receiving joystick input) may still be active
-	 * and calling rs50_find_ff_data().
+	 * and calling hidpp_dd_find_ff_data().
 	 */
-	if (hidpp->quirks & HIDPP_QUIRK_RS50_FFB) {
+	if (hidpp->quirks & HIDPP_QUIRK_DD_FFB) {
 		ff = READ_ONCE(hidpp->private_data);
 		/*
 		 * Only the OWNER takes the full-teardown path. Interface 0
 		 * also carries a non-NULL private_data these days - the
 		 * pedal/steering raw-event path caches the shared ff there
-		 * (rs50_process_pedals) - and letting it in here made its
+		 * (hidpp_dd_process_pedals) - and letting it in here made its
 		 * removal set the global stopping flag (killing FFB for a
 		 * still-alive owner) and run an unbalanced hid_hw_close on
 		 * itself (ff->hid_open tracks the OWNER's hid_hw_open from
@@ -13857,7 +13891,7 @@ static void hidpp_remove(struct hid_device *hdev)
 			 * hid_hw_stop() triggers hidinput_disconnect() which calls
 			 * input_ff_destroy(). That function does kfree(ff->private).
 			 * If we don't clear it first, input_ff_destroy frees our ff,
-			 * then rs50_ff_destroy tries to use/free it again -> crash.
+			 * then hidpp_dd_ff_destroy tries to use/free it again -> crash.
 			 *
 			 * We must check ff->input validity carefully since interface 0
 			 * (which owns the input device) could theoretically be removed
@@ -13874,11 +13908,11 @@ static void hidpp_remove(struct hid_device *hdev)
 			 * When hid_hw_stop() runs below it triggers
 			 * input_ff_destroy(), which kfrees input->ff->private.
 			 * If interface 1 has ALREADY been removed in this rmmod
-			 * cycle, its rs50_ff_destroy kfreed ff_data first; our
+			 * cycle, its hidpp_dd_ff_destroy kfreed ff_data first; our
 			 * input->ff->private is then a dangling pointer and the
 			 * kfree hits BUG at mm/slub.c:638 (observed in practice).
 			 *
-			 * Relying on rs50_find_ff_data() to find the sibling
+			 * Relying on hidpp_dd_find_ff_data() to find the sibling
 			 * does NOT fix this - in the rmmod-ordered-this-way case
 			 * the sibling is already detached and the lookup returns
 			 * NULL before we get the chance to clear anything. So
@@ -13900,7 +13934,7 @@ static void hidpp_remove(struct hid_device *hdev)
 			 * callbacks don't dereference the input_dev we're
 			 * about to destroy.
 			 */
-			ff = rs50_find_ff_data(hdev);
+			ff = hidpp_dd_find_ff_data(hdev);
 			if (ff)
 				WRITE_ONCE(ff->input, NULL);
 		}
@@ -13910,18 +13944,18 @@ static void hidpp_remove(struct hid_device *hdev)
 	 * G Pro sysfs settings teardown.
 	 *
 	 * Mirror the init-side condition exactly. gpro_sysfs_init only runs
-	 * in the (G_PRO_WHEEL || G_PRO_PS_WHEEL) AND !RS50_FFB branch above.
+	 * in the (G_PRO_WHEEL || G_PRO_PS_WHEEL) AND !HIDPP_DD_FFB branch above.
 	 * For RS50-in-compat-mode the same product IDs are used but
-	 * rs50_ff_init runs instead, no gpro_wheel_group is ever attached,
+	 * hidpp_dd_ff_init runs instead, no gpro_wheel_group is ever attached,
 	 * and calling sysfs_remove_group on the unattached group walks into
 	 * sysfs internals that kfree a stale kernfs node and BUG at
 	 * mm/slub.c:638 (observed). Skipping destroy on the RS50 path is
-	 * symmetrical with skipping init on the same path - rs50_ff_destroy
-	 * cleans up everything rs50_ff_init created.
+	 * symmetrical with skipping init on the same path - hidpp_dd_ff_destroy
+	 * cleans up everything hidpp_dd_ff_init created.
 	 */
 	if ((hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
 	     hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL) &&
-	    !(hidpp->quirks & HIDPP_QUIRK_RS50_FFB)) {
+	    !(hidpp->quirks & HIDPP_QUIRK_DD_FFB)) {
 		gpro_sysfs_destroy(hidpp);
 	}
 
@@ -13932,8 +13966,8 @@ static void hidpp_remove(struct hid_device *hdev)
 	hid_hw_stop(hdev);
 
 	/* Now safe to clean up RS50 force feedback - no more callbacks */
-	if (hidpp->quirks & HIDPP_QUIRK_RS50_FFB)
-		rs50_ff_destroy(hidpp);
+	if (hidpp->quirks & HIDPP_QUIRK_DD_FFB)
+		hidpp_dd_ff_destroy(hidpp);
 
 	sysfs_remove_group(&hdev->dev.kobj, &ps_attribute_group);
 
@@ -14039,22 +14073,22 @@ static const struct hid_device_id hidpp_devices[] = {
 	{ /* Logitech G Pro Racing Wheel (Xbox/PC) over USB.
 	   * Same direct-drive base architecture as the RS50: HID++ 4.2
 	   * on interface 1, dedicated 64-byte FFB endpoint on interface
-	   * 2, identical TrueForce packet layout. Use the rs50_ff_*
-	   * code path (HIDPP_QUIRK_RS50_FFB) rather than the G920 HID++
+	   * 2, identical TrueForce packet layout. Use the hidpp_dd_ff_*
+	   * code path (HIDPP_QUIRK_DD_FFB) rather than the G920 HID++
 	   * FFB path - the latter inherits transport / queue
 	   * limitations from the G920/G923 belt-driven generation that
 	   * do not apply to direct-drive wheels and cause "Failed to
 	   * send command" / unbounded FFB workqueue growth on real G
 	   * PRO hardware (see issue #8). */
 	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL),
-		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_RS50_FFB },
+		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_DD_FFB },
 	{ /* Logitech G Pro Racing Wheel (PlayStation/PC) over USB.
 	   * See HID_USB_DEVICE comment above for the rationale. */
 	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL),
-		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_RS50_FFB },
+		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_DD_FFB },
 	{ /* Logitech RS50 Direct Drive Wheel (PlayStation/PC) over USB */
 	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_RS50),
-		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_RS50_FFB },
+		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_DD_FFB },
 	{ /* Logitech G Pro X Superlight Gaming Mouse over USB */
 	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC094) },
 	{ /* Logitech G Pro X Superlight 2 Gaming Mouse over USB */
@@ -14137,7 +14171,7 @@ static struct hid_driver hidpp_driver = {
 
 static int __init hidpp_module_init(void)
 {
-	pr_info("hid-logitech-hidpp: loaded (git=%s)\n", RS50_GIT_HASH);
+	pr_info("hid-logitech-hidpp: loaded (git=%s)\n", HIDPP_DD_GIT_HASH);
 	return hid_register_driver(&hidpp_driver);
 }
 

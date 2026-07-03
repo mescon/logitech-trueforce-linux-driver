@@ -7,14 +7,14 @@
  * docs/TRUEFORCE_PROTOCOL.md for the packet breakdown. Regenerate
  * from that header if the capture data is ever revised.
  */
-#ifndef RS50_TF_INIT_H
-#define RS50_TF_INIT_H
+#ifndef HIDPP_DD_TF_INIT_H
+#define HIDPP_DD_TF_INIT_H
 
-#define RS50_TF_INIT_PACKET_COUNT	68
-#define RS50_TF_INIT_PACKET_LEN	64
-#define RS50_TF_INIT_SEQ_OFFSET	5
+#define HIDPP_DD_TF_INIT_PACKET_COUNT	68
+#define HIDPP_DD_TF_INIT_PACKET_LEN	64
+#define HIDPP_DD_TF_INIT_SEQ_OFFSET	5
 
-static const u8 rs50_tf_init_packets[RS50_TF_INIT_PACKET_COUNT][RS50_TF_INIT_PACKET_LEN] = {
+static const u8 hidpp_dd_tf_init_packets[HIDPP_DD_TF_INIT_PACKET_COUNT][HIDPP_DD_TF_INIT_PACKET_LEN] = {
 	{ /* #01 type=0x05 */
 	  0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -425,4 +425,4 @@ static const u8 rs50_tf_init_packets[RS50_TF_INIT_PACKET_COUNT][RS50_TF_INIT_PAC
 	},
 };
 
-#endif /* RS50_TF_INIT_H */
+#endif /* HIDPP_DD_TF_INIT_H */
