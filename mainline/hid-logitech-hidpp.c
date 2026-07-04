@@ -451,6 +451,20 @@ static int __do_hidpp_send_message_sync(struct hidpp_device *hidpp,
 	hidpp->answer_available = false;
 
 	/*
+	 * Default the device index BEFORE the question is copied for
+	 * answer matching. __hidpp_send_report() applies the same
+	 * default in-place at send time; if the copy happened first,
+	 * the question would keep 0x00 while the wire (and therefore
+	 * the answer) carries 0xff, hidpp_match_answer() would reject
+	 * every first-attempt answer on the device-index check, and
+	 * each sync call would eat a full 5 s timeout before the retry
+	 * accidentally succeeded with the mutated message (observed
+	 * live: every settings GET/SET stalling ~5 s).
+	 */
+	if (message->device_index == 0)
+		message->device_index = 0xff;
+
+	/*
 	 * So that we can later validate the answer when it arrives
 	 * in hidpp_raw_event
 	 */
