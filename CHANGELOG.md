@@ -29,6 +29,15 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ### Fixed
 
+- **Every HID++ settings command stalled ~5 seconds** (introduced by
+  the device-index answer check earlier in this cycle, caught the same
+  day via usbmon): the answer matcher compared against a question
+  snapshot taken before the transport applied the 0xff device-index
+  default, so every first attempt was rejected and only an accidental
+  retry-on-timeout made calls succeed. Symptoms: Oversteer appearing
+  to hang, `wheel_profile_names` taking up to 50 s, deferred init
+  taking minutes. Now the default is applied before the snapshot;
+  range writes measure 4 ms.
 - **udev permissions race**: the permissions rule fires on the hidraw
   "add" event, which is emitted before probe creates the `wheel_*` /
   compat attribute files, so a plug or driver load could leave the
