@@ -82,11 +82,11 @@ which slot number `wheel_profile` should get.
 
 ```bash
 cat wheel_profile_names
-# 1: AC EVO
-# 2: GT7
+# 1: RACE
+# 2: DRIFT
 # 3: PROFILE 3
 # 4: PROFILE 4
-# 5: TEST
+# 5: PROFILE 5
 ```
 
 ### wheel_range

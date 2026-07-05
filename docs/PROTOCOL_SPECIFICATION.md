@@ -665,7 +665,7 @@ The fallback indices in the table are what GHUB uses on a 2026-04-26 firmware re
 - `fn=1` with no parameters reads `[profile, mode, ...]`: `params[0]` is the profile index (0 = desktop, 1..5 = onboard slot), `params[1]` a mode flag. (An earlier revision of this section misread the response as `[mode_class, slot]`; that was disproven live 2026-07-02 - a decode built on it reported "profile 1" while the wheel's OLED sat on slot 2.)
 - `fn=2` with `[0x00, 0x00, 0x00]` switches the wheel into desktop mode. Subsequent live host SETs (range, strength, trueforce, damping, filter) take effect on the motor immediately. Verified end-to-end on 2026-04-26 against the live wheel.
 - `fn=2` with `[slot, 0x00, 0x00]` selects onboard slot 1..5 - the same plain-index encoding as native, confirmed live 2026-07-02 (OLED landed on the correct slot name, sysfs read-back matched, and the slot's stored range applied). This is also what G Hub's own packets send (`10ff172d 03` in the compat profile-sweep captures).
-- `fn=3` with `[slot]` returns the slot's user-assigned profile NAME: `[slot][length][ASCII name]` (e.g. `12ff173c 01 06 "AC EVO"`). Exposed as the `wheel_profile_names` sysfs attribute; verified against the wheel's OLED profile list.
+- `fn=3` with `[slot]` returns the slot's user-assigned profile NAME: `[slot][length][ASCII name]` (e.g. `12ff173c 01 04 "RACE"`). Exposed as the `wheel_profile_names` sysfs attribute; verified against the wheel's OLED profile list.
 
 The wheel boots in onboard mode by default. The OLED menu cycles between onboard profile slots only; it does not expose a desktop indicator separately, but the slot name displayed reflects the active state.
 
