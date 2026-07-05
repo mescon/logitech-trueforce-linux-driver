@@ -4084,6 +4084,17 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_TF_NEW_SAMPLES		4	/* new samples per packet */
 #define HIDPP_DD_TF_FLAG_BYTE		0x0d	/* constant per captures */
 /*
+ * Texture amplitude ceiling (post gain/strength scaling), half of full
+ * scale. The wheel's DSP plays window samples as vibration below
+ * roughly 0.5-0.7 of full scale but crosses into pulling the steering
+ * axis above it (TF4ALL project measurements on G PRO; consistent with
+ * our 49%-amplitude test buzz sitting at the audible-but-not-steering
+ * boundary). Real SDK games stream tiny amplitudes (ACC median 123 of
+ * 32767) so this cap never touches game-shaped content - it only stops
+ * a synthetic full-scale FF_RUMBLE from hijacking steering torque.
+ */
+#define HIDPP_DD_TF_MAX_AMPLITUDE		16383
+/*
  * Crossover between "steering-shaping" and "texture" periodics: period
  * at or below this (>= 20 Hz) is texture and routes to TF; slower
  * periodic effects keep contributing to the steering force. FF_RUMBLE
@@ -4507,9 +4518,7 @@ struct hidpp_dd_ff_data {
 	bool tf_init_queued;		/* init work queued/running; cleared for retry on failure */
 	bool tf_streaming;		/* between START and STOP */
 	u8 tf_seq;			/* TF stream sequence counter */
-	u8 tf_staged;			/* samples staged toward next packet */
 	u8 tf_init_attempts;		/* hard init failures so far (cap: HIDPP_DD_TF_INIT_MAX_ATTEMPTS) */
-	u16 tf_stage[HIDPP_DD_TF_NEW_SAMPLES];
 	u16 tf_window[HIDPP_DD_TF_WINDOW];	/* rolling window, offset binary */
 	struct work_struct tf_init_work; /* runs the 2x68-packet init (system_unbound_wq) */
 	/*
@@ -4569,8 +4578,8 @@ struct hidpp_dd_ff_data {
 static void hidpp_dd_ff_work_handler(struct work_struct *work);
 static void hidpp_dd_ff_send_force(struct hidpp_dd_ff_data *ff, s32 force);
 static bool hidpp_dd_ff_effect_is_texture(const struct ff_effect *eff);
-static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
-			 const s32 *samples);
+static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
+			 const s32 *samples, s32 force);
 static void hidpp_dd_tf_init_work_handler(struct work_struct *work);
 static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff);
 static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range);
@@ -5316,20 +5325,31 @@ static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t)
 	 * Drive the TrueForce texture channel. Also runs while a stream
 	 * is still open with no texture playing so the STOP gets sent
 	 * (and re-sent if it was dropped) instead of the wheel looping
-	 * the stale window.
+	 * the stale window. When a unified stream packet went out it
+	 * already carries this tick's force in its cur preamble, so the
+	 * separate force packet below is skipped for that tick - one
+	 * 64-byte packet per tick either way.
 	 */
-	if (any_texture || ff->tf_streaming)
-		hidpp_dd_tf_tick(ff, any_texture, tf_sample);
+	{
+		bool force_sent = false;
 
-	/*
-	 * Always push the current force on each timer tick. The wheel
-	 * firmware treats a gap in commands as "host idle" and runs an
-	 * unwind-to-soft-stop / recenter safety routine, so coalescing
-	 * identical-force ticks made any held constant force evaporate
-	 * within a couple of seconds (issue #16, ffmvforce repro). At
-	 * 500 Hz x 64 bytes the USB cost is ~32 KB/s, negligible.
-	 */
-	hidpp_dd_ff_send_force(ff, force);
+		if (any_texture || ff->tf_streaming)
+			force_sent = hidpp_dd_tf_tick(ff, any_texture,
+						      tf_sample, force);
+
+		/*
+		 * Push the current force on each timer tick (unless the
+		 * unified TF packet above already did). The wheel firmware
+		 * treats a gap in commands as "host idle" and runs an
+		 * unwind-to-soft-stop / recenter safety routine, so
+		 * coalescing identical-force ticks made any held constant
+		 * force evaporate within a couple of seconds (issue #16,
+		 * ffmvforce repro). At 500 Hz x 64 bytes the USB cost is
+		 * ~32 KB/s, negligible.
+		 */
+		if (!force_sent)
+			hidpp_dd_ff_send_force(ff, force);
+	}
 	ff->last_force = force;
 
 	/*
@@ -5471,23 +5491,35 @@ static bool hidpp_dd_tf_queue_ctrl(struct hidpp_dd_ff_data *ff, u8 cmd)
 }
 
 /*
- * Queue one TF audio-stream packet carrying the current rolling window.
- * Layout per docs/TRUEFORCE_PROTOCOL.md: newest sample duplicated in the
- * bytes 6-9 preamble, sample count and the 0x0d flag at 10/11, then the
- * 13 window slots oldest-first, each u16 duplicated L/R. Timer context
- * only (tf_seq, tf_window).
+ * Queue one unified TF stream packet: the steering-force sum rides in
+ * the bytes 6-9 preamble ("cur") and the rolling window carries the
+ * texture audio on top.
+ *
+ * Bytes 6-9 are the wheel's MOTOR TORQUE TARGET while a TF session is
+ * active, with the window played additively over it - established by
+ * the TF4ALL project's Windows-side captures (AC EVO streams its game
+ * FFB in cur and audio in the window of the same packet) and consistent
+ * with our own KF packet, which is this exact layout with zero new
+ * samples. Earlier revisions duplicated the NEWEST AUDIO SAMPLE into
+ * 6-9, which commanded the motor to follow the texture amplitude
+ * whenever a stream packet interleaved with the 500 Hz force packets.
+ *
+ * Layout per docs/TRUEFORCE_PROTOCOL.md: cur duplicated at 6-9, sample
+ * count and the 0x0d flag at 10/11, then the 13 window slots
+ * oldest-first, each u16 duplicated L/R. Timer context only (tf_seq,
+ * tf_window).
  */
-static bool hidpp_dd_tf_queue_stream(struct hidpp_dd_ff_data *ff)
+static bool hidpp_dd_tf_queue_stream(struct hidpp_dd_ff_data *ff, s32 force)
 {
 	u8 pkt[HIDPP_DD_FF_REPORT_SIZE] = { 0 };
-	u16 newest = ff->tf_window[HIDPP_DD_TF_WINDOW - 1];
+	u16 cur = hidpp_dd_force_to_offset_binary(force);
 	int i;
 
 	pkt[0] = HIDPP_DD_FF_REPORT_ID;
 	pkt[4] = HIDPP_DD_TF_CMD_STREAM;
 	pkt[5] = ff->tf_seq;
-	put_unaligned_le16(newest, &pkt[6]);
-	put_unaligned_le16(newest, &pkt[8]);
+	put_unaligned_le16(cur, &pkt[6]);
+	put_unaligned_le16(cur, &pkt[8]);
 	pkt[10] = HIDPP_DD_TF_NEW_SAMPLES;
 	pkt[11] = HIDPP_DD_TF_FLAG_BYTE;
 	for (i = 0; i < HIDPP_DD_TF_WINDOW; i++) {
@@ -5598,16 +5630,27 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
 /*
  * Per-tick TF driver, called from the effect timer after the effect sum.
  * `samples` holds this tick's two 1 kHz texture samples (signed force
- * domain, pre-gain). Stages samples four-at-a-time into the rolling
- * window and emits one stream packet per full stage (250 Hz cadence,
- * matching libtrueforce and the G Hub captures). When the last texture
- * effect stops, re-centres the window and sends STOP so the wheel's DSP
- * returns to silence instead of looping the stale window.
+ * domain, pre-gain); `force` is the final steering-force sum for this
+ * tick (post-gain, autocenter included).
+ *
+ * Emits ONE unified stream packet per tick (500 Hz): the steering force
+ * in the cur preamble and four new window slots - each 1 kHz texture
+ * sample duplicated once, which is time-correct at the resulting 2 kHz
+ * window-slot rate. This replaces the earlier two-stream interleave
+ * (500 Hz force packets + 250 Hz audio packets whose preamble wrongly
+ * carried audio); one packet per tick means the caller must NOT also
+ * send a force packet when this returns true.
+ *
+ * When the last texture effect stops, re-centres the window and sends
+ * STOP so the wheel's DSP returns to silence instead of looping the
+ * stale window. Returns true when a stream packet carrying `force` was
+ * queued this tick (caller skips its force send), false otherwise.
  */
-static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
-			 const s32 *samples)
+static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
+			 const s32 *samples, s32 force)
 {
 	u16 gain, strength;
+	u16 quartet[HIDPP_DD_TF_NEW_SAMPLES];
 	int i;
 
 	if (!any_texture) {
@@ -5621,14 +5664,19 @@ static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 			 * down. The timer keeps ticking while tf_streaming
 			 * is set (see its reschedule condition), so a
 			 * failed STOP retries on the next tick.
+			 *
+			 * The recentre packet still carries the live force
+			 * in cur, but return false regardless so the caller
+			 * sends its own force packet: if the STOP queued,
+			 * the session is closing and the KF stream is
+			 * already the force carrier again.
 			 */
 			memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW);
-			ff->tf_staged = 0;
-			hidpp_dd_tf_queue_stream(ff);
+			hidpp_dd_tf_queue_stream(ff, force);
 			if (hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_STOP))
 				ff->tf_streaming = false;
 		}
-		return;
+		return false;
 	}
 
 	if (!ff->tf_streaming) {
@@ -5637,7 +5685,7 @@ static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 		 * it was dropped, skip this tick's samples and retry.
 		 */
 		if (!hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_START))
-			return;
+			return false;
 		ff->tf_streaming = true;
 	}
 
@@ -5658,21 +5706,30 @@ static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 		 */
 		if (strength != 0xFFFF)
 			s = (s32)(((s64)s * strength) / 0xFFFF);
-		ff->tf_stage[ff->tf_staged++] =
-			hidpp_dd_force_to_offset_binary(s);
-
-		if (ff->tf_staged == HIDPP_DD_TF_NEW_SAMPLES) {
-			memmove(&ff->tf_window[0],
-				&ff->tf_window[HIDPP_DD_TF_NEW_SAMPLES],
-				(HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES) *
-					sizeof(ff->tf_window[0]));
-			memcpy(&ff->tf_window[HIDPP_DD_TF_WINDOW -
-					      HIDPP_DD_TF_NEW_SAMPLES],
-			       ff->tf_stage, sizeof(ff->tf_stage));
-			ff->tf_staged = 0;
-			hidpp_dd_tf_queue_stream(ff);
-		}
+		/*
+		 * Keep texture in the DSP's vibration regime; above the
+		 * cap the window content starts steering the motor (see
+		 * HIDPP_DD_TF_MAX_AMPLITUDE).
+		 */
+		s = clamp(s, -(s32)HIDPP_DD_TF_MAX_AMPLITUDE,
+			  (s32)HIDPP_DD_TF_MAX_AMPLITUDE);
+		/*
+		 * Duplicate each 1 kHz sample into two adjacent window
+		 * slots: at one packet per 2 ms tick the wheel consumes
+		 * window slots at 2 kHz, so the pair plays for the 1 ms
+		 * the sample represents.
+		 */
+		quartet[i * 2] = hidpp_dd_force_to_offset_binary(s);
+		quartet[i * 2 + 1] = quartet[i * 2];
 	}
+
+	memmove(&ff->tf_window[0],
+		&ff->tf_window[HIDPP_DD_TF_NEW_SAMPLES],
+		(HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES) *
+			sizeof(ff->tf_window[0]));
+	memcpy(&ff->tf_window[HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES],
+	       quartet, sizeof(quartet));
+	return hidpp_dd_tf_queue_stream(ff, force);
 }
 
 /*
@@ -10953,7 +11010,6 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->tf_ready = false;
 	ff->tf_init_queued = false;
 	ff->tf_streaming = false;
-	ff->tf_staged = 0;
 	ff->tf_init_attempts = 0;
 	memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW); /* offset-binary centre */
 	spin_lock_init(&ff->effects_lock);
