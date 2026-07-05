@@ -79,7 +79,12 @@ static int parse_hex_u16(const char *s, uint16_t *out)
 static int hidraw_usb_ids(const char *hidraw_name,
 			  uint16_t *vid, uint16_t *pid, int *ifnum)
 {
-	char linkpath[256];
+	/*
+	 * Sized for a PATH_MAX realpath() result plus the longest attribute
+	 * suffix appended below; anything smaller trips gcc's
+	 * -Wformat-truncation because `resolved` may be PATH_MAX long.
+	 */
+	char linkpath[PATH_MAX + sizeof("/bInterfaceNumber")];
 	char resolved[PATH_MAX];
 	char buf[32];
 	char *slash;
@@ -267,7 +272,7 @@ int logitf_discover(void)
 		int ifnum;
 		struct logitf_device *dev;
 		char hidraw_sysdev[PATH_MAX];
-		char linkpath[256];
+		char linkpath[288];	/* '/sys/class/hidraw/' + d_name(255) + '/device' */
 
 		if (strncmp(ent->d_name, "hidraw", 6) != 0)
 			continue;

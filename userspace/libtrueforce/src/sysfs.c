@@ -28,7 +28,7 @@ static int find_attr_path(struct logitf_device *dev, const char *attr,
 {
 	DIR *d;
 	struct dirent *ent;
-	char dev_link[256];
+	char dev_link[288];	/* '/sys/class/hidraw/' + d_name(255) + '/device' */
 	char resolved[PATH_MAX];
 	int rc = -1;
 

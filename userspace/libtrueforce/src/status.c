@@ -61,7 +61,7 @@ static int read_wheel_range_deg(struct logitf_device *dev)
 {
 	DIR *d;
 	struct dirent *ent;
-	char path[512];
+	char path[4096];
 	int v = 1080;
 	bool found = false;
 
@@ -72,7 +72,7 @@ static int read_wheel_range_deg(struct logitf_device *dev)
 	if (!d)
 		return v;
 	while ((ent = readdir(d)) && !found) {
-		char dev_link[256];
+		char dev_link[288];
 		char resolved[PATH_MAX];
 		FILE *f;
 

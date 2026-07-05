@@ -28,10 +28,10 @@ struct logitf_device {
 	/* Identity */
 	uint16_t vid;
 	uint16_t pid;
-	char hidraw_path[64];      /* /dev/hidrawN, interface 2 */
-	char evdev_path[128];      /* /dev/input/eventN, joystick */
-	char by_id[256];           /* /dev/input/by-id/... for stable identity */
-	char usb_root[512];        /* /sys/...usbX/N-M -- shared with sibling interfaces */
+	char hidraw_path[272];     /* /dev/<d_name(255)> fits untruncated */
+	char evdev_path[272];      /* /dev/input/<d_name(255)> fits */
+	char by_id[288];           /* /dev/input/by-id/<d_name(255)> fits */
+	char usb_root[4096];       /* PATH_MAX realpath result -- shared with sibling interfaces */
 
 	/* File descriptors (open on first use) */
 	int hidraw_fd;             /* TF audio stream */
