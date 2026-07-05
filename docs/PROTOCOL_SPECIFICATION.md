@@ -879,13 +879,37 @@ re-enumerate it.
 
 ### Architecture Note
 
-The RS50 uses a **fundamentally different FFB architecture** from the G920/G923:
+The RS50/G PRO expose **two independent force transports**, and which one a
+host uses is a choice, not a hardware constraint (established 2026-07-04 by
+the TF4ALL project's Windows-side kernel-filter captures, cross-checked
+against our catalog):
 
-- **G920/G923**: All FFB communication via HID++ Feature 0x8123. The kernel driver queries the feature index at runtime and sends FAP (Feature Access Protocol) messages.
+- **HID++ Feature 0x8123 fn2** - the path Logitech's own Windows runtime
+  uses for normal game FFB on these wheels too, not just on G920/G923:
+  report 0x11/0x12, device index 0xff, the wheel's 0x8123 feature *index*
+  (native RS50 catalog: 0x10; G-PRO-PID catalog: 0x0e), function 2, signed
+  int16 BE motor target at payload offset 10-11, sent at the game's rate
+  (~140-333 Hz observed). Set-and-hold: the wheel maintains the last
+  commanded force indefinitely with no keepalive.
+- **Dedicated endpoint 0x03 on Interface 2** (raw report-0x01 packets) -
+  the TrueForce session channel, used by SDK-native games (AC EVO, ACC)
+  and by this Linux driver for ALL force output. While a TrueForce session
+  is active, bytes 6-9 of the stream packet ("cur") are the motor torque
+  target and OVERRIDE the 0x8123 path; the 13-slot window plays additively
+  on top as audio. A packet with zero new samples (byte 10 = 0) is a pure
+  force command - this driver's classic "KF" packet.
 
-- **RS50**: FFB uses a dedicated USB endpoint (0x03 OUT on Interface 2) with raw HID output reports. HID++ is used only for configuration (rotation range, strength, etc.), not for real-time force commands.
+The G920/G923 comparison above therefore describes *defaults*, not
+capabilities: the G920/G923 has only 0x8123, while the DD wheels have both
+and privilege the endpoint stream.
 
-**Driver implication**: Code paths for G920 FFB (`hidpp_ff_*` functions using Feature 0x8123) cannot be reused for RS50. The driver uses `HIDPP_QUIRK_DD_FFB` to select the dedicated endpoint code path (`hidpp_dd_ff_*` functions).
+**Driver implication**: this driver uses the endpoint path exclusively
+(`HIDPP_QUIRK_DD_FFB` / `hidpp_dd_ff_*`), which needs the 500 Hz refresh
+semantics below; the G920 `hidpp_ff_*` 0x8123 code path with its slot-based
+effect engine still cannot be reused as-is (the issue #8 queue-saturation
+failures), but a minimal 0x8123-fn2 force-target sender remains an untested
+alternative transport - potentially relevant if the wheel's FFB-filter
+smoothing turns out to apply only to that path.
 
 **Interface initialization**: FFB must be initialized on Interface 1 (HID++), not Interface 0 (joystick). Interface 0 has no HID++ support.
 
@@ -895,6 +919,20 @@ The RS50 uses a **fundamentally different FFB architecture** from the G920/G923:
 
 The RS50 wheel rim features **10 individually addressable RGB LEDs** around the circumference.
 The LIGHTSYNC feature provides full per-LED color control with animation direction support.
+
+> **This section describes RS50 rim hardware only** (in both native and
+> compat enumeration - the rim does not change with the PID). The **real
+> G PRO rim** uses the same 0x807A feature page for a completely different,
+> LEVEL-based rev-light protocol with no per-LED RGB: after a one-time arm
+> burst (SHORT fn0, fn1, fn2, fn3 param 0x02, fn0), the host repeats a
+> SHORT fn2 + LONG fn6 pair where the LONG's byte 9 carries a 0-10 "LEDs
+> lit" level; colours, direction and scaling belong to the wheel's onboard
+> profile. Decoded by the TF4ALL project from a G HUB capture (2026-05-16);
+> exposed by this driver as `wheel_rev_level` on real G PROs, with the RGB
+> attributes hidden there. Caution from the same source: bursting these
+> writes starves the wheel's shared HID++ command processor and cuts FFB
+> out on the Windows FFB path - pace level writes at G HUB's ~160 ms
+> cadence.
 
 ### 9.1 Physical LED Layout
 
@@ -1557,3 +1595,4 @@ This returns the PAGE ID at each index. G Hub queries indices 0x00 through ~0x1F
 | 6.3 | 2026-07-02 | Resolved the three unknown features (0x80A4 axis response curves, 0x1BC0 ReportHidUsages, compat 0x15 = Brake Force); compat catalog identical to native; sub-device map (5.3); HID++ error packets, SW_ID and 0x12-report semantics from Logitech's official specs; DeviceInfo identity decode; LIGHTSYNC official lineage (9.10); registry cross-checks |
 | 6.4 | 2026-07-03 | Profile feature settled live against the OLED: fn2 SET = plain [profile,0,0], fn1 GET = [profile, mode], fn3 = per-slot profile names; catalog rows 0x02/0x03 corrected (DeviceInfo / DeviceNameType); launch-time 90-degree reset root-caused to the SDK's type-0x0e operating-range push (see TRUEFORCE_PROTOCOL.md) |
 | 6.5 | 2026-07-03 | Renamed from RS50_PROTOCOL_SPECIFICATION.md (covers the whole direct-drive family); driver symbols updated to the hidpp_dd_ prefix; documented that the RS50 keeps its own USB product string in G PRO compatibility mode ("RS50 Base for PlayStation/PC" under PID c272) while a real G PRO reports "PRO Racing Wheel" - the driver uses this to tag log output per model |
+| 6.6 | 2026-07-04 | Cross-pollination from the TF4ALL project (issue #20): the Windows game-FFB path for DD wheels is HID++ 0x8123 fn2 (int16 BE at offset 10-11; catalog index 0x10 native / 0x0e G-PRO-PID); stream-packet bytes 6-9 ("cur") are the motor torque target and override 0x8123 while a session is active, with the window additive on top; AC EVO streams unified cur+audio packets at up to ~1000 pkt/s; texture amplitudes above ~0.5-0.7 FS cross from vibration into steering pull; the REAL G PRO rim has level-based rev lights on 0x807A (SHORT fn2 + LONG fn6, byte 9 = 0-10) with no per-LED RGB - section 9 describes RS50 hardware only |

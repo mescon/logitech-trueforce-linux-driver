@@ -4358,6 +4358,15 @@ struct hidpp_dd_ff_data {
 	u8 idx_brightness;		/* Feature index for LED brightness */
 	u8 idx_lightsync;		/* Feature index for LIGHTSYNC effects */
 	u8 idx_rgb_config;		/* Feature index for RGB Zone Config */
+	/*
+	 * Real-G-PRO rev-light state (level-based 0x807A protocol; see
+	 * wheel_rev_level_store). Serialised by rev_lock: sysfs stores can
+	 * race each other and the arm burst must run exactly once.
+	 */
+	struct mutex rev_lock;
+	bool rev_armed;			/* one-time arm burst sent */
+	u8 rev_level;			/* last commanded level 0-10 */
+	unsigned long rev_last_write;	/* jiffies of last level pair */
 	u8 idx_profile;			/* Feature index for Profile switching */
 	u8 idx_profile_notify;		/* Feature index for profile-change broadcasts (0x80D0) */
 	u8 idx_sync;			/* Feature index for sync/prepare (0x1BC0) */
@@ -9459,6 +9468,174 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 
 static DEVICE_ATTR(wheel_led_effect, 0664, wheel_led_effect_show, wheel_led_effect_store);
 
+/*
+ * Real G PRO Racing Wheel: is this bound identity an actual G PRO, as
+ * opposed to an RS50 spoofing the G PRO product ID in compatibility
+ * mode? The RS50 keeps its own USB product string under the borrowed
+ * PID (verified live), while a real G PRO reports "PRO Racing Wheel"
+ * (verified from contributor captures). Used to gate the LED surface:
+ * the two rims have entirely different LED hardware and protocols.
+ */
+static bool dd_is_real_gpro(struct hid_device *hdev)
+{
+	return (hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
+		hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL) &&
+	       !strstr(hdev->name, "RS50");
+}
+
+/*
+ * wheel_rev_level: rev-light level for the REAL G PRO rim (0-10 = how
+ * many LEDs lit). The G PRO's rim lights are level-based, not the
+ * RS50's per-LED RGB LIGHTSYNC model: colours, direction and scaling
+ * belong to the wheel's onboard profile, and the host only commands a
+ * level. Protocol decoded by the TF4ALL project from a G HUB capture
+ * (2026-05-16, see dev/docs/tf4all-analysis.md): a one-time arm burst
+ * of SHORT sends on the 0x807A feature (fn0, fn1, fn2, fn3 param 0x02,
+ * fn0, a few ms apart), then per update a SHORT fn2 + LONG fn6 pair
+ * with the level in the LONG's byte 9. G HUB's sw-id nibble (0x0d) is
+ * kept verbatim - this is the only known-working capture shape.
+ *
+ * Two cautions baked in, both from TF4ALL's testing on real hardware:
+ * writes are fire-and-forget (no reply is read - the pair does not
+ * reliably generate one, and a sync wait would eat timeouts), and
+ * updates are floor-limited to G HUB's own ~160 ms cadence because
+ * bursting level writes starves the wheel's shared HID++ command
+ * processor. The wheel holds a level for a long time but reverts
+ * eventually; a telemetry feeder should refresh at ~1 Hz or faster,
+ * which anything driving rev lights does naturally.
+ *
+ * UNTESTED on real hardware (we develop on an RS50); gated to real
+ * G PROs by dd_is_real_gpro() and needs a G PRO owner to validate.
+ */
+#define HIDPP_DD_REV_SWID		0x0d	/* G HUB's sw-id, kept verbatim */
+#define HIDPP_DD_REV_MAX_LEVEL		10
+#define HIDPP_DD_REV_MIN_GAP_MS		160	/* G HUB's observed cadence */
+#define HIDPP_DD_REV_ARM_GAP_MS	4
+
+static int hidpp_dd_rev_send_short(struct hidpp_device *hidpp, u8 idx, u8 fn,
+				   u8 p0)
+{
+	struct hidpp_report report = {
+		.report_id = REPORT_ID_HIDPP_SHORT,
+		.device_index = 0xff,
+		.fap = {
+			.feature_index = idx,
+			.funcindex_clientid = (fn << 4) | HIDPP_DD_REV_SWID,
+			.params = { p0, 0, 0 },
+		},
+	};
+
+	return __hidpp_send_report(hidpp->hid_dev, &report);
+}
+
+static int hidpp_dd_rev_send_level(struct hidpp_device *hidpp, u8 idx, u8 level)
+{
+	struct hidpp_report report = {
+		.report_id = REPORT_ID_HIDPP_LONG,
+		.device_index = 0xff,
+		.fap = {
+			.feature_index = idx,
+			.funcindex_clientid = (6 << 4) | HIDPP_DD_REV_SWID,
+			/* params start at report byte 4: 00 01 00 0a 00 LL */
+			.params = { 0x00, 0x01, 0x00, 0x0a, 0x00, level },
+		},
+	};
+	int ret;
+
+	ret = hidpp_dd_rev_send_short(hidpp, idx, 2, 0);
+	if (ret < 0)
+		return ret;
+	return __hidpp_send_report(hidpp->hid_dev, &report);
+}
+
+static ssize_t wheel_rev_level_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ff->rev_level));
+}
+
+static ssize_t wheel_rev_level_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	unsigned int level;
+	int ret, i;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	ret = kstrtouint(buf, 10, &level);
+	if (ret)
+		return ret;
+	if (level > HIDPP_DD_REV_MAX_LEVEL)
+		return -EINVAL;
+	if (ff->idx_lightsync == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&ff->rev_lock);
+
+	if (!ff->rev_armed) {
+		static const u8 arm_fns[]    = { 0, 1, 2, 3, 0 };
+		static const u8 arm_params[] = { 0, 0, 0, 2, 0 };
+
+		for (i = 0; i < ARRAY_SIZE(arm_fns); i++) {
+			ret = hidpp_dd_rev_send_short(hidpp, ff->idx_lightsync,
+						      arm_fns[i],
+						      arm_params[i]);
+			if (ret < 0)
+				goto out;
+			msleep(HIDPP_DD_REV_ARM_GAP_MS);
+		}
+		ff->rev_armed = true;
+		ff->rev_last_write = jiffies - msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS);
+	}
+
+	/*
+	 * Pace to G HUB's cadence rather than error: rev level is
+	 * telemetry-shaped (rapid small updates near the shift point)
+	 * and callers should not have to handle -EBUSY. Sleeping out
+	 * the remainder keeps the wire footprint bounded.
+	 */
+	if (time_before(jiffies, ff->rev_last_write +
+				 msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS)))
+		msleep(jiffies_to_msecs(ff->rev_last_write +
+					msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS) -
+					jiffies));
+
+	ret = hidpp_dd_rev_send_level(hidpp, ff->idx_lightsync, level);
+	if (ret < 0)
+		goto out;
+	WRITE_ONCE(ff->rev_level, level);
+	ff->rev_last_write = jiffies;
+	ret = 0;
+out:
+	mutex_unlock(&ff->rev_lock);
+	return ret < 0 ? ret : count;
+}
+
+static DEVICE_ATTR(wheel_rev_level, 0664, wheel_rev_level_show,
+		   wheel_rev_level_store);
+
 /* LED brightness */
 static ssize_t wheel_led_brightness_show(struct device *dev, struct device_attribute *attr,
 					char *buf)
@@ -10625,6 +10802,7 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_led_apply.attr,
 	&dev_attr_wheel_led_brightness.attr,
 	&dev_attr_wheel_led_effect.attr,
+	&dev_attr_wheel_rev_level.attr,
 #ifdef CONFIG_HID_LOGITECH_HIDPP_DEBUG
 	&dev_attr_wheel_hidpp_debug.attr,
 #endif
@@ -10656,8 +10834,44 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	NULL,
 };
 
+/*
+ * Per-model LED surface gating. The RS50 rim/base carries LIGHTSYNC
+ * per-LED RGB hardware (the wheel_led_* attributes drive it in native
+ * AND compat mode - verified live 2026-04-29); the real G PRO rim has
+ * level-based rev lights with onboard-profile-owned colours and no
+ * per-LED RGB at all (TF4ALL capture decode). Showing the wrong
+ * surface would mean attributes that write protocol the rim does not
+ * speak, so each identity gets only its own: LIGHTSYNC slots for
+ * RS50s, wheel_rev_level for real G PROs. Identity is known at probe
+ * time (product ID + product string), so evaluating at
+ * sysfs_create_group() time is safe.
+ */
+static umode_t hidpp_dd_wheel_group_is_visible(struct kobject *kobj,
+					       struct attribute *attr, int idx)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	struct hid_device *hid = to_hid_device(dev);
+	bool real_gpro = dd_is_real_gpro(hid);
+
+	if (attr == &dev_attr_wheel_rev_level.attr)
+		return real_gpro ? attr->mode : 0;
+
+	if (real_gpro &&
+	    (attr == &dev_attr_wheel_led_slot.attr ||
+	     attr == &dev_attr_wheel_led_slot_name.attr ||
+	     attr == &dev_attr_wheel_led_slot_brightness.attr ||
+	     attr == &dev_attr_wheel_led_direction.attr ||
+	     attr == &dev_attr_wheel_led_colors.attr ||
+	     attr == &dev_attr_wheel_led_apply.attr ||
+	     attr == &dev_attr_wheel_led_effect.attr))
+		return 0;
+
+	return attr->mode;
+}
+
 static const struct attribute_group hidpp_dd_wheel_group = {
 	.attrs = hidpp_dd_wheel_group_attrs,
+	.is_visible = hidpp_dd_wheel_group_is_visible,
 };
 
 static struct attribute *gpro_wheel_group_attrs[] = {
@@ -11011,6 +11225,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->tf_init_queued = false;
 	ff->tf_streaming = false;
 	ff->tf_init_attempts = 0;
+	mutex_init(&ff->rev_lock);
 	memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW); /* offset-binary centre */
 	spin_lock_init(&ff->effects_lock);
 	atomic_set(&ff->sequence, 0);
