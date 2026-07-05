@@ -79,6 +79,21 @@
  * (verified from contributor captures on real hardware), so the
  * substring check below separates the two reliably.
  */
+/*
+ * The single identity heuristic every consumer must share: an RS50
+ * borrowing the G PRO product ID keeps its own USB product string
+ * ("RS50 Base for PlayStation/PC", verified live), while a real G PRO
+ * reports "PRO Racing Wheel" (verified from contributor captures).
+ * dd_wheel_name() (log tags) and dd_is_real_gpro() (LED-surface
+ * gating) both build on this ONE strstr so a firmware string change
+ * or new compat PID can never make logs and sysfs disagree about
+ * which wheel this is.
+ */
+static bool dd_product_claims_rs50(struct hid_device *hdev)
+{
+	return strstr(hdev->name, "RS50") != NULL;
+}
+
 static const char *dd_wheel_name(struct hid_device *hdev)
 {
 	switch (hdev->product) {
@@ -86,12 +101,27 @@ static const char *dd_wheel_name(struct hid_device *hdev)
 		return "RS50 (native)";
 	case USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL:
 	case USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL:
-		if (strstr(hdev->name, "RS50"))
+		if (dd_product_claims_rs50(hdev))
 			return "RS50 (G PRO compatibility mode)";
 		return "G PRO";
 	default:
 		return "DD wheel";
 	}
+}
+
+/*
+ * Real G PRO Racing Wheel: is this bound identity an actual G PRO, as
+ * opposed to an RS50 spoofing the G PRO product ID in compatibility
+ * mode? The RS50 keeps its own USB product string under the borrowed
+ * PID (verified live), while a real G PRO reports "PRO Racing Wheel"
+ * (verified from contributor captures). Used to gate the LED surface:
+ * the two rims have entirely different LED hardware and protocols.
+ */
+static bool dd_is_real_gpro(struct hid_device *hdev)
+{
+	return (hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
+		hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL) &&
+	       !dd_product_claims_rs50(hdev);
 }
 
 #define dd_info(hdev, fmt, ...) \
@@ -715,17 +745,30 @@ static int hidpp_send_rap_command_sync(struct hidpp_device *hidpp_dev,
 	return ret;
 }
 
-static inline bool hidpp_match_answer(struct hidpp_report *question,
-		struct hidpp_report *answer)
+static inline bool hidpp_match_answer(struct hidpp_device *hidpp,
+		struct hidpp_report *question, struct hidpp_report *answer)
 {
 	/*
-	 * Answers always echo the device index of the question. Without
-	 * this check a question addressed to the base device (0xff) can be
-	 * "answered" by a late or unsolicited report from a sub-device
-	 * (RS50: 0x01 display / 0x02 pedal base / 0x05 motor) that happens
-	 * to share the feature index and function nibble.
+	 * On the direct-drive wheels, answers always echo the device index
+	 * of the question, and without this check a question addressed to
+	 * the base device (0xff) can be "answered" by a late or unsolicited
+	 * report from a sub-device (RS50: 0x01 display / 0x02 pedal base /
+	 * 0x05 motor) that happens to share the feature index and function
+	 * nibble.
+	 *
+	 * The check MUST stay gated on the DD quirk: for devices paired
+	 * through a Unifying/Lightspeed receiver, hid-logitech-dj's
+	 * ll_raw_request rewrites wire byte 1 to the paired slot index
+	 * (1..7) AFTER our question snapshot was taken, so the answer
+	 * comes back with a device index the snapshot (0xff) can never
+	 * match - an unconditional check makes every sync command on
+	 * every receiver-paired mouse/keyboard eat the full timeout.
+	 * Upstream ignores the index entirely; we only need it where the
+	 * sub-device collision exists, and the DD wheels are always
+	 * direct USB where the wire index is exactly what we sent.
 	 */
-	if (answer->device_index != question->device_index)
+	if ((hidpp->quirks & HIDPP_QUIRK_DD_FFB) &&
+	    answer->device_index != question->device_index)
 		return false;
 
 	/*
@@ -746,11 +789,15 @@ static inline bool hidpp_match_answer(struct hidpp_report *question,
 	   (answer->fap.funcindex_clientid == question->fap.funcindex_clientid);
 }
 
-static inline bool hidpp_match_error(struct hidpp_report *question,
-		struct hidpp_report *answer)
+static inline bool hidpp_match_error(struct hidpp_device *hidpp,
+		struct hidpp_report *question, struct hidpp_report *answer)
 {
-	return (answer->device_index == question->device_index) &&
-	    ((answer->rap.sub_id == HIDPP_ERROR) ||
+	/* Same DD-only device-index gate as hidpp_match_answer() above. */
+	if ((hidpp->quirks & HIDPP_QUIRK_DD_FFB) &&
+	    answer->device_index != question->device_index)
+		return false;
+
+	return ((answer->rap.sub_id == HIDPP_ERROR) ||
 	    (answer->fap.feature_index == HIDPP20_ERROR)) &&
 	    (answer->fap.funcindex_clientid == question->fap.feature_index) &&
 	    (answer->fap.params[0] == question->fap.funcindex_clientid);
@@ -4053,24 +4100,30 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 /*
  * In-kernel TrueForce texture channel (KF/TF separation, issue #8).
  *
- * The wheel's interface-2 type-0x01 report carries BOTH force channels,
- * demultiplexed by byte 10 ("new samples this packet"):
- *   - byte10 = 0: plain constant-force (KF) update - the force in the
- *     bytes 6-9 preamble is held. This is what struct hidpp_dd_ff_report has
- *     always sent; our steering stream is a TrueForce stream with an
- *     empty sample window.
- *   - byte10 = 4: audio-stream (TF) packet - bytes 12..63 carry a
- *     13-slot rolling window of 1 kHz haptic samples (each u16 offset
- *     binary, duplicated L/R), advanced 4 samples per packet (250 Hz
- *     packet cadence). See docs/TRUEFORCE_PROTOCOL.md.
+ * The wheel's interface-2 type-0x01 report carries BOTH force channels
+ * in one packet: the bytes 6-9 preamble ("cur") is the held motor
+ * torque target, and byte 10 ("new samples this packet") announces
+ * additive audio content:
+ *   - byte10 = 0: plain constant-force (KF) update - torque in cur,
+ *     no audio. This is what struct hidpp_dd_ff_report has always sent.
+ *   - byte10 = 4: unified stream packet - torque in cur PLUS bytes
+ *     12..63 carrying a 13-slot rolling window of haptic samples (each
+ *     u16 offset binary, duplicated L/R), advanced 4 slots per packet.
+ *     The driver emits these at its 500 Hz effect tick (2 kHz slot
+ *     rate; each 1 kHz synthesized sample fills two slots); games
+ *     stream the same shape anywhere from 250 to ~1000 pkt/s, so slot
+ *     consumption is packet-paced. See docs/TRUEFORCE_PROTOCOL.md.
  *
- * Interleaving independent KF and TF type-0x01 streams on this endpoint
- * is the exact traffic pattern already proven under Proton (SDK-driven
- * TF alongside our KF force stream), so routing vibration-class evdev
- * effects (FF_RUMBLE, high-frequency FF_PERIODIC) through TF instead of
- * summing them into the steering force replicates the Windows KF/TF
- * split: texture rides the wheel's audio-haptic path and no longer
- * modulates ("grits") the steering axis.
+ * While texture is active the driver sends ONLY unified packets (the
+ * separate force packet is skipped for that tick - one packet per tick
+ * either way). Routing vibration-class evdev effects (FF_RUMBLE,
+ * high-frequency FF_PERIODIC) through the window instead of summing
+ * them into the steering force replicates the Windows KF/TF split:
+ * texture rides the wheel's audio-haptic path and no longer modulates
+ * ("grits") the steering axis. Continuous unified streaming is also
+ * how AC EVO drives the wheel for entire sessions, which is the
+ * evidence that a byte10=4 packet satisfies the firmware's host-alive
+ * watchdog exactly like a KF packet (issue #16 unwind behaviour).
  *
  * The TF session needs a one-time init: the 68-packet sequence in
  * hidpp_dd_tf_init.h sent twice (G Hub behaviour). We run it lazily from a
@@ -4115,6 +4168,13 @@ static void hidpp_ff_retry_work(struct work_struct *work)
  * feature indices, which vary per device. Never use hardcoded indices!
  */
 #define HIDPP_DD_PAGE_BRIGHTNESS		0x8040	/* LED Brightness Control */
+/*
+ * 0x807A speaks two per-model dialects: the RS50 rim's per-LED RGB
+ * LIGHTSYNC protocol (constants below, section 9 of the spec) and the
+ * real G PRO rim's level-based rev lights (HIDPP_DD_REV_* next to
+ * wheel_rev_level_store). Changes to either side must be checked
+ * against the other - they share the feature page and index.
+ */
 #define HIDPP_DD_PAGE_LIGHTSYNC		0x807A	/* LIGHTSYNC LED Effects */
 #define HIDPP_DD_PAGE_RGB_CONFIG		0x807B	/* RGB Zone Config (LED color data) */
 #define HIDPP_DD_PAGE_PROFILE_NOTIFY	0x80D0	/* Emits profile-change broadcast event */
@@ -4125,6 +4185,7 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_PAGE_RANGE			0x8138	/* Rotation Range (emits rotation-change broadcast event) */
 #define HIDPP_DD_PAGE_TRUEFORCE		0x8139	/* TRUEFORCE Bass Shaker */
 #define HIDPP_DD_PAGE_FILTER		0x8140	/* FFB Filter */
+#define HIDPP_DD_PAGE_RESPONSE_CURVE	0x80A4	/* Per-axis 64-point response curves */
 #define HIDPP_DD_PAGE_CALIBRATE		0x812C	/* Centre calibration (G Pro sub-device 0x05) */
 #define HIDPP_DD_PAGE_SYNC			0x1BC0	/* Unknown sync/prepare feature */
 
@@ -4355,6 +4416,7 @@ struct hidpp_dd_ff_data {
 	u8 idx_trueforce;		/* Feature index for TRUEFORCE */
 	u8 idx_brakeforce;		/* Feature index for brake force */
 	u8 idx_filter;			/* Feature index for FFB filter */
+	u8 idx_response_curve;		/* Feature index for 0x80A4 axis response curves */
 	u8 idx_brightness;		/* Feature index for LED brightness */
 	u8 idx_lightsync;		/* Feature index for LIGHTSYNC effects */
 	u8 idx_rgb_config;		/* Feature index for RGB Zone Config */
@@ -4526,6 +4588,7 @@ struct hidpp_dd_ff_data {
 	bool tf_ready;			/* two-pass session init completed */
 	bool tf_init_queued;		/* init work queued/running; cleared for retry on failure */
 	bool tf_streaming;		/* between START and STOP */
+	bool tf_recentre_sent;		/* wind-down recentre packet already out */
 	u8 tf_seq;			/* TF stream sequence counter */
 	u8 tf_init_attempts;		/* hard init failures so far (cap: HIDPP_DD_TF_INIT_MAX_ATTEMPTS) */
 	u16 tf_window[HIDPP_DD_TF_WINDOW];	/* rolling window, offset binary */
@@ -5513,15 +5576,31 @@ static bool hidpp_dd_tf_queue_ctrl(struct hidpp_dd_ff_data *ff, u8 cmd)
  * 6-9, which commanded the motor to follow the texture amplitude
  * whenever a stream packet interleaved with the 500 Hz force packets.
  *
+ * cur is deliberately NOT scaled by wheel_strength here: it is the same
+ * bytes-6-9 field the KF packet carries, and KF forces are verified to
+ * be strength-scaled by the wheel firmware itself (unlike the window
+ * samples, which play at face value and are host-scaled before they
+ * reach this function). Windows corroborates: G Hub's strength setting
+ * audibly works in SDK titles whose entire force path is cur.
+ *
+ * `quartet` is the tick's HIDPP_DD_TF_NEW_SAMPLES new window slots, or
+ * NULL to resend the current window unchanged (STOP-path recentre).
+ * The rolling window is only advanced AFTER the packet actually
+ * queued: committing first and dropping the packet under queue
+ * pressure would silently skip 2 ms of texture the wheel never saw
+ * while the next packet still claims 4 new samples.
+ *
  * Layout per docs/TRUEFORCE_PROTOCOL.md: cur duplicated at 6-9, sample
  * count and the 0x0d flag at 10/11, then the 13 window slots
  * oldest-first, each u16 duplicated L/R. Timer context only (tf_seq,
  * tf_window).
  */
-static bool hidpp_dd_tf_queue_stream(struct hidpp_dd_ff_data *ff, s32 force)
+static bool hidpp_dd_tf_queue_stream(struct hidpp_dd_ff_data *ff, s32 force,
+				     const u16 *quartet)
 {
 	u8 pkt[HIDPP_DD_FF_REPORT_SIZE] = { 0 };
 	u16 cur = hidpp_dd_force_to_offset_binary(force);
+	int shifted = HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES;
 	int i;
 
 	pkt[0] = HIDPP_DD_FF_REPORT_ID;
@@ -5532,12 +5611,27 @@ static bool hidpp_dd_tf_queue_stream(struct hidpp_dd_ff_data *ff, s32 force)
 	pkt[10] = HIDPP_DD_TF_NEW_SAMPLES;
 	pkt[11] = HIDPP_DD_TF_FLAG_BYTE;
 	for (i = 0; i < HIDPP_DD_TF_WINDOW; i++) {
-		put_unaligned_le16(ff->tf_window[i], &pkt[12 + i * 4]);
-		put_unaligned_le16(ff->tf_window[i], &pkt[14 + i * 4]);
+		u16 v;
+
+		if (!quartet)
+			v = ff->tf_window[i];
+		else if (i < shifted)
+			v = ff->tf_window[i + HIDPP_DD_TF_NEW_SAMPLES];
+		else
+			v = quartet[i - shifted];
+		put_unaligned_le16(v, &pkt[12 + i * 4]);
+		put_unaligned_le16(v, &pkt[14 + i * 4]);
 	}
 	if (!hidpp_dd_tf_queue_raw(ff, pkt))
 		return false;
 	ff->tf_seq++;
+	if (quartet) {
+		memmove(&ff->tf_window[0],
+			&ff->tf_window[HIDPP_DD_TF_NEW_SAMPLES],
+			shifted * sizeof(ff->tf_window[0]));
+		memcpy(&ff->tf_window[shifted], quartet,
+		       HIDPP_DD_TF_NEW_SAMPLES * sizeof(ff->tf_window[0]));
+	}
 	return true;
 }
 
@@ -5647,13 +5741,19 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
  * sample duplicated once, which is time-correct at the resulting 2 kHz
  * window-slot rate. This replaces the earlier two-stream interleave
  * (500 Hz force packets + 250 Hz audio packets whose preamble wrongly
- * carried audio); one packet per tick means the caller must NOT also
- * send a force packet when this returns true.
+ * carried audio).
  *
- * When the last texture effect stops, re-centres the window and sends
- * STOP so the wheel's DSP returns to silence instead of looping the
- * stale window. Returns true when a stream packet carrying `force` was
- * queued this tick (caller skips its force send), false otherwise.
+ * When the last texture effect stops, re-centres the window (once) and
+ * sends STOP so the wheel's DSP returns to silence instead of looping
+ * the stale window.
+ *
+ * Return value is the force-carrier contract: true means a stream
+ * packet carrying `force` in its cur preamble was queued THIS tick and
+ * the caller must not send a second force packet; false means the
+ * caller owns the tick's force send. Every path in this function
+ * returns exactly that truth - keep it that way, since a wrong true
+ * starves the firmware's host-alive watchdog and a wrong false doubles
+ * the torque command.
  */
 static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 			 const s32 *samples, s32 force)
@@ -5664,26 +5764,37 @@ static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 
 	if (!any_texture) {
 		if (ff->tf_streaming) {
+			bool sent = false;
+
 			/*
-			 * Recentre and stop. Only mark the stream stopped
-			 * once the STOP actually queued: queue_raw can drop
-			 * packets under queue pressure, and a dropped STOP
-			 * would leave the wheel's DSP looping the last
-			 * window while the driver believes the stream is
-			 * down. The timer keeps ticking while tf_streaming
-			 * is set (see its reschedule condition), so a
-			 * failed STOP retries on the next tick.
+			 * Recentre and stop. The recentre packet is sent at
+			 * most ONCE per session wind-down (tf_recentre_sent):
+			 * repeating it on every STOP retry under queue
+			 * pressure would keep the queue at the very
+			 * threshold that is dropping the STOP. It carries
+			 * the live force in cur, so the tick it goes out it
+			 * IS the force carrier and the caller must not send
+			 * a second one.
 			 *
-			 * The recentre packet still carries the live force
-			 * in cur, but return false regardless so the caller
-			 * sends its own force packet: if the STOP queued,
-			 * the session is closing and the KF stream is
-			 * already the force carrier again.
+			 * Only mark the stream stopped once the STOP
+			 * actually queued: a dropped STOP would leave the
+			 * wheel's DSP looping the last window while the
+			 * driver believes the stream is down. The timer
+			 * keeps ticking while tf_streaming is set, so a
+			 * failed STOP retries on the next tick (with the
+			 * caller's plain force packet as that tick's
+			 * carrier).
 			 */
-			memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW);
-			hidpp_dd_tf_queue_stream(ff, force);
+			if (!ff->tf_recentre_sent) {
+				memset16(ff->tf_window, 0x8000,
+					 HIDPP_DD_TF_WINDOW);
+				sent = hidpp_dd_tf_queue_stream(ff, force,
+								NULL);
+				ff->tf_recentre_sent = sent;
+			}
 			if (hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_STOP))
 				ff->tf_streaming = false;
+			return sent;
 		}
 		return false;
 	}
@@ -5696,11 +5807,13 @@ static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 		if (!hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_START))
 			return false;
 		ff->tf_streaming = true;
+		ff->tf_recentre_sent = false;
 	}
 
 	gain = READ_ONCE(ff->gain);
 	strength = READ_ONCE(ff->strength);
-	for (i = 0; i < 2; i++) {
+	/* Each 1 kHz sample fills two of the packet's four new slots. */
+	for (i = 0; i < HIDPP_DD_TF_NEW_SAMPLES / 2; i++) {
 		s32 s = samples[i];
 
 		if (gain != 0xFFFF)
@@ -5732,13 +5845,8 @@ static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 		quartet[i * 2 + 1] = quartet[i * 2];
 	}
 
-	memmove(&ff->tf_window[0],
-		&ff->tf_window[HIDPP_DD_TF_NEW_SAMPLES],
-		(HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES) *
-			sizeof(ff->tf_window[0]));
-	memcpy(&ff->tf_window[HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES],
-	       quartet, sizeof(quartet));
-	return hidpp_dd_tf_queue_stream(ff, force);
+	/* Window advance is committed inside queue_stream, only on success. */
+	return hidpp_dd_tf_queue_stream(ff, force, quartet);
 }
 
 /*
@@ -6583,6 +6691,7 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	ff->idx_trueforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_brakeforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_response_curve = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile_notify = HIDPP_DD_FEATURE_NOT_FOUND;
@@ -6618,6 +6727,12 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_FILTER, &ff->idx_filter);
 	if (ret == 0)
 		dd_dbg(hid, "FFB filter feature at index 0x%02x\n", ff->idx_filter);
+
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_RESPONSE_CURVE,
+				     &ff->idx_response_curve);
+	if (ret == 0)
+		dd_dbg(hid, "Response curve feature at index 0x%02x\n",
+		       ff->idx_response_curve);
 
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_BRIGHTNESS, &ff->idx_brightness);
 	if (ret == 0)
@@ -7094,8 +7209,17 @@ static void hidpp_dd_ff_query_settings(struct hidpp_dd_ff_data *ff)
 
 	dd_dbg(hid, "Settings query completed\n");
 
-	/* Enable LIGHTSYNC LED subsystem - required before LED commands work */
-	if (ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND) {
+	/*
+	 * Enable LIGHTSYNC LED subsystem - required before LED commands
+	 * work. Gated off on a real G PRO: its rim speaks a LEVEL-based
+	 * rev-light dialect on the same 0x807A feature page, and running
+	 * the RS50-shaped enable/query/apply sequence against it would be
+	 * exactly the wrong-protocol traffic the per-model sysfs gating
+	 * exists to prevent (and could disturb the arm state
+	 * wheel_rev_level depends on).
+	 */
+	if (ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND &&
+	    !dd_is_real_gpro(hid)) {
 		ret = hidpp_dd_lightsync_enable(hidpp, ff);
 		if (ret) {
 			dd_warn(hid, "Failed to enable LIGHTSYNC: %d\n", ret);
@@ -9469,21 +9593,6 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 static DEVICE_ATTR(wheel_led_effect, 0664, wheel_led_effect_show, wheel_led_effect_store);
 
 /*
- * Real G PRO Racing Wheel: is this bound identity an actual G PRO, as
- * opposed to an RS50 spoofing the G PRO product ID in compatibility
- * mode? The RS50 keeps its own USB product string under the borrowed
- * PID (verified live), while a real G PRO reports "PRO Racing Wheel"
- * (verified from contributor captures). Used to gate the LED surface:
- * the two rims have entirely different LED hardware and protocols.
- */
-static bool dd_is_real_gpro(struct hid_device *hdev)
-{
-	return (hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
-		hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL) &&
-	       !strstr(hdev->name, "RS50");
-}
-
-/*
  * wheel_rev_level: rev-light level for the REAL G PRO rim (0-10 = how
  * many LEDs lit). The G PRO's rim lights are level-based, not the
  * RS50's per-LED RGB LIGHTSYNC model: colours, direction and scaling
@@ -9594,6 +9703,40 @@ static ssize_t wheel_rev_level_store(struct device *dev,
 
 	mutex_lock(&ff->rev_lock);
 
+	/*
+	 * Pace to G HUB's cadence rather than error: rev level is
+	 * telemetry-shaped (rapid small updates near the shift point)
+	 * and callers should not have to handle -EBUSY. Sleeping out
+	 * the remainder keeps the wire footprint bounded. The remaining
+	 * delay is computed ONCE as a signed delta: re-deriving it after
+	 * a time_before() check races the jiffies tick, and an unsigned
+	 * "deadline - jiffies" that crosses zero underflows into a
+	 * near-infinite msleep holding rev_lock.
+	 *
+	 * TODO(post-hardware-validation): a delayed_work flushing only
+	 * the newest level would coalesce fast feeders instead of
+	 * queueing every stale intermediate value behind the mutex.
+	 */
+	{
+		long remaining = (long)(ff->rev_last_write +
+					msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS) -
+					jiffies);
+
+		if (ff->rev_armed && remaining > 0)
+			msleep(jiffies_to_msecs(remaining));
+	}
+
+	/*
+	 * Serialise the raw sends against the sync-transaction machinery:
+	 * holding send_mutex guarantees no sync question is pending on
+	 * this interface while our fire-and-forget 0x807A traffic can
+	 * elicit replies. Without it, a rev-elicited reply whose sw-id
+	 * the wheel zeroes could satisfy hidpp_match_answer's lenient
+	 * (sw-id-stripped) path for a concurrent sync question on the
+	 * same feature and function nibble.
+	 */
+	mutex_lock(&hidpp->send_mutex);
+
 	if (!ff->rev_armed) {
 		static const u8 arm_fns[]    = { 0, 1, 2, 3, 0 };
 		static const u8 arm_params[] = { 0, 0, 0, 2, 0 };
@@ -9603,34 +9746,26 @@ static ssize_t wheel_rev_level_store(struct device *dev,
 						      arm_fns[i],
 						      arm_params[i]);
 			if (ret < 0)
-				goto out;
+				goto out_send;
 			msleep(HIDPP_DD_REV_ARM_GAP_MS);
 		}
 		ff->rev_armed = true;
-		ff->rev_last_write = jiffies - msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS);
 	}
-
-	/*
-	 * Pace to G HUB's cadence rather than error: rev level is
-	 * telemetry-shaped (rapid small updates near the shift point)
-	 * and callers should not have to handle -EBUSY. Sleeping out
-	 * the remainder keeps the wire footprint bounded.
-	 */
-	if (time_before(jiffies, ff->rev_last_write +
-				 msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS)))
-		msleep(jiffies_to_msecs(ff->rev_last_write +
-					msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS) -
-					jiffies));
 
 	ret = hidpp_dd_rev_send_level(hidpp, ff->idx_lightsync, level);
 	if (ret < 0)
-		goto out;
+		goto out_send;
 	WRITE_ONCE(ff->rev_level, level);
 	ff->rev_last_write = jiffies;
 	ret = 0;
-out:
+out_send:
+	mutex_unlock(&hidpp->send_mutex);
 	mutex_unlock(&ff->rev_lock);
-	return ret < 0 ? ret : count;
+	/*
+	 * __hidpp_send_report reports transport failure as bare -1
+	 * (-EPERM to userspace, a misleading errno for an I/O problem).
+	 */
+	return ret < 0 ? -EIO : count;
 }
 
 static DEVICE_ATTR(wheel_rev_level, 0664, wheel_rev_level_show,
@@ -10658,6 +10793,247 @@ static DEVICE_ATTR(wheel_range_restore, 0664,
 		   wheel_range_restore_show, wheel_range_restore_store);
 
 /*
+ * wheel_response_curve: the steering axis's 64-point response curve
+ * (HID++ feature 0x80A4 AxisResponseCurve) - the store behind G Hub's
+ * Sensitivity slider, protocol-mapped from the
+ * 2026-01-30_desktop_sensitivity capture (spec section 5.1):
+ *
+ *   fn3 (empty params)             open upload for axis 0 (steering)
+ *   22x fn4 [n][(in,out) BE16 x n] curve points, n <= 3, 64 points
+ *                                  total, monotonic, (0,0)..(FFFF,FFFF)
+ *   fn5 (empty params)             commit (echoes [axis][00][0040])
+ *   fn6 (empty params)             revert axis to the built-in curve
+ *
+ * Write syntax: "reset" reverts to the built-in curve; otherwise 2-64
+ * whitespace-separated "in:out" pairs (decimal 0-65535), strictly
+ * increasing in `in`, non-decreasing in `out`, first pair 0:0, last
+ * 65535:65535. Fewer than 64 pairs are resampled to the 64 points the
+ * wheel stores by linear interpolation, so e.g.
+ *   echo "0:0 32768:16384 65535:65535" > wheel_response_curve
+ * uploads a softened centre. Reads report the loaded/max point count
+ * straight from the wheel (fn1).
+ *
+ * The pedal unit exposes the same feature on sub-device 0x02 (three
+ * axes); per-pedal curves already exist in-driver as software
+ * transforms (wheel_*_curve), so only the steering axis is wired here.
+ */
+static ssize_t wheel_response_curve_show(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_report response;
+	u8 params[3] = { 0, 0, 0 };	/* axis 0 = steering */
+	u16 loaded, max;
+	int ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_response_curve == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	memset(&response, 0, sizeof(response));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_response_curve,
+					  0x10 /* fn1 axis info */,
+					  params, 1, &response);
+	if (ret)
+		return hidpp_errno(hid, ret, "read response curve info");
+
+	/*
+	 * fn1 reply: [axis][00 01 00][usage][bit width][loaded u16 BE]
+	 * [max u16 BE].
+	 */
+	loaded = get_unaligned_be16(&response.fap.params[6]);
+	max = get_unaligned_be16(&response.fap.params[8]);
+	return sysfs_emit(buf, "%u/%u points loaded (0 = built-in curve)\n",
+			  loaded, max);
+}
+
+#define HIDPP_DD_CURVE_POINTS		64
+#define HIDPP_DD_CURVE_CHUNK		3	/* points per fn4 send */
+
+static ssize_t wheel_response_curve_store(struct device *dev,
+					  struct device_attribute *attr,
+					  const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_report response;
+	u16 (*pts)[2];
+	u16 curve[HIDPP_DD_CURVE_POINTS];
+	int npts = 0, i, sent, ret;
+	char *dup, *tok, *cur_pos;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_response_curve == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	if (sysfs_streq(buf, "reset")) {
+		memset(&response, 0, sizeof(response));
+		ret = hidpp_send_fap_command_sync(hidpp,
+						  ff->idx_response_curve,
+						  0x60 /* fn6 revert */,
+						  NULL, 0, &response);
+		return ret ? hidpp_errno(hid, ret, "reset response curve")
+			   : count;
+	}
+
+	pts = kmalloc_array(HIDPP_DD_CURVE_POINTS, sizeof(*pts), GFP_KERNEL);
+	if (!pts)
+		return -ENOMEM;
+	dup = kstrndup(buf, count, GFP_KERNEL);
+	if (!dup) {
+		kfree(pts);
+		return -ENOMEM;
+	}
+
+	cur_pos = dup;
+	while ((tok = strsep(&cur_pos, " \t\n")) != NULL) {
+		unsigned int in, out;
+
+		if (!*tok)
+			continue;
+		if (npts >= HIDPP_DD_CURVE_POINTS ||
+		    sscanf(tok, "%u:%u", &in, &out) != 2 ||
+		    in > 0xFFFF || out > 0xFFFF) {
+			ret = -EINVAL;
+			goto out_free;
+		}
+		/* Strictly increasing in, non-decreasing out. */
+		if (npts > 0 && (in <= pts[npts - 1][0] ||
+				 out < pts[npts - 1][1])) {
+			ret = -EINVAL;
+			goto out_free;
+		}
+		pts[npts][0] = in;
+		pts[npts][1] = out;
+		npts++;
+	}
+	if (npts < 2 || pts[0][0] != 0 || pts[0][1] != 0 ||
+	    pts[npts - 1][0] != 0xFFFF || pts[npts - 1][1] != 0xFFFF) {
+		ret = -EINVAL;
+		goto out_free;
+	}
+
+	/*
+	 * Resample to the 64 evenly-spaced input positions the wheel
+	 * stores, linearly interpolating output between user pairs.
+	 */
+	{
+		int seg = 0;
+
+		for (i = 0; i < HIDPP_DD_CURVE_POINTS; i++) {
+			u32 in = (u32)i * 0xFFFF /
+				 (HIDPP_DD_CURVE_POINTS - 1);
+			u32 in0, in1, out0, out1;
+
+			while (seg < npts - 2 && pts[seg + 1][0] < in)
+				seg++;
+			in0 = pts[seg][0];
+			in1 = pts[seg + 1][0];
+			out0 = pts[seg][1];
+			out1 = pts[seg + 1][1];
+			curve[i] = out0 + (u32)(out1 - out0) * (in - in0) /
+					   (in1 - in0);
+		}
+	}
+
+	/* fn3: open the upload for axis 0. */
+	memset(&response, 0, sizeof(response));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_response_curve,
+					  0x30 /* fn3 open */, NULL, 0,
+					  &response);
+	if (ret) {
+		ret = hidpp_errno(hid, ret, "open response curve upload");
+		goto out_free;
+	}
+
+	for (sent = 0; sent < HIDPP_DD_CURVE_POINTS; ) {
+		u8 chunk[1 + HIDPP_DD_CURVE_CHUNK * 4];
+		int n = min(HIDPP_DD_CURVE_POINTS - sent,
+			    HIDPP_DD_CURVE_CHUNK);
+
+		/*
+		 * Teardown can begin mid-upload; each remaining sync
+		 * send would ride its timeout against a dead device.
+		 */
+		if (atomic_read_acquire(&ff->stopping)) {
+			ret = -ENODEV;
+			goto out_revert;
+		}
+
+		chunk[0] = n;
+		for (i = 0; i < n; i++) {
+			u32 in = (u32)(sent + i) * 0xFFFF /
+				 (HIDPP_DD_CURVE_POINTS - 1);
+
+			put_unaligned_be16(in, &chunk[1 + i * 4]);
+			put_unaligned_be16(curve[sent + i],
+					   &chunk[3 + i * 4]);
+		}
+		memset(&response, 0, sizeof(response));
+		ret = hidpp_send_fap_command_sync(hidpp,
+						  ff->idx_response_curve,
+						  0x40 /* fn4 points */,
+						  chunk, 1 + n * 4,
+						  &response);
+		if (ret) {
+			ret = hidpp_errno(hid, ret,
+					  "upload response curve points");
+			goto out_revert;
+		}
+		sent += n;
+	}
+
+	/* fn5: commit. */
+	memset(&response, 0, sizeof(response));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_response_curve,
+					  0x50 /* fn5 commit */, NULL, 0,
+					  &response);
+	if (ret) {
+		ret = hidpp_errno(hid, ret, "commit response curve");
+		goto out_revert;
+	}
+
+	dd_info(hid, "Steering response curve uploaded (%d user points resampled to %d)\n",
+		npts, HIDPP_DD_CURVE_POINTS);
+	ret = 0;
+	goto out_free;
+
+out_revert:
+	/*
+	 * Best effort: abandon the half-open upload so the wheel is not
+	 * left with a partially-written store. fn6 falls back to the
+	 * built-in curve, which is the predictable state.
+	 */
+	memset(&response, 0, sizeof(response));
+	hidpp_send_fap_command_sync(hidpp, ff->idx_response_curve,
+				    0x60 /* fn6 revert */, NULL, 0,
+				    &response);
+out_free:
+	kfree(dup);
+	kfree(pts);
+	return ret < 0 ? ret : count;
+}
+
+static DEVICE_ATTR(wheel_response_curve, 0664, wheel_response_curve_show,
+		   wheel_response_curve_store);
+
+/*
  * wheel_serial / wheel_firmware: read-only identity from DeviceInfo
  * (feature 0x0003), read once at init. The serial is the real
  * 12-character device serial (matches the USB iSerial); firmware shows
@@ -10824,6 +11200,7 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_firmware.attr,
 	&dev_attr_wheel_profile_names.attr,
 	&dev_attr_wheel_range_restore.attr,
+	&dev_attr_wheel_response_curve.attr,
 	&dev_attr_wheel_compat_range.attr,
 	&dev_attr_wheel_compat_gain.attr,
 	&dev_attr_wheel_compat_autocenter.attr,
@@ -10856,14 +11233,20 @@ static umode_t hidpp_dd_wheel_group_is_visible(struct kobject *kobj,
 	if (attr == &dev_attr_wheel_rev_level.attr)
 		return real_gpro ? attr->mode : 0;
 
+	/*
+	 * Hide every wheel_led_* LIGHTSYNC attribute on a real G PRO by
+	 * NAME PREFIX rather than an explicit list, so the next
+	 * LIGHTSYNC attribute added to the group is gated automatically
+	 * instead of silently appearing on hardware whose 0x807A speaks
+	 * a different dialect. The one deliberate exception is
+	 * wheel_led_brightness: it drives feature 0x8040
+	 * (BrightnessControl, an official cross-device HID++ feature),
+	 * not LIGHTSYNC, and its store is feature-gated at runtime
+	 * anyway.
+	 */
 	if (real_gpro &&
-	    (attr == &dev_attr_wheel_led_slot.attr ||
-	     attr == &dev_attr_wheel_led_slot_name.attr ||
-	     attr == &dev_attr_wheel_led_slot_brightness.attr ||
-	     attr == &dev_attr_wheel_led_direction.attr ||
-	     attr == &dev_attr_wheel_led_colors.attr ||
-	     attr == &dev_attr_wheel_led_apply.attr ||
-	     attr == &dev_attr_wheel_led_effect.attr))
+	    strncmp(attr->name, "wheel_led_", strlen("wheel_led_")) == 0 &&
+	    attr != &dev_attr_wheel_led_brightness.attr)
 		return 0;
 
 	return attr->mode;
@@ -11224,6 +11607,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->tf_ready = false;
 	ff->tf_init_queued = false;
 	ff->tf_streaming = false;
+	ff->tf_recentre_sent = false;
 	ff->tf_init_attempts = 0;
 	mutex_init(&ff->rev_lock);
 	memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW); /* offset-binary centre */
@@ -11246,6 +11630,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->idx_trueforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_brakeforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_response_curve = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_lightsync = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_rgb_config = HIDPP_DD_FEATURE_NOT_FOUND;
@@ -12968,8 +13353,8 @@ static int hidpp_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 		 * Check for a correct hidpp20 answer or the corresponding
 		 * error
 		 */
-		if (hidpp_match_answer(question, report) ||
-				hidpp_match_error(question, report)) {
+		if (hidpp_match_answer(hidpp, question, report) ||
+				hidpp_match_error(hidpp, question, report)) {
 			*answer = *report;
 			hidpp->answer_available = true;
 			wake_up(&hidpp->wait);

@@ -25,13 +25,9 @@
 ACTION!="add|change", GOTO="rs50_end"
 SUBSYSTEM!="hidraw", GOTO="rs50_end"
 
-ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c262", GOTO="rs50_apply"
-ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c266", GOTO="rs50_apply"
-ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c26d", GOTO="rs50_apply"
-ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c26e", GOTO="rs50_apply"
-ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c268", GOTO="rs50_apply"
-ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c272", GOTO="rs50_apply"
-ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c276", GOTO="rs50_apply"
+# One alternation instead of a GOTO per PID: adding a wheel is a
+# five-character diff that cannot forget the GOTO.
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c262|c266|c26d|c26e|c268|c272|c276", GOTO="rs50_apply"
 GOTO="rs50_end"
 
 LABEL="rs50_apply"
