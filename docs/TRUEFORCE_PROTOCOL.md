@@ -30,7 +30,7 @@ The 68-packet init sequence is identical across the two, byte-for-byte. The stre
 |--------|-------------------|----------------|
 | Interface 2 data packets | **0** | **tens of thousands** per gameplay session |
 | PID constant force updates (intf 1) | ongoing | small, init only |
-| Endpoint `0x03` packet rate | idle | ~250 Hz (libtrueforce cadence; captures saw 250-500 Hz depending on game) |
+| Endpoint `0x03` packet rate | idle | 250 Hz (libtrueforce) / 500 Hz (kernel unified stream); games send 250-1000 Hz (AC EVO at the top end) |
 | Samples per packet (new) | N/A | 4 new + 9 history = 13-slot rolling window |
 | Effective audio sample rate | N/A | ~1000 Hz (250 pkt/s * 4 new samples) |
 

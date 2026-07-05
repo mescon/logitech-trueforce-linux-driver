@@ -343,7 +343,7 @@ cross-checks each toggle value against native evdev expectations.
 **Access**: Read/Write
 **Values**: `0` to `100` (percentage)
 **Default**: `25`
-**Availability**: RS50 FFB path only (not on the G Pro `hidpp_ff` path).
+**Availability**: all direct-drive wheels (RS50 native/compat and real G PRO - every family PID runs the same `hidpp_dd_ff_*` FFB path).
 
 Synthetic damping applied to emulated `FF_SPRING` effects, as a
 percentage of a `FF_DAMPER` running the spring's own coefficient.
@@ -368,7 +368,7 @@ echo 40 > wheel_spring_damping
 **Access**: Read/Write
 **Values**: `tf` or `kf` (also accepts `1` / `0`)
 **Default**: `tf`
-**Availability**: RS50 FFB path only (not on the G Pro `hidpp_ff` path).
+**Availability**: all direct-drive wheels (RS50 native/compat and real G PRO - every family PID runs the same `hidpp_dd_ff_*` FFB path).
 
 Selects where vibration-class effects - `FF_RUMBLE` and periodic
 effects at 20 Hz or faster (period <= 50 ms) - are actuated:
@@ -386,8 +386,10 @@ effects at 20 Hz or faster (period <= 50 ms) - are actuated:
 The TrueForce session is brought up lazily: the first time a
 texture-class effect actually plays, the driver replays the captured
 68-packet init sequence twice (G Hub behaviour) and then streams
-250 Hz window packets while texture effects are active (dmesg:
-`TrueForce texture channel ready`). Wheels that never see texture
+unified packets at 500 Hz while texture effects are active - each
+packet carries the steering-force sum in its preamble and four
+texture-audio window slots (2 kHz slot rate), the same shape AC EVO
+streams (dmesg: `TrueForce texture channel ready`). Wheels that never see texture
 effects never see TF traffic. If the init fails, texture effects
 fall back to the steering channel - degraded feel, never lost - and
 the driver retries on a later texture playback (up to 3 attempts per
@@ -403,7 +405,11 @@ playback moves to the TF stream.
 Texture amplitude respects `FF_GAIN` and `wheel_strength` (the wheel
 firmware scales steering forces by the strength setting itself but
 plays TF samples at face value, so the driver applies strength to
-texture in software for consistency).
+texture in software for consistency), and is additionally capped at
+half of full scale: above roughly 0.5-0.7 FS the wheel's DSP crosses
+from vibration into pulling the steering axis, so the cap keeps a
+synthetic full-scale rumble from hijacking steering torque. Real
+games stream texture far below the cap.
 
 Note for SDK games (ACC, AC EVO with the TrueForce shim): those
 stream TrueForce themselves via hidraw and normally do not send
@@ -463,9 +469,9 @@ centre across power cycles (same as G Hub on Windows).
 
 The RS50 wheel base has 10 RGB LEDs arranged in a strip. The driver provides per-slot configuration with 5 custom slots (0-4).
 
-> **G Pro**: the driver does not currently expose `wheel_led_*` attributes for the G Pro wheel; we haven't confirmed the LIGHTSYNC protocol matches byte-for-byte on that hardware yet. The feature is RS50-only for now.
+> **Per-model availability**: the `wheel_led_*` LIGHTSYNC attributes exist on the RS50 in both native and G-PRO-compat enumeration (the rim hardware doesn't change with the PID; verified live 2026-04-29). On a **real G PRO Racing Wheel** they are hidden: that rim has level-based rev lights with no per-LED RGB, exposed as `wheel_rev_level` instead (see its entry below).
 >
-> **G PRO PID (`046d:c272` / `046d:c268`)**: covers both real G PRO Racing Wheel and RS50-in-G-PRO-compat-mode. Both run through the same `hidpp_dd_ff_*` code path and expose the same sysfs surface. LIGHTSYNC works the same way as native RS50 - feature `0x807A` is advertised at the same index discovery picks up in native, and `wheel_led_*` writes drive the LED strip end-to-end (verified against the live wheel 2026-04-29). Wheel-config attributes that work via fallback feature paths (see `docs/PROTOCOL_SPECIFICATION.md` section 5.1): `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`, `wheel_ffb_filter`, `wheel_profile` (write `0` to enter desktop mode), and `wheel_calibrate`. The remaining attributes (`wheel_brake_force`, `wheel_ffb_filter_auto`, `wheel_sensitivity`) are unsupported by this firmware: once their mode gating is satisfied the store returns `-EOPNOTSUPP` (note `wheel_brake_force` still returns `-EPERM` in desktop mode and `wheel_sensitivity` in onboard mode before that check). For those, configure via the wheel's OLED menu or via Windows G Hub on a Windows host.
+> **G PRO PID (`046d:c272` / `046d:c268`)**: covers both real G PRO Racing Wheel and RS50-in-G-PRO-compat-mode. Both run through the same `hidpp_dd_ff_*` code path and expose the same wheel-config surface; the LED attributes differ per rim (see the per-model note above - the driver tells the two apart by USB product string). On the RS50 in compat mode, LIGHTSYNC works the same way as native - feature `0x807A` is advertised at the same index discovery picks up in native, and `wheel_led_*` writes drive the LED strip end-to-end (verified against the live wheel 2026-04-29). Wheel-config attributes that work via fallback feature paths (see `docs/PROTOCOL_SPECIFICATION.md` section 5.1): `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`, `wheel_ffb_filter`, `wheel_profile` (write `0` to enter desktop mode), and `wheel_calibrate`. The remaining attributes (`wheel_brake_force`, `wheel_ffb_filter_auto`, `wheel_sensitivity`) are unsupported by this firmware: once their mode gating is satisfied the store returns `-EOPNOTSUPP` (note `wheel_brake_force` still returns `-EPERM` in desktop mode and `wheel_sensitivity` in onboard mode before that check). For those, configure via the wheel's OLED menu or via Windows G Hub on a Windows host.
 
 ### LED Control Workflow
 

@@ -121,8 +121,13 @@ The RS50 is the development hardware, so its column is verified directly.
 A real G PRO runs the **same `hidpp_dd_ff_*` code path** as an RS50 in G PRO
 compatibility mode (which *is* verified), so it is expected to work; we
 just do not have one to confirm against. **G920 / G923** keep working as
-a drop-in through the inherited upstream HID++ `0x8123` FFB path, but the
-RS50/G-PRO-specific `wheel_*` settings and TrueForce do not apply to them.
+a drop-in through the inherited upstream HID++ `0x8123` FFB path; the
+RS50/G-PRO-specific `wheel_*` settings do not apply to them. The **G923**
+speaks the same TrueForce stream protocol as the DD wheels (confirmed on
+Windows by the TF4ALL project), and the udev rule now grants it hidraw
+access so the SDK DLLs can reach it under Proton - TrueForce on a G923
+is plausible but unverified on Linux; testers wanted in
+[issue #27](https://github.com/mescon/logitech-trueforce-linux-driver/issues/27).
 
 ### Force-feedback effect types
 

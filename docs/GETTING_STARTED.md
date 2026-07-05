@@ -13,7 +13,9 @@ needs a copy of Logitech G HUB to source files from.
 - **Wheels**: RS50 (`046d:c276` / `046d:c272`) and G PRO Racing Wheel
   (`046d:c272` Xbox/PC, `046d:c268` PS/PC). G920/G923 keep working
   through this module too, but the features described here target the
-  direct-drive family.
+  direct-drive family. (G923 owners: your wheel speaks the same
+  TrueForce protocol, and TrueForce under Proton may already work via
+  steps 2-3 - unverified, testers wanted in [issue #27].)
 - **Games, verified end-to-end**: Assetto Corsa Competizione and
   Assetto Corsa EVO under Proton, with simultaneous steering FFB and
   TrueForce. Other Logitech-SDK sims (Le Mans Ultimate, AMS2, Assetto
@@ -165,7 +167,12 @@ The fastest way to improve this project is to race and report:
   compatibility matrix - one sentence and a `wheel_firmware` output
   is enough.
 - Real G PRO owners: your feel reports on texture routing
-  (`wheel_texture_route` tf vs kf) are the top item we cannot test
-  ourselves.
+  (`wheel_texture_route` tf vs kf) and the new rev-light control
+  (`echo 0-10 > wheel_rev_level`) are the top items we cannot test
+  ourselves (issue #8).
+- G923 owners: whether TrueForce works under Proton on your wheel is
+  an open question only you can answer (issue #27).
+
+[issue #27]: https://github.com/mescon/logitech-trueforce-linux-driver/issues/27
 
 Enjoy the racing.
