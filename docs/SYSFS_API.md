@@ -609,6 +609,33 @@ echo 5 > wheel_led_effect
 echo 3 > wheel_led_effect
 ```
 
+### wheel_response_curve
+**Access**: Read/Write
+**Availability**: all direct-drive wheels (feature `0x80A4`)
+
+The steering axis's 64-point response curve - the store behind G Hub's
+**Sensitivity** slider. Write `reset` to revert to the built-in
+(linear) curve, or 2-64 whitespace-separated `in:out` pairs (decimal
+0-65535, strictly increasing `in`, non-decreasing `out`, starting at
+`0:0` and ending at `65535:65535`). Fewer than 64 pairs are resampled
+by linear interpolation to the 64 points the wheel stores.
+
+```bash
+# Soften the centre (slower response near straight-ahead)
+echo "0:0 32768:16384 65535:65535" > wheel_response_curve
+
+# Back to the built-in curve
+echo reset > wheel_response_curve
+
+cat wheel_response_curve
+# 64/64 points loaded (0 = built-in curve)
+```
+
+**Status: implemented from the 2026-01-30 G Hub capture
+(`desktop_sensitivity`), not yet validated live - use `reset` if
+steering feels wrong after an upload. Whether curves persist across
+power cycles is unknown.**
+
 ### wheel_rev_level
 **Access**: Read/Write
 **Values**: `0`-`10` (number of rev LEDs lit)

@@ -38,6 +38,27 @@ dev/docs/tf4all-analysis.md) fed back into the driver:
   session channel and overrides it); stream rates up to ~1000 pkt/s
   observed (AC EVO).
 
+### Overnight hardening pass (2026-07-06)
+
+- **Fixed a regression for Unifying/Lightspeed-paired devices**: the
+  device-index answer check added earlier this cycle made every HID++
+  sync command on receiver-paired mice/keyboards eat the full timeout
+  (the DJ transport rewrites the wire index after the driver's
+  snapshot). The check is now applied only to the direct-drive wheels
+  it was written for.
+- Real G PRO: connect-time LIGHTSYNC initialisation no longer runs
+  (wrong protocol dialect for that rim); `wheel_rev_level` hardened
+  (pacing underflow, send serialisation, honest errno).
+- TrueForce stream: texture window advances only when the packet
+  actually queued; session wind-down sends one recentre packet, not
+  one per retry.
+- New **`wheel_response_curve`**: the steering axis's 64-point
+  response curve (G Hub's Sensitivity slider, feature 0x80A4) -
+  write `in:out` pairs or `reset`. Implemented from captures, needs
+  live validation.
+- libtrueforce: all -Wformat-truncation warnings fixed; sparse,
+  smatch and both CI kernel builds clean across the week's changes.
+
 ### Naming generalized to the whole direct-drive family
 
 - **dmesg lines are now tagged with the actual wheel model** instead
