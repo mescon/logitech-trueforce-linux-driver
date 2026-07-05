@@ -26,27 +26,49 @@ needs a copy of Logitech G HUB to source files from.
 - Honest expectations: see "State of the driver" in the README. Short
   version: the core works and is verified on real hardware; there is
   no GUI yet (settings are files you `echo` into, or Oversteer); and
-  setup is manual, not one-click. Improving setup friction is the
-  top roadmap item.
+  install is one command plus a couple of per-game Steam settings
+  nobody can automate. No distro packages (AUR etc.) yet.
 
 ## 1. Install the driver
 
-Follow README "Installation" steps 1-6 (prerequisites, clone,
-`sudo ./tools/dkms-update.sh`, blacklist the in-tree drivers, reload,
-`fftest` smoke test). Condensed:
+One command does it all - DKMS module, in-tree driver blacklist, udev
+permissions, module load, and (if the SDK DLLs from step 2 are staged)
+the TrueForce shim into every Steam prefix:
 
 ```bash
 git clone https://github.com/mescon/logitech-trueforce-linux-driver.git
 cd logitech-trueforce-linux-driver
-sudo ./tools/dkms-update.sh
-printf "blacklist hid-logitech-hidpp\nblacklist hid-logitech\n" | sudo tee /etc/modprobe.d/blacklist-hid-logitech-hidpp.conf
-sudo depmod -a
-sudo modprobe -r hid-logitech-hidpp 2>/dev/null; sudo modprobe hid-logitech-hidpp
-# replug the wheel's USB cable, then:
+sudo ./tools/setup.sh
+```
+
+It is idempotent - run it again after `git pull` or a kernel update
+and it converges. It finishes with a diagnosis of every layer; you
+can re-run that health check alone at any time, as your normal user:
+
+```bash
+./tools/setup.sh doctor
+```
+
+Every line should say PASS (warnings tell you exactly what to run).
+Then replug the wheel's USB cable and check the kernel log:
+
+```bash
 sudo dmesg | grep -iE 'rs50|g pro'   # expect: "... Force feedback initialized"
 # (log lines are tagged with your wheel model: "RS50 (native):",
 #  "RS50 (G PRO compatibility mode):", or "G PRO:")
 ```
+
+<details>
+<summary>What setup.sh does, as manual steps (if you prefer to run them yourself)</summary>
+
+```bash
+sudo ./tools/dkms-update.sh
+printf "blacklist hid-logitech-hidpp\nblacklist hid-logitech\n" | sudo tee /etc/modprobe.d/blacklist-hid-logitech-hidpp.conf
+sudo depmod -a
+sudo modprobe -r hid-logitech-hidpp 2>/dev/null; sudo modprobe hid-logitech-hidpp
+./tools/install-tf-shim.sh --all-steam   # only with the SDK DLLs staged
+```
+</details>
 
 > **Safety**: this is a direct-drive wheel producing up to 8 Nm. Keep
 > hands clear (or hold the rim) whenever the driver loads, the wheel
@@ -125,6 +147,7 @@ if you ever do, that is a bug we want reported.
 
 | Symptom | Fix |
 |---|---|
+| Anything at all | `./tools/setup.sh doctor` diagnoses every layer and names the fix |
 | No `wheel_*` files, no FFB (wheel grabbed by `hid-generic`) | `sudo ./tools/rebind-wheel.sh` |
 | A game stops seeing the wheel / hangs loading after the driver was reloaded | Quit the game, **restart Steam completely**, relaunch |
 | Steering feels off-center | Hold the rim physically straight, then `echo 1 > "$H/wheel_calibrate_here"` |

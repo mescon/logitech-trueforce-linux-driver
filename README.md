@@ -195,9 +195,11 @@ simultaneous steering FFB and TrueForce.
 
 **Not there yet, compared to G Hub on Windows:**
 - No GUI; configuration is sysfs (and partially Oversteer).
-- Setup is manual: DKMS module, per-prefix TrueForce shim install,
-  `PROTON_ENABLE_HIDRAW=1`, Steam Input off. Documented, not
-  automatic.
+- Install is one command (`sudo ./tools/setup.sh`, with a `doctor`
+  mode that diagnoses every layer), but two per-game Steam settings
+  remain manual because they live in Steam's own UI
+  (`PROTON_ENABLE_HIDRAW=1`, Steam Input off), and there are no
+  distro packages (AUR etc.) yet.
 - No firmware updates (SecureDFU untouched by design), no onboard
   profile *editing* (slots can be selected and their names read, not
   written), no per-game automatic profiles, and the response-curve /
@@ -240,6 +242,18 @@ Note: Indices 12-20 are gaps in the HID descriptor (unused).
 This is the path most users want: from a fresh clone to a working
 wheel with full force feedback and (optionally) TrueForce in
 SDK-aware sims under Proton.
+
+**Short version** - one command covers steps 1-6 below (DKMS build,
+in-tree driver blacklist, udev rule, module load, TrueForce shim if
+the SDK DLLs are staged), and `doctor` verifies every layer:
+
+```bash
+sudo ./tools/setup.sh        # install / update everything
+./tools/setup.sh doctor      # health-check all layers, change nothing
+```
+
+The numbered steps below are what it does, kept for transparency and
+for anyone who prefers manual control.
 
 ### Prerequisites
 
