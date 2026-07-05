@@ -4084,6 +4084,17 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_TF_NEW_SAMPLES		4	/* new samples per packet */
 #define HIDPP_DD_TF_FLAG_BYTE		0x0d	/* constant per captures */
 /*
+ * Texture amplitude ceiling (post gain/strength scaling), half of full
+ * scale. The wheel's DSP plays window samples as vibration below
+ * roughly 0.5-0.7 of full scale but crosses into pulling the steering
+ * axis above it (TF4ALL project measurements on G PRO; consistent with
+ * our 49%-amplitude test buzz sitting at the audible-but-not-steering
+ * boundary). Real SDK games stream tiny amplitudes (ACC median 123 of
+ * 32767) so this cap never touches game-shaped content - it only stops
+ * a synthetic full-scale FF_RUMBLE from hijacking steering torque.
+ */
+#define HIDPP_DD_TF_MAX_AMPLITUDE		16383
+/*
  * Crossover between "steering-shaping" and "texture" periodics: period
  * at or below this (>= 20 Hz) is texture and routes to TF; slower
  * periodic effects keep contributing to the steering force. FF_RUMBLE
@@ -4347,6 +4358,15 @@ struct hidpp_dd_ff_data {
 	u8 idx_brightness;		/* Feature index for LED brightness */
 	u8 idx_lightsync;		/* Feature index for LIGHTSYNC effects */
 	u8 idx_rgb_config;		/* Feature index for RGB Zone Config */
+	/*
+	 * Real-G-PRO rev-light state (level-based 0x807A protocol; see
+	 * wheel_rev_level_store). Serialised by rev_lock: sysfs stores can
+	 * race each other and the arm burst must run exactly once.
+	 */
+	struct mutex rev_lock;
+	bool rev_armed;			/* one-time arm burst sent */
+	u8 rev_level;			/* last commanded level 0-10 */
+	unsigned long rev_last_write;	/* jiffies of last level pair */
 	u8 idx_profile;			/* Feature index for Profile switching */
 	u8 idx_profile_notify;		/* Feature index for profile-change broadcasts (0x80D0) */
 	u8 idx_sync;			/* Feature index for sync/prepare (0x1BC0) */
@@ -4507,9 +4527,7 @@ struct hidpp_dd_ff_data {
 	bool tf_init_queued;		/* init work queued/running; cleared for retry on failure */
 	bool tf_streaming;		/* between START and STOP */
 	u8 tf_seq;			/* TF stream sequence counter */
-	u8 tf_staged;			/* samples staged toward next packet */
 	u8 tf_init_attempts;		/* hard init failures so far (cap: HIDPP_DD_TF_INIT_MAX_ATTEMPTS) */
-	u16 tf_stage[HIDPP_DD_TF_NEW_SAMPLES];
 	u16 tf_window[HIDPP_DD_TF_WINDOW];	/* rolling window, offset binary */
 	struct work_struct tf_init_work; /* runs the 2x68-packet init (system_unbound_wq) */
 	/*
@@ -4569,8 +4587,8 @@ struct hidpp_dd_ff_data {
 static void hidpp_dd_ff_work_handler(struct work_struct *work);
 static void hidpp_dd_ff_send_force(struct hidpp_dd_ff_data *ff, s32 force);
 static bool hidpp_dd_ff_effect_is_texture(const struct ff_effect *eff);
-static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
-			 const s32 *samples);
+static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
+			 const s32 *samples, s32 force);
 static void hidpp_dd_tf_init_work_handler(struct work_struct *work);
 static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff);
 static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range);
@@ -5316,20 +5334,31 @@ static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t)
 	 * Drive the TrueForce texture channel. Also runs while a stream
 	 * is still open with no texture playing so the STOP gets sent
 	 * (and re-sent if it was dropped) instead of the wheel looping
-	 * the stale window.
+	 * the stale window. When a unified stream packet went out it
+	 * already carries this tick's force in its cur preamble, so the
+	 * separate force packet below is skipped for that tick - one
+	 * 64-byte packet per tick either way.
 	 */
-	if (any_texture || ff->tf_streaming)
-		hidpp_dd_tf_tick(ff, any_texture, tf_sample);
+	{
+		bool force_sent = false;
 
-	/*
-	 * Always push the current force on each timer tick. The wheel
-	 * firmware treats a gap in commands as "host idle" and runs an
-	 * unwind-to-soft-stop / recenter safety routine, so coalescing
-	 * identical-force ticks made any held constant force evaporate
-	 * within a couple of seconds (issue #16, ffmvforce repro). At
-	 * 500 Hz x 64 bytes the USB cost is ~32 KB/s, negligible.
-	 */
-	hidpp_dd_ff_send_force(ff, force);
+		if (any_texture || ff->tf_streaming)
+			force_sent = hidpp_dd_tf_tick(ff, any_texture,
+						      tf_sample, force);
+
+		/*
+		 * Push the current force on each timer tick (unless the
+		 * unified TF packet above already did). The wheel firmware
+		 * treats a gap in commands as "host idle" and runs an
+		 * unwind-to-soft-stop / recenter safety routine, so
+		 * coalescing identical-force ticks made any held constant
+		 * force evaporate within a couple of seconds (issue #16,
+		 * ffmvforce repro). At 500 Hz x 64 bytes the USB cost is
+		 * ~32 KB/s, negligible.
+		 */
+		if (!force_sent)
+			hidpp_dd_ff_send_force(ff, force);
+	}
 	ff->last_force = force;
 
 	/*
@@ -5471,23 +5500,35 @@ static bool hidpp_dd_tf_queue_ctrl(struct hidpp_dd_ff_data *ff, u8 cmd)
 }
 
 /*
- * Queue one TF audio-stream packet carrying the current rolling window.
- * Layout per docs/TRUEFORCE_PROTOCOL.md: newest sample duplicated in the
- * bytes 6-9 preamble, sample count and the 0x0d flag at 10/11, then the
- * 13 window slots oldest-first, each u16 duplicated L/R. Timer context
- * only (tf_seq, tf_window).
+ * Queue one unified TF stream packet: the steering-force sum rides in
+ * the bytes 6-9 preamble ("cur") and the rolling window carries the
+ * texture audio on top.
+ *
+ * Bytes 6-9 are the wheel's MOTOR TORQUE TARGET while a TF session is
+ * active, with the window played additively over it - established by
+ * the TF4ALL project's Windows-side captures (AC EVO streams its game
+ * FFB in cur and audio in the window of the same packet) and consistent
+ * with our own KF packet, which is this exact layout with zero new
+ * samples. Earlier revisions duplicated the NEWEST AUDIO SAMPLE into
+ * 6-9, which commanded the motor to follow the texture amplitude
+ * whenever a stream packet interleaved with the 500 Hz force packets.
+ *
+ * Layout per docs/TRUEFORCE_PROTOCOL.md: cur duplicated at 6-9, sample
+ * count and the 0x0d flag at 10/11, then the 13 window slots
+ * oldest-first, each u16 duplicated L/R. Timer context only (tf_seq,
+ * tf_window).
  */
-static bool hidpp_dd_tf_queue_stream(struct hidpp_dd_ff_data *ff)
+static bool hidpp_dd_tf_queue_stream(struct hidpp_dd_ff_data *ff, s32 force)
 {
 	u8 pkt[HIDPP_DD_FF_REPORT_SIZE] = { 0 };
-	u16 newest = ff->tf_window[HIDPP_DD_TF_WINDOW - 1];
+	u16 cur = hidpp_dd_force_to_offset_binary(force);
 	int i;
 
 	pkt[0] = HIDPP_DD_FF_REPORT_ID;
 	pkt[4] = HIDPP_DD_TF_CMD_STREAM;
 	pkt[5] = ff->tf_seq;
-	put_unaligned_le16(newest, &pkt[6]);
-	put_unaligned_le16(newest, &pkt[8]);
+	put_unaligned_le16(cur, &pkt[6]);
+	put_unaligned_le16(cur, &pkt[8]);
 	pkt[10] = HIDPP_DD_TF_NEW_SAMPLES;
 	pkt[11] = HIDPP_DD_TF_FLAG_BYTE;
 	for (i = 0; i < HIDPP_DD_TF_WINDOW; i++) {
@@ -5598,16 +5639,27 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
 /*
  * Per-tick TF driver, called from the effect timer after the effect sum.
  * `samples` holds this tick's two 1 kHz texture samples (signed force
- * domain, pre-gain). Stages samples four-at-a-time into the rolling
- * window and emits one stream packet per full stage (250 Hz cadence,
- * matching libtrueforce and the G Hub captures). When the last texture
- * effect stops, re-centres the window and sends STOP so the wheel's DSP
- * returns to silence instead of looping the stale window.
+ * domain, pre-gain); `force` is the final steering-force sum for this
+ * tick (post-gain, autocenter included).
+ *
+ * Emits ONE unified stream packet per tick (500 Hz): the steering force
+ * in the cur preamble and four new window slots - each 1 kHz texture
+ * sample duplicated once, which is time-correct at the resulting 2 kHz
+ * window-slot rate. This replaces the earlier two-stream interleave
+ * (500 Hz force packets + 250 Hz audio packets whose preamble wrongly
+ * carried audio); one packet per tick means the caller must NOT also
+ * send a force packet when this returns true.
+ *
+ * When the last texture effect stops, re-centres the window and sends
+ * STOP so the wheel's DSP returns to silence instead of looping the
+ * stale window. Returns true when a stream packet carrying `force` was
+ * queued this tick (caller skips its force send), false otherwise.
  */
-static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
-			 const s32 *samples)
+static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
+			 const s32 *samples, s32 force)
 {
 	u16 gain, strength;
+	u16 quartet[HIDPP_DD_TF_NEW_SAMPLES];
 	int i;
 
 	if (!any_texture) {
@@ -5621,14 +5673,19 @@ static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 			 * down. The timer keeps ticking while tf_streaming
 			 * is set (see its reschedule condition), so a
 			 * failed STOP retries on the next tick.
+			 *
+			 * The recentre packet still carries the live force
+			 * in cur, but return false regardless so the caller
+			 * sends its own force packet: if the STOP queued,
+			 * the session is closing and the KF stream is
+			 * already the force carrier again.
 			 */
 			memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW);
-			ff->tf_staged = 0;
-			hidpp_dd_tf_queue_stream(ff);
+			hidpp_dd_tf_queue_stream(ff, force);
 			if (hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_STOP))
 				ff->tf_streaming = false;
 		}
-		return;
+		return false;
 	}
 
 	if (!ff->tf_streaming) {
@@ -5637,7 +5694,7 @@ static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 		 * it was dropped, skip this tick's samples and retry.
 		 */
 		if (!hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_START))
-			return;
+			return false;
 		ff->tf_streaming = true;
 	}
 
@@ -5658,21 +5715,30 @@ static void hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 		 */
 		if (strength != 0xFFFF)
 			s = (s32)(((s64)s * strength) / 0xFFFF);
-		ff->tf_stage[ff->tf_staged++] =
-			hidpp_dd_force_to_offset_binary(s);
-
-		if (ff->tf_staged == HIDPP_DD_TF_NEW_SAMPLES) {
-			memmove(&ff->tf_window[0],
-				&ff->tf_window[HIDPP_DD_TF_NEW_SAMPLES],
-				(HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES) *
-					sizeof(ff->tf_window[0]));
-			memcpy(&ff->tf_window[HIDPP_DD_TF_WINDOW -
-					      HIDPP_DD_TF_NEW_SAMPLES],
-			       ff->tf_stage, sizeof(ff->tf_stage));
-			ff->tf_staged = 0;
-			hidpp_dd_tf_queue_stream(ff);
-		}
+		/*
+		 * Keep texture in the DSP's vibration regime; above the
+		 * cap the window content starts steering the motor (see
+		 * HIDPP_DD_TF_MAX_AMPLITUDE).
+		 */
+		s = clamp(s, -(s32)HIDPP_DD_TF_MAX_AMPLITUDE,
+			  (s32)HIDPP_DD_TF_MAX_AMPLITUDE);
+		/*
+		 * Duplicate each 1 kHz sample into two adjacent window
+		 * slots: at one packet per 2 ms tick the wheel consumes
+		 * window slots at 2 kHz, so the pair plays for the 1 ms
+		 * the sample represents.
+		 */
+		quartet[i * 2] = hidpp_dd_force_to_offset_binary(s);
+		quartet[i * 2 + 1] = quartet[i * 2];
 	}
+
+	memmove(&ff->tf_window[0],
+		&ff->tf_window[HIDPP_DD_TF_NEW_SAMPLES],
+		(HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES) *
+			sizeof(ff->tf_window[0]));
+	memcpy(&ff->tf_window[HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES],
+	       quartet, sizeof(quartet));
+	return hidpp_dd_tf_queue_stream(ff, force);
 }
 
 /*
@@ -9402,6 +9468,174 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 
 static DEVICE_ATTR(wheel_led_effect, 0664, wheel_led_effect_show, wheel_led_effect_store);
 
+/*
+ * Real G PRO Racing Wheel: is this bound identity an actual G PRO, as
+ * opposed to an RS50 spoofing the G PRO product ID in compatibility
+ * mode? The RS50 keeps its own USB product string under the borrowed
+ * PID (verified live), while a real G PRO reports "PRO Racing Wheel"
+ * (verified from contributor captures). Used to gate the LED surface:
+ * the two rims have entirely different LED hardware and protocols.
+ */
+static bool dd_is_real_gpro(struct hid_device *hdev)
+{
+	return (hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
+		hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL) &&
+	       !strstr(hdev->name, "RS50");
+}
+
+/*
+ * wheel_rev_level: rev-light level for the REAL G PRO rim (0-10 = how
+ * many LEDs lit). The G PRO's rim lights are level-based, not the
+ * RS50's per-LED RGB LIGHTSYNC model: colours, direction and scaling
+ * belong to the wheel's onboard profile, and the host only commands a
+ * level. Protocol decoded by the TF4ALL project from a G HUB capture
+ * (2026-05-16, see dev/docs/tf4all-analysis.md): a one-time arm burst
+ * of SHORT sends on the 0x807A feature (fn0, fn1, fn2, fn3 param 0x02,
+ * fn0, a few ms apart), then per update a SHORT fn2 + LONG fn6 pair
+ * with the level in the LONG's byte 9. G HUB's sw-id nibble (0x0d) is
+ * kept verbatim - this is the only known-working capture shape.
+ *
+ * Two cautions baked in, both from TF4ALL's testing on real hardware:
+ * writes are fire-and-forget (no reply is read - the pair does not
+ * reliably generate one, and a sync wait would eat timeouts), and
+ * updates are floor-limited to G HUB's own ~160 ms cadence because
+ * bursting level writes starves the wheel's shared HID++ command
+ * processor. The wheel holds a level for a long time but reverts
+ * eventually; a telemetry feeder should refresh at ~1 Hz or faster,
+ * which anything driving rev lights does naturally.
+ *
+ * UNTESTED on real hardware (we develop on an RS50); gated to real
+ * G PROs by dd_is_real_gpro() and needs a G PRO owner to validate.
+ */
+#define HIDPP_DD_REV_SWID		0x0d	/* G HUB's sw-id, kept verbatim */
+#define HIDPP_DD_REV_MAX_LEVEL		10
+#define HIDPP_DD_REV_MIN_GAP_MS		160	/* G HUB's observed cadence */
+#define HIDPP_DD_REV_ARM_GAP_MS	4
+
+static int hidpp_dd_rev_send_short(struct hidpp_device *hidpp, u8 idx, u8 fn,
+				   u8 p0)
+{
+	struct hidpp_report report = {
+		.report_id = REPORT_ID_HIDPP_SHORT,
+		.device_index = 0xff,
+		.fap = {
+			.feature_index = idx,
+			.funcindex_clientid = (fn << 4) | HIDPP_DD_REV_SWID,
+			.params = { p0, 0, 0 },
+		},
+	};
+
+	return __hidpp_send_report(hidpp->hid_dev, &report);
+}
+
+static int hidpp_dd_rev_send_level(struct hidpp_device *hidpp, u8 idx, u8 level)
+{
+	struct hidpp_report report = {
+		.report_id = REPORT_ID_HIDPP_LONG,
+		.device_index = 0xff,
+		.fap = {
+			.feature_index = idx,
+			.funcindex_clientid = (6 << 4) | HIDPP_DD_REV_SWID,
+			/* params start at report byte 4: 00 01 00 0a 00 LL */
+			.params = { 0x00, 0x01, 0x00, 0x0a, 0x00, level },
+		},
+	};
+	int ret;
+
+	ret = hidpp_dd_rev_send_short(hidpp, idx, 2, 0);
+	if (ret < 0)
+		return ret;
+	return __hidpp_send_report(hidpp->hid_dev, &report);
+}
+
+static ssize_t wheel_rev_level_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ff->rev_level));
+}
+
+static ssize_t wheel_rev_level_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	unsigned int level;
+	int ret, i;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	ret = kstrtouint(buf, 10, &level);
+	if (ret)
+		return ret;
+	if (level > HIDPP_DD_REV_MAX_LEVEL)
+		return -EINVAL;
+	if (ff->idx_lightsync == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&ff->rev_lock);
+
+	if (!ff->rev_armed) {
+		static const u8 arm_fns[]    = { 0, 1, 2, 3, 0 };
+		static const u8 arm_params[] = { 0, 0, 0, 2, 0 };
+
+		for (i = 0; i < ARRAY_SIZE(arm_fns); i++) {
+			ret = hidpp_dd_rev_send_short(hidpp, ff->idx_lightsync,
+						      arm_fns[i],
+						      arm_params[i]);
+			if (ret < 0)
+				goto out;
+			msleep(HIDPP_DD_REV_ARM_GAP_MS);
+		}
+		ff->rev_armed = true;
+		ff->rev_last_write = jiffies - msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS);
+	}
+
+	/*
+	 * Pace to G HUB's cadence rather than error: rev level is
+	 * telemetry-shaped (rapid small updates near the shift point)
+	 * and callers should not have to handle -EBUSY. Sleeping out
+	 * the remainder keeps the wire footprint bounded.
+	 */
+	if (time_before(jiffies, ff->rev_last_write +
+				 msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS)))
+		msleep(jiffies_to_msecs(ff->rev_last_write +
+					msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS) -
+					jiffies));
+
+	ret = hidpp_dd_rev_send_level(hidpp, ff->idx_lightsync, level);
+	if (ret < 0)
+		goto out;
+	WRITE_ONCE(ff->rev_level, level);
+	ff->rev_last_write = jiffies;
+	ret = 0;
+out:
+	mutex_unlock(&ff->rev_lock);
+	return ret < 0 ? ret : count;
+}
+
+static DEVICE_ATTR(wheel_rev_level, 0664, wheel_rev_level_show,
+		   wheel_rev_level_store);
+
 /* LED brightness */
 static ssize_t wheel_led_brightness_show(struct device *dev, struct device_attribute *attr,
 					char *buf)
@@ -10568,6 +10802,7 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_led_apply.attr,
 	&dev_attr_wheel_led_brightness.attr,
 	&dev_attr_wheel_led_effect.attr,
+	&dev_attr_wheel_rev_level.attr,
 #ifdef CONFIG_HID_LOGITECH_HIDPP_DEBUG
 	&dev_attr_wheel_hidpp_debug.attr,
 #endif
@@ -10599,8 +10834,44 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	NULL,
 };
 
+/*
+ * Per-model LED surface gating. The RS50 rim/base carries LIGHTSYNC
+ * per-LED RGB hardware (the wheel_led_* attributes drive it in native
+ * AND compat mode - verified live 2026-04-29); the real G PRO rim has
+ * level-based rev lights with onboard-profile-owned colours and no
+ * per-LED RGB at all (TF4ALL capture decode). Showing the wrong
+ * surface would mean attributes that write protocol the rim does not
+ * speak, so each identity gets only its own: LIGHTSYNC slots for
+ * RS50s, wheel_rev_level for real G PROs. Identity is known at probe
+ * time (product ID + product string), so evaluating at
+ * sysfs_create_group() time is safe.
+ */
+static umode_t hidpp_dd_wheel_group_is_visible(struct kobject *kobj,
+					       struct attribute *attr, int idx)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	struct hid_device *hid = to_hid_device(dev);
+	bool real_gpro = dd_is_real_gpro(hid);
+
+	if (attr == &dev_attr_wheel_rev_level.attr)
+		return real_gpro ? attr->mode : 0;
+
+	if (real_gpro &&
+	    (attr == &dev_attr_wheel_led_slot.attr ||
+	     attr == &dev_attr_wheel_led_slot_name.attr ||
+	     attr == &dev_attr_wheel_led_slot_brightness.attr ||
+	     attr == &dev_attr_wheel_led_direction.attr ||
+	     attr == &dev_attr_wheel_led_colors.attr ||
+	     attr == &dev_attr_wheel_led_apply.attr ||
+	     attr == &dev_attr_wheel_led_effect.attr))
+		return 0;
+
+	return attr->mode;
+}
+
 static const struct attribute_group hidpp_dd_wheel_group = {
 	.attrs = hidpp_dd_wheel_group_attrs,
+	.is_visible = hidpp_dd_wheel_group_is_visible,
 };
 
 static struct attribute *gpro_wheel_group_attrs[] = {
@@ -10953,8 +11224,8 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->tf_ready = false;
 	ff->tf_init_queued = false;
 	ff->tf_streaming = false;
-	ff->tf_staged = 0;
 	ff->tf_init_attempts = 0;
+	mutex_init(&ff->rev_lock);
 	memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW); /* offset-binary centre */
 	spin_lock_init(&ff->effects_lock);
 	atomic_set(&ff->sequence, 0);

@@ -11,15 +11,23 @@
 #
 # Supported wheels:
 #   046D:C262  Logitech G920 Racing Wheel
-#   046D:C26E  Logitech G923 (Xbox version)
+#   046D:C266  Logitech G923 (PlayStation/PC) - TrueForce-capable
+#   046D:C26D  Logitech G923 (Xbox/PC, alt PID) - TrueForce-capable
+#   046D:C26E  Logitech G923 (Xbox/PC) - TrueForce-capable
 #   046D:C268  Logitech G PRO Racing Wheel (PlayStation/PC)
 #   046D:C272  Logitech G PRO Racing Wheel (Xbox/PC)
 #   046D:C276  Logitech RS50 Direct Drive (PS/PC)
+#
+# The G923 PIDs get hidraw access so Logitech's SDK DLLs (TrueForce)
+# can reach the wheel under Proton the same way they do for the
+# RS50/G PRO; the G923 speaks the same TrueForce stream protocol.
 
 ACTION!="add|change", GOTO="rs50_end"
 SUBSYSTEM!="hidraw", GOTO="rs50_end"
 
 ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c262", GOTO="rs50_apply"
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c266", GOTO="rs50_apply"
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c26d", GOTO="rs50_apply"
 ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c26e", GOTO="rs50_apply"
 ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c268", GOTO="rs50_apply"
 ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c272", GOTO="rs50_apply"

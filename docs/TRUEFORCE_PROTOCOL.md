@@ -138,10 +138,17 @@ byte[60-63]: window[12]
 - Each packet advances the window by **4 new samples**; the oldest 4 fall off the front.
 - Every u16 sample is duplicated (L and R channels). The wheel is single-motor, the stereo duplication is ceremonial.
 - Values are unsigned 16-bit little-endian, offset binary (centre `0x8000`, `0x0000` = full left, `0xFFFF` = full right).
-- The preamble at bytes 6-9 is the newest sample, i.e. `window[12]`, also duplicated.
+- The preamble at bytes 6-9 ("cur") is the **motor torque target**, duplicated as
+  two u16 LE. While a TrueForce session is active the wheel steers by cur and
+  the window plays additively on top as audio; cur OVERRIDES the HID++ 0x8123
+  force path. In G Hub/SDK captures cur usually tracks the newest window
+  sample only because the games stream their FFB there - AC EVO carries its
+  game force in cur and independent audio in the window of the same packet.
+  (Semantics established by the TF4ALL project's Windows captures, 2026-07-04;
+  earlier revisions of this doc described 6-9 as "the newest sample".)
 - Bytes 10 (`0x04`) and 11 (`0x0d`) are constants per capture.
 
-Packet cadence in libtrueforce is 250 Hz (4 new samples * 250 Hz = 1000 sample/s effective). If userspace can't keep up the thread repeats the previous window (Windows does the same under input starvation) and the wheel gradually unwinds. If userspace overruns the ring, `logitf_stream_push_s16()` blocks on `ring_space`.
+Packet cadence in libtrueforce is 250 Hz (4 new samples * 250 Hz = 1000 sample/s effective); the kernel driver's unified stream runs 500 Hz (2 kHz slot rate, 1 kHz unique content). Games vary: ACC captures show 250-500 pkt/s, AC EVO up to ~1000 pkt/s (4 kHz audio) per TF4ALL measurements - the wheel accepts the whole range. If userspace can't keep up the thread repeats the previous window (Windows does the same under input starvation) and the wheel gradually unwinds. If userspace overruns the ring, `logitf_stream_push_s16()` blocks on `ring_space`.
 
 ## Type `0x0e`: Operating Range (root cause of the "90 degrees on game launch" bug)
 

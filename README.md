@@ -100,7 +100,8 @@ reference.
 
 What to expect per wheel. **Legend:** ✅ verified on hardware · 🟢
 supported, expected to work (shares the verified code path, not yet
-tested on that exact model) · — not applicable.
+tested on that exact model) · 🟡 implemented from captures, needs an
+owner to validate · — not applicable.
 
 | Capability | RS50 (`c276` native / `c272` compat) | G PRO Racing Wheel (`c272` Xbox-PC / `c268` PS-PC) |
 |---|:--:|:--:|
@@ -111,7 +112,8 @@ tested on that exact model) · — not applicable.
 | Rotation range (90–2700°) | ✅ | 🟢 |
 | FFB strength / damping / FFB filter (+ auto) | ✅ | 🟢 |
 | TrueForce intensity / sensitivity / brake-force | ✅ | 🟢 |
-| LIGHTSYNC RGB LEDs | ✅ | 🟢 |
+| LIGHTSYNC RGB LEDs (RS50 rim) | ✅ | — |
+| Rev-light level (`wheel_rev_level`, real G PRO rim) | — | 🟡 needs a tester |
 | Centre calibration | ✅ | 🟢 |
 | Mode / profile switching | ✅ | 🟢 |
 

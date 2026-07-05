@@ -603,6 +603,32 @@ echo 5 > wheel_led_effect
 echo 3 > wheel_led_effect
 ```
 
+### wheel_rev_level
+**Access**: Read/Write
+**Values**: `0`-`10` (number of rev LEDs lit)
+**Visibility**: real G PRO Racing Wheel only (hidden on RS50, including
+RS50 in G PRO compatibility mode - the two rims have different LED
+hardware; the RS50 gets the `wheel_led_*` LIGHTSYNC attributes instead,
+which are hidden on a real G PRO)
+
+Rev-light level for the G PRO rim. The G PRO's rim lights are
+level-based: the host commands how many LEDs are lit (0-10) and the
+wheel's onboard profile owns colours, direction and scaling. Protocol
+decoded from a G HUB capture by the TF4ALL project (see
+`docs/PROTOCOL_SPECIFICATION.md` section 9). The first write arms the
+feature; writes are paced to G HUB's ~160 ms cadence internally because
+faster bursts starve the wheel's shared HID++ command processor. The
+wheel holds a level for a while but reverts eventually - a telemetry
+feeder should refresh at ~1 Hz or faster (natural for rev-light use).
+
+**Status: implemented from captures, not yet validated on a real G PRO
+- reports welcome (issue tracker).**
+
+```bash
+# Light 7 of 10 rev LEDs
+echo 7 > wheel_rev_level
+```
+
 ### wheel_serial
 **Access**: Read-only
 **Values**: 12-character device serial

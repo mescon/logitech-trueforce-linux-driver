@@ -7,6 +7,37 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+### TrueForce stream reworked from TF4ALL cross-pollination
+
+Protocol findings from the TF4ALL project (a Windows SimHub plugin
+built on this project's documentation - issue #20; analysis in
+dev/docs/tf4all-analysis.md) fed back into the driver:
+
+- **Unified force+audio stream packets**: bytes 6-9 of a stream packet
+  are the motor torque target, with the 13-slot window played
+  additively on top - so the driver now sends ONE packet per 2 ms tick
+  during texture playback (steering force in the preamble, four window
+  slots of texture audio) instead of interleaving 500 Hz force packets
+  with 250 Hz audio packets whose preamble wrongly carried the audio
+  amplitude. Doubles the texture slot rate to 2 kHz and removes the
+  audio-as-torque wart.
+- **Texture amplitude cap** at half of full scale: above ~0.5-0.7 FS
+  the wheel's DSP crosses from vibration into pulling the steering
+  axis; real games stream far below the cap.
+- **`wheel_rev_level` (0-10) for the real G PRO rim** - level-based
+  rev lights per the TF4ALL G HUB capture decode; the RS50's per-LED
+  RGB `wheel_led_*` attributes are hidden on a real G PRO (different
+  rim hardware) and vice versa. Untested on real hardware; needs a
+  G PRO owner.
+- **G923 PIDs added to the udev rule** (c266/c26d/c26e): the G923
+  speaks the same TrueForce protocol, so hidraw access lets Logitech's
+  SDK DLLs reach it under Proton the way they do for RS50/G PRO.
+  Untested; needs a G923 owner.
+- Protocol spec corrected: the Windows game-FFB path for these wheels
+  is HID++ 0x8123 fn2 (the endpoint stream is the TrueForce/SDK
+  session channel and overrides it); stream rates up to ~1000 pkt/s
+  observed (AC EVO).
+
 ### Naming generalized to the whole direct-drive family
 
 - **dmesg lines are now tagged with the actual wheel model** instead
