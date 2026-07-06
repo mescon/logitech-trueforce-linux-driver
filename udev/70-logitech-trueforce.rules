@@ -1,42 +1,51 @@
-# Logitech direct-drive racing wheels: hidraw + wheel_* sysfs access
+# Logitech TrueForce wheels: hidraw + wheel_* sysfs access
 #
 # Grants the currently-logged-in session user (via systemd-logind
 # uaccess) and anyone in the "input" group access to:
-#   - /dev/hidraw*  for libtrueforce / userspace tooling
+#   - /dev/hidraw*  for libtrueforce / userspace tooling and the
+#     Logitech SDK DLLs' TrueForce stream under Proton
 #   - /sys/class/hidraw/hidrawN/device/wheel_*  for Oversteer, the
 #     in-tree sysfs knobs, and user scripts
 #
 # Without this rule the sysfs knobs are mode 0664 root:root and every
 # wheel_* write needs sudo.
 #
-# Supported wheels:
-#   046D:C262  Logitech G920 Racing Wheel
-#   046D:C266  Logitech G923 (PlayStation/PC) - TrueForce-capable
-#   046D:C26D  Logitech G923 (Xbox/PC, alt PID) - TrueForce-capable
-#   046D:C26E  Logitech G923 (Xbox/PC) - TrueForce-capable
-#   046D:C268  Logitech G PRO Racing Wheel (PlayStation/PC)
-#   046D:C272  Logitech G PRO Racing Wheel (Xbox/PC)
-#   046D:C276  Logitech RS50 Direct Drive (PS/PC)
+# Supported USB product IDs (VID 046D):
+#   C276  RS50 Direct Drive - NATIVE mode (full sysfs surface)
+#   C272  G PRO Racing Wheel (Xbox/PC) - ALSO the RS50 in G PRO
+#         COMPATIBILITY mode (the RS50 borrows this PID so the SDK's
+#         device check accepts it; the driver tells the two apart by
+#         USB product string)
+#   C268  G PRO Racing Wheel (PlayStation/PC)
+#   C266  G923 (PlayStation/PC)      - TrueForce-capable
+#   C26D  G923 (Xbox/PC, alt PID)    - TrueForce-capable
+#   C26E  G923 (Xbox/PC)             - TrueForce-capable
+#   C262  G920 Racing Wheel
 #
-# The G923 PIDs get hidraw access so Logitech's SDK DLLs (TrueForce)
-# can reach the wheel under Proton the same way they do for the
-# RS50/G PRO; the G923 speaks the same TrueForce stream protocol.
+# The RS50 and G PRO are the direct-drive family this driver targets;
+# the G923 is gear-driven but speaks the same TrueForce stream protocol,
+# so it gets hidraw access purely so the SDK DLLs can reach it under
+# Proton. The G920 has no TrueForce but is kept for its range knob.
 
-ACTION!="add|change", GOTO="rs50_end"
-SUBSYSTEM!="hidraw", GOTO="rs50_end"
+ACTION!="add|change", GOTO="trueforce_end"
+SUBSYSTEM!="hidraw", GOTO="trueforce_end"
 
 # One alternation instead of a GOTO per PID: adding a wheel is a
 # five-character diff that cannot forget the GOTO.
-ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c262|c266|c26d|c26e|c268|c272|c276", GOTO="rs50_apply"
-GOTO="rs50_end"
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c262|c266|c26d|c26e|c268|c272|c276", GOTO="trueforce_apply"
+GOTO="trueforce_end"
 
-LABEL="rs50_apply"
+LABEL="trueforce_apply"
 
 # /dev/hidraw* for libtrueforce and direct userspace tooling.
 TAG+="uaccess", GROUP="input", MODE="0660"
 
 # wheel_* sysfs attributes (only exist on the HID++ interface's hidraw
 # node; the RUN invocation is a no-op on interfaces that lack them).
-RUN+="/bin/sh -c 'for f in /sys/class/hidraw/%k/device/wheel_* /sys/class/hidraw/%k/device/range /sys/class/hidraw/%k/device/gain /sys/class/hidraw/%k/device/autocenter /sys/class/hidraw/%k/device/combine_pedals /sys/class/hidraw/%k/device/damper_level /sys/class/hidraw/%k/device/spring_level /sys/class/hidraw/%k/device/friction_level; do [ -e \"$f\" ] || continue; chgrp input \"$f\"; chmod g+w \"$f\"; done'"
+# Note: "$$f" not "$f" - udev treats a lone "$" as a substitution
+# marker, so a literal shell "$f" must be written "$$f" (passes
+# udevadm verify; on lenient udev versions "$f" happened to survive
+# as a literal, but that is non-portable).
+RUN+="/bin/sh -c 'for f in /sys/class/hidraw/%k/device/wheel_* /sys/class/hidraw/%k/device/range /sys/class/hidraw/%k/device/gain /sys/class/hidraw/%k/device/autocenter /sys/class/hidraw/%k/device/combine_pedals /sys/class/hidraw/%k/device/damper_level /sys/class/hidraw/%k/device/spring_level /sys/class/hidraw/%k/device/friction_level; do [ -e \"$$f\" ] || continue; chgrp input \"$$f\"; chmod g+w \"$$f\"; done'"
 
-LABEL="rs50_end"
+LABEL="trueforce_end"
