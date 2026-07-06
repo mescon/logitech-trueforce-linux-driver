@@ -75,6 +75,28 @@ dev/docs/tf4all-analysis.md) fed back into the driver:
   gameplay capture streams type-0x01 force packets at 999.8 Hz,
   matching the packet-paced 1 kHz model behind the unified stream.
 
+### Per-model force strength and libtrueforce fixes (2026-07-06)
+
+- **Per-model KF peak torque**: libtrueforce scaled every torque
+  request against the RS50's 8 Nm ceiling, so on an 11 Nm G PRO a
+  request for 8 Nm mapped to full scale (about 11 Nm actual, ~37% more
+  than asked). Peak torque now resolves from the wheel's USB PID
+  (RS50 8 Nm, G PRO 11 Nm), and the capability getters report the
+  right value. G PRO figures are spec-derived, hardware confirmation
+  requested in issue #28.
+- **libtrueforce udev permissions gap fixed**: the rule matched only
+  the RS50's USB ID (c276), silently locking G PRO owners out of the
+  library without root; it now covers c276/c272/c268. File renamed to
+  `99-logitech-trueforce.rules`.
+- **Dead code removed**: the `gpro_sysfs_init` settings-only path was
+  unreachable (the G PRO runs the direct-drive init that already
+  provides the full settings surface) and was deleted, along with the
+  write-only `is_gpro` marker. No behaviour change.
+- Final naming sweep: the remaining `rs50` references in code comments,
+  the libtrueforce sources, and the udev rule labels are generalized to
+  the direct-drive family where they no longer meant the RS50
+  specifically. Em-dashes and en-dashes removed from the tracked docs.
+
 ### Naming generalized to the whole direct-drive family
 
 - **dmesg lines are now tagged with the actual wheel model** instead
