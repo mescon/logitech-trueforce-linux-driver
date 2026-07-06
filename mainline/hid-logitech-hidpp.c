@@ -4632,14 +4632,6 @@ struct hidpp_dd_ff_data {
 	/* Track whether we opened HID device for runtime HID++ communication */
 	bool hid_open;
 	bool ff_hdev_open;	/* Track whether interface 2 is open for FFB I/O */
-	/*
-	 * Device class marker: false = RS50 full FFB path (ours), true =
-	 * G Pro using the inherited hidpp_ff (G920) FFB with only our
-	 * sysfs-settings layer on top. FFB-only fields (wq, effects[],
-	 * timers, ...) are only populated in the RS50 path; G-Pro-marked
-	 * devices must not be handed to hidpp_dd_ff_* entry points.
-	 */
-	bool is_gpro;
 
 #ifdef CONFIG_HID_LOGITECH_HIDPP_DEBUG
 	/* Debug interface state (per-device, not global) */
@@ -6522,11 +6514,11 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	 * Only gate on `stopping`. The broadcast cache updates below are
 	 * pure field writes (current_profile, mode, range); they do not
 	 * need the FFB runtime (effect timer, workqueue, input FF device)
-	 * to be ready. In particular, G Pro's settings-only
-	 * hidpp_dd_ff_data is allocated by gpro_sysfs_init which never sets
-	 * `initialized`, and gating on that flag here silently discarded
-	 * every profile- and rotation-change broadcast on G Pro until
-	 * the user manually re-queried via sysfs.
+	 * to be ready - a broadcast can legitimately arrive during the
+	 * deferred-init window before `initialized` is set, and gating on
+	 * that flag here would silently discard the profile- and
+	 * rotation-change broadcast until the user manually re-queried
+	 * via sysfs.
 	 */
 	if (atomic_read_acquire(&ff->stopping))
 		return 0;
@@ -6585,12 +6577,11 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 				 "Profile change broadcast -> %s (profile %u)\n",
 				 profile ? "onboard" : "desktop", profile);
 			/*
-			 * Re-query profile-dependent settings if we have an
-			 * FFB-runtime workqueue. G Pro's settings-only mode
-			 * (gpro_sysfs_init) leaves ff->wq NULL and does not
-			 * initialise settings_refresh_work, so we skip the
-			 * re-query there; the broadcast's cache updates
-			 * above are still applied.
+			 * Re-query profile-dependent settings, guarded on
+			 * ff->wq as defence in depth: the settings-refresh
+			 * work is only armed once the FFB workqueue exists,
+			 * so a wq-less path would skip the re-query while the
+			 * broadcast's cache updates above still apply.
 			 */
 			if (ff->wq)
 				queue_work(ff->wq, &ff->settings_refresh_work);
@@ -11537,46 +11528,6 @@ static const struct attribute_group hidpp_dd_wheel_group = {
 	.is_visible = hidpp_dd_wheel_group_is_visible,
 };
 
-static struct attribute *gpro_wheel_group_attrs[] = {
-	&dev_attr_wheel_range.attr,
-	&dev_attr_wheel_strength.attr,
-	&dev_attr_wheel_damping.attr,
-	&dev_attr_wheel_trueforce.attr,
-	&dev_attr_wheel_brake_force.attr,
-	&dev_attr_wheel_sensitivity.attr,
-	&dev_attr_wheel_ffb_filter.attr,
-	&dev_attr_wheel_ffb_filter_auto.attr,
-	&dev_attr_wheel_mode.attr,
-	&dev_attr_wheel_profile.attr,
-	&dev_attr_wheel_calibrate.attr,
-	&dev_attr_wheel_calibrate_here.attr,
-#ifdef CONFIG_HID_LOGITECH_HIDPP_DEBUG
-	&dev_attr_wheel_hidpp_debug.attr,
-#endif
-	NULL,
-};
-
-static umode_t gpro_wheel_group_is_visible(struct kobject *kobj,
-					   struct attribute *attr, int idx)
-{
-	struct device *dev = kobj_to_dev(kobj);
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff = hidpp ? hidpp->private_data : NULL;
-
-	if (attr == &dev_attr_wheel_calibrate.attr ||
-	    attr == &dev_attr_wheel_calibrate_here.attr) {
-		if (!ff || ff->idx_calibrate == HIDPP_DD_FEATURE_NOT_FOUND)
-			return 0;
-	}
-	return attr->mode;
-}
-
-static const struct attribute_group gpro_wheel_group = {
-	.attrs = gpro_wheel_group_attrs,
-	.is_visible = gpro_wheel_group_is_visible,
-};
-
 /*
  * RS50 input mapping - filter phantom buttons declared in HID descriptor.
  *
@@ -11635,162 +11586,6 @@ static void hidpp_dd_sysfs_uevent_replay(struct hid_device *hid)
 	if (hidraw && hidraw->dev)
 		kobject_uevent(&hidraw->dev->kobj, KOBJ_CHANGE);
 #endif
-}
-
-/* -------------------------------------------------------------------------- */
-/* G Pro Racing Wheel: sysfs settings (reuses hidpp_dd_ff_data for settings only) */
-/* -------------------------------------------------------------------------- */
-
-/*
- * Initialize sysfs settings for the G Pro Racing Wheel.
- *
- * The G Pro uses the G920 HID++ 0x8123 FFB path (handled separately in probe),
- * but shares the same HID++ settings features (range, strength, damping, etc.)
- * as the RS50. This function allocates an hidpp_dd_ff_data solely for settings
- * management and sysfs attributes -- no workqueue, timers, or FFB state.
- */
-static int gpro_sysfs_init(struct hidpp_device *hidpp)
-{
-	struct hid_device *hid = hidpp->hid_dev;
-	struct hidpp_dd_ff_data *ff;
-	int ret;
-	int i, j;
-
-	if (!hid_is_usb(hid)) {
-		dd_err(hid, "Settings require USB connection\n");
-		return -ENODEV;
-	}
-
-	ff = kzalloc(sizeof(*ff), GFP_KERNEL);
-	if (!ff)
-		return -ENOMEM;
-
-	ff->hidpp = hidpp;
-	ff->owner_hidpp = hidpp;
-	atomic_set(&ff->stopping, 0);
-	WRITE_ONCE(hidpp->private_data, ff);
-
-	/*
-	 * Feature indices get reset to HIDPP_DD_FEATURE_NOT_FOUND by
-	 * hidpp_dd_discover_settings_features and hidpp_dd_discover_lightsync_features
-	 * before any lookups run, so we don't need to pre-initialise them here.
-	 */
-	ff->calibrate_dev_idx = 0x05;	/* G Pro: calibrate lives on sub-device 0x05 */
-
-	/* Default SET function numbers (RS50 pattern: fn=2 for all) */
-	ff->fn_set_range = HIDPP_DD_HIDPP_FN_SET;
-	ff->fn_set_strength = HIDPP_DD_HIDPP_FN_SET;
-	ff->fn_set_damping = HIDPP_DD_HIDPP_FN_SET;
-	ff->fn_set_trueforce = HIDPP_DD_HIDPP_FN_SET;
-	ff->fn_set_brakeforce = HIDPP_DD_HIDPP_FN_SET;
-	ff->fn_set_filter = HIDPP_DD_HIDPP_FN_SET;
-	ff->fn_set_sensitivity = HIDPP_DD_HIDPP_FN_SET;
-	ff->fn_set_brightness = HIDPP_DD_HIDPP_FN_SET;
-
-	/* G Pro-specific SET function overrides (verified from USB captures):
-	 * - fn_set_range: fn2 (0x20) - verified
-	 * - fn_set_strength: fn2 (0x20) - verified
-	 * - fn_set_brakeforce: fn2 (0x20) - verified
-	 * - fn_set_damping: fn1 (0x10) - verified
-	 * - fn_set_trueforce: fn3 (0x30) - verified
-	 * - fn_set_filter: fn2 (0x20) - verified 2026-04-18 from G Pro captures
-	 *   (previous analysis said fn3; fresh G Hub capture on a contributor's
-	 *   G Pro shows fn2 for every filter SET)
-	 * - fn_set_sensitivity: fn2 (0x20) - intentional alias of
-	 *   fn_set_brightness. Feature 0x8040 exposes one wire byte that
-	 *   both sliders drive in desktop mode; G Hub issues the same fn2
-	 *   command for either slider. A separate onboard-mode sensitivity
-	 *   path (different feature) is gated elsewhere by mode_known.
-	 */
-	ff->fn_set_damping = 0x10;		/* fn1 (G Pro uses fn1 for damping SET) */
-	ff->fn_set_trueforce = 0x30;		/* fn3 (G Pro uses fn3 for TRUEFORCE SET) */
-	ff->fn_set_filter = 0x20;		/* fn2 (G Pro uses fn2 for FFB filter SET) */
-
-	/* Sane defaults until device is queried */
-	ff->range = 900;
-	ff->strength = 65535;
-	ff->damping = 0;
-	ff->trueforce = 65535;
-	ff->brake_force = 65535;
-	ff->ffb_filter = 11;
-	ff->ffb_filter_auto = 0;
-	ff->led_brightness = 100;
-
-	/*
-	 * LIGHTSYNC slot defaults: mirror the RS50 path (white, 100%).
-	 * Without these the slots would read as all-zero (black) until the
-	 * user writes one, which matches neither G Hub behaviour nor user
-	 * expectation.
-	 */
-	ff->led_active_slot = 0;
-	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_SLOTS; i++) {
-		ff->led_slots[i].direction = HIDPP_DD_LIGHTSYNC_DIR_LEFT_RIGHT;
-		ff->led_slots[i].brightness = 100;
-		for (j = 0; j < HIDPP_DD_LIGHTSYNC_NUM_LEDS; j++) {
-			ff->led_slots[i].colors[j * 3 + 0] = 0xFF;
-			ff->led_slots[i].colors[j * 3 + 1] = 0xFF;
-			ff->led_slots[i].colors[j * 3 + 2] = 0xFF;
-		}
-	}
-
-	ff->is_gpro = true;
-
-	/*
-	 * Feature discovery + settings query reuse the RS50 helpers so
-	 * the two paths cannot drift (SYS.F15). The helpers also look up
-	 * LIGHTSYNC/RGB config and the centre-calibrate sub-device, which
-	 * the G Pro supports identically.
-	 */
-	hidpp_dd_discover_settings_features(ff);
-	hidpp_dd_discover_lightsync_features(ff);
-	hidpp_dd_get_current_mode(ff);
-	hidpp_dd_ff_query_common_settings(ff);
-
-	/*
-	 * Create sysfs attributes in one go. The is_visible callback on
-	 * gpro_wheel_group gates wheel_calibrate on idx_calibrate discovery.
-	 *
-	 * LIGHTSYNC attrs are excluded pending more G Pro investigation.
-	 * Oversteer-compatible attrs are excluded because hidpp_ff_init
-	 * already creates a 'range' file via dev_attr_range (would -EEXIST);
-	 * the rest are skipped for consistency.
-	 */
-	ret = sysfs_create_group(&hid->dev.kobj, &gpro_wheel_group);
-	if (ret)
-		dd_warn(hid, "sysfs group creation failed: %d\n", ret);
-	else
-		hidpp_dd_sysfs_uevent_replay(hid);
-
-	dd_info(hid, "Settings initialized\n");
-	return 0;
-}
-
-/*
- * Cleanup sysfs settings for the G Pro Racing Wheel.
- * Removes sysfs attributes and frees the hidpp_dd_ff_data.
- */
-static void gpro_sysfs_destroy(struct hidpp_device *hidpp)
-{
-	struct hid_device *hid = hidpp->hid_dev;
-	struct hidpp_dd_ff_data *ff = READ_ONCE(hidpp->private_data);
-
-	if (!ff)
-		return;
-
-	/*
-	 * Flip the stopping flag first so any in-flight sysfs handler that
-	 * already loaded `ff` and is between attr-specific synchronizes
-	 * bails before touching the freed struct.
-	 */
-	atomic_set_release(&ff->stopping, 1);
-
-	sysfs_remove_group(&hid->dev.kobj, &gpro_wheel_group);
-
-	/* Publish NULL before freeing so late raw_event readers don't load a stale pointer. */
-	WRITE_ONCE(hidpp->private_data, NULL);
-	kfree(ff);
-
-	dd_info(hid, "Settings removed\n");
 }
 
 static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
@@ -11961,13 +11756,6 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	INIT_DELAYED_WORK(&ff->init_work, hidpp_dd_ff_init_work);
 	INIT_DELAYED_WORK(&ff->refresh_work, hidpp_dd_ff_refresh_work);
 	INIT_DELAYED_WORK(&ff->range_poll_work, hidpp_dd_ff_range_poll_work);
-	/*
-	 * rev_work is only reachable from wheel_rev_level_store, which lives
-	 * in hidpp_dd_wheel_group (created below). The G Pro settings-only
-	 * path (gpro_sysfs_init) attaches gpro_wheel_group, which has no
-	 * wheel_rev_level attribute, and never runs this init - so its zeroed
-	 * rev_work is never queued and gpro_sysfs_destroy need not cancel it.
-	 */
 	INIT_DELAYED_WORK(&ff->rev_work, hidpp_dd_rev_work_handler);
 	INIT_WORK(&ff->settings_refresh_work, hidpp_dd_ff_settings_refresh_work);
 	INIT_WORK(&ff->tf_init_work, hidpp_dd_tf_init_work_handler);
@@ -13529,7 +13317,7 @@ static int hidpp_dd_pid_install(struct hid_device *hdev)
  * was now garbage). Restoring the pointer is correct - the previously
  * suspected race against in-flight hidraw output_report calls turned
  * out not to be the actual cause of the original rmmod crash; that
- * was the asymmetric gpro_sysfs_destroy issue, now fixed separately.
+ * was a separate teardown-asymmetry issue, since fixed.
  */
 static void hidpp_dd_pid_uninstall(struct hid_device *hdev)
 {
@@ -14723,15 +14511,6 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 						 ret);
 				}
 			}
-
-			/* G Pro wheels: add sysfs settings on top of G920 FFB */
-			if (hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
-			    hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL) {
-				ret = gpro_sysfs_init(hidpp);
-				if (ret)
-					dd_warn(hidpp->hid_dev,
-						 "Settings setup failed (error %d)\n", ret);
-			}
 		}
 	}
 
@@ -14903,25 +14682,6 @@ static void hidpp_remove(struct hid_device *hdev)
 			if (ff)
 				WRITE_ONCE(ff->input, NULL);
 		}
-	}
-
-	/*
-	 * G Pro sysfs settings teardown.
-	 *
-	 * Mirror the init-side condition exactly. gpro_sysfs_init only runs
-	 * in the (G_PRO_WHEEL || G_PRO_PS_WHEEL) AND !HIDPP_DD_FFB branch above.
-	 * For RS50-in-compat-mode the same product IDs are used but
-	 * hidpp_dd_ff_init runs instead, no gpro_wheel_group is ever attached,
-	 * and calling sysfs_remove_group on the unattached group walks into
-	 * sysfs internals that kfree a stale kernfs node and BUG at
-	 * mm/slub.c:638 (observed). Skipping destroy on the RS50 path is
-	 * symmetrical with skipping init on the same path - hidpp_dd_ff_destroy
-	 * cleans up everything hidpp_dd_ff_init created.
-	 */
-	if ((hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
-	     hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL) &&
-	    !(hidpp->quirks & HIDPP_QUIRK_DD_FFB)) {
-		gpro_sysfs_destroy(hidpp);
 	}
 
 	/*
