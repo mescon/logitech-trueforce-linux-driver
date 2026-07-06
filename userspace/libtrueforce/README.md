@@ -85,10 +85,11 @@ libtrueforce 1.3.11
 
 ## udev rule
 
-`udev/99-logitech-rs50-trueforce.rules` grants read/write access on
-`/dev/hidrawN` for interface 2 of VID:PID `046d:c276` to users in the
-`input` group, and also tags it with `uaccess` so logind-managed
-sessions get access automatically on login.
+`udev/99-logitech-trueforce.rules` grants read/write access on
+`/dev/hidrawN` for interface 2 of the supported wheels (`046d:c276`
+RS50, `046d:c272` / `046d:c268` G PRO) to users in the `input` group,
+and also tags it with `uaccess` so logind-managed sessions get access
+automatically on login.
 
 ## API
 

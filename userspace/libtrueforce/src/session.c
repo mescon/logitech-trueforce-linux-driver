@@ -1,7 +1,7 @@
 /*
  * libtrueforce - hidraw session and init sequence.
  *
- * On first use, opens /dev/hidrawN for the RS50's interface 2 and
+ * On first use, opens /dev/hidrawN for the wheel's interface 2 and
  * sends the canonical Trueforce init sequence extracted from
  * captures of a BeamNG session on Windows G HUB (issue #5). The
  * 68-packet sequence sets up parameters (type 0x05), frequency

@@ -130,7 +130,7 @@ static int hidraw_usb_ids(const char *hidraw_name,
 
 /*
  * Recognised Logitech wheels whose TF transport is the same ep 0x03
- * hidraw interface the RS50 uses.
+ * hidraw interface the wheel uses.
  *
  * RS50 and the G PRO Racing Wheel share the Trueforce wire format
  * byte-for-byte (issue #14 BeamNG+G Pro and issue #15 ACC+RS50
@@ -148,7 +148,7 @@ static bool is_supported_wheel(uint16_t vid, uint16_t pid)
 
 /*
  * Find the matching /dev/input/eventN (joystick) for the same physical
- * RS50, given the hidraw path that pointed at interface 2. We look
+ * wheel, given the hidraw path that pointed at interface 2. We look
  * under /dev/input/by-id for a -event-joystick symlink whose resolved
  * target shares the same USB device path up through "usb1/1-1".
  *

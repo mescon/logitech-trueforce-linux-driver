@@ -71,7 +71,7 @@ install: all
 
 udev-install:
 	install -d $(DESTDIR)$(UDEVDIR)
-	install -m 0644 udev/99-logitech-rs50-trueforce.rules $(DESTDIR)$(UDEVDIR)/
+	install -m 0644 udev/99-logitech-trueforce.rules $(DESTDIR)$(UDEVDIR)/
 
 clean:
 	rm -f $(OBJS) $(FULL) $(SONAME) $(LIB) $(STATIC) $(TESTS)

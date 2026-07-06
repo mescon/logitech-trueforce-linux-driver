@@ -1,7 +1,7 @@
 /*
  * libtrueforce - wheel angle and angular velocity readback.
  *
- * The RS50's joystick interface (0) already emits the wheel's
+ * The wheel's joystick interface (0) already emits the wheel's
  * absolute X axis at 1 kHz via evdev EV_ABS / ABS_X. Rather than
  * decode the ep 0x83 IN status reports ourselves, we piggyback on
  * the kernel's evdev parsing: one reader thread pulls EV_ABS
@@ -55,7 +55,7 @@ static double ns_now(void)
  * under dev->usb_root, and return the wheel_range value of the first
  * one that exposes the attribute. On multi-wheel setups this no
  * longer collides with a different wheel's sysfs. Falls back to 1080
- * (RS50 OEM default) if no matching attr is found.
+ * (the direct-drive OEM default) if no matching attr is found.
  */
 static int read_wheel_range_deg(struct logitf_device *dev)
 {

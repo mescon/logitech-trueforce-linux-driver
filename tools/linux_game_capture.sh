@@ -80,7 +80,7 @@ WHEEL_PID=$(echo "$WHEEL_LINE" | awk '{ print $6 }')
 
 DATE=$(date +%Y-%m-%d)
 STEM="${DATE}_${LABEL}_linux"
-TMPDIR=$(mktemp -d -t rs50-cap.XXXXXX)
+TMPDIR=$(mktemp -d -t wheel-cap.XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 PCAP="$TMPDIR/${STEM}.pcap"

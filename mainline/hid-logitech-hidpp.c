@@ -635,8 +635,8 @@ static int hidpp_send_fap_command_sync(struct hidpp_device *hidpp,
 		return -ENOMEM;
 
 	/*
-	 * RS50 racing wheel requires SHORT reports (0x10) for HID++ commands.
-	 * Unlike most FAP devices that use LONG (0x11), the RS50 ignores LONG
+	 * Direct-drive wheels require SHORT reports (0x10) for HID++ commands.
+	 * Unlike most FAP devices that use LONG (0x11), they ignore LONG
 	 * reports and only responds to SHORT. It always responds with VERY_LONG
 	 * (0x12) regardless of input report type. Use SHORT when possible.
 	 */
@@ -676,7 +676,7 @@ static int hidpp_send_fap_to_device_sync(struct hidpp_device *hidpp,
 		return -ENOMEM;
 
 	/*
-	 * Only RS50-family wheels currently use sub-device-addressed FAPs,
+	 * Only the direct-drive wheels currently use sub-device-addressed FAPs,
 	 * and they require SHORT reports for small-param sends. The middle
 	 * LONG case covers payloads that outgrow SHORT's 3 bytes but fit LONG
 	 * (e.g. the 13-byte fn4 response-curve chunks the pedal-unit uploader
@@ -777,7 +777,7 @@ static inline bool hidpp_match_answer(struct hidpp_device *hidpp,
 		return false;
 
 	/*
-	 * Some devices (e.g., RS50 racing wheel) don't echo back the software
+	 * Some devices (e.g., the direct-drive wheels) don't echo back the software
 	 * ID in the response's funcindex_clientid field - they only return
 	 * the function index in the upper nibble, leaving the lower nibble
 	 * as 0. Handle this by only comparing the function index (upper nibble)
@@ -4081,11 +4081,11 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Logitech RS50 Direct Drive Racing Wheel                                    */
+/* Logitech direct-drive wheels: FFB + settings (RS50, G PRO)                 */
 /* -------------------------------------------------------------------------- */
 
 /*
- * The RS50 uses a completely different FFB architecture than G920/G923.
+ * The direct-drive wheels (RS50, G Pro) use a completely different FFB architecture than G920/G923.
  * Instead of HID++ feature 0x8123, it uses dedicated endpoint 0x03 OUT
  * with raw 64-byte output reports for real-time force feedback.
  *
@@ -4097,7 +4097,7 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_FF_REPORT_SIZE		64
 #define HIDPP_DD_INPUT_REPORT_SIZE		30	/* Interface 0 joystick report */
 
-/* RS50 FFB refresh command (sent periodically to maintain FFB state) */
+/* Direct-drive FFB refresh command (sent periodically to maintain FFB state) */
 #define HIDPP_DD_FF_REFRESH_ID		0x05
 #define HIDPP_DD_FF_REFRESH_CMD		0x07
 #define HIDPP_DD_FF_REFRESH_INTERVAL_MS	20000	/* 20 seconds */
@@ -4168,7 +4168,7 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_TF_INIT_MAX_ATTEMPTS	3
 
 /*
- * RS50 HID++ feature PAGE IDs for wheel settings.
+ * Direct-drive wheel HID++ feature PAGE IDs for wheel settings.
  * These are used with hidpp_root_get_feature() to discover the actual
  * feature indices, which vary per device. Never use hardcoded indices!
  */
@@ -4203,7 +4203,7 @@ static void hidpp_ff_retry_work(struct work_struct *work)
  */
 #define HIDPP_DD_MAX_BUTTON_USAGE	0x50	/* Accept buttons 1-80, ignore 81+ */
 
-/* RS50 HID++ function IDs for settings */
+/* Direct-drive wheel HID++ function IDs for settings */
 #define HIDPP_DD_HIDPP_FN_GET_INFO		0x00	/* Function 0: get capabilities/limits */
 #define HIDPP_DD_HIDPP_FN_GET		0x10	/* Function 1: get current value */
 #define HIDPP_DD_HIDPP_FN_SET		0x20	/* Function 2: set value */
@@ -4284,7 +4284,7 @@ struct hidpp_dd_lightsync_slot {
 /* Marker for features that weren't discovered (not supported by device) */
 #define HIDPP_DD_FEATURE_NOT_FOUND		0xFF
 
-/* RS50 FFB constants */
+/* Direct-drive FFB constants */
 /*
  * Maximum simultaneous FFB effect slots advertised to userspace via
  * input_ff_create(). The kernel input ff-core uses this to size its
@@ -4325,7 +4325,7 @@ struct hidpp_dd_lightsync_slot {
 #define HIDPP_DD_FF_SPRING_DAMPING_DEFAULT	25
 
 /*
- * RS50 pedal response curve types.
+ * Direct-drive wheel pedal response curve types.
  * These curves are applied in software to pedal axis values.
  */
 #define HIDPP_DD_CURVE_LINEAR		0	/* 1:1 linear mapping */
@@ -4359,7 +4359,7 @@ struct hidpp_dd_ff_effect {
 	bool use_tf;
 };
 
-/* RS50 FFB output report structure (64 bytes to endpoint 0x03) */
+/* Direct-drive FFB output report structure (64 bytes to endpoint 0x03) */
 struct hidpp_dd_ff_report {
 	u8 report_id;		/* 0x01 */
 	u8 reserved[3];		/* 0x00, 0x00, 0x00 */
@@ -4373,7 +4373,7 @@ struct hidpp_dd_ff_report {
 static_assert(sizeof(struct hidpp_dd_ff_report) == HIDPP_DD_FF_REPORT_SIZE,
 	      "DD FFB report structure size mismatch");
 
-/* RS50 FFB work item for async USB transfers */
+/* Direct-drive FFB work item for async USB transfers */
 struct hidpp_dd_ff_work {
 	struct work_struct work;
 	struct hidpp_dd_ff_data *ff_data;
@@ -4393,7 +4393,7 @@ struct hidpp_dd_ff_work {
 	u8 report_buf[HIDPP_DD_FF_REPORT_SIZE];
 };
 
-/* RS50 FFB private data */
+/* Direct-drive FFB private data */
 struct hidpp_dd_ff_data {
 	struct hidpp_device *hidpp;
 	struct hidpp_device *owner_hidpp;/* hidpp that allocated this ff_data */
@@ -4545,7 +4545,7 @@ struct hidpp_dd_ff_data {
 	 * Live wheel state used by condition-effect emulation (SPRING,
 	 * DAMPER, FRICTION, INERTIA). Updated from the interface-0 raw
 	 * input report handler at the wheel's native poll rate (roughly
-	 * 500 Hz for the RS50). The timer callback reads these lock-free
+	 * 500 Hz for these wheels). The timer callback reads these lock-free
 	 * via READ_ONCE; writers use WRITE_ONCE. wheel_pos is raw encoder
 	 * 0..65535 (0x8000 == centre). wheel_vel and wheel_accel are
 	 * signed derivatives in encoder-counts per input sample, computed
@@ -5188,7 +5188,7 @@ static u16 hidpp_dd_force_to_offset_binary(s32 force)
 
 /*
  * Timer callback - sends continuous force updates to the wheel.
- * RS50 requires periodic force commands to maintain FFB effect.
+ * Direct-drive wheels require periodic force commands to maintain FFB effect.
  */
 static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t)
 {
@@ -6534,7 +6534,7 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	/*
 	 * Broadcasts arrive on interface 1 as LONG or VERY_LONG reports
 	 * depending on device firmware; accept either. SHORT reports
-	 * aren't used by these events on RS50.
+	 * aren't used by these events on these wheels.
 	 */
 	if (size < 5)
 		return 0;
@@ -7396,7 +7396,7 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	 *
 	 * All the condition effects (SPRING, DAMPER, FRICTION, INERTIA)
 	 * are emulated in software against the live wheel state read from
-	 * interface 0 input reports; the RS50 firmware itself only
+	 * interface 0 input reports; the direct-drive wheel firmware itself only
 	 * understands raw constant forces on interface 2 endpoint 0x03.
 	 * FF_CONSTANT is the fundamental one; everything else layers on
 	 * top at the hidpp_dd_ff_effect_tick level.
@@ -7479,7 +7479,7 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 
 	/*
 	 * Effect timer is started on-demand when effects play.
-	 * The RS50 wheel requires continuous FFB commands to maintain force.
+	 * The wheel requires continuous FFB commands to maintain force.
 	 * Timer will be started by playback callback when needed.
 	 */
 	dd_info(hid, "Effect timer ready (interval=%dms, starts on effect play)\n", HIDPP_DD_FF_TIMER_INTERVAL_MS);
@@ -7512,7 +7512,7 @@ skip_hidpp:
 }
 
 /*
- * RS50 sysfs attributes for wheel settings.
+ * Direct-drive wheel sysfs attributes for wheel settings (shared by RS50 and G Pro).
  * These use HID++ protocol via interface 1 to configure the wheel.
  */
 
@@ -10445,7 +10445,7 @@ static DEVICE_ATTR(wheel_clutch_deadzone, 0664,
 		   wheel_clutch_deadzone_show, wheel_clutch_deadzone_store);
 
 /*
- * RS50 mode/profile sysfs attributes
+ * Direct-drive wheel mode/profile sysfs attributes
  *
  * Mode: "desktop" (profile 0) or "onboard" (profiles 1-5)
  * Profile: 0 = desktop, 1-5 = onboard profiles
@@ -11809,7 +11809,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 
 	/*
 	 * Check if ff_data already exists on a sibling interface.
-	 * The RS50 has 3 HID interfaces and probe runs for each one.
+	 * These wheels have 3 HID interfaces and probe runs for each one.
 	 * We only want ONE ff_data instance with ONE timer.
 	 */
 	ff = hidpp_dd_find_ff_data(hid);
@@ -11836,7 +11836,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 
 	ff->hidpp = hidpp;
 	ff->owner_hidpp = hidpp;	/* Track who allocated for cleanup */
-	ff->range = 1080;	/* RS50 default: 1080 degrees */
+	ff->range = 1080;	/* Direct-drive default: 1080 degrees */
 	ff->strength = 65535;	/* Default: 100% */
 	ff->damping = 0;	/* Default: 0% */
 	ff->trueforce = 65535;	/* Default: 100% */
@@ -11927,7 +11927,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->calibrate_dev_idx = 0x05;	/* Centre calibration sub-device (matches G Pro) */
 
 	/*
-	 * RS50 SET function numbers (verified from archived G Hub captures):
+	 * Default SET function numbers (verified from archived G Hub captures on RS50):
 	 *   range / strength / brakeforce / filter / sensitivity /
 	 *   brightness   -> fn=2 (0x20)    (e.g. rotation_sweep shows
 	 *                                  10ff182d for feature 0x18 RANGE)
@@ -13553,7 +13553,7 @@ static int hidpp_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
 
 	/*
-	 * RS50 button remapping works by product ID alone - it doesn't need
+	 * Direct-drive wheel button remapping works by product ID alone - it doesn't need
 	 * the hidpp structure. The joystick interface has no HID++ reports,
 	 * so hidpp will be NULL, but we still need to remap buttons.
 	 */
@@ -13737,7 +13737,7 @@ static int hidpp_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 }
 
 /*
- * Find RS50 FF data from any interface by searching sibling interfaces.
+ * Find direct-drive FF data from any interface by searching sibling interfaces.
  * This is needed because joystick reports come on interface 0, which has
  * no hidpp structure, but we need to update the wheel position in the
  * FF data stored on interface 1.
@@ -13769,7 +13769,7 @@ static struct hidpp_dd_ff_data *hidpp_dd_find_ff_data(struct hid_device *hdev)
 	intf = to_usb_interface(hdev->dev.parent);
 	udev = interface_to_usbdev(intf);
 
-	/* Search all interfaces for the one with RS50 FF data */
+	/* Search all interfaces for the one with direct-drive FF data */
 	for (i = 0; i < USB_MAXINTERFACES; i++) {
 		struct usb_interface *sibling = usb_ifnum_to_if(udev, i);
 		struct hid_device *sibling_hid;
@@ -13824,7 +13824,7 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 	int ret = 0;
 
 	/*
-	 * RS50: We only claim interface 1 (HID++).
+	 * Direct-drive wheels: we only claim interface 1 (HID++).
 	 * Interface 0 (joystick) is handled by hid-generic.
 	 */
 
@@ -13870,7 +13870,7 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 		return m560_raw_event(hdev, data, size);
 
 	/*
-	 * Process RS50 joystick reports for pedal handling.
+	 * Process direct-drive joystick reports for pedal handling.
 	 * Only process 30-byte reports from interface 0 (joystick).
 	 * Checking the interface number first guards against a 30-byte
 	 * non-HID++ report arriving on interface 1 or 2 being rewritten
@@ -13903,7 +13903,7 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 
 /*
  * Pedal curve and deadzone transforms are applied in software in the driver.
- * There is no HID++ feature for per-pedal curves or deadzones on RS50; the
+ * There is no HID++ feature for per-pedal curves or deadzones on these wheels; the
  * G Hub pedal UI sends nothing to the wheel for these settings. The wheel
  * always reports raw 16-bit axis values and we reshape them here before
  * forwarding to userspace.
@@ -13974,7 +13974,7 @@ static u16 hidpp_dd_apply_deadzone(u16 input, u8 lower_pct, u8 upper_pct)
 }
 
 /*
- * Process RS50 pedal values: apply response curves, deadzones, and combined mode.
+ * Process direct-drive pedal values: apply response curves, deadzones, and combined mode.
  * This function modifies the raw HID data in place before the HID subsystem
  * processes it.
  *
@@ -14550,7 +14550,7 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 
 	if (!hidpp->supported_reports) {
 		/*
-		 * RS50 has 3 interfaces:
+		 * The direct-drive wheels have 3 interfaces:
 		 *   0 = Joystick (wheel/pedals) - claim for pedal processing
 		 *   1 = HID++ (configuration) - has HID++ support, handled below
 		 *   2 = FFB output endpoint - let hid-generic handle
@@ -14672,8 +14672,8 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	if (hidpp->quirks & HIDPP_QUIRK_CLASS_G920) {
 		if (hidpp->quirks & HIDPP_QUIRK_DD_FFB) {
 			/*
-			 * RS50 uses dedicated endpoint FFB, not HID++ feature 0x8123.
-			 * Skip G920 config and use RS50-specific initialization.
+			 * Direct-drive wheels (RS50, G Pro) use dedicated endpoint FFB, not HID++ feature 0x8123.
+			 * Skip G920 config and use the direct-drive initialization path.
 			 * IMPORTANT: Only init FFB on interface with HID++ support
 			 * (interface 1), not the joystick interface (interface 0).
 			 */
@@ -14818,7 +14818,7 @@ static void hidpp_remove(struct hid_device *hdev)
 	}
 
 	/*
-	 * RS50 cleanup: Set stopping flag FIRST to prevent cross-interface
+	 * Direct-drive cleanup: Set stopping flag FIRST to prevent cross-interface
 	 * lookups from accessing our data while we're tearing down.
 	 * This must happen before hid_hw_stop() because sibling interfaces
 	 * (like interface 0 receiving joystick input) may still be active
@@ -14930,7 +14930,7 @@ static void hidpp_remove(struct hid_device *hdev)
 	 */
 	hid_hw_stop(hdev);
 
-	/* Now safe to clean up RS50 force feedback - no more callbacks */
+	/* Now safe to clean up direct-drive force feedback - no more callbacks */
 	if (hidpp->quirks & HIDPP_QUIRK_DD_FFB)
 		hidpp_dd_ff_destroy(hidpp);
 

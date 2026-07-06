@@ -1,0 +1,22 @@
+# /etc/udev/rules.d/99-logitech-trueforce.rules
+#
+# Grant the "input" group read/write access to the wheel's interface-2
+# hidraw node so that libtrueforce (and any game linking against it)
+# can stream TrueForce audio packets without root.
+#
+# Interface 2 is the TrueForce audio / status endpoint. Interface 0
+# (joystick) is already made accessible via the evdev subsystem by the
+# default distro rules.
+#
+# VID 046D. These are the PIDs libtrueforce supports (all direct-drive,
+# sharing the same interface-2 ep-0x03 TrueForce transport):
+#   C276  RS50 Base (native mode)
+#   C272  G PRO Racing Wheel (Xbox/PC) - also the RS50 in G PRO compat mode
+#   C268  G PRO Racing Wheel (PlayStation/PC)
+# (Earlier revisions matched only C276, which silently locked G PRO
+# owners out of libtrueforce without root.)
+
+SUBSYSTEM=="hidraw", \
+    ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c276|c272|c268", \
+    ATTRS{bInterfaceNumber}=="02", \
+    MODE="0660", GROUP="input", TAG+="uaccess"

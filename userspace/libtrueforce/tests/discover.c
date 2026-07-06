@@ -1,5 +1,5 @@
 /*
- * Discovery test: enumerate detected RS50 wheels and print what
+ * Discovery test: enumerate detected direct-drive wheels and print what
  * libtrueforce sees. No device writes; read-only sysfs/hidraw-path
  * inspection via the library's public discovery entry points.
  */
