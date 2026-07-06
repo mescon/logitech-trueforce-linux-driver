@@ -10,22 +10,25 @@
 # Without this rule the sysfs knobs are mode 0664 root:root and every
 # wheel_* write needs sudo.
 #
-# Supported USB product IDs (VID 046D):
-#   C276  RS50 Direct Drive - NATIVE mode (full sysfs surface)
-#   C272  G PRO Racing Wheel (Xbox/PC) - ALSO the RS50 in G PRO
-#         COMPATIBILITY mode (the RS50 borrows this PID so the SDK's
-#         device check accepts it; the driver tells the two apart by
-#         USB product string)
-#   C268  G PRO Racing Wheel (PlayStation/PC)
-#   C266  G923 (PlayStation/PC)      - TrueForce-capable
-#   C26D  G923 (Xbox/PC, alt PID)    - TrueForce-capable
-#   C26E  G923 (Xbox/PC)             - TrueForce-capable
-#   C262  G920 Racing Wheel
+# Supported USB product IDs (VID 046D), grouped by capability - all get
+# the same hidraw access:
 #
-# The RS50 and G PRO are the direct-drive family this driver targets;
-# the G923 is gear-driven but speaks the same TrueForce stream protocol,
-# so it gets hidraw access purely so the SDK DLLs can reach it under
-# Proton. The G920 has no TrueForce but is kept for its range knob.
+#   Direct-drive TrueForce wheels (this driver's primary targets):
+#     C276  RS50 Direct Drive - NATIVE mode (full sysfs surface)
+#     C272  G PRO Racing Wheel (Xbox/PC) - ALSO the RS50 in G PRO
+#           COMPATIBILITY mode (the RS50 borrows this PID so the SDK's
+#           device check accepts it; the driver tells the two apart by
+#           USB product string)
+#     C268  G PRO Racing Wheel (PlayStation/PC)
+#
+#   Gear-driven, but same TrueForce stream protocol - access is purely
+#   so the SDK DLLs can reach the wheel under Proton:
+#     C266  G923 (PlayStation/PC)
+#     C26D  G923 (Xbox/PC, alt PID)
+#     C26E  G923 (Xbox/PC)
+#
+#   No TrueForce - kept only for its range knob:
+#     C262  G920 Racing Wheel
 
 ACTION!="add|change", GOTO="trueforce_end"
 SUBSYSTEM!="hidraw", GOTO="trueforce_end"
