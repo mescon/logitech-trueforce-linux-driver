@@ -636,6 +636,36 @@ cat wheel_response_curve
 steering feels wrong after an upload. Whether curves persist across
 power cycles is unknown.**
 
+### wheel_pedal_response_curve
+**Access**: Read/Write
+**Availability**: wheels whose pedal unit exposes feature `0x80A4` on
+HID++ sub-device `0x02` (`-EOPNOTSUPP` otherwise)
+
+Hardware response curves for the pedal unit's three axes - the same
+64-point store as `wheel_response_curve`, addressed per axis. First
+token selects the axis (0-2), then `reset` or the pair list:
+
+```bash
+# Soften pedal axis 1's top end
+echo "1 0:0 32768:40000 65535:65535" > wheel_pedal_response_curve
+
+# Axis 1 back to built-in
+echo "1 reset" > wheel_pedal_response_curve
+
+cat wheel_pedal_response_curve
+# 0: 64/64 points (usage 0x31)
+# 1: 0/64 points (usage 0x33)
+# 2: 0/64 points (usage 0x32)
+```
+
+Which axis is which pedal is reported live via each axis's HID usage
+(shown by the read) rather than assumed. Note these are the wheel's
+onboard hardware curves; the driver's software pedal shaping
+(`wheel_throttle_curve` etc.) is separate and applied on top.
+
+**Status: implemented from the G Hub capture protocol map, untested on
+hardware. `<axis> reset` is the escape hatch.**
+
 ### wheel_rev_level
 **Access**: Read/Write
 **Values**: `0`-`10` (number of rev LEDs lit)
@@ -649,8 +679,11 @@ level-based: the host commands how many LEDs are lit (0-10) and the
 wheel's onboard profile owns colours, direction and scaling. Protocol
 decoded from a G HUB capture by the TF4ALL project (see
 `docs/PROTOCOL_SPECIFICATION.md` section 9). The first write arms the
-feature; writes are paced to G HUB's ~160 ms cadence internally because
-faster bursts starve the wheel's shared HID++ command processor. The
+feature. Writes return immediately: the driver coalesces them and
+flushes only the newest level at G HUB's ~160 ms cadence (faster
+bursts would starve the wheel's shared HID++ command processor), so a
+fast telemetry feeder always shows the latest value with no queueing
+lag. The
 wheel holds a level for a while but reverts eventually - a telemetry
 feeder should refresh at ~1 Hz or faster (natural for rev-light use).
 

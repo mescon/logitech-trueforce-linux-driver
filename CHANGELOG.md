@@ -59,6 +59,22 @@ dev/docs/tf4all-analysis.md) fed back into the driver:
 - libtrueforce: all -Wformat-truncation warnings fixed; sparse,
   smatch and both CI kernel builds clean across the week's changes.
 
+### Second overnight batch (2026-07-06)
+
+- **`wheel_pedal_response_curve`**: hardware response curves for the
+  pedal unit's three axes (feature 0x80A4 on HID++ sub-device 0x02),
+  sharing the steering attribute's upload core. En route, the
+  sub-device send helper gained the LONG-report case it was missing
+  (13-byte curve chunks would previously have been truncated to a
+  SHORT report). Untested on hardware.
+- **`wheel_rev_level` is now asynchronous and coalescing**: writes
+  return immediately and the driver flushes only the newest level at
+  the 160 ms cadence - a fast telemetry feeder no longer blocks
+  ~160 ms per write or drains stale intermediate levels to the wire.
+- Independent corroboration from our own captures: the 2026-01-26
+  gameplay capture streams type-0x01 force packets at 999.8 Hz,
+  matching the packet-paced 1 kHz model behind the unified stream.
+
 ### Naming generalized to the whole direct-drive family
 
 - **dmesg lines are now tagged with the actual wheel model** instead

@@ -677,13 +677,18 @@ static int hidpp_send_fap_to_device_sync(struct hidpp_device *hidpp,
 
 	/*
 	 * Only RS50-family wheels currently use sub-device-addressed FAPs,
-	 * and they require SHORT reports for small-param sends. VERY_LONG
-	 * covers the theoretical large-payload case; both branches match
-	 * the SHORT-first path hidpp_send_fap_command_sync takes for the
-	 * same quirk.
+	 * and they require SHORT reports for small-param sends. The middle
+	 * LONG case covers payloads that outgrow SHORT's 3 bytes but fit LONG
+	 * (e.g. the 13-byte fn4 response-curve chunks the pedal-unit uploader
+	 * sends to sub-device 0x02); VERY_LONG covers anything larger. All
+	 * three thresholds mirror the SHORT-first path
+	 * hidpp_send_fap_command_sync takes for the same quirk, so a given
+	 * param_count picks the same report type through either function.
 	 */
 	if (param_count > (HIDPP_REPORT_LONG_LENGTH - 4))
 		message->report_id = REPORT_ID_HIDPP_VERY_LONG;
+	else if (param_count > (HIDPP_REPORT_SHORT_LENGTH - 4))
+		message->report_id = REPORT_ID_HIDPP_LONG;
 	else
 		message->report_id = REPORT_ID_HIDPP_SHORT;
 	message->device_index = device_index;
@@ -4187,6 +4192,7 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_PAGE_FILTER		0x8140	/* FFB Filter */
 #define HIDPP_DD_PAGE_RESPONSE_CURVE	0x80A4	/* Per-axis 64-point response curves */
 #define HIDPP_DD_PAGE_CALIBRATE		0x812C	/* Centre calibration (G Pro sub-device 0x05) */
+#define HIDPP_DD_PEDAL_DEV_IDX		0x02	/* HID++ sub-device index of the pedal unit (0x80A4 axis curves) */
 #define HIDPP_DD_PAGE_SYNC			0x1BC0	/* Unknown sync/prepare feature */
 
 /*
@@ -4416,19 +4422,25 @@ struct hidpp_dd_ff_data {
 	u8 idx_trueforce;		/* Feature index for TRUEFORCE */
 	u8 idx_brakeforce;		/* Feature index for brake force */
 	u8 idx_filter;			/* Feature index for FFB filter */
-	u8 idx_response_curve;		/* Feature index for 0x80A4 axis response curves */
+	u8 idx_response_curve;		/* Feature index for 0x80A4 axis response curves (steering, base dev 0xff) */
+	u8 idx_pedal_curve;		/* Feature index for 0x80A4 axis response curves on pedal sub-device 0x02 */
 	u8 idx_brightness;		/* Feature index for LED brightness */
 	u8 idx_lightsync;		/* Feature index for LIGHTSYNC effects */
 	u8 idx_rgb_config;		/* Feature index for RGB Zone Config */
 	/*
 	 * Real-G-PRO rev-light state (level-based 0x807A protocol; see
-	 * wheel_rev_level_store). Serialised by rev_lock: sysfs stores can
-	 * race each other and the arm burst must run exactly once.
+	 * wheel_rev_level_store). Serialised by rev_lock: sysfs stores queue
+	 * rev_work, which owns every send; the arm burst must run exactly
+	 * once. rev_target is the newest requested level (latest-value-wins);
+	 * the worker always flushes the latest, never stale intermediates.
 	 */
 	struct mutex rev_lock;
-	bool rev_armed;			/* one-time arm burst sent */
-	u8 rev_level;			/* last commanded level 0-10 */
-	unsigned long rev_last_write;	/* jiffies of last level pair */
+	struct delayed_work rev_work;	/* coalescing flush; runs on system_unbound_wq */
+	bool rev_armed;			/* one-time arm burst sent (rev_lock) */
+	bool rev_err_logged;		/* worker: send-fail warned once this streak (rev_lock) */
+	u8 rev_level;			/* last successfully commanded level 0-10 (reported by _show) */
+	u8 rev_target;			/* newest requested level, WRITE_ONCE/READ_ONCE */
+	unsigned long rev_last_write;	/* jiffies of last level-pair attempt (rev_lock) */
 	u8 idx_profile;			/* Feature index for Profile switching */
 	u8 idx_profile_notify;		/* Feature index for profile-change broadcasts (0x80D0) */
 	u8 idx_sync;			/* Feature index for sync/prepare (0x1BC0) */
@@ -6692,6 +6704,7 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	ff->idx_brakeforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_response_curve = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_pedal_curve = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile_notify = HIDPP_DD_FEATURE_NOT_FOUND;
@@ -6761,6 +6774,18 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	if (ret == 0)
 		dd_dbg(hid, "Calibrate feature at dev 0x%02x index 0x%02x\n",
 			ff->calibrate_dev_idx, ff->idx_calibrate);
+
+	/*
+	 * The pedal unit carries its own 0x80A4 AxisResponseCurve instance on
+	 * HID++ sub-device 0x02 (three axes, distinct feature index from the
+	 * base's steering one). Resolve it per sub-device, mirroring calibrate.
+	 */
+	ret = hidpp_root_get_feature_on_device(hidpp, HIDPP_DD_PEDAL_DEV_IDX,
+					       HIDPP_DD_PAGE_RESPONSE_CURVE,
+					       &ff->idx_pedal_curve);
+	if (ret == 0)
+		dd_dbg(hid, "Pedal response curve feature at dev 0x%02x index 0x%02x\n",
+		       HIDPP_DD_PEDAL_DEV_IDX, ff->idx_pedal_curve);
 
 	hidpp_dd_query_device_identity(ff);
 }
@@ -9613,6 +9638,14 @@ static DEVICE_ATTR(wheel_led_effect, 0664, wheel_led_effect_show, wheel_led_effe
  * eventually; a telemetry feeder should refresh at ~1 Hz or faster,
  * which anything driving rev lights does naturally.
  *
+ * The cadence floor is enforced by a coalescing delayed_work
+ * (hidpp_dd_rev_work_handler), not by sleeping in the store: a store
+ * only validates, publishes the target level, and queues the worker for
+ * the next allowed slot, returning immediately. Fast feeders (50-100 Hz)
+ * therefore collapse to one send per slot with the newest level winning,
+ * instead of blocking each write ~160 ms and draining stale
+ * intermediates onto the wire.
+ *
  * UNTESTED on real hardware (we develop on an RS50); gated to real
  * G PROs by dd_is_real_gpro() and needs a G PRO owner to validate.
  */
@@ -9657,6 +9690,108 @@ static int hidpp_dd_rev_send_level(struct hidpp_device *hidpp, u8 idx, u8 level)
 	return __hidpp_send_report(hidpp->hid_dev, &report);
 }
 
+/*
+ * Coalescing rev-light flush (process context, system_unbound_wq).
+ *
+ * Runs on system_unbound_wq, not ff->wq: it does synchronous-ish 0x807A
+ * sends (the arm burst msleeps between packets) and must never
+ * head-of-line-block the 500 Hz force stream on the singlethread ff->wq -
+ * same rationale as tf_init_work / range_poll_work.
+ *
+ * Latest-value-wins: the store publishes rev_target and (re)queues us; we
+ * always send whatever rev_target holds now, so a fast telemetry feeder
+ * collapses to one send per cadence slot instead of queueing every stale
+ * intermediate level. If the target moved again while we were sending, we
+ * re-queue for the next slot.
+ */
+static void hidpp_dd_rev_work_handler(struct work_struct *work)
+{
+	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
+						   rev_work.work);
+	struct hidpp_device *hidpp = ff->hidpp;
+	u8 target;
+	int ret = 0, i;
+
+	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
+		return;
+
+	mutex_lock(&ff->rev_lock);
+
+	/* Teardown may have flipped stopping while we waited for the lock. */
+	if (atomic_read_acquire(&ff->stopping) ||
+	    ff->idx_lightsync == HIDPP_DD_FEATURE_NOT_FOUND) {
+		mutex_unlock(&ff->rev_lock);
+		return;
+	}
+
+	target = READ_ONCE(ff->rev_target);
+
+	/*
+	 * Serialise the raw sends against the sync-transaction machinery:
+	 * holding send_mutex guarantees no sync question is pending on this
+	 * interface while our fire-and-forget 0x807A traffic can elicit
+	 * replies. Without it, a rev-elicited reply whose sw-id the wheel
+	 * zeroes could satisfy hidpp_match_answer's lenient (sw-id-stripped)
+	 * path for a concurrent sync question on the same feature/function.
+	 */
+	mutex_lock(&hidpp->send_mutex);
+
+	if (!ff->rev_armed) {
+		static const u8 arm_fns[]    = { 0, 1, 2, 3, 0 };
+		static const u8 arm_params[] = { 0, 0, 0, 2, 0 };
+
+		for (i = 0; i < ARRAY_SIZE(arm_fns); i++) {
+			ret = hidpp_dd_rev_send_short(hidpp, ff->idx_lightsync,
+						      arm_fns[i], arm_params[i]);
+			if (ret < 0)
+				goto out_send;
+			msleep(HIDPP_DD_REV_ARM_GAP_MS);
+		}
+		ff->rev_armed = true;
+	}
+
+	ret = hidpp_dd_rev_send_level(hidpp, ff->idx_lightsync, target);
+out_send:
+	mutex_unlock(&hidpp->send_mutex);
+
+	/*
+	 * Pace every attempt, not just successes: rev_last_write bounds the
+	 * wire footprint regardless of outcome, so a persistent transport
+	 * error can't turn a fast feeder into an unthrottled retry storm.
+	 * The reported level (rev_level) only advances on a real send.
+	 */
+	ff->rev_last_write = jiffies;
+
+	if (ret < 0) {
+		/*
+		 * The store can no longer surface send errors, so log here.
+		 * Once per failure streak (cleared on the next success):
+		 * __hidpp_send_report returns bare -1, report a real -EIO.
+		 */
+		if (!ff->rev_err_logged) {
+			dd_warn(hidpp->hid_dev,
+				"rev-light send failed: %d\n", -EIO);
+			ff->rev_err_logged = true;
+		}
+	} else {
+		WRITE_ONCE(ff->rev_level, target);
+		ff->rev_err_logged = false;
+	}
+
+	/*
+	 * The feeder moved the target while we were sending: schedule the
+	 * next flush a full cadence gap out (rev_last_write is now), so the
+	 * 160 ms floor holds across the hand-off.
+	 */
+	if (READ_ONCE(ff->rev_target) != target &&
+	    !atomic_read_acquire(&ff->stopping) &&
+	    atomic_read(&ff->initialized))
+		queue_delayed_work(system_unbound_wq, &ff->rev_work,
+				   msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS));
+
+	mutex_unlock(&ff->rev_lock);
+}
+
 static ssize_t wheel_rev_level_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
@@ -9683,7 +9818,9 @@ static ssize_t wheel_rev_level_store(struct device *dev,
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
 	struct hidpp_dd_ff_data *ff;
 	unsigned int level;
-	int ret, i;
+	unsigned long delay;
+	long remaining;
+	int ret;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -9701,71 +9838,39 @@ static ssize_t wheel_rev_level_store(struct device *dev,
 	if (ff->idx_lightsync == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
+	/*
+	 * Latest-value-wins: publish the target, then queue the worker for
+	 * the next cadence slot and return. No send, no sleep here - the
+	 * worker (hidpp_dd_rev_work_handler) owns the arm burst, the sends
+	 * and the send_mutex serialisation. queue_delayed_work is a no-op if
+	 * the worker is already pending, so a burst of stores coalesces onto
+	 * the single already-scheduled flush, which picks up this newest
+	 * rev_target when it runs.
+	 */
+	WRITE_ONCE(ff->rev_target, level);
+
 	mutex_lock(&ff->rev_lock);
-
-	/*
-	 * Pace to G HUB's cadence rather than error: rev level is
-	 * telemetry-shaped (rapid small updates near the shift point)
-	 * and callers should not have to handle -EBUSY. Sleeping out
-	 * the remainder keeps the wire footprint bounded. The remaining
-	 * delay is computed ONCE as a signed delta: re-deriving it after
-	 * a time_before() check races the jiffies tick, and an unsigned
-	 * "deadline - jiffies" that crosses zero underflows into a
-	 * near-infinite msleep holding rev_lock.
-	 *
-	 * TODO(post-hardware-validation): a delayed_work flushing only
-	 * the newest level would coalesce fast feeders instead of
-	 * queueing every stale intermediate value behind the mutex.
-	 */
-	{
-		long remaining = (long)(ff->rev_last_write +
-					msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS) -
-					jiffies);
-
-		if (ff->rev_armed && remaining > 0)
-			msleep(jiffies_to_msecs(remaining));
+	/* Re-check under the lock: teardown may have flipped stopping. */
+	if (atomic_read_acquire(&ff->stopping)) {
+		mutex_unlock(&ff->rev_lock);
+		return -ENODEV;
 	}
-
 	/*
-	 * Serialise the raw sends against the sync-transaction machinery:
-	 * holding send_mutex guarantees no sync question is pending on
-	 * this interface while our fire-and-forget 0x807A traffic can
-	 * elicit replies. Without it, a rev-elicited reply whose sw-id
-	 * the wheel zeroes could satisfy hidpp_match_answer's lenient
-	 * (sw-id-stripped) path for a concurrent sync question on the
-	 * same feature and function nibble.
+	 * Delay to the next allowed slot, computed ONCE as a signed delta:
+	 * re-deriving it after a time_before() check races the jiffies tick,
+	 * and an unsigned "deadline - jiffies" that crosses zero underflows
+	 * into a near-infinite queue delay. Before the arm burst there is no
+	 * prior pair to pace against, so fire immediately.
 	 */
-	mutex_lock(&hidpp->send_mutex);
-
-	if (!ff->rev_armed) {
-		static const u8 arm_fns[]    = { 0, 1, 2, 3, 0 };
-		static const u8 arm_params[] = { 0, 0, 0, 2, 0 };
-
-		for (i = 0; i < ARRAY_SIZE(arm_fns); i++) {
-			ret = hidpp_dd_rev_send_short(hidpp, ff->idx_lightsync,
-						      arm_fns[i],
-						      arm_params[i]);
-			if (ret < 0)
-				goto out_send;
-			msleep(HIDPP_DD_REV_ARM_GAP_MS);
-		}
-		ff->rev_armed = true;
-	}
-
-	ret = hidpp_dd_rev_send_level(hidpp, ff->idx_lightsync, level);
-	if (ret < 0)
-		goto out_send;
-	WRITE_ONCE(ff->rev_level, level);
-	ff->rev_last_write = jiffies;
-	ret = 0;
-out_send:
-	mutex_unlock(&hidpp->send_mutex);
+	delay = 0;
+	remaining = (long)(ff->rev_last_write +
+			   msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS) - jiffies);
+	if (ff->rev_armed && remaining > 0)
+		delay = remaining;
+	queue_delayed_work(system_unbound_wq, &ff->rev_work, delay);
 	mutex_unlock(&ff->rev_lock);
-	/*
-	 * __hidpp_send_report reports transport failure as bare -1
-	 * (-EPERM to userspace, a misleading errno for an I/O problem).
-	 */
-	return ret < 0 ? -EIO : count;
+
+	return count;
 }
 
 static DEVICE_ATTR(wheel_rev_level, 0664, wheel_rev_level_show,
@@ -10814,8 +10919,8 @@ static DEVICE_ATTR(wheel_range_restore, 0664,
  * straight from the wheel (fn1).
  *
  * The pedal unit exposes the same feature on sub-device 0x02 (three
- * axes); per-pedal curves already exist in-driver as software
- * transforms (wheel_*_curve), so only the steering axis is wired here.
+ * axes); that hardware store is wired separately as
+ * wheel_pedal_response_curve, which shares this attribute's upload core.
  */
 static ssize_t wheel_response_curve_show(struct device *dev,
 					 struct device_attribute *attr,
@@ -10859,38 +10964,57 @@ static ssize_t wheel_response_curve_show(struct device *dev,
 #define HIDPP_DD_CURVE_POINTS		64
 #define HIDPP_DD_CURVE_CHUNK		3	/* points per fn4 send */
 
-static ssize_t wheel_response_curve_store(struct device *dev,
-					  struct device_attribute *attr,
+/*
+ * Revert one 0x80A4 axis to its built-in curve (fn6 [axis]). Shared by the
+ * user-facing "reset" escape hatch and the best-effort mid-upload cleanup.
+ * `dev_idx` is 0xff for the wheel base (steering) or 0x02 for the pedal
+ * unit; hidpp_send_fap_to_device_sync handles both (device_index 0xff is
+ * what hidpp_send_message_sync rewrites the base's implicit 0 into anyway).
+ * Returns the raw send result: 0, a negative transport errno, or a positive
+ * HID++ error byte, for the caller to log via hidpp_errno.
+ */
+static int hidpp_dd_response_curve_revert(struct hidpp_device *hidpp,
+					  u8 dev_idx, u8 axis, u8 idx)
+{
+	struct hidpp_report response;
+	u8 params[1] = { axis };
+
+	memset(&response, 0, sizeof(response));
+	return hidpp_send_fap_to_device_sync(hidpp, dev_idx, idx,
+					     0x60 /* fn6 revert */,
+					     params, 1, &response);
+}
+
+/*
+ * Parse an "in:out" pair list, validate it, resample to the wheel's 64-point
+ * store, and upload it to one 0x80A4 axis via fn3 open / 22x fn4 chunks /
+ * fn5 commit. This is the shared body behind both the steering
+ * (dev 0xff, axis 0) and pedal (dev 0x02, axis 0-2) store paths.
+ *
+ * `buf`/`count` cover just the pair list (the pedal store strips its leading
+ * axis token first). Every send goes through hidpp_send_fap_to_device_sync:
+ * for the 0xff base that is equivalent to hidpp_send_fap_command_sync (same
+ * report-type choice for the 0/1/5/13-byte payloads used here, and the same
+ * 0xff device index after the implicit-0 rewrite), so one path serves both.
+ * fn3 open and fn6 revert carry [axis]; a SHORT report with param [0] is
+ * byte-identical to the empty-param "axis 0" form the earlier steering-only
+ * code sent. Stopping is re-checked between chunks (teardown mid-upload would
+ * otherwise ride each remaining sync send to its full timeout), and a failed
+ * chunk/commit triggers a best-effort fn6 revert so the wheel is not left
+ * with a half-written store. Returns 0 or a negative errno.
+ */
+static int hidpp_dd_response_curve_upload(struct hidpp_device *hidpp,
+					  struct hidpp_dd_ff_data *ff,
+					  u8 dev_idx, u8 axis, u8 idx,
 					  const char *buf, size_t count)
 {
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
+	struct hid_device *hid = hidpp->hid_dev;
 	struct hidpp_report response;
+	u8 openp[1] = { axis };
 	u16 (*pts)[2];
 	u16 curve[HIDPP_DD_CURVE_POINTS];
 	int npts = 0, i, sent, ret;
 	char *dup, *tok, *cur_pos;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-	if (ff->idx_response_curve == HIDPP_DD_FEATURE_NOT_FOUND)
-		return -EOPNOTSUPP;
-
-	if (sysfs_streq(buf, "reset")) {
-		memset(&response, 0, sizeof(response));
-		ret = hidpp_send_fap_command_sync(hidpp,
-						  ff->idx_response_curve,
-						  0x60 /* fn6 revert */,
-						  NULL, 0, &response);
-		return ret ? hidpp_errno(hid, ret, "reset response curve")
-			   : count;
-	}
 
 	pts = kmalloc_array(HIDPP_DD_CURVE_POINTS, sizeof(*pts), GFP_KERNEL);
 	if (!pts)
@@ -10952,11 +11076,11 @@ static ssize_t wheel_response_curve_store(struct device *dev,
 		}
 	}
 
-	/* fn3: open the upload for axis 0. */
+	/* fn3: open the upload for this axis. */
 	memset(&response, 0, sizeof(response));
-	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_response_curve,
-					  0x30 /* fn3 open */, NULL, 0,
-					  &response);
+	ret = hidpp_send_fap_to_device_sync(hidpp, dev_idx, idx,
+					    0x30 /* fn3 open */, openp, 1,
+					    &response);
 	if (ret) {
 		ret = hidpp_errno(hid, ret, "open response curve upload");
 		goto out_free;
@@ -10986,11 +11110,10 @@ static ssize_t wheel_response_curve_store(struct device *dev,
 					   &chunk[3 + i * 4]);
 		}
 		memset(&response, 0, sizeof(response));
-		ret = hidpp_send_fap_command_sync(hidpp,
-						  ff->idx_response_curve,
-						  0x40 /* fn4 points */,
-						  chunk, 1 + n * 4,
-						  &response);
+		ret = hidpp_send_fap_to_device_sync(hidpp, dev_idx, idx,
+						    0x40 /* fn4 points */,
+						    chunk, 1 + n * 4,
+						    &response);
 		if (ret) {
 			ret = hidpp_errno(hid, ret,
 					  "upload response curve points");
@@ -11001,16 +11124,16 @@ static ssize_t wheel_response_curve_store(struct device *dev,
 
 	/* fn5: commit. */
 	memset(&response, 0, sizeof(response));
-	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_response_curve,
-					  0x50 /* fn5 commit */, NULL, 0,
-					  &response);
+	ret = hidpp_send_fap_to_device_sync(hidpp, dev_idx, idx,
+					    0x50 /* fn5 commit */, NULL, 0,
+					    &response);
 	if (ret) {
 		ret = hidpp_errno(hid, ret, "commit response curve");
 		goto out_revert;
 	}
 
-	dd_info(hid, "Steering response curve uploaded (%d user points resampled to %d)\n",
-		npts, HIDPP_DD_CURVE_POINTS);
+	dd_info(hid, "Response curve uploaded (dev 0x%02x axis %u, %d user points resampled to %d)\n",
+		dev_idx, axis, npts, HIDPP_DD_CURVE_POINTS);
 	ret = 0;
 	goto out_free;
 
@@ -11020,18 +11143,174 @@ out_revert:
 	 * left with a partially-written store. fn6 falls back to the
 	 * built-in curve, which is the predictable state.
 	 */
-	memset(&response, 0, sizeof(response));
-	hidpp_send_fap_command_sync(hidpp, ff->idx_response_curve,
-				    0x60 /* fn6 revert */, NULL, 0,
-				    &response);
+	hidpp_dd_response_curve_revert(hidpp, dev_idx, axis, idx);
 out_free:
 	kfree(dup);
 	kfree(pts);
+	return ret;
+}
+
+static ssize_t wheel_response_curve_store(struct device *dev,
+					  struct device_attribute *attr,
+					  const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	int ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_response_curve == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	if (sysfs_streq(buf, "reset")) {
+		ret = hidpp_dd_response_curve_revert(hidpp, 0xff, 0,
+						     ff->idx_response_curve);
+		return ret ? hidpp_errno(hid, ret, "reset response curve")
+			   : count;
+	}
+
+	ret = hidpp_dd_response_curve_upload(hidpp, ff, 0xff, 0,
+					     ff->idx_response_curve, buf, count);
 	return ret < 0 ? ret : count;
 }
 
 static DEVICE_ATTR(wheel_response_curve, 0664, wheel_response_curve_show,
 		   wheel_response_curve_store);
+
+/*
+ * wheel_pedal_response_curve: the pedal unit's per-axis 64-point response
+ * curves (HID++ feature 0x80A4 on sub-device 0x02, three axes). Same store
+ * protocol as the steering curve above, addressed to dev 0x02 with an
+ * explicit axis. Read emits one line per axis with the wheel-reported
+ * loaded/max point counts and the HID usage the axis reports for itself
+ * (0x31/0x33/0x32 per the capture map, but taken live from fn1 rather than
+ * assumed, since axis<->pedal mapping is not fixed here).
+ *
+ * IMPLEMENTED FROM THE G HUB CAPTURE PROTOCOL MAP (spec section 5.1/5.3),
+ * UNTESTED ON HARDWARE. `reset` (per axis) is the escape hatch back to the
+ * built-in curve. G Hub also calls fn9 [axis] on every init here; its role
+ * is unknown, so this driver does not send it.
+ *
+ * Write syntax: "<axis> reset" or "<axis> <in:out>...", e.g.
+ *   echo "1 0:0 32768:40000 65535:65535" > wheel_pedal_response_curve
+ *   echo "1 reset" > wheel_pedal_response_curve
+ * axis is 0-2; the pair list obeys the same rules as wheel_response_curve
+ * (2-64 pairs, strictly increasing in, non-decreasing out, 0:0 first,
+ * 65535:65535 last, resampled to 64 points).
+ */
+static ssize_t wheel_pedal_response_curve_show(struct device *dev,
+					       struct device_attribute *attr,
+					       char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_report response;
+	ssize_t len = 0;
+	u8 axis;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_pedal_curve == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	for (axis = 0; axis < 3; axis++) {
+		u8 params[1] = { axis };
+		u16 loaded, max;
+		int ret;
+
+		/*
+		 * Re-check between axes: teardown can start mid-loop, and each
+		 * remaining sync send would then ride its full timeout against
+		 * a dead device (three axes back to back).
+		 */
+		if (atomic_read_acquire(&ff->stopping))
+			return -ENODEV;
+
+		/*
+		 * Zero the response first: a SHORT/LONG reply fills only the
+		 * leading params bytes and the device-reported length is
+		 * untrusted, so without this a stale-stack read could leak
+		 * through this world-readable attribute (infoleak).
+		 */
+		memset(&response, 0, sizeof(response));
+		ret = hidpp_send_fap_to_device_sync(hidpp, HIDPP_DD_PEDAL_DEV_IDX,
+						    ff->idx_pedal_curve,
+						    0x10 /* fn1 axis info */,
+						    params, 1, &response);
+		if (ret) {
+			len += sysfs_emit_at(buf, len, "%u: ?\n", axis);
+			continue;
+		}
+		/*
+		 * fn1 reply: [axis][00 01 00][usage][bit width][loaded u16 BE]
+		 * [max u16 BE].
+		 */
+		loaded = get_unaligned_be16(&response.fap.params[6]);
+		max = get_unaligned_be16(&response.fap.params[8]);
+		len += sysfs_emit_at(buf, len,
+				     "%u: %u/%u points (usage 0x%02x)\n",
+				     axis, loaded, max,
+				     response.fap.params[4]);
+	}
+	return len;
+}
+
+static ssize_t wheel_pedal_response_curve_store(struct device *dev,
+						struct device_attribute *attr,
+						const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	unsigned int axis;
+	int consumed = 0, ret;
+	const char *rest;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_pedal_curve == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	/* First token = axis (0-2); the rest is "reset" or the pair list. */
+	if (sscanf(buf, "%u %n", &axis, &consumed) < 1 || axis > 2)
+		return -EINVAL;
+	rest = buf + consumed;
+
+	if (sysfs_streq(rest, "reset")) {
+		ret = hidpp_dd_response_curve_revert(hidpp,
+						     HIDPP_DD_PEDAL_DEV_IDX,
+						     axis, ff->idx_pedal_curve);
+		return ret ? hidpp_errno(hid, ret, "reset pedal response curve")
+			   : count;
+	}
+
+	ret = hidpp_dd_response_curve_upload(hidpp, ff, HIDPP_DD_PEDAL_DEV_IDX,
+					     axis, ff->idx_pedal_curve, rest,
+					     count - consumed);
+	return ret < 0 ? ret : count;
+}
+
+static DEVICE_ATTR(wheel_pedal_response_curve, 0664,
+		   wheel_pedal_response_curve_show,
+		   wheel_pedal_response_curve_store);
 
 /*
  * wheel_serial / wheel_firmware: read-only identity from DeviceInfo
@@ -11201,6 +11480,7 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_profile_names.attr,
 	&dev_attr_wheel_range_restore.attr,
 	&dev_attr_wheel_response_curve.attr,
+	&dev_attr_wheel_pedal_response_curve.attr,
 	&dev_attr_wheel_compat_range.attr,
 	&dev_attr_wheel_compat_gain.attr,
 	&dev_attr_wheel_compat_autocenter.attr,
@@ -11631,6 +11911,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->idx_brakeforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_response_curve = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_pedal_curve = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_lightsync = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_rgb_config = HIDPP_DD_FEATURE_NOT_FOUND;
@@ -11680,6 +11961,14 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	INIT_DELAYED_WORK(&ff->init_work, hidpp_dd_ff_init_work);
 	INIT_DELAYED_WORK(&ff->refresh_work, hidpp_dd_ff_refresh_work);
 	INIT_DELAYED_WORK(&ff->range_poll_work, hidpp_dd_ff_range_poll_work);
+	/*
+	 * rev_work is only reachable from wheel_rev_level_store, which lives
+	 * in hidpp_dd_wheel_group (created below). The G Pro settings-only
+	 * path (gpro_sysfs_init) attaches gpro_wheel_group, which has no
+	 * wheel_rev_level attribute, and never runs this init - so its zeroed
+	 * rev_work is never queued and gpro_sysfs_destroy need not cancel it.
+	 */
+	INIT_DELAYED_WORK(&ff->rev_work, hidpp_dd_rev_work_handler);
 	INIT_WORK(&ff->settings_refresh_work, hidpp_dd_ff_settings_refresh_work);
 	INIT_WORK(&ff->tf_init_work, hidpp_dd_tf_init_work_handler);
 
@@ -11818,6 +12107,12 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 	dd_dbg(hid, "Cancelling refresh timer\n");
 	cancel_delayed_work_sync(&ff->refresh_work);
 	cancel_delayed_work_sync(&ff->range_poll_work);
+	/*
+	 * rev_work runs on system_unbound_wq (not ff->wq), so drain_workqueue
+	 * below won't reach it - cancel it explicitly like range_poll_work.
+	 * stopping is already set, so a running instance can't self-requeue.
+	 */
+	cancel_delayed_work_sync(&ff->rev_work);
 	cancel_work_sync(&ff->settings_refresh_work);
 	cancel_work_sync(&ff->tf_init_work);
 
