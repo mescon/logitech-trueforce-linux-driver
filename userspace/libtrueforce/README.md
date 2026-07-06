@@ -21,11 +21,11 @@ an extension; it has no Windows SDK counterpart.
 
 ## Safety
 
-The RS50 can produce up to 8 Nm of torque. The wheel may self-
-calibrate by rotating when it powers up, when the active profile
-changes, or when the Trueforce init sequence first runs after
-library load. Keep hands clear of the rim, or firmly hold the
-wheel, whenever you:
+These are strong direct-drive wheels - the RS50 produces up to 8 Nm
+of torque and the G PRO up to 11 Nm. The wheel may self-calibrate by
+rotating when it powers up, when the active profile changes, or when
+the Trueforce init sequence first runs after library load. Keep hands
+clear of the rim, or firmly hold the wheel, whenever you:
 
 - load the kernel driver,
 - plug or replug the wheel,
