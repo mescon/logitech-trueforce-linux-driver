@@ -1,7 +1,7 @@
 # Logitech TrueForce Direct-Drive Wheel Protocol Specification
 
-**Document Version**: 6.5
-**Date**: 2026-07-03
+**Document Version**: 6.7
+**Date**: 2026-07-06
 **Author**: Verified from USB capture analysis
 **Status**: Protocol reference for Linux driver development
 
@@ -193,21 +193,39 @@ Brake partial (0x4847):
 
 ## 4. Force Feedback Output Commands (Endpoint 0x03 OUT)
 
-### Standard FFB Report (64 bytes) - VERIFIED
+> **Endpoint 0x03 carries one 64-byte type-0x01 packet family, not two
+> separate protocols.** Byte 10 (the "new samples this packet" count)
+> demultiplexes it: `0` is a pure constant-force ("KF") update
+> documented here, and `4` is a unified force+audio ("TF") packet whose
+> bytes 12-63 carry a rolling haptic sample window on top of the same
+> force field. **[`TRUEFORCE_PROTOCOL.md`](TRUEFORCE_PROTOCOL.md) is the
+> authoritative reference for the full framing** (window layout, init
+> sequence, type-0x0e range, type-0x02 responses). This section covers
+> only the constant-force subset the kernel driver's steering path
+> emits, plus the encoding and refresh command shared by both.
+
+### Constant-Force Report (64 bytes, byte 10 = 0) - VERIFIED
 
 ```
 Offset  Size  Type      Description
 ------  ----  ----      -----------
 0       1     uint8     Report ID (0x01)
 1-3     3     -         Reserved (0x00 0x00 0x00)
-4       1     uint8     Effect type (0x01 = constant force)
+4       1     uint8     Command type (0x01 = stream/sample packet)
 5       1     uint8     Sequence counter (0x00-0xFF, wraps)
-6-7     2     uint16    Force value (little-endian)
-8-9     2     uint16    Force value duplicate (little-endian)
-10-63   54    -         Padding (zeros)
+6-7     2     uint16    Force value / motor torque target ("cur", LE)
+8-9     2     uint16    Force value duplicate (LE, must match 6-7)
+10      1     uint8     New-sample count (0 here; 4 = TF audio packet)
+11-63   53    -         Zero for a constant-force packet. In a TF
+                        packet byte 11 is 0x0d and 12-63 are the audio
+                        window - see TRUEFORCE_PROTOCOL.md.
 ```
 
-**CRITICAL**: Sequence counter is a **single byte** that wraps at 255.
+Bytes 6-9 are the wheel's motor torque target ("cur" in TrueForce
+terms) and are honoured whether or not the packet also carries audio,
+so a constant-force packet is a TF stream packet with an empty sample
+window. **CRITICAL**: the sequence counter is a **single byte** that
+wraps at 255 (unlike the two-byte HID++ sequence).
 
 ### Force Value Encoding (Offset Binary)
 
@@ -257,7 +275,9 @@ Maximum force RIGHT, sequence 0x01:
 
 ### Observed Behavior
 
-- FFB update rate: ~250-500 Hz during gameplay
+- Force update rate: games stream 250-1000 Hz (AC EVO at the top end);
+  the kernel driver's own force stream runs at 500 Hz, rising to a
+  unified force+audio packet per tick while a texture effect plays
 - Sequence counter increments with each command
 - Force value and duplicate must always match
 - `05 07` command sent periodically (~3 times per minute)
@@ -1596,3 +1616,4 @@ This returns the PAGE ID at each index. G Hub queries indices 0x00 through ~0x1F
 | 6.4 | 2026-07-03 | Profile feature settled live against the OLED: fn2 SET = plain [profile,0,0], fn1 GET = [profile, mode], fn3 = per-slot profile names; catalog rows 0x02/0x03 corrected (DeviceInfo / DeviceNameType); launch-time 90-degree reset root-caused to the SDK's type-0x0e operating-range push (see TRUEFORCE_PROTOCOL.md) |
 | 6.5 | 2026-07-03 | Renamed from RS50_PROTOCOL_SPECIFICATION.md (covers the whole direct-drive family); driver symbols updated to the hidpp_dd_ prefix; documented that the RS50 keeps its own USB product string in G PRO compatibility mode ("RS50 Base for PlayStation/PC" under PID c272) while a real G PRO reports "PRO Racing Wheel" - the driver uses this to tag log output per model |
 | 6.6 | 2026-07-04 | Cross-pollination from the TF4ALL project (issue #20): the Windows game-FFB path for DD wheels is HID++ 0x8123 fn2 (int16 BE at offset 10-11; catalog index 0x10 native / 0x0e G-PRO-PID); stream-packet bytes 6-9 ("cur") are the motor torque target and override 0x8123 while a session is active, with the window additive on top; AC EVO streams unified cur+audio packets at up to ~1000 pkt/s; texture amplitudes above ~0.5-0.7 FS cross from vibration into steering pull; the REAL G PRO rim has level-based rev lights on 0x807A (SHORT fn2 + LONG fn6, byte 9 = 0-10) with no per-LED RGB - section 9 describes RS50 hardware only |
+| 6.7 | 2026-07-06 | Section 4 corrected and de-duplicated against TRUEFORCE_PROTOCOL.md: byte 10 is the new-sample count that demuxes the shared ep-0x03 packet family (0 = constant force, 4 = unified force+audio), not padding; bytes 6-9 named as the "cur" motor torque target; force rate note updated (games 250-1000 Hz, driver 500 Hz); TRUEFORCE_PROTOCOL.md pointed to as the authoritative framing reference, with a reciprocal link back. Removed the RS50_PROTOCOL_SPECIFICATION.md redirect stub (rename complete). |

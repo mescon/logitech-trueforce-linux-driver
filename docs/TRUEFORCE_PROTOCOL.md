@@ -223,7 +223,9 @@ addressed to interface 1, but the **RS50 has no FFB OUT endpoint on
 interface 1**. The Linux driver actuates the RS50's constant force by
 writing to **interface 2 endpoint `0x03`** (the dedicated `hidpp_dd_ff_*`
 path), the same interface TRUEFORCE uses; the two are still separated by
-report ID. See the RS50 FFB section of `PROTOCOL_SPECIFICATION.md`.
+report ID. See [`PROTOCOL_SPECIFICATION.md`](PROTOCOL_SPECIFICATION.md)
+section 4 for the constant-force (KF) subset of these same ep-0x03
+packets and the wider HID++ / device reference.
 
 ### Report 0x10 (7 bytes)
 
