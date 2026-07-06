@@ -3,7 +3,7 @@
 # Update the DKMS-installed hid-logitech-hidpp module from the current
 # repo checkout. Copies mainline/ into /usr/src/hid-logitech-hidpp-1.0/,
 # removes any previous DKMS state for that version, and installs the
-# freshly built module. Does NOT unload the running module — reload it
+# freshly built module. Does NOT unload the running module - reload it
 # manually (see the final message) once the wheel is free.
 #
 # Usage: sudo ./tools/dkms-update.sh
@@ -107,7 +107,7 @@ cat <<'EOF'
 Module installed. To pick it up without a reboot:
 
   1) Unplug the wheel (or close anything holding the evdev / hidraw
-     device open — e.g. fftest, games, browser tabs with Gamepad API)
+     device open - e.g. fftest, games, browser tabs with Gamepad API)
   2) sudo modprobe -r hid-logitech-hidpp
   3) sudo modprobe hid-logitech-hidpp
   4) Plug the wheel back in

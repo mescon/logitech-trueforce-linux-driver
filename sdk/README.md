@@ -15,7 +15,7 @@ This directory holds copies of Logitech Windows SDK artifacts we use to reason a
 | `wheel_9_1_0/logi_steering_wheel_{x64,x86}.dll` | **Wheel SDK 9.1.0** (successor to the 2015 public SDK) | Extracted from a game install |
 | `wheel_9_1_0/exports_x64.txt` | Full export listing (58 symbols) | `winedump -j export` |
 
-## Legacy public SDK vs newer SDKs — what changed
+## Legacy public SDK vs newer SDKs - what changed
 
 ### Public Steering Wheel SDK (2015)
 
@@ -25,10 +25,10 @@ Models supported top out at G920 / G29. The header enumerates constants like `LO
 
 58 exports. Adds versus the legacy SDK:
 
-- `LogiGetDiState`, `LogiGetDiStateENGINES` — direct DirectInput state passthrough (bypasses internal bookkeeping)
-- `LogiFreeStateENGINES` — explicit state struct cleanup (paired with GetStateENGINES)
-- `LogiGetLedCaps`, `LogiGetLedCapsDInput` — runtime LED capability discovery
-- `LogiSetRpmLedsDirect`, `LogiSetRpmLedsDirectDInput` — direct RPM LED control (vs `LogiPlayLeds` which takes RPM/first/redline)
+- `LogiGetDiState`, `LogiGetDiStateENGINES` - direct DirectInput state passthrough (bypasses internal bookkeeping)
+- `LogiFreeStateENGINES` - explicit state struct cleanup (paired with GetStateENGINES)
+- `LogiGetLedCaps`, `LogiGetLedCapsDInput` - runtime LED capability discovery
+- `LogiSetRpmLedsDirect`, `LogiSetRpmLedsDirectDInput` - direct RPM LED control (vs `LogiPlayLeds` which takes RPM/first/redline)
 
 Everything else is the same API. No Trueforce.
 
@@ -53,20 +53,20 @@ Force mode and range (mirrors Wheel SDK 9.1.0):
 - `logiWheelGetOperatingRangeBoundsDegrees/Radians`
 - `logiWheelGetRpmLedCaps`, `logiWheelPlayLeds`
 
-Kinetic Force (KF — the classic constant-force channel):
+Kinetic Force (KF - the classic constant-force channel):
 - `logiTrueForceSetTorqueKF`, `logiTrueForceSetTorqueKFPiecewise`, `logiTrueForceGetTorqueKF`, `logiTrueForceClearKF`
 - `logiTrueForceGetGainKF`, `logiTrueForceSetGainKF`
 - `logiTrueForceGetMaxContinuousTorqueKF`, `logiTrueForceGetMaxPeakTorqueKF`
 - `logiTrueForceGetReconstructionFilterKF`, `logiTrueForceSetReconstructionFilterKF`
 
 Trueforce audio stream (TF):
-- `logiTrueForceSetStreamTF` — set a stream of samples (the ~1kHz bulk API)
-- `logiTrueForceSetTorqueTFfloat`, `logiTrueForceSetTorqueTFdouble`, `logiTrueForceSetTorqueTFint8/16/32` — per-sample or small-buffer setters, numeric type variants
+- `logiTrueForceSetStreamTF` - set a stream of samples (the ~1kHz bulk API)
+- `logiTrueForceSetTorqueTFfloat`, `logiTrueForceSetTorqueTFdouble`, `logiTrueForceSetTorqueTFint8/16/32` - per-sample or small-buffer setters, numeric type variants
 - `logiTrueForceGetTorqueTF`, `logiTrueForceClearTF`
 - `logiTrueForceGetGainTF`, `logiTrueForceSetGainTF`
 - `logiTrueForceGetHapticRate`, `logiTrueForceGetHapticThreadStatus`
 - `logiTrueForcePause`, `logiTrueForceResume`, `logiTrueForceIsPaused`
-- `logiTrueForceSync` — stream synchronization
+- `logiTrueForceSync` - stream synchronization
 - `logiTrueForceGetTorqueTFRateBounds`
 
 Damping / viscosity (shared between KF and TF):
@@ -74,19 +74,19 @@ Damping / viscosity (shared between KF and TF):
 - (viscosity appears in string table; not currently an export, likely deprecated/unused from this version)
 
 Advanced / diagnostics:
-- `logiAdvancedGetThreadHandles` — exposes SDK's internal thread handles to the host (for affinity / priority control)
+- `logiAdvancedGetThreadHandles` - exposes SDK's internal thread handles to the host (for affinity / priority control)
 
-DllRegisterServer, DllUnregisterServer, dllOpen, dllClose — standard DLL boilerplate.
+DllRegisterServer, DllUnregisterServer, dllOpen, dllClose - standard DLL boilerplate.
 
 **Architecture revealed by strings:**
 
 The SDK does NOT talk to USB directly. String table includes:
 
-- `local_connection::Connection`, `local_connection::CodecConnection` — the SDK uses a "local connection" abstraction
-- `logi.trueforce.connect` — almost certainly the IPC endpoint name (named pipe, local socket, or similar)
-- `Packet::Header`, `Packet::Gains`, `Packet::Aperture`, `Packet::HeloContainerId`, `Packet::HeloProtocolVersion` — packet types serialized over the IPC
-- `"TrueForce message pump"` — SDK runs a background thread processing incoming packets
-- `trueforce_features.cfg`, `trueforce_data.bin` — device-specific config files (likely under `C:\Program Files\LGHUB\` or similar)
+- `local_connection::Connection`, `local_connection::CodecConnection` - the SDK uses a "local connection" abstraction
+- `logi.trueforce.connect` - almost certainly the IPC endpoint name (named pipe, local socket, or similar)
+- `Packet::Header`, `Packet::Gains`, `Packet::Aperture`, `Packet::HeloContainerId`, `Packet::HeloProtocolVersion` - packet types serialized over the IPC
+- `"TrueForce message pump"` - SDK runs a background thread processing incoming packets
+- `trueforce_features.cfg`, `trueforce_data.bin` - device-specific config files (likely under `C:\Program Files\LGHUB\` or similar)
 
 **Implication:** on Windows the flow is:
 
@@ -98,8 +98,8 @@ The USB wire protocol we see in captures is generated by the G HUB Agent, not by
 
 ### "KF" vs "TF" inside the SDK
 
-- **KF — Kinetic Force** — classic constant-force style torque. Single value per call, or piecewise curve. Maps to the existing PID FFB path on the wheel (feature 0x8123 via HID++, or on the RS50 the dedicated endpoint 0x03 with a DC force value).
-- **TF — Trueforce** — the audio haptic stream. ~1000 samples/sec (per captures). Multiple numeric types accepted (int8/int16/int32/float/double) — the SDK does the conversion before serializing.
+- **KF - Kinetic Force** - classic constant-force style torque. Single value per call, or piecewise curve. Maps to the existing PID FFB path on the wheel (feature 0x8123 via HID++, or on the RS50 the dedicated endpoint 0x03 with a DC force value).
+- **TF - Trueforce** - the audio haptic stream. ~1000 samples/sec (per captures). Multiple numeric types accepted (int8/int16/int32/float/double) - the SDK does the conversion before serializing.
 
 Both channels coexist at runtime: the SDK sets both KF (slow, steering feel) and TF (fast, vibration/texture) simultaneously.
 

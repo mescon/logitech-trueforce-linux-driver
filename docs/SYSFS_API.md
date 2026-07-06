@@ -287,15 +287,15 @@ echo 0 > wheel_ffb_filter_auto
 Controls whether the driver inverts the sign of every `FF_CONSTANT`
 level before sending it to the wheel. This single toggle is what makes
 the driver's FFB feel right under both Wine/Proton games and native
-Linux apps — the two paths disagree on sign by one flip somewhere in
+Linux apps - the two paths disagree on sign by one flip somewhere in
 Wine's DirectInput-to-evdev translation layer, and the driver can't
 tell them apart at runtime.
 
-- `1` (default) — invert. Correct for Wine/Proton running Windows
+- `1` (default) - invert. Correct for Wine/Proton running Windows
   games (Assetto Corsa Competizione, etc.). If `FF_CONSTANT` feels
   like centring forces push the wheel *away* from centre instead of
   back toward it, the toggle is at the wrong setting.
-- `0` — pass-through. Correct for native Linux evdev apps that
+- `0` - pass-through. Correct for native Linux evdev apps that
   upload effects with the convention documented in
   `Documentation/input/ff.rst` (direction=0x4000 east, positive
   level = rightward force). `fftest`, `ffcfstress`, and direct

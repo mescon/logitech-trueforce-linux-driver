@@ -78,12 +78,12 @@ have live SETs take effect on the motor. See "Compat-mode
 behavior" below for caveats.
 
 **TrueForce in Proton sims**: end-to-end verified against
-**Assetto Corsa Competizione** and **Assetto Corsa EVO** — full FFB,
+**Assetto Corsa Competizione** and **Assetto Corsa EVO** - full FFB,
 TrueForce haptics, and complete button / paddle / encoder binding
 all working through Logitech's own signed SDK DLLs running
 unmodified under Proton. The same setup is expected to work for
 Le Mans Ultimate, AMS2, Assetto Corsa (the original 2014 game),
-rFactor 2, and iRacing — they all use the same SDK. The recipe below
+rFactor 2, and iRacing - they all use the same SDK. The recipe below
 covers the setup. Our driver passes the SDK's raw writes through
 unchanged; no shim, no DLL injection.
 
@@ -101,7 +101,7 @@ reference.
 What to expect per wheel. **Legend:** ✅ verified on hardware · 🟢
 supported, expected to work (shares the verified code path, not yet
 tested on that exact model) · 🟡 implemented from captures, needs an
-owner to validate · — not applicable.
+owner to validate · - not applicable.
 
 | Capability | RS50 (`c276` native / `c272` compat) | G PRO Racing Wheel (`c272` Xbox-PC / `c268` PS-PC) |
 |---|:--:|:--:|
@@ -109,11 +109,11 @@ owner to validate · — not applicable.
 | Force feedback (full evdev effect suite) | ✅ | 🟢 |
 | TrueForce haptics (Proton + signed SDK) | ✅ | 🟢 |
 | TrueForce texture routing for evdev effects (`wheel_texture_route`) | ✅ | 🟢 |
-| Rotation range (90–2700°) | ✅ | 🟢 |
+| Rotation range (90-2700°) | ✅ | 🟢 |
 | FFB strength / damping / FFB filter (+ auto) | ✅ | 🟢 |
 | TrueForce intensity / sensitivity / brake-force | ✅ | 🟢 |
-| LIGHTSYNC RGB LEDs (RS50 rim) | ✅ | — |
-| Rev-light level (`wheel_rev_level`, real G PRO rim) | — | 🟡 needs a tester |
+| LIGHTSYNC RGB LEDs (RS50 rim) | ✅ | - |
+| Rev-light level (`wheel_rev_level`, real G PRO rim) | - | 🟡 needs a tester |
 | Centre calibration | ✅ | 🟢 |
 | Mode / profile switching | ✅ | 🟢 |
 
@@ -148,7 +148,7 @@ All effects are routed to the wheel's single direct-drive motor
 
 ### Verified game support
 
-- **Assetto Corsa Competizione** and **Assetto Corsa EVO** — verified
+- **Assetto Corsa Competizione** and **Assetto Corsa EVO** - verified
   end-to-end under Proton: **steering, full FFB, and TrueForce all at the
   same time**, with `PROTON_ENABLE_HIDRAW=1` and Steam Input disabled.
 - Other Logitech-SDK sims (Le Mans Ultimate, AMS2, Assetto Corsa,
