@@ -24,11 +24,46 @@
 #include <unistd.h>
 
 /*
- * RS50 direct-drive motor peak torque (datasheet / manual page 13:
- * "up to 8 Nm"). We clamp inputs outside +/- MAX so a misbehaving
- * game can't request more than the wheel can physically produce.
+ * Per-model direct-drive motor torque ceilings (Nm), resolved from the
+ * wheel's USB PID. The PEAK value is the scaling denominator in
+ * logitf_kf_set_torque_nm(): a torque request maps to full-scale int16
+ * at exactly the wheel's peak, and it also clamps inputs so a
+ * misbehaving game cannot request more than the wheel can physically
+ * produce. Getting it per-model is safety-relevant - scaling an 11 Nm
+ * G PRO against an 8 Nm ceiling would command ~37% more torque than the
+ * game asked for.
+ *
+ *   RS50  (c276):        8 Nm peak (datasheet / manual page 13)
+ *   G PRO (c272 / c268): 11 Nm peak (Logitech published spec)
+ *
+ * The CONTINUOUS value is informational only (reported via a getter,
+ * never used in scaling). The RS50's 5 Nm is from the manual; the
+ * G PRO's is an estimate pending confirmation on real hardware - see
+ * the "help wanted: G PRO torque" tracking issue.
  */
-#define RS50_MAX_TORQUE_NM 8.0
+static double dd_peak_torque_nm(uint16_t pid)
+{
+	switch (pid) {
+	case LOGITF_GPRO_XBOX_PID:
+	case LOGITF_GPRO_PS_PID:
+		return 11.0;
+	case LOGITF_RS50_PID:
+	default:
+		return 8.0;
+	}
+}
+
+static double dd_continuous_torque_nm(uint16_t pid)
+{
+	switch (pid) {
+	case LOGITF_GPRO_XBOX_PID:
+	case LOGITF_GPRO_PS_PID:
+		return 6.9;	/* ESTIMATE - unconfirmed on G PRO hardware */
+	case LOGITF_RS50_PID:
+	default:
+		return 5.0;
+	}
+}
 
 int logitf_evdev_ensure_open(struct logitf_device *dev)
 {
@@ -97,7 +132,7 @@ int logitf_kf_set_torque_nm(struct logitf_device *dev, double torque_nm)
 {
 	int rc;
 	int16_t level;
-	double scaled;
+	double scaled, maxnm;
 
 	pthread_mutex_lock(&dev->lock);
 	rc = kf_ensure_open(dev);
@@ -106,9 +141,10 @@ int logitf_kf_set_torque_nm(struct logitf_device *dev, double torque_nm)
 		return rc;
 	}
 
-	if (torque_nm >  RS50_MAX_TORQUE_NM) torque_nm =  RS50_MAX_TORQUE_NM;
-	if (torque_nm < -RS50_MAX_TORQUE_NM) torque_nm = -RS50_MAX_TORQUE_NM;
-	scaled = torque_nm * 32767.0 / RS50_MAX_TORQUE_NM;
+	maxnm = dd_peak_torque_nm(dev->pid);
+	if (torque_nm >  maxnm) torque_nm =  maxnm;
+	if (torque_nm < -maxnm) torque_nm = -maxnm;
+	scaled = torque_nm * 32767.0 / maxnm;
 	level = (int16_t)scaled;
 
 	if (kf_upload(dev, level) < 0) {
@@ -164,5 +200,12 @@ double logitf_kf_get_torque_nm(struct logitf_device *dev)
 	return v;
 }
 
-double logitf_kf_max_continuous_nm(void) { return 5.0; }
-double logitf_kf_max_peak_nm(void)       { return RS50_MAX_TORQUE_NM; }
+double logitf_kf_max_continuous_nm(struct logitf_device *dev)
+{
+	return dd_continuous_torque_nm(dev->pid);
+}
+
+double logitf_kf_max_peak_nm(struct logitf_device *dev)
+{
+	return dd_peak_torque_nm(dev->pid);
+}

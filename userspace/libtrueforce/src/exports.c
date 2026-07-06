@@ -314,14 +314,20 @@ int logiTrueForceClearKF(int index)
 
 double logiTrueForceGetMaxContinuousTorqueKF(int index)
 {
-	(void)index;
-	return logitf_kf_max_continuous_nm();
+	struct logitf_device *dev;
+
+	if (logitf_find_by_index(index, &dev))
+		return 0.0;
+	return logitf_kf_max_continuous_nm(dev);
 }
 
 double logiTrueForceGetMaxPeakTorqueKF(int index)
 {
-	(void)index;
-	return logitf_kf_max_peak_nm();
+	struct logitf_device *dev;
+
+	if (logitf_find_by_index(index, &dev))
+		return 0.0;
+	return logitf_kf_max_peak_nm(dev);
 }
 
 /*

@@ -122,8 +122,8 @@ int    logitf_kf_set_torque_nm(struct logitf_device *dev, double torque_nm);
 int    logitf_kf_clear(struct logitf_device *dev);
 int    logitf_kf_close(struct logitf_device *dev);
 double logitf_kf_get_torque_nm(struct logitf_device *dev);
-double logitf_kf_max_continuous_nm(void);
-double logitf_kf_max_peak_nm(void);
+double logitf_kf_max_continuous_nm(struct logitf_device *dev);
+double logitf_kf_max_peak_nm(struct logitf_device *dev);
 
 /* status.c */
 int    logitf_status_start(struct logitf_device *dev);
