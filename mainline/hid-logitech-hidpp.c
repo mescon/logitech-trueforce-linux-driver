@@ -6576,15 +6576,8 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 			dd_info(hidpp->hid_dev,
 				 "Profile change broadcast -> %s (profile %u)\n",
 				 profile ? "onboard" : "desktop", profile);
-			/*
-			 * Re-query profile-dependent settings, guarded on
-			 * ff->wq as defence in depth: the settings-refresh
-			 * work is only armed once the FFB workqueue exists,
-			 * so a wq-less path would skip the re-query while the
-			 * broadcast's cache updates above still apply.
-			 */
-			if (ff->wq)
-				queue_work(ff->wq, &ff->settings_refresh_work);
+			/* Re-query profile-dependent settings. */
+			queue_work(ff->wq, &ff->settings_refresh_work);
 		}
 		return 1;
 	}
@@ -7036,14 +7029,8 @@ static int hidpp_dd_set_mode(struct hidpp_dd_ff_data *ff, u8 profile)
 	 * stale values. The device usually emits a rotation broadcast too,
 	 * but the settings we read via HID++ GETs don't trigger their own
 	 * events.
-	 *
-	 * G Pro's settings-only hidpp_dd_ff_data leaves ff->wq NULL; skip the
-	 * re-query there to avoid a NULL-deref in queue_work. Callers on
-	 * that path already updated the cache fields above and the
-	 * per-sysfs-handler get will re-fetch on the next read.
 	 */
-	if (ff->wq)
-		queue_work(ff->wq, &ff->settings_refresh_work);
+	queue_work(ff->wq, &ff->settings_refresh_work);
 
 	return 0;
 }
