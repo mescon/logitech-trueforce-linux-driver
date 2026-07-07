@@ -11006,11 +11006,19 @@ static int hidpp_dd_response_curve_upload(struct hidpp_device *hidpp,
 	cur_pos = dup;
 	while ((tok = strsep(&cur_pos, " \t\n")) != NULL) {
 		unsigned int in, out;
+		char extra;
 
 		if (!*tok)
 			continue;
+		/*
+		 * "%c" catches trailing junk glued to a pair ("30000:40000x"
+		 * or "5:5:5"): sscanf stops at the first non-match and would
+		 * otherwise return 2 for the numeric prefix, silently
+		 * accepting the malformed token. A clean pair leaves nothing
+		 * for %c, so a valid token returns exactly 2.
+		 */
 		if (npts >= HIDPP_DD_CURVE_POINTS ||
-		    sscanf(tok, "%u:%u", &in, &out) != 2 ||
+		    sscanf(tok, "%u:%u%c", &in, &out, &extra) != 2 ||
 		    in > 0xFFFF || out > 0xFFFF) {
 			ret = -EINVAL;
 			goto out_free;
