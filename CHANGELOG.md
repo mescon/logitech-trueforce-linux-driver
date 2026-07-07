@@ -150,6 +150,13 @@ dev/docs/tf4all-analysis.md) fed back into the driver:
   is added - a leftover low gain from a game no longer silently kills
   the user's centring force (matches hardware-autocenter semantics on
   other wheels).
+- **Pre-release review hardening**: a non-finite (NaN) KF torque
+  request from game force code slipped past the clamp in libtrueforce
+  and reached an undefined int16 cast - an unbounded command to a
+  direct-drive motor - now treated as zero force; the response-curve
+  pair parser rejected trailing junk (`30000:40000x`, `5:5:5`) instead
+  of silently accepting the numeric prefix; and two dead `if (ff->wq)`
+  guards left by the settings-only path removal were dropped.
 
 ### Oversteer
 
