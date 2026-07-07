@@ -17,6 +17,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <linux/input.h>
 #include <stdint.h>
 #include <string.h>
@@ -142,6 +143,17 @@ int logitf_kf_set_torque_nm(struct logitf_device *dev, double torque_nm)
 	}
 
 	maxnm = dd_peak_torque_nm(dev->pid);
+	/*
+	 * A NaN request slips past both ordered comparisons below (every
+	 * comparison with NaN is false), leaving scaled = NaN and making
+	 * the (int16_t) cast undefined. A game whose own force maths
+	 * produces NaN must not translate into an unbounded command to a
+	 * direct-drive motor. Treat non-finite input as zero force.
+	 * (+/-inf are already caught by the clamp, but this covers them
+	 * too.)
+	 */
+	if (!isfinite(torque_nm))
+		torque_nm = 0.0;
 	if (torque_nm >  maxnm) torque_nm =  maxnm;
 	if (torque_nm < -maxnm) torque_nm = -maxnm;
 	scaled = torque_nm * 32767.0 / maxnm;
