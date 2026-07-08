@@ -220,27 +220,55 @@ setup() {
 	"$REPO_ROOT/tools/dkms-update.sh" || exit 1
 
 	say "[2/5] Migrating off any old full-fork install"
-	# The old build shipped as hid-logitech-hidpp and blacklisted the
-	# in-tree driver, taking over every Logitech HID++ device. This scoped
-	# build only claims the wheels, so undo both: drop the blacklist (it
-	# would leave mice/keyboards without the in-tree driver) and remove the
-	# old DKMS package and module.
-	local migrated=0
+	# The old build shipped its module as hid-logitech-hidpp - the SAME
+	# name as the in-tree driver - so DKMS DISPLACED the genuine in-tree
+	# module (backing it up under .../original_module/) and the installer
+	# blacklisted it. This scoped build ships as hid-logitech-dd and claims
+	# only the wheels, so fully undo the old state: drop the blacklist,
+	# remove the old DKMS package, RESTORE the displaced in-tree module, and
+	# delete the fork's leftover .ko. Skipping the restore would leave the
+	# stale fork as the only hid-logitech-hidpp on disk, so mice/keyboards
+	# would keep loading it instead of the maintained in-tree driver.
+	local migrated=0 dkms_base=/var/lib/dkms/hid-logitech-hidpp
 	if [ -f "$OLD_BLACKLIST_FILE" ]; then
 		rm -f "$OLD_BLACKLIST_FILE"
 		echo "  removed stale blacklist $OLD_BLACKLIST_FILE"
 		migrated=1
 	fi
-	if dkms status 2>/dev/null | grep '^hid-logitech-hidpp' >/dev/null; then
-		dkms remove -m hid-logitech-hidpp --all >/dev/null 2>&1 || true
-		rm -rf /usr/src/hid-logitech-hidpp-*
-		echo "  removed old DKMS package hid-logitech-hidpp"
+	if dkms status 2>/dev/null | grep -q '^hid-logitech-hidpp' \
+	   || [ -d "$dkms_base" ] \
+	   || ls /usr/lib/modules/*/updates/dkms/hid-logitech-hidpp.ko* >/dev/null 2>&1; then
+		# Best-effort clean removal (restores the original when the source
+		# is still intact); tolerate an already-broken state.
+		dkms remove -m hid-logitech-hidpp -v 1.0 --all >/dev/null 2>&1 || true
+		# Restore any displaced in-tree module from DKMS's own backup.
+		if [ -d "$dkms_base/original_module" ]; then
+			local kdir k om dst
+			for kdir in "$dkms_base"/original_module/*/; do
+				[ -d "$kdir" ] || continue
+				k=$(basename "$kdir")
+				om=$(ls "$kdir"*/hid-logitech-hidpp.ko* 2>/dev/null | head -1)
+				dst=/usr/lib/modules/$k/kernel/drivers/hid
+				if [ -n "$om" ] && [ -d "$dst" ]; then
+					cp -f "$om" "$dst/"
+					echo "  restored in-tree hid-logitech-hidpp for $k"
+				fi
+			done
+		fi
+		# Drop the fork's installed module and DKMS state for good.
+		rm -f /usr/lib/modules/*/updates/dkms/hid-logitech-hidpp.ko* 2>/dev/null || true
+		rm -rf "$dkms_base" /usr/src/hid-logitech-hidpp-*
+		echo "  removed old full-fork DKMS package hid-logitech-hidpp"
 		migrated=1
 	fi
 	modprobe -r hid-logitech-hidpp 2>/dev/null || true
 	if [ "$migrated" -eq 1 ]; then
 		depmod -a
-		echo "  in-tree hid-logitech-hidpp now serves your other Logitech devices"
+		if modprobe -n hid-logitech-hidpp >/dev/null 2>&1; then
+			echo "  in-tree hid-logitech-hidpp restored for your other Logitech devices"
+		else
+			wrn "in-tree hid-logitech-hidpp missing after migration - reinstall your kernel package (e.g. sudo pacman -S linux) to restore it for non-wheel Logitech devices"
+		fi
 	else
 		echo "  nothing to migrate (clean install)"
 	fi
