@@ -5,7 +5,12 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.11.0 - 2026-07-08
+
+35 commits since the `v0.10.0` tag on 2026-07-03. The TrueForce force
+path was reworked from TF4ALL protocol findings and feel-verified on
+RS50 hardware (clean texture route, host-alive force unaffected by
+texture playback, response-curve upload/reset confirmed).
 
 ### TrueForce stream reworked from TF4ALL cross-pollination
 
