@@ -10,7 +10,11 @@ the contract is "it works on RS50 and G Pro as listed here".
 35 commits since the `v0.10.0` tag on 2026-07-03. The TrueForce force
 path was reworked from TF4ALL protocol findings and feel-verified on
 RS50 hardware (clean texture route, host-alive force unaffected by
-texture playback, response-curve upload/reset confirmed).
+texture playback, response-curve upload/reset confirmed). SDK-driven
+game TrueForce under Proton was additionally packet-confirmed in the
+RS50's **native mode** (`046d:c276`, AC EVO, ~2 kHz type-0x01 stream on
+ep 0x03), so native mode no longer trades away game TrueForce for its
+full 2700 range.
 
 ### TrueForce stream reworked from TF4ALL cross-pollination
 

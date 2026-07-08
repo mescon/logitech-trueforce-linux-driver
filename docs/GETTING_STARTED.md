@@ -118,8 +118,14 @@ For each sim, in Steam:
    this game, so the game sees the wheel directly instead of a
    virtual gamepad.
 
-**(RS50 only)** switch the wheel into "G PRO compatibility" mode via
-its OLED menu first - the SDK's device check accepts that identity.
+**(RS50, optional)** you can switch the wheel into "G PRO compatibility"
+mode via its OLED menu, but as of 2026-07-08 this is no longer required:
+the SDK also accepts the RS50's **native** identity (`046d:c276`), verified
+end-to-end in AC EVO (usbmon-confirmed TrueForce stream). Native mode
+additionally unlocks the full 2700 range. Compat mode remains a safe
+fallback if a particular game's SDK build does not recognise the native
+PID; if TrueForce does not engage in native, try compat and please open
+an issue noting the game.
 
 ## 4. Set your steering range, then race
 

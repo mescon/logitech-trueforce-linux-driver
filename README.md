@@ -117,10 +117,12 @@ owner to validate · - not applicable.
 | Centre calibration | ✅ | 🟢 |
 | Mode / profile switching | ✅ | 🟢 |
 
-The RS50 is the development hardware, so its column is verified directly.
-A real G PRO runs the **same `hidpp_dd_ff_*` code path** as an RS50 in G PRO
-compatibility mode (which *is* verified), so it is expected to work; we
-just do not have one to confirm against. **G920 / G923** keep working as
+The RS50 is the development hardware, so its column is verified directly
+in both native (`046d:c276`) and G PRO compatibility (`046d:c272`) modes,
+including SDK game TrueForce under Proton in each. A real G PRO runs the
+**same `hidpp_dd_ff_*` code path** as an RS50 in G PRO compatibility mode,
+so it is expected to work; we just do not have one to confirm against.
+**G920 / G923** keep working as
 a drop-in through the inherited upstream HID++ `0x8123` FFB path; the
 RS50/G-PRO-specific `wheel_*` settings do not apply to them. The **G923**
 speaks the same TrueForce stream protocol as the DD wheels (confirmed on
@@ -178,14 +180,17 @@ All effects are routed to the wheel's single direct-drive motor
 >   after the driver was reloaded while Steam ran: **restart Steam
 >   fully** - its device list goes stale across driver reloads.
 
-### State of the driver (v0.10.0, 2026-07-03)
+### State of the driver (v0.11.0, 2026-07-08)
 
 An honest calibration of what "supported" means today:
 
-**Verified on hardware** (one RS50, G PRO compatibility mode, plus
-extensive USB-capture cross-checks): everything marked with a check in
-the matrix above, including full-lap gameplay in ACC and AC EVO with
-simultaneous steering FFB and TrueForce.
+**Verified on hardware** (one RS50, in **both** G PRO compatibility and
+native `046d:c276` modes, plus extensive USB-capture cross-checks):
+everything marked with a check in the matrix above, including full-lap
+gameplay in ACC and AC EVO with simultaneous steering FFB and TrueForce.
+SDK-driven TrueForce under Proton is now packet-confirmed in native mode
+as well (AC EVO, 2026-07-08), so native mode gets the full 2700 range
+without giving up game TrueForce.
 
 **Expected but awaiting independent confirmation:**
 - A **real G PRO Racing Wheel** runs the identical code path and
@@ -404,13 +409,19 @@ signed SDK DLLs running unmodified under Proton. The same recipe is
 expected to work for the other Logitech-SDK-aware sims (Le Mans
 Ultimate, AMS2, Assetto Corsa, rFactor 2, iRacing). The recipe
 applies to both the RS50 and the G PRO Racing
-Wheel for Xbox/PC. Step 1 is RS50-only.
+Wheel for Xbox/PC. Step 1 is RS50-only and optional.
 
-1. **(RS50 only)** Switch the wheel into "G PRO compatibility" mode
-   via the OLED menu. The wheel reboots and reappears as
-   `046d:c272`, which is the PID ACC's TrueForce check accepts.
-2. Set the wheel's steering angle. The compat-mode factory default
-   is 90°, much too small to drive with. Two equivalent paths:
+1. **(RS50, optional)** You can switch the wheel into "G PRO
+   compatibility" mode via the OLED menu (it reboots and reappears as
+   `046d:c272`), but as of 2026-07-08 this is not required: the SDK
+   also accepts the RS50's **native** PID `046d:c276`, verified
+   end-to-end in AC EVO (usbmon-confirmed TrueForce stream). Native
+   mode additionally unlocks the full 2700 range. Use compat mode only
+   as a fallback if a specific game's SDK build does not recognise the
+   native PID.
+2. Set the wheel's steering angle. The default range can be very small
+   (compat mode's factory default is 90°), much too small to drive
+   with. Two equivalent paths:
    - **From Linux (recommended)**: enter desktop mode and set the
      range live via sysfs:
      ```bash

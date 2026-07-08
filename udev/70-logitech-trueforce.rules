@@ -16,9 +16,10 @@
 #   Direct-drive TrueForce wheels (this driver's primary targets):
 #     C276  RS50 Direct Drive - NATIVE mode (full sysfs surface)
 #     C272  G PRO Racing Wheel (Xbox/PC) - ALSO the RS50 in G PRO
-#           COMPATIBILITY mode (the RS50 borrows this PID so the SDK's
-#           device check accepts it; the driver tells the two apart by
-#           USB product string)
+#           COMPATIBILITY mode (the RS50 can present this PID; the
+#           driver tells the two apart by USB product string). The SDK
+#           also accepts the RS50's native C276, so compat mode is not
+#           required for TrueForce.
 #     C268  G PRO Racing Wheel (PlayStation/PC)
 #
 #   Gear-driven, but same TrueForce stream protocol - access is purely
