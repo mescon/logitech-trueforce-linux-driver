@@ -40,14 +40,42 @@ WHEEL_PFX_DIR='drive_c/Program Files/Logi/wheel_sdk/9_1_0'
 TF_WINE_PATH='C:\\Program Files\\Logi\\Trueforce\\1_3_11\\trueforce_sdk_x64.dll'
 WHEEL_WINE_PATH='C:\\Program Files\\Logi\\wheel_sdk\\9_1_0\\logi_steering_wheel_x64.dll'
 
+# Directory holding your own copies of Logitech's signed SDK DLLs, laid
+# out the same way Logitech ships them on Windows (a "Logi/..." subtree).
+# We never redistribute these; you supply them once. The directory is
+# resolved (highest precedence first) by resolve_sdk_dir():
+#   1. --sdk-dir <path>                      (explicit, this run)
+#   2. $LOGITECH_TRUEFORCE_SDK_DIR           (environment)
+#   3. repo sdk/ next to this script         (in-tree checkout)
+#   4. $XDG_DATA_HOME/logitech-trueforce/sdk (default; ~/.local/share/...)
+# so the same script works from a git checkout and from an AUR/system
+# install where there is no repo tree.
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# DLLs live in this tree under repo/sdk/, laid out the same way Logitech
-# ships them on Windows. See README for how users can populate this from
-# their own Windows install if the tree is missing.
-SRC_TF_X64="$REPO_ROOT/sdk/Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll"
-SRC_TF_X86="$REPO_ROOT/sdk/Logi/Trueforce/1_3_11/trueforce_sdk_x86.dll"
-SRC_WHEEL_X64="$REPO_ROOT/sdk/Logi/wheel_sdk/9_1_0/logi_steering_wheel_x64.dll"
-SRC_WHEEL_X86="$REPO_ROOT/sdk/Logi/wheel_sdk/9_1_0/logi_steering_wheel_x86.dll"
+SDK_DIR_OVERRIDE=""
+SDK_DIR=""
+
+default_sdk_dir() {
+	echo "${XDG_DATA_HOME:-$HOME/.local/share}/logitech-trueforce/sdk"
+}
+
+# Relative path of the marker DLL used to detect a populated SDK tree.
+SDK_MARKER='Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll'
+
+resolve_sdk_dir() {
+	if [ -n "$SDK_DIR_OVERRIDE" ]; then
+		SDK_DIR="$SDK_DIR_OVERRIDE"
+	elif [ -n "${LOGITECH_TRUEFORCE_SDK_DIR:-}" ]; then
+		SDK_DIR="$LOGITECH_TRUEFORCE_SDK_DIR"
+	elif [ -e "$REPO_ROOT/sdk/$SDK_MARKER" ]; then
+		SDK_DIR="$REPO_ROOT/sdk"
+	else
+		SDK_DIR="$(default_sdk_dir)"
+	fi
+	SRC_TF_X64="$SDK_DIR/Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll"
+	SRC_TF_X86="$SDK_DIR/Logi/Trueforce/1_3_11/trueforce_sdk_x86.dll"
+	SRC_WHEEL_X64="$SDK_DIR/Logi/wheel_sdk/9_1_0/logi_steering_wheel_x64.dll"
+	SRC_WHEEL_X86="$SDK_DIR/Logi/wheel_sdk/9_1_0/logi_steering_wheel_x86.dll"
+}
 
 usage() {
 	cat <<EOF
@@ -55,6 +83,11 @@ Usage:
   $0 --all-steam               Install into every Steam wine prefix under ~/.local/share/Steam
   $0 --prefix <path>           Install into a single wine prefix (the .../pfx directory)
   $0 --uninstall               Remove from all Steam prefixes
+
+Options:
+  --sdk-dir <path>             Directory holding your Logitech SDK DLLs
+                               (default: \$LOGITECH_TRUEFORCE_SDK_DIR, the repo
+                               sdk/ tree, or $(default_sdk_dir))
 EOF
 	exit 1
 }
@@ -68,18 +101,25 @@ require_sources() {
 		fi
 	done
 	if [ $missing -ne 0 ]; then
-		cat >&2 <<'EOF'
+		cat >&2 <<EOF
 
-The real Logitech SDK DLLs are not in the repo's sdk/ tree. They ship with
-Logitech G HUB on Windows. To get them:
+The Logitech SDK DLLs were not found under:
+  $SDK_DIR
 
-  - On a Windows install with G HUB, copy:
-      C:\Program Files\Logi\Trueforce\1_3_11\    -> sdk/Logi/Trueforce/1_3_11/
-      C:\Program Files\Logi\wheel_sdk\9_1_0\     -> sdk/Logi/wheel_sdk/9_1_0/
+They ship with Logitech G HUB on Windows and we do not redistribute them;
+you supply them once. Place these four files (Logitech's own Windows
+layout) under that directory:
 
-  - Or install G HUB in a dummy wine prefix and copy from there.
+  \$SDK/Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll
+  \$SDK/Logi/Trueforce/1_3_11/trueforce_sdk_x86.dll
+  \$SDK/Logi/wheel_sdk/9_1_0/logi_steering_wheel_x64.dll
+  \$SDK/Logi/wheel_sdk/9_1_0/logi_steering_wheel_x86.dll
 
-We do not redistribute Logitech's signed DLLs. You must obtain them yourself.
+To get them: on a Windows machine with G HUB, copy C:\Program Files\Logi\
+Trueforce\1_3_11\ and C:\Program Files\Logi\wheel_sdk\9_1_0\ into the tree
+above; or install G HUB in a throwaway wine prefix and copy from there.
+
+Point elsewhere with --sdk-dir <path> or \$LOGITECH_TRUEFORCE_SDK_DIR.
 EOF
 		exit 2
 	fi
@@ -223,7 +263,40 @@ steam_prefixes() {
 	echo "$HOME"/.steam/debian-installation/steamapps/compatdata/*/pfx
 }
 
-case "${1:-}" in
+# Parse flags in any order: a mode (--all-steam / --prefix / --uninstall)
+# plus the optional --sdk-dir override.
+MODE=""
+PREFIX_ARG=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--all-steam|--uninstall)
+		MODE="$1"
+		;;
+	--prefix)
+		MODE="--prefix"
+		PREFIX_ARG="${2:-}"
+		[ -n "$PREFIX_ARG" ] || usage
+		shift
+		;;
+	--sdk-dir)
+		SDK_DIR_OVERRIDE="${2:-}"
+		[ -n "$SDK_DIR_OVERRIDE" ] || usage
+		shift
+		;;
+	-h|--help)
+		usage
+		;;
+	*)
+		echo "unknown argument: $1" >&2
+		usage
+		;;
+	esac
+	shift
+done
+
+resolve_sdk_dir
+
+case "$MODE" in
 --all-steam)
 	require_sources
 	count=0
@@ -235,9 +308,8 @@ case "${1:-}" in
 	echo "installed in $count Steam prefix(es)"
 	;;
 --prefix)
-	[ -n "${2:-}" ] || usage
 	require_sources
-	install_in_prefix "$2"
+	install_in_prefix "$PREFIX_ARG"
 	;;
 --uninstall)
 	for pfx in $(steam_prefixes); do

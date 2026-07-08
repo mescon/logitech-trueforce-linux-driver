@@ -85,20 +85,32 @@ TrueForce in the big sims is delivered by Logitech's own signed DLLs
 running unmodified inside Proton. They are not redistributable, so
 you supply them once, from any Logitech G HUB installation (a Windows
 machine, or G HUB unpacked into a throwaway wine prefix). Four files,
-placed at these exact paths inside the repo:
+in Logitech's own `Logi/...` layout:
 
 ```
-sdk/Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll
-sdk/Logi/Trueforce/1_3_11/trueforce_sdk_x86.dll
-sdk/Logi/wheel_sdk/9_1_0/logi_steering_wheel_x64.dll
-sdk/Logi/wheel_sdk/9_1_0/logi_steering_wheel_x86.dll
+Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll
+Logi/Trueforce/1_3_11/trueforce_sdk_x86.dll
+Logi/wheel_sdk/9_1_0/logi_steering_wheel_x64.dll
+Logi/wheel_sdk/9_1_0/logi_steering_wheel_x86.dll
 ```
+
+Place that `Logi/` tree under whichever of these the installer finds
+first (highest precedence first):
+
+- a directory you pass with `--sdk-dir <path>`,
+- `$LOGITECH_TRUEFORCE_SDK_DIR`,
+- the repo's `sdk/` subdirectory (i.e. `sdk/Logi/...`) if you cloned it,
+- otherwise `~/.local/share/logitech-trueforce/sdk/` (the default when
+  installed from the AUR, where there is no repo tree).
 
 Then install them into your Steam prefixes (as your normal user,
 not sudo):
 
 ```bash
+# from a git checkout:
 ./tools/install-tf-shim.sh --all-steam
+# installed from the AUR (command is on your PATH):
+logitech-trueforce-install-shim --all-steam
 ```
 
 Games installed later: re-run that command (it is idempotent), or
