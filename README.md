@@ -188,40 +188,22 @@ All effects are routed to the wheel's single direct-drive motor
 >   after the driver was reloaded while Steam ran: **restart Steam
 >   fully** - its device list goes stale across driver reloads.
 
-### State of the driver (v0.11.0, 2026-07-08)
+### State of the driver
 
-An honest calibration of what "supported" means today:
+**Verified on RS50 hardware** (native and G PRO compatibility modes,
+plus extensive USB captures): everything checked in the matrix above,
+including full-lap ACC and AC EVO with simultaneous FFB and TrueForce.
 
-**Verified on hardware** (one RS50, in **both** G PRO compatibility and
-native `046d:c276` modes, plus extensive USB-capture cross-checks):
-everything marked with a check in the matrix above, including full-lap
-gameplay in ACC and AC EVO with simultaneous steering FFB and TrueForce.
-SDK-driven TrueForce under Proton is now packet-confirmed in native mode
-as well (AC EVO, 2026-07-08), so native mode gets the full 2700 range
-without giving up game TrueForce.
+**Expected, needs a field report:** a real G PRO (identical code path,
+[issue #8](https://github.com/mescon/logitech-trueforce-linux-driver/issues/8))
+and the other Logitech-SDK sims (Le Mans Ultimate, AMS2, Assetto Corsa,
+rFactor 2, iRacing) - one confirmation each moves them into the verified
+column.
 
-**Expected but awaiting independent confirmation:**
-- A **real G PRO Racing Wheel** runs the identical code path and
-  protocol (byte-verified against contributor captures), but no
-  field report has confirmed the new texture routing or range
-  auto-restore on one yet. If you have a G PRO, your report is the
-  most valuable thing you can contribute (issue #8).
-- **Other Logitech-SDK sims** (Le Mans Ultimate, AMS2, Assetto Corsa,
-  rFactor 2, iRacing) link against the same SDK as the two verified
-  titles and should behave identically. One confirmation each is all
-  it takes to move them into the verified column.
-
-**Not there yet, compared to G Hub on Windows:**
-- No GUI; configuration is sysfs (and partially Oversteer).
-- Install is one command (`sudo ./tools/setup.sh`, with a `doctor`
-  mode that diagnoses every layer), but two per-game Steam settings
-  remain manual because they live in Steam's own UI
-  (`PROTON_ENABLE_HIDRAW=1`, Steam Input off), and there are no
-  distro packages (AUR etc.) yet.
-- No firmware updates (SecureDFU untouched by design), no onboard
-  profile *editing* (slots can be selected and their names read, not
-  written), no per-game automatic profiles, and the response-curve /
-  Sensitivity upload feature is protocol-mapped but not implemented.
+**Not yet, vs G Hub on Windows:** no GUI (settings are sysfs, partly
+Oversteer); two per-game Steam settings stay manual
+(`PROTON_ENABLE_HIDRAW=1`, Steam Input off); no firmware updates and no
+onboard-profile editing (slots select and read, not write).
 
 ## Button Mapping
 
@@ -460,40 +442,23 @@ Corsa, rFactor 2, iRacing) follow the same recipe.
 ## Compat-mode behavior
 
 A few things look wrong but are firmware-side defaults that match
-Windows G Hub on the same wheel. Listed here so you do not chase
-them as Linux issues:
+Windows G Hub, not Linux bugs:
 
-- **The wheel "wants to stay centered"** when no game is sending
-  FFB. The firmware applies its own self-centering spring whenever
-  it is idle. There is no known host command to disable it. Once a
-  game (or the TF SDK) starts driving FFB, that overrides it.
-- **Default steering angle is 90°** out of the factory in compat
-  mode, not 1080°. Set it from Linux via `wheel_profile=0` then
-  `wheel_range=<degrees>`, or from the OLED by editing the active
-  onboard profile's stored steering angle. Some games (Assetto Corsa
-  EVO has been reported) appear to reset the wheel back to 90° on
-  launch every time even when the user has set a wider range
-  beforehand. Inspecting the SDK's HID++ traffic shows the games
-  themselves do **not** write any range-set command - they never
-  even query the range feature - so the reset is wheel-firmware-side,
-  triggered by something in the game's open / acquire / DInput claim
-  path. If you hit this, set the angle via the OLED on the wheel
-  base after launching the game (the OLED change takes effect live)
-  and pin the in-game wheel range to the same value so the firmware
-  has no reason to re-clamp.
-- **Mode and slot semantics**:
-  - Writing `0` to `wheel_profile` enters desktop mode (verified
-    against motor behaviour: subsequent live SETs to `wheel_range`,
-    `wheel_strength`, `wheel_trueforce`, `wheel_damping`, and
-    `wheel_ffb_filter` take effect on the motor immediately).
-  - Writing `1..5` to `wheel_profile` is intended to select onboard
-    slot N but the byte encoding our driver currently sends is wrong
-    in compat mode; it triggers a profile-broadcast cascade and the
-    wheel can land on an unintended slot. Use the OLED menu to
-    select an onboard slot until that path is fixed.
+- **The wheel self-centers when idle.** The firmware applies its own
+  centering spring whenever no game is driving FFB; a game (or the TF
+  SDK) overrides it. No host command disables it.
+- **Factory steering angle is 90° in compat mode.** Set it with
+  `wheel_profile=0` then `wheel_range=<degrees>`, or via the OLED. Some
+  games (e.g. AC EVO) reset it to 90° on launch (firmware-side, not a
+  range command from the game); if so, set the angle on the OLED after
+  launch and pin the in-game range to match.
+- **`wheel_profile=0`** enters desktop mode, where live SETs to
+  `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`,
+  and `wheel_ffb_filter` take effect immediately. Selecting onboard
+  slots 1-5 via `wheel_profile` is unreliable in compat mode; use the
+  OLED menu instead.
 - **`wheel_brake_force`, `wheel_sensitivity`, `wheel_ffb_filter_auto`**
-  return `-EOPNOTSUPP` on this firmware regardless of mode.
-  Configure them via Windows G Hub or the wheel's OLED menu.
+  return `-EOPNOTSUPP` on this firmware; configure via G Hub or the OLED.
 
 ## Usage
 
@@ -582,91 +547,31 @@ See `docs/SYSFS_API.md` for complete API documentation with examples.
 
 ### Oversteer Compatibility
 
-The driver exposes the standard wheel attribute set (new-lg4ff
-names and scales) for [Oversteer](https://github.com/berarma/oversteer)
-compatibility, all verified through Oversteer's own code against the
-live wheel:
-- `range` - rotation range (up to 2700°)
-- `gain` - FFB strength (raw 0-65535 scale)
-- `autocenter` - driver-emulated damped centring spring (raw 0-65535)
-- `spring_level` / `damper_level` / `friction_level` - per-effect-class
-  output scales (0-100)
-- `combine_pedals` - combined pedals mode
+The driver exposes the standard new-lg4ff attribute set for
+[Oversteer](https://github.com/berarma/oversteer): `range` (to 2700°),
+`gain`, `autocenter`, `spring_level`/`damper_level`/`friction_level`, and
+`combine_pedals`, verified through Oversteer against a live wheel.
 
-**Note:** Oversteer requires a patch for full support (native RS50
-detection, and attribute discovery for all three PIDs - stock
-Oversteer looks for the settings on the joystick interface, but this
-driver exposes them on the HID++ sibling interface). The patch ships
-in this repo and applies cleanly to current Oversteer master; the
-full round trip (detect, read settings, set range) is verified
-against a live wheel as of 2026-07-03. Upstreaming is planned; until
-merged, apply it manually.
-
-The patch (`oversteer-logitech-trueforce.patch`) adds:
-- RS50 device detection (USB ID `046d:c276`)
-- 2700° rotation range support (range slider marks at 1800/2700)
-- Correct pedal axis mapping
-- udev permissions for the full settings set (`gain`, `autocenter`,
-  `spring_level`/`damper_level`/`friction_level`, `combine_pedals`) on
-  the RS50 **and both G PRO variants** (`c268`/`c272`) - stock
-  Oversteer only unlocks `range` for the G PRO, so without the patch
-  the other controls stay greyed out even though this driver provides
-  them
-
-#### Applying the Patch
-
-**Option 1: System package / pip install**
+Full support needs a patch (`oversteer-logitech-trueforce.patch`, in this
+repo): it adds RS50 detection (`046d:c276`), the 2700° range, and finds
+the settings on the HID++ sibling interface (stock Oversteer looks on the
+joystick interface and only unlocks `range` for the G PRO, leaving the
+other controls greyed out). It applies cleanly to current Oversteer
+master; upstreaming is planned.
 
 ```bash
-# Find where Oversteer is installed
-python3 -c "import oversteer; print(oversteer.__file__)"
-# Usually: /usr/lib/python3.x/site-packages/oversteer/__init__.py
-
-# Apply patch (adjust path as needed)
-cd /usr/lib/python3.x/site-packages/
+# pip / system install:
+cd "$(python3 -c 'import oversteer,os; print(os.path.dirname(os.path.dirname(oversteer.__file__)))')"
 sudo patch -p1 < /path/to/oversteer-logitech-trueforce.patch
+
+# or from git source:
+git clone https://github.com/berarma/oversteer.git && cd oversteer
+git apply /path/to/oversteer-logitech-trueforce.patch && sudo pip install .
 ```
 
-**Option 2: From git source**
-
-```bash
-git clone https://github.com/berarma/oversteer.git
-cd oversteer
-git apply /path/to/oversteer-logitech-trueforce.patch
-sudo pip install .
-```
-
-**Option 3: Flatpak**
-
-Flatpak apps are sandboxed, so you need to extract, patch, and reinstall:
-
-```bash
-# Export the installed Flatpak to a bundle
-flatpak build-bundle ~/.local/share/flatpak/repo oversteer.flatpak \
-  io.github.berarma.Oversteer
-
-# Unfortunately, Flatpak bundles can't be easily patched.
-# For Flatpak users, the recommended approach is to:
-# 1. Uninstall the Flatpak version
-flatpak uninstall io.github.berarma.Oversteer
-
-# 2. Install from source with the patch applied (Option 2 above)
-
-# 3. Or wait for the upstream patch to be merged and Flatpak updated
-```
-
-#### udev Rule (Required for non-root access)
-
-Create `/etc/udev/rules.d/99-oversteer-rs50.rules`:
-
-```
-SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c276", MODE="0666", TAG+="uaccess"
-```
-
-Then reload:
-```bash
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
+Flatpak Oversteer is sandboxed and can't be patched in place; install from
+source instead. Non-root access to the settings is handled by the driver's
+udev rule (installed by `setup.sh`).
 
 ## Documentation
 
@@ -698,73 +603,31 @@ or a custom test rig). It has its own README and tests under
 `userspace/libtrueforce/`. Nothing in `userspace/` is built or
 installed by the regular install flow.
 
-## Game Compatibility
+## Game compatibility
 
-The driver works with any game that supports Linux force feedback:
+Games see the wheel as a standard Linux joystick with force feedback; no
+special setup beyond binding controls in-game. Verified titles are listed
+under [Verified game support](#verified-game-support); TrueForce in
+SDK-aware sims needs the Proton recipe above. Some games want Steam Input
+enabled as a gamepad, or `SDL_JOYSTICK_DEVICE=/dev/input/eventX`.
 
-| Game | Status | Notes |
-|------|--------|-------|
-| **Native Linux** | ✓ | F1, Dirt Rally 2.0, Euro Truck Simulator 2 |
-| **Proton/Steam** | ✓ | Assetto Corsa, ACC, iRacing, etc. |
-| **Wine** | ✓ | Most racing games via Proton |
+**Experimental `inject_pid` module parameter:** for non-SDK games that use
+standard DirectInput PID force feedback (older/indie sims), the driver can
+inject a PID output collection on interface 0 and translate DInput FFB
+into evdev. Off by default (`inject_pid=0`); `=1` dry-runs (logs only,
+no actuation), `=2` actuates (bench-tested only). Unrelated to
+`PROTON_ENABLE_HIDRAW`, and not needed for any SDK-aware sim.
 
-Games detect the wheel as a standard Linux joystick with FF support. No special configuration needed beyond setting up controls in-game.
+## Technical details
 
-### Proton Tips
-
-- Enable "Steam Input" → "Gamepad with Joystick Trackpad" for some games
-- Some games may need `SDL_JOYSTICK_DEVICE=/dev/input/eventX` environment variable
-
-### inject_pid module parameter
-
-The driver carries an experimental kernel-side path that injects a
-USB HID PID Page 0x0F output collection into interface 0's
-descriptor and translates the resulting DirectInput PID FFB writes
-into our evdev FFB pipeline. It exists for racing games that have
-**no** Logitech SDK integration and rely on standard DInput PID
-force feedback (older sims, indie games, fftest-style standalone
-tools). For all SDK-aware sims listed above it is unused, because
-the SDK bypasses DInput FFB entirely.
-
-Default: `inject_pid=0` (off). The two non-zero values:
-
-```bash
-sudo modprobe -r hid_logitech_hidpp
-# Dry-run: inject the descriptor and intercept PID output reports,
-# but do NOT actuate the wheel - logs every intercepted report.
-# Use this first to confirm the game is hitting our shim.
-sudo modprobe hid_logitech_hidpp inject_pid=1
-
-# Actuate: descriptor + intercept + drive the wheel. Bench-tested
-# only; not yet verified end-to-end against a real non-SDK game.
-sudo modprobe hid_logitech_hidpp inject_pid=2
-```
-
-This path is intended for **Proton's default joystick layer**
-(without `PROTON_ENABLE_HIDRAW`). Setting `PROTON_ENABLE_HIDRAW=1`
-is **not** required and is unrelated; it routes a different game
-class (the SDK-aware sims covered by the recipe above) and does
-not interact with `inject_pid`.
-
-## Technical Details
-
-The RS50 is a multi-interface USB device:
-- **Interface 0**: Joystick input (30-byte reports) - No HID++ support
-- **Interface 1**: HID++ 4.2 protocol (configuration, settings, feature discovery)
-- **Interface 2**: Force feedback output (64-byte reports on endpoint 0x03)
-
-### Architecture Difference: RS50 vs G920/G923
-
-| Aspect | G920/G923 (Belt-driven) | RS50 (Direct-drive) |
-|--------|-------------------------|---------------------|
-| FFB Protocol | HID++ Feature 0x8123 | Dedicated USB endpoint |
-| FFB Commands | Via HID++ FAP messages | Raw HID output reports (01 XX) |
-| Interface Layout | Unified | 3 separate interfaces |
-| Max Rotation | 900° | 2700° |
-
-**Critical Implementation Detail:** The RS50 driver must initialize FFB only on Interface 1 (HID++), not Interface 0 (joystick). Interface 0 lacks HID++ support and attempting FFB initialization there causes joystick input to fail. The driver uses `HIDPP_QUIRK_DD_FFB` to differentiate from the standard G920 code path.
-
-See `docs/PROTOCOL_SPECIFICATION.md` for complete protocol documentation.
+The wheel is a 3-interface USB device: interface 0 = joystick input,
+interface 1 = HID++ 4.2 (config/settings), interface 2 = force-feedback
+output (64-byte reports on ep 0x03). Unlike the belt-driven G920/G923
+(FFB over HID++ 0x8123, 900°), the direct-drive wheels use a dedicated
+FFB endpoint and reach 2700°, so the driver gates them on
+`HIDPP_QUIRK_DD_FFB` and initialises FFB on interface 1 only (interface 0
+has no HID++). Full protocol in
+[`docs/PROTOCOL_SPECIFICATION.md`](docs/PROTOCOL_SPECIFICATION.md).
 
 ## Troubleshooting
 
@@ -802,46 +665,20 @@ This loads the module and rebinds every wheel interface from
 
 ### FFB "pulls the wrong way" / wheel feels unstable under Wine/Proton
 
-If a racing game feels like the wheel wants to *amplify* your steering
-input instead of pushing back toward centre ("tips over" when nudged,
-no self-centering when released), the `FF_CONSTANT` sign compensation
-is probably in the wrong state for your app.
-
-Wine and Proton's DirectInput-to-evdev translation lands
-`FF_CONSTANT` at the driver with the sign inverted relative to what
-native Linux evdev apps produce (this has been empirically confirmed
-against Assetto Corsa Competizione; we have not pinned down the
-exact Wine source location). The driver compensates by default, so
-Wine/Proton games feel right out of the box. Native-evdev tools
-(`fftest`, `ffcfstress`, games using SDL's FF path directly, and
-anyone uploading via raw EVIOCSFF) see that compensation as an
-unwanted flip and will feel inverted.
-
-Toggle via sysfs:
+If a game amplifies your steering instead of pushing back toward centre
+(no self-centering when released), the `FF_CONSTANT` sign compensation is
+in the wrong state. Wine/Proton deliver `FF_CONSTANT` inverted relative to
+native evdev apps, so the driver inverts by default and Wine/Proton games
+feel right out of the box. Native-evdev tools (`fftest`, SDL FF, raw
+`EVIOCSFF`) then feel inverted - toggle it off:
 
 ```bash
-# Resolve the wheel's sysfs dir once (the attributes live on the HID++
-# interface, not necessarily hidraw0; this finds the right one):
 WHEEL_DEV=$(dirname "$(ls -d /sys/class/hidraw/*/device/wheel_range | head -1)")
-
-# Default: invert (correct for Wine/Proton games)
-echo 1 | sudo tee "$WHEEL_DEV/wheel_ffb_constant_sign"
-
-# Pass-through (correct for fftest, SDL FF, custom evdev apps)
-echo 0 | sudo tee "$WHEEL_DEV/wheel_ffb_constant_sign"
+echo 1 | sudo tee "$WHEEL_DEV/wheel_ffb_constant_sign"   # invert (Wine/Proton, default)
+echo 0 | sudo tee "$WHEEL_DEV/wheel_ffb_constant_sign"   # pass-through (native evdev)
 ```
 
-If `WHEEL_DEV` comes back empty, the driver is not bound to the wheel
-(check `lsmod | grep hid_logitech_hidpp` and that the wheel is in PC
-mode), or your build predates this attribute (it was added later in the
-0.9 series) - pull latest and rebuild.
-
-Only `FF_CONSTANT` is affected. SPRING, DAMPER, FRICTION, INERTIA,
-RAMP, PERIODIC, and RUMBLE all feel identical at either toggle
-value.
-
-See `docs/SYSFS_API.md` for details, including the ongoing
-investigation into where the flip actually lives.
+Only `FF_CONSTANT` is affected. See [`docs/SYSFS_API.md`](docs/SYSFS_API.md).
 
 ### Settings not persisting
 
