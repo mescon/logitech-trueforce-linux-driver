@@ -31,7 +31,7 @@
  * - a future 22.x item).
  *
  * Coexistence with the kernel driver on interface 2: our in-tree
- * hid-logitech-hidpp fork also writes to interface 2's ep 0x03 OUT
+ * hid-logitech-dd fork also writes to interface 2's ep 0x03 OUT
  * for classic PID FFB (wheel's HID-report id 0x11, short packets).
  * Our TF packets use HID-report id 0x01 with the 64-byte layout
  * below. The wheel firmware demultiplexes by report id, so the two

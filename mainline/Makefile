@@ -37,8 +37,8 @@ install: all
 	depmod -a
 
 load: all
-	-sudo rmmod hid-logitech-hidpp 2>/dev/null || true
-	sudo insmod ./hid-logitech-hidpp.ko
+	-sudo rmmod hid-logitech-dd 2>/dev/null || true
+	sudo insmod ./hid-logitech-dd.ko
 
 unload:
-	-sudo rmmod hid-logitech-hidpp 2>/dev/null || true
+	-sudo rmmod hid-logitech-dd 2>/dev/null || true

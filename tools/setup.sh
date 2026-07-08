@@ -3,7 +3,8 @@
 # One-command setup and diagnosis for the logitech-trueforce-linux-driver.
 #
 #   sudo ./tools/setup.sh            Full setup: DKMS module + udev rule +
-#                                    in-tree driver blacklist + module load,
+#                                    module load (migrating off any old
+#                                    full-fork install),
 #                                    then (if the SDK DLLs are staged) the
 #                                    TrueForce shim into every Steam prefix
 #                                    as the invoking user.
@@ -17,7 +18,10 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BLACKLIST_FILE="/etc/modprobe.d/blacklist-hid-logitech-hidpp.conf"
+# Left behind by the old full-fork install; this scoped build must NOT
+# blacklist hid-logitech-hidpp (that would strip the in-tree driver from
+# the user's Logitech mice/keyboards). Removed during migration below.
+OLD_BLACKLIST_FILE="/etc/modprobe.d/blacklist-hid-logitech-hidpp.conf"
 UDEV_DST="/etc/udev/rules.d/70-logitech-trueforce.rules"
 WHEEL_PIDS="c276 c272 c268"
 # Steam appids of the Logitech-SDK sims for launch-option checks:
@@ -48,24 +52,25 @@ doctor() {
 	echo
 
 	say "[1/7] Kernel module"
-	if [ -d /sys/module/hid_logitech_hidpp ]; then
-		ok "hid_logitech_hidpp is loaded"
+	if [ -d /sys/module/hid_logitech_dd ]; then
+		ok "hid_logitech_dd is loaded"
 	else
-		bad "hid_logitech_hidpp is not loaded (run: sudo ./tools/setup.sh)"
+		bad "hid_logitech_dd is not loaded (run: sudo ./tools/setup.sh)"
 	fi
 	# No `grep -q` here: under `set -o pipefail`, -q exits on the first
 	# match (our module sorts first in dkms output), dkms catches SIGPIPE
 	# mid-print and the successful pipeline reports failure. Reading the
 	# full stream avoids the race.
-	if dkms status 2>/dev/null | grep '^hid-logitech-hidpp.*installed' >/dev/null; then
+	if dkms status 2>/dev/null | grep '^logitech-trueforce.*installed' >/dev/null; then
 		ok "DKMS package installed (survives kernel updates)"
 	else
 		wrn "no DKMS install found - a manually insmod'ed module will not survive a reboot or kernel update (run: sudo ./tools/setup.sh)"
 	fi
-	if [ -f "$BLACKLIST_FILE" ]; then
-		ok "in-tree driver blacklist present"
-	else
-		wrn "no blacklist file - the stock in-tree hid-logitech-hidpp (no RS50/G PRO FFB) may win the race at boot (run: sudo ./tools/setup.sh)"
+	if [ -f "$OLD_BLACKLIST_FILE" ]; then
+		wrn "stale blacklist from the old full-fork install present ($OLD_BLACKLIST_FILE) - it strips the in-tree driver from your other Logitech devices; remove it (run: sudo ./tools/setup.sh)"
+	fi
+	if dkms status 2>/dev/null | grep '^hid-logitech-hidpp.*installed' >/dev/null; then
+		wrn "old full-fork DKMS package 'hid-logitech-hidpp' still installed - it shadowed the in-tree driver for all Logitech devices; remove it (run: sudo ./tools/setup.sh)"
 	fi
 
 	echo
@@ -82,7 +87,7 @@ doctor() {
 	for d in /sys/bus/hid/devices/0003:046D:C2{76,72,68}.*; do
 		[ -e "$d" ] || continue
 		case "$(basename "$(readlink -f "$d/driver" 2>/dev/null)")" in
-			logitech-hidpp-device) bound_ours=$((bound_ours+1));;
+			logitech-dd) bound_ours=$((bound_ours+1));;
 			hid-generic) bound_generic=$((bound_generic+1));;
 		esac
 	done
@@ -214,18 +219,35 @@ setup() {
 	say "[1/5] Kernel module (DKMS) + udev rule"
 	"$REPO_ROOT/tools/dkms-update.sh" || exit 1
 
-	say "[2/5] Blacklisting the in-tree drivers"
-	if [ ! -f "$BLACKLIST_FILE" ]; then
-		printf "blacklist hid-logitech-hidpp\nblacklist hid-logitech\n" > "$BLACKLIST_FILE"
+	say "[2/5] Migrating off any old full-fork install"
+	# The old build shipped as hid-logitech-hidpp and blacklisted the
+	# in-tree driver, taking over every Logitech HID++ device. This scoped
+	# build only claims the wheels, so undo both: drop the blacklist (it
+	# would leave mice/keyboards without the in-tree driver) and remove the
+	# old DKMS package and module.
+	local migrated=0
+	if [ -f "$OLD_BLACKLIST_FILE" ]; then
+		rm -f "$OLD_BLACKLIST_FILE"
+		echo "  removed stale blacklist $OLD_BLACKLIST_FILE"
+		migrated=1
+	fi
+	if dkms status 2>/dev/null | grep '^hid-logitech-hidpp' >/dev/null; then
+		dkms remove -m hid-logitech-hidpp --all >/dev/null 2>&1 || true
+		rm -rf /usr/src/hid-logitech-hidpp-*
+		echo "  removed old DKMS package hid-logitech-hidpp"
+		migrated=1
+	fi
+	modprobe -r hid-logitech-hidpp 2>/dev/null || true
+	if [ "$migrated" -eq 1 ]; then
 		depmod -a
-		echo "  installed $BLACKLIST_FILE"
+		echo "  in-tree hid-logitech-hidpp now serves your other Logitech devices"
 	else
-		echo "  already present"
+		echo "  nothing to migrate (clean install)"
 	fi
 
 	say "[3/5] Loading the module"
-	modprobe -r hid-logitech-hidpp 2>/dev/null || true
-	if modprobe hid-logitech-hidpp; then
+	modprobe -r hid-logitech-dd 2>/dev/null || true
+	if modprobe hid-logitech-dd; then
 		echo "  loaded"
 	else
 		echo "  modprobe failed - check dmesg" >&2

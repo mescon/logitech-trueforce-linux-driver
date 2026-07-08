@@ -5,6 +5,47 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+### Scoped to the direct-drive wheels (module renamed to hid-logitech-dd)
+
+The driver was a full fork of the in-tree `hid-logitech-hidpp` and shipped
+under that same name, so once installed it **replaced the in-tree driver
+for every Logitech HID++ device** - mice, keyboards, receivers - freezing
+them at the fork's snapshot (which lagged mainline by ~21 recent Bluetooth
+devices plus several 7.1/7.2 hardening fixes). It only ever added value for
+the direct-drive wheels.
+
+- The module now builds as **`hid-logitech-dd`** (driver name `logitech-dd`)
+  and its device table is trimmed to just the direct-drive wheel USB IDs
+  (`c276` RS50 native, `c272` G PRO Xbox/PC + RS50-compat, `c268` G PRO
+  PS/PC). It runs **alongside** the in-tree `hid-logitech-hidpp`, which
+  keeps serving every other Logitech device at its current version. No
+  symbol clash (the fork exports none) and no PID conflict (the in-tree
+  driver does not claim these wheels), so **no blacklist is needed**.
+- `setup.sh` now **migrates** existing installs: it removes the old
+  `hid-logitech-hidpp` DKMS package and the stale
+  `blacklist-hid-logitech-hidpp.conf`, restoring the in-tree driver for
+  your other Logitech hardware.
+- Belt-driven **G920/G923 are no longer claimed** by this fork; they use
+  the in-tree driver (their standard HID++ FFB is unchanged).
+
+### Licensing and packaging
+
+- Added the missing license texts: `COPYING` (GPL-2.0) for the driver and
+  tooling, `userspace/libtrueforce/COPYING` (LGPL-2.1) for the library,
+  plus SPDX headers on every libtrueforce source. Required for AUR.
+- `install-tf-shim.sh` resolves its SDK-DLL directory (`--sdk-dir` / env /
+  repo `sdk/` / `~/.local/share/logitech-trueforce/sdk`) instead of
+  hardcoding the repo tree, so it works when installed standalone.
+- DKMS packaging skeleton for the AUR under `packaging/aur/`.
+
+### Documentation
+
+- Native-mode SDK TrueForce under Proton confirmed on RS50 (`c276`, AC EVO)
+  and documented across README / protocol docs; compat mode is no longer
+  required for TrueForce.
+
 ## 0.11.0 - 2026-07-08
 
 35 commits since the `v0.10.0` tag on 2026-07-03. The TrueForce force

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# Update the DKMS-installed hid-logitech-hidpp module from the current
-# repo checkout. Copies mainline/ into /usr/src/hid-logitech-hidpp-1.0/,
+# Update the DKMS-installed logitech-trueforce package (built as the
+# hid-logitech-dd.ko module) from the current repo checkout. Copies
+# mainline/ into /usr/src/logitech-trueforce-1.0/,
 # removes any previous DKMS state for that version, and installs the
 # freshly built module. Does NOT unload the running module - reload it
 # manually (see the final message) once the wheel is free.
@@ -14,7 +15,7 @@
 
 set -euo pipefail
 
-PKG="hid-logitech-hidpp"
+PKG="logitech-trueforce"
 VER="1.0"
 SRC_DIR="/usr/src/${PKG}-${VER}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -108,8 +109,8 @@ Module installed. To pick it up without a reboot:
 
   1) Unplug the wheel (or close anything holding the evdev / hidraw
      device open - e.g. fftest, games, browser tabs with Gamepad API)
-  2) sudo modprobe -r hid-logitech-hidpp
-  3) sudo modprobe hid-logitech-hidpp
+  2) sudo modprobe -r hid-logitech-dd
+  3) sudo modprobe hid-logitech-dd
   4) Plug the wheel back in
 
 If modprobe -r reports "Module is in use", something still has the

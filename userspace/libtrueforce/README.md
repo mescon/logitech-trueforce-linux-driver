@@ -9,8 +9,7 @@ packets, so the same library drives both. See
 documentation.
 
 The library talks to the wheel's interface-2 hidraw node directly; no
-custom kernel driver is required beyond what the in-tree
-`hid-logitech-hidpp` fork already provides.
+custom kernel driver is required beyond what the `hid-logitech-dd` driver already provides.
 
 While a stream is active the library also consumes the wheel's
 type-0x02 responses (real-time wheel position and a device-side

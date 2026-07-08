@@ -2,7 +2,7 @@
 #
 # Diagnose and fix the common "wheel stuck on hid-generic" problem.
 #
-# If the wheel enumerates before hid-logitech-hidpp is loaded (a boot
+# If the wheel enumerates before hid-logitech-dd is loaded (a boot
 # race, or the in-kernel module loaded instead of this fork), hid-generic
 # claims it. The symptom is no wheel_* sysfs, no force feedback, and the
 # dmesg "Invalid code 768" phantom-button spam - the wheel works as a
@@ -14,8 +14,8 @@
 
 set -euo pipefail
 
-DRIVER="logitech-hidpp-device"
-MODULE="hid-logitech-hidpp"
+DRIVER="logitech-dd"
+MODULE="hid-logitech-dd"
 # Supported wheels (USB product IDs, upper-case to match the HID device
 # directory names under /sys/bus/hid/devices).
 PIDS="C262 C26E C268 C272 C276"

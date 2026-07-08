@@ -14706,156 +14706,34 @@ static void hidpp_remove(struct hid_device *hdev)
 		   USB_VENDOR_ID_LOGITECH, (product))
 
 static const struct hid_device_id hidpp_devices[] = {
-	{ /* wireless touchpad */
-	  LDJ_DEVICE(0x4011),
-	  .driver_data = HIDPP_QUIRK_CLASS_WTP | HIDPP_QUIRK_DELAYED_INIT |
-			 HIDPP_QUIRK_WTP_PHYSICAL_BUTTONS },
-	{ /* wireless touchpad T650 */
-	  LDJ_DEVICE(0x4101),
-	  .driver_data = HIDPP_QUIRK_CLASS_WTP | HIDPP_QUIRK_DELAYED_INIT },
-	{ /* wireless touchpad T651 */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH,
-		USB_DEVICE_ID_LOGITECH_T651),
-	  .driver_data = HIDPP_QUIRK_CLASS_WTP | HIDPP_QUIRK_DELAYED_INIT },
-	{ /* Mouse Logitech Anywhere MX */
-	  LDJ_DEVICE(0x1017), .driver_data = HIDPP_QUIRK_HI_RES_SCROLL_1P0 },
-	{ /* Mouse logitech M560 */
-	  LDJ_DEVICE(0x402d),
-	  .driver_data = HIDPP_QUIRK_DELAYED_INIT | HIDPP_QUIRK_CLASS_M560 },
-	{ /* Mouse Logitech M705 (firmware RQM17) */
-	  LDJ_DEVICE(0x101b), .driver_data = HIDPP_QUIRK_HI_RES_SCROLL_1P0 },
-	{ /* Mouse Logitech Performance MX */
-	  LDJ_DEVICE(0x101a), .driver_data = HIDPP_QUIRK_HI_RES_SCROLL_1P0 },
-	{ /* Keyboard logitech K400 */
-	  LDJ_DEVICE(0x4024),
-	  .driver_data = HIDPP_QUIRK_CLASS_K400 },
-	{ /* Solar Keyboard Logitech K750 */
-	  LDJ_DEVICE(0x4002),
-	  .driver_data = HIDPP_QUIRK_CLASS_K750 },
-	{ /* Keyboard MX5000 (Bluetooth-receiver in HID proxy mode) */
-	  LDJ_DEVICE(0xb305),
-	  .driver_data = HIDPP_QUIRK_HIDPP_CONSUMER_VENDOR_KEYS },
-	{ /* Dinovo Edge (Bluetooth-receiver in HID proxy mode) */
-	  LDJ_DEVICE(0xb309),
-	  .driver_data = HIDPP_QUIRK_HIDPP_CONSUMER_VENDOR_KEYS },
-	{ /* Keyboard MX5500 (Bluetooth-receiver in HID proxy mode) */
-	  LDJ_DEVICE(0xb30b),
-	  .driver_data = HIDPP_QUIRK_HIDPP_CONSUMER_VENDOR_KEYS },
-	{ /* Logitech G502 Lightspeed Wireless Gaming Mouse */
-	  LDJ_DEVICE(0x407f),
-	  .driver_data = HIDPP_QUIRK_RESET_HI_RES_SCROLL },
-
-	{ LDJ_DEVICE(HID_ANY_ID) },
-
-	{ /* Keyboard LX501 (Y-RR53) */
-	  L27MHZ_DEVICE(0x0049),
-	  .driver_data = HIDPP_QUIRK_KBD_ZOOM_WHEEL },
-	{ /* Keyboard MX3000 (Y-RAM74) */
-	  L27MHZ_DEVICE(0x0057),
-	  .driver_data = HIDPP_QUIRK_KBD_SCROLL_WHEEL },
-	{ /* Keyboard MX3200 (Y-RAV80) */
-	  L27MHZ_DEVICE(0x005c),
-	  .driver_data = HIDPP_QUIRK_KBD_ZOOM_WHEEL },
-	{ /* S510 Media Remote */
-	  L27MHZ_DEVICE(0x00fe),
-	  .driver_data = HIDPP_QUIRK_KBD_SCROLL_WHEEL },
-
-	{ L27MHZ_DEVICE(HID_ANY_ID) },
-
-	{ /* Logitech G403 Wireless Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC082) },
-	{ /* Logitech G502 Lightspeed Wireless Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC08D) },
-	{ /* Logitech G703 Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC087) },
-	{ /* Logitech G703 Hero Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC090) },
-	{ /* Logitech G900 Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC081) },
-	{ /* Logitech G903 Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC086) },
-	{ /* Logitech G Pro Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC088) },
-	{ /* MX Vertical over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC08A) },
-	{ /* Logitech G703 Hero Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC090) },
-	{ /* Logitech G903 Hero Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC091) },
-	{ /* Logitech G915 TKL Keyboard over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC343) },
-	{ /* Logitech G920 Wheel over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_G920_WHEEL),
-		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_FORCE_OUTPUT_REPORTS},
-	{ /* Logitech G923 Wheel (Xbox version) over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_G923_XBOX_WHEEL),
-		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_FORCE_OUTPUT_REPORTS },
-	{ /* Logitech G Pro Racing Wheel (Xbox/PC) over USB.
-	   * Same direct-drive base architecture as the RS50: HID++ 4.2
-	   * on interface 1, dedicated 64-byte FFB endpoint on interface
-	   * 2, identical TrueForce packet layout. Use the hidpp_dd_ff_*
-	   * code path (HIDPP_QUIRK_DD_FFB) rather than the G920 HID++
-	   * FFB path - the latter inherits transport / queue
-	   * limitations from the G920/G923 belt-driven generation that
-	   * do not apply to direct-drive wheels and cause "Failed to
-	   * send command" / unbounded FFB workqueue growth on real G
-	   * PRO hardware (see issue #8). */
+	/*
+	 * Wheel-scoped fork: this driver claims ONLY the Logitech direct-drive
+	 * wheels - the RS50 and G PRO, across their three USB IDs (c276 RS50
+	 * native, c272 G PRO Xbox/PC which the RS50 also uses in compatibility
+	 * mode, c268 G PRO PS/PC) - whose TrueForce / direct-drive FFB support
+	 * it adds. Every other Logitech HID++ device (mice, keyboards, receiver-
+	 * paired and 27 MHz devices, and the belt-driven G920/G923 wheels) is
+	 * deliberately left to the in-tree hid-logitech-hidpp driver, which is
+	 * continuously maintained and supports far more hardware. Do not add
+	 * non-direct-drive IDs here: that would shadow the in-tree driver with
+	 * this fork's copy and regress those devices (see the project README's
+	 * "wheel-scoped" note).
+	 *
+	 * Direct-drive base architecture: HID++ 4.2 on interface 1, a dedicated
+	 * 64-byte FFB endpoint on interface 2, and the TrueForce packet layout.
+	 * These use hidpp_dd_ff_* (HIDPP_QUIRK_DD_FFB), NOT the G920 HID++ FFB
+	 * path, which inherits transport/queue limitations from the belt-driven
+	 * generation and misbehaves on direct-drive hardware (issue #8).
+	 */
+	{ /* Logitech G Pro Racing Wheel (Xbox/PC) over USB */
 	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL),
 		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_DD_FFB },
-	{ /* Logitech G Pro Racing Wheel (PlayStation/PC) over USB.
-	   * See HID_USB_DEVICE comment above for the rationale. */
+	{ /* Logitech G Pro Racing Wheel (PlayStation/PC) over USB */
 	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL),
 		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_DD_FFB },
 	{ /* Logitech RS50 Direct Drive Wheel (PlayStation/PC) over USB */
 	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_RS50),
 		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_DD_FFB },
-	{ /* Logitech G Pro X Superlight Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC094) },
-	{ /* Logitech G Pro X Superlight 2 Gaming Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xC09b) },
-	{ /* Logitech G PRO 2 LIGHTSPEED Wireless Mouse over USB */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0xc09a) },
-
-	{ /* G935 Gaming Headset */
-	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, 0x0a87),
-		.driver_data = HIDPP_QUIRK_WIRELESS_STATUS },
-
-	{ /* MX5000 keyboard over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb305),
-	  .driver_data = HIDPP_QUIRK_HIDPP_CONSUMER_VENDOR_KEYS },
-	{ /* Dinovo Edge keyboard over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb309),
-	  .driver_data = HIDPP_QUIRK_HIDPP_CONSUMER_VENDOR_KEYS },
-	{ /* MX5500 keyboard over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb30b),
-	  .driver_data = HIDPP_QUIRK_HIDPP_CONSUMER_VENDOR_KEYS },
-	{ /* Logitech G915 TKL keyboard over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb35f) },
-	{ /* M-RCQ142 V470 Cordless Laser Mouse over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb008) },
-	{ /* MX Master mouse over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb012) },
-	{ /* M720 Triathlon mouse over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb015) },
-	{ /* MX Master 2S mouse over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb019) },
-	{ /* MX Ergo trackball over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb01d) },
-	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb01e) },
-	{ /* MX Vertical mouse over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb020) },
-	{ /* Signature M650 over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb02a) },
-	{ /* MX Master 3 mouse over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb023) },
-	{ /* MX Anywhere 3 mouse over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb025) },
-	{ /* MX Master 3S mouse over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb034) },
-	{ /* MX Anywhere 3S mouse over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb037) },
-	{ /* MX Anywhere 3SB mouse over Bluetooth */
-	  HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH, 0xb038) },
 	{}
 };
 
@@ -14876,7 +14754,12 @@ static const struct hid_usage_id hidpp_usages[] = {
 };
 
 static struct hid_driver hidpp_driver = {
-	.name = "logitech-hidpp-device",
+	/*
+	 * Distinct from the in-tree driver's "logitech-hidpp-device": both
+	 * modules register a hid_driver and may be loaded at once (this fork
+	 * claims only the direct-drive wheels), so the names must not collide.
+	 */
+	.name = "logitech-dd",
 	.id_table = hidpp_devices,
 	.report_fixup = hidpp_report_fixup,
 	.probe = hidpp_probe,
