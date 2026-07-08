@@ -65,9 +65,9 @@ sudo dmesg | grep -iE 'rs50|g pro'   # expect: "... Force feedback initialized"
 
 ```bash
 sudo ./tools/dkms-update.sh
-printf "blacklist hid-logitech-hidpp\nblacklist hid-logitech\n" | sudo tee /etc/modprobe.d/blacklist-hid-logitech-hidpp.conf
-sudo depmod -a
-sudo modprobe -r hid-logitech-hidpp 2>/dev/null; sudo modprobe hid-logitech-hidpp
+# No blacklist needed: hid-logitech-dd claims only the direct-drive
+# wheels, so it coexists with the in-tree drivers.
+sudo modprobe -r hid-logitech-dd 2>/dev/null; sudo modprobe hid-logitech-dd
 ./tools/install-tf-shim.sh --all-steam   # only with the SDK DLLs staged
 ```
 </details>

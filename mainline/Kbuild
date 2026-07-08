@@ -1,4 +1,10 @@
-obj-m := hid-logitech-hidpp.o
+# Built as hid-logitech-dd.ko, NOT hid-logitech-hidpp, so this fork
+# does not shadow the continuously-maintained in-tree hid-logitech-hidpp.
+# It claims only the direct-drive wheels (see the id_table); every other
+# Logitech HID++ device stays on the in-tree driver. The source file keeps
+# its historical name; only the module output is renamed.
+obj-m := hid-logitech-dd.o
+hid-logitech-dd-y := hid-logitech-hidpp.o
 
 # Embed a build-time identifier the loaded module prints on module_init,
 # so users on a "did my fix actually take effect?" hunt can read it back

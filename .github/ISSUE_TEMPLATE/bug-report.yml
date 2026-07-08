@@ -86,7 +86,7 @@ body:
         Use a code block (triple backticks) for formatting.
       placeholder: |
         ```
-        [    5.123456] hid-logitech-hidpp 0003:046D:C276.0001: RS50: Force feedback initialized
+        [    5.123456] logitech-dd 0003:046D:C276.0001: RS50 (native): Force feedback initialized
         ...
         ```
       render: shell
@@ -136,8 +136,8 @@ body:
     attributes:
       label: Checklist
       options:
-        - label: I blacklisted the in-kernel hid-logitech-hidpp module
-        - label: I verified the driver loaded (`lsmod | grep hidpp`)
+        - label: I installed the driver via setup.sh (or dkms-update.sh)
+        - label: I verified the driver loaded (`lsmod | grep hid_logitech_dd`)
         - label: I checked dmesg for errors
 
   - type: textarea

@@ -26,9 +26,10 @@ wheels**:
 > **Note**: this project was previously named
 > `logitech-rs50-linux-driver`. It was renamed 2026-07-02 because the
 > driver covers the whole TrueForce direct-drive family, not just the
-> RS50. Old GitHub links and clones redirect automatically; nothing
-> changes for installed systems (the kernel module and DKMS package
-> were always named `hid-logitech-hidpp`).
+> RS50. Old GitHub links and clones redirect automatically. As of
+> v0.12.0 the kernel module is `hid-logitech-dd` (previously the fork
+> shipped as `hid-logitech-hidpp` and shadowed the in-tree driver); the
+> installer migrates existing systems automatically.
 
 You get the full evdev force-feedback suite (constant, spring, damper,
 friction, inertia, periodic, ramp, rumble, gain), all buttons,
@@ -38,9 +39,15 @@ pedal curves, LIGHTSYNC LEDs) exposed via sysfs. **TrueForce haptics
 work in supported sims under Proton** via Logitech's own signed SDK
 DLLs - see the recipe below.
 
-This is a patched fork of the in-kernel `hid-logitech-hidpp` module
-that replaces it. Other Logitech HID++ devices (mice, keyboards, G29 /
-G920 / G923 wheels, etc.) keep working through the same module.
+This is a fork of the in-kernel `hid-logitech-hidpp` driver, **scoped to
+only the Logitech direct-drive wheels** - the RS50 and G PRO, across their
+three USB IDs (`c276` RS50 native, `c272` G PRO Xbox/PC which the RS50 also
+uses in compatibility mode, `c268` G PRO PS/PC). It installs as a
+separate module, `hid-logitech-dd`, that binds *only* those wheels and
+runs alongside the in-tree `hid-logitech-hidpp`, which keeps handling all
+your other Logitech HID++ devices (mice, keyboards, G29 / G920 / G923
+wheels, etc.) at its current, continuously-maintained version. No
+blacklist, no shadowing - this driver owns only the hardware it improves.
 
 ## What works
 
@@ -122,9 +129,10 @@ in both native (`046d:c276`) and G PRO compatibility (`046d:c272`) modes,
 including SDK game TrueForce under Proton in each. A real G PRO runs the
 **same `hidpp_dd_ff_*` code path** as an RS50 in G PRO compatibility mode,
 so it is expected to work; we just do not have one to confirm against.
-**G920 / G923** keep working as
-a drop-in through the inherited upstream HID++ `0x8123` FFB path; the
-RS50/G-PRO-specific `wheel_*` settings do not apply to them. The **G923**
+**G920 / G923** are handled by the
+in-tree `hid-logitech-hidpp` driver (this scoped fork no longer claims
+them); their standard HID++ FFB is unaffected, and the RS50/G-PRO-specific
+`wheel_*` settings do not apply to them. The **G923**
 speaks the same TrueForce stream protocol as the DD wheels (confirmed on
 Windows by the TF4ALL project), and the udev rule now grants it hidraw
 access so the SDK DLLs can reach it under Proton - TrueForce on a G923
@@ -309,7 +317,7 @@ the SDK DLL installation into your wine prefixes.
    sudo ./tools/dkms-update.sh
    ```
    This:
-   - Registers the source under `/usr/src/hid-logitech-hidpp-1.0/`
+   - Registers the source under `/usr/src/logitech-trueforce-1.0/`
      and runs `dkms install` so the kernel module rebuilds
      automatically on every kernel update.
    - Installs `udev/70-logitech-trueforce.rules`, which hands `wheel_*`
@@ -321,29 +329,19 @@ the SDK DLL installation into your wine prefixes.
      `system.reg` so SDK-aware sims (ACC, Le Mans Ultimate, AMS2,
      AC, rF2, iRacing) load TrueForce.
 
-4. **Blacklist conflicting in-tree drivers** (one-time):
-   ```bash
-   printf "blacklist hid-logitech-hidpp\nblacklist hid-logitech\n" | sudo tee /etc/modprobe.d/blacklist-hid-logitech-hidpp.conf
-   sudo depmod -a
-   ```
-   `hid-logitech-hidpp` is the upstream version without RS50 / G PRO
-   compat support, which our module replaces. `hid-logitech` (lg4ff)
-   is for older wheels (G25/G27/G29) and matches the RS50, sending
-   incorrect FFB commands that crash the wheel firmware on
-   reconnect. Blacklisting `hid-logitech` does **not** affect G920
-   or G923 (those use HID++, handled by our driver), but if you
-   also use a G25/G27/G29 you will lose lg4ff FFB on that older
-   wheel.
+4. **Reload the module and replug the wheel.**
 
-5. **Reload the module and replug the wheel.**
+   No blacklist is needed: `hid-logitech-dd` claims only the three
+   direct-drive wheels, which the in-tree drivers do not, so the two
+   coexist without conflict.
 
    > **Safety**: the RS50 can produce up to 8 Nm and may rotate
    > under power. Hold the rim or keep clear whenever you load or
    > reload the driver, replug the wheel, or switch profiles.
 
    ```bash
-   sudo modprobe -r hid-logitech-hidpp 2>/dev/null
-   sudo modprobe hid-logitech-hidpp
+   sudo modprobe -r hid-logitech-dd 2>/dev/null
+   sudo modprobe hid-logitech-dd
    ```
    Physically unplug then replug the wheel's USB cable (or reboot).
    `dmesg | grep -i "force feedback"` should show
@@ -396,8 +394,8 @@ sudo usermod -aG input "$USER"
 ```bash
 cd mainline
 make
-sudo rmmod hid-logitech-hidpp 2>/dev/null
-sudo insmod ./hid-logitech-hidpp.ko
+sudo rmmod hid-logitech-dd 2>/dev/null
+sudo insmod ./hid-logitech-dd.ko
 ```
 
 ## Recipe: SDK-aware sims (ACC, AC EVO, ...) on RS50 or G PRO
@@ -791,8 +789,8 @@ sudo ./tools/rebind-wheel.sh
 
 This loads the module and rebinds every wheel interface from
 `hid-generic` to this driver. If it reports the bind failed, the
-in-kernel `hid-logitech-hidpp` is loaded instead of this fork - run
-`sudo ./tools/dkms-update.sh` so the DKMS build shadows it, then retry.
+`hid-logitech-dd` module is not installed/loaded - run
+`sudo ./tools/dkms-update.sh` (then reload the module), and retry.
 
 ### FFB not working
 

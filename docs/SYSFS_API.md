@@ -1,6 +1,6 @@
 # Logitech TrueForce Linux Driver - Sysfs API Reference
 
-**Driver**: `hid-logitech-hidpp`
+**Driver**: `hid-logitech-dd` (module), `logitech-dd` (hid_driver)
 **Devices**:
 - Logitech RS50 Direct Drive Wheel Base (USB `046d:c276`)
 - Logitech G Pro Racing Wheel (USB `046d:c272` Xbox/PC, `046d:c268` PS/PC)

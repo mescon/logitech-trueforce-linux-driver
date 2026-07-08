@@ -124,7 +124,7 @@ snapshot() {
 		lsmod | grep -E '^(hid_logitech_hidpp|usbhid|usbmon)' || true
 		echo
 		echo "=== modinfo version ==="
-		modinfo -F version hid-logitech-hidpp 2>/dev/null || echo "(unknown)"
+		modinfo -F version hid-logitech-dd 2>/dev/null || echo "(unknown)"
 		echo
 		echo "=== recent wheel dmesg ==="
 		dmesg --since '60 seconds ago' 2>/dev/null | grep -E 'RS50|G PRO|hidpp|046d' | tail -30 || true
@@ -140,7 +140,7 @@ snapshot() {
 	cat /etc/os-release 2>/dev/null || true
 	echo
 	echo "=== driver git hash ==="
-	modinfo -F version hid-logitech-hidpp 2>/dev/null || echo "(unknown)"
+	modinfo -F version hid-logitech-dd 2>/dev/null || echo "(unknown)"
 	echo
 	echo "=== wheel device ==="
 	echo "lsusb line: $WHEEL_LINE"

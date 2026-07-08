@@ -80,7 +80,7 @@ jobs:
       - name: Module info
         working-directory: mainline
         run: |
-          modinfo hid-logitech-hidpp.ko
+          modinfo hid-logitech-dd.ko
 
   sparse:
     name: Sparse Analysis
