@@ -6,8 +6,8 @@ post_install() {
     Load it now without a reboot (free the wheel first - close games,
     Oversteer, browser tabs using the Gamepad API):
 
-      sudo modprobe -r hid-logitech-trueforce 2>/dev/null || true
-      sudo modprobe hid-logitech-trueforce
+      sudo modprobe -r hid-logitech-dd 2>/dev/null || true
+      sudo modprobe hid-logitech-dd
 
     or simply reboot. Standard force feedback then works out of the box;
     the wheel settings appear under /sys/.../wheel_* and are writable by
@@ -37,7 +37,7 @@ post_upgrade() {
 	cat <<'MSG'
 ==> logitech-trueforce-dkms upgraded.
     DKMS rebuilt the module. Reload it (or reboot) to run the new build:
-      sudo modprobe -r hid-logitech-trueforce 2>/dev/null || true
-      sudo modprobe hid-logitech-trueforce
+      sudo modprobe -r hid-logitech-dd 2>/dev/null || true
+      sudo modprobe hid-logitech-dd
 MSG
 }
