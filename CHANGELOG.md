@@ -40,11 +40,22 @@ the direct-drive wheels.
   hardcoding the repo tree, so it works when installed standalone.
 - DKMS packaging skeleton for the AUR under `packaging/aur/`.
 
-### Documentation
+### Fixed
 
-- Native-mode SDK TrueForce under Proton confirmed on RS50 (`c276`, AC EVO)
-  and documented across README / protocol docs; compat mode is no longer
-  required for TrueForce.
+- **LED brightness reverting to 100% on connect** ([issue #29]): the
+  LIGHTSYNC slot-apply wrote a driver-cached brightness (default 100%,
+  never read back from the wheel) on every init and LED change, racing
+  the wheel's profile load and stomping the user's saved RPM brightness.
+  apply_slot no longer writes brightness; it stays owned by the
+  `wheel_led_slot_brightness` handler. Hardware-verified on RS50.
+- **LED effect reset to Custom on connect** (same class as #29): the
+  load-time apply forced effect mode 5 (Custom) over any animated effect
+  (modes 1-4) the wheel restored from its profile, because the effect
+  mode is never read back. The init now applies the slot's colours
+  without forcing the effect mode. Hardware-verified: an animated effect
+  survives a reload, and Custom-mode LEDs still light on load.
+
+[issue #29]: https://github.com/mescon/logitech-trueforce-linux-driver/issues/29
 
 ## 0.11.0 - 2026-07-08
 
