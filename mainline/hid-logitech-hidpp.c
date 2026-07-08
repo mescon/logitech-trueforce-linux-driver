@@ -8953,22 +8953,18 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 	}
 
 	/*
-	 * Step 8: Apply per-slot brightness.
-	 * Each custom slot can have its own brightness stored locally.
+	 * Deliberately does NOT write brightness. Brightness is a separate
+	 * feature (0x8040), owned by the wheel_led_slot_brightness sysfs
+	 * handler and kept in sync by the BrightnessControl broadcast handler.
+	 * The per-slot brightness cache is never read back from the wheel (the
+	 * RGB GET returns only colours + direction), so it holds the driver
+	 * default of 100%. Writing it on every apply_slot - the init apply and
+	 * every colour/direction/effect/mode change - stomped the wheel's
+	 * stored profile brightness back to 100%, winning the race against the
+	 * profile load roughly half the time (issue #29). apply_slot now leaves
+	 * brightness alone; the wheel keeps whatever its active profile holds,
+	 * and the user changes it explicitly via wheel_led_slot_brightness.
 	 */
-	if (ff->idx_brightness != HIDPP_DD_FEATURE_NOT_FOUND) {
-		params[0] = 0x00;
-		params[1] = ls->brightness;
-		params[2] = 0x00;
-
-		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_brightness,
-						  ff->fn_set_brightness, params, 3, &response);
-		if (ret == 0) {
-			ff->led_brightness = ls->brightness;
-			dd_dbg(hid, "Slot %d brightness applied: %d%%\n",
-				slot, ls->brightness);
-		}
-	}
 
 	/*
 	 * Desktop mode: G Hub issues seven fn1 writes on the sync feature
