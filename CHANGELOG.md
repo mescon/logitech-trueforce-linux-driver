@@ -5,7 +5,14 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.12.0 - 2026-07-09
+
+9 commits since the `v0.11.0` tag on 2026-07-08. The fork is now scoped
+to only the direct-drive wheels (module `hid-logitech-dd`), coexisting
+with the in-tree `hid-logitech-hidpp` instead of shadowing it for every
+Logitech device; two LED init-stomp bugs are fixed; and the licensing +
+AUR packaging groundwork is in place. All validated on RS50 hardware and
+built clean on clang 7.1.3 and gcc 6.18-debug.
 
 ### Scoped to the direct-drive wheels (module renamed to hid-logitech-dd)
 
