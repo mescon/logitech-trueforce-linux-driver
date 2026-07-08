@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * libtrueforce - wheel angle and angular velocity readback.
  *

@@ -919,7 +919,17 @@ Contributions are welcome! There are several ways to help:
 
 ## License
 
-GPL-2.0-only (same as the Linux kernel)
+- **Kernel driver** (`mainline/`), tooling, and everything else:
+  **GPL-2.0-only** (same as the Linux kernel it derives from). Full text
+  in [`COPYING`](COPYING).
+- **libtrueforce** (`userspace/libtrueforce/`): **LGPL-2.1-or-later**, so
+  native Linux apps (including closed-source ones) may link it while
+  changes to the library itself stay open. Full text in
+  [`userspace/libtrueforce/COPYING`](userspace/libtrueforce/COPYING).
+
+Logitech's TrueForce SDK DLLs are **not** part of this project and are
+not redistributed here; users supply them from their own Logitech G HUB
+installation (see the Proton setup above).
 
 ## Acknowledgments
 

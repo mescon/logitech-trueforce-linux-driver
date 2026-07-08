@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * kf - apply a constant KF torque for a few seconds, then release.
  *

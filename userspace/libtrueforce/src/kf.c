@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * libtrueforce - Kinetic Force (KF) routing via evdev FF_CONSTANT.
  *

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * angle - print the wheel's angle and angular velocity every 100 ms
  * for N seconds (default 10). Turn the wheel during the run.

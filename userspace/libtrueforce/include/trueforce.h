@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * libtrueforce - native Linux implementation of the Logitech Trueforce
  * SDK (trueforce_sdk_x64.dll, v1.3.11).

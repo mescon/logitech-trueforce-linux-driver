@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /* Auto-generated from /tmp/tf5/init_batch1.hex. Do not edit by hand. */
 #ifndef LIBTRUEFORCE_INIT_DATA_H
 #define LIBTRUEFORCE_INIT_DATA_H

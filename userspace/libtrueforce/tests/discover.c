@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * Discovery test: enumerate detected direct-drive wheels and print what
  * libtrueforce sees. No device writes; read-only sysfs/hidraw-path

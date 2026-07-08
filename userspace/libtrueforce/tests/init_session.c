@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * Init-session test: open, trigger init via a zero-sample TF setter,
  * read a few status responses from hidraw, close.

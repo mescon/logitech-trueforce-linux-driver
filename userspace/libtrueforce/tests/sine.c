@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * sine - stream a sine wave to the wheel via libtrueforce.
  *
