@@ -7042,7 +7042,8 @@ static void hidpp_dd_lightsync_query_slot_names(struct hidpp_device *hidpp,
 static void hidpp_dd_lightsync_query_slot_configs(struct hidpp_device *hidpp,
 					      struct hidpp_dd_ff_data *ff);
 static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
-				     struct hidpp_dd_ff_data *ff, u8 slot);
+				     struct hidpp_dd_ff_data *ff, u8 slot,
+				     bool set_effect);
 
 /*
  * Query current device settings using discovered feature indices.
@@ -7242,7 +7243,13 @@ static void hidpp_dd_ff_query_settings(struct hidpp_dd_ff_data *ff)
 			 * The sequence must be: enable (0x6C) -> set config (0x2C) -> activate (0x3C)
 			 */
 			dd_dbg(hid, "Sending initial LED configuration\n");
-			ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, ff->led_active_slot);
+			/*
+		 * set_effect=false: apply the slot's colours but do NOT force
+		 * effect mode 5, so an animated effect the wheel restored from
+		 * its profile survives load (issue #29's sibling for effect).
+		 */
+		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, ff->led_active_slot,
+						    false);
 			if (ret)
 				dd_warn(hid, "Failed to apply initial LED config: %d\n", ret);
 			else
@@ -8782,7 +8789,8 @@ static void hidpp_dd_lightsync_query_slot_configs(struct hidpp_device *hidpp,
  *   4. Activate slot on feature 0x0C
  */
 static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
-				     struct hidpp_dd_ff_data *ff, u8 slot)
+				     struct hidpp_dd_ff_data *ff, u8 slot,
+				     bool set_effect)
 {
 	struct hid_device *hid = hidpp->hid_dev;
 	struct hidpp_report response;
@@ -8840,8 +8848,15 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 	 * Step 3: Set effect mode 5 (static/custom) on feature 0x0B.
 	 * From capture: 10 FF 0B 3C 05 00 00
 	 * This tells the device we're using custom colors, not an animation.
+	 *
+	 * Gated on set_effect: user-initiated colour/direction/effect changes
+	 * pass true (they intend Custom, to display the change). The load-time
+	 * init passes false so it does NOT force Custom over an animated effect
+	 * (modes 1-4) the wheel restored from its profile - the effect mode is
+	 * never read back, so forcing 5 here would stomp it (cf. the brightness
+	 * bug, issue #29).
 	 */
-	if (ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND) {
+	if (set_effect && ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND) {
 		params[0] = 0x05;  /* Effect mode 5 = static/custom */
 		params[1] = 0x00;
 		params[2] = 0x00;
@@ -9053,7 +9068,7 @@ static ssize_t wheel_led_slot_store(struct device *dev, struct device_attribute 
 		return -EINVAL;
 
 	/* Apply the selected slot configuration to the device */
-	ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot);
+	ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot, true);
 	if (ret)
 		return ret;
 
@@ -9319,7 +9334,7 @@ static ssize_t wheel_led_direction_store(struct device *dev, struct device_attri
 		u8 prev = ff->led_slots[slot].direction;
 
 		ff->led_slots[slot].direction = dir;
-		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot);
+		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot, true);
 		if (ret) {
 			ff->led_slots[slot].direction = prev;
 			return ret;
@@ -9444,7 +9459,7 @@ static ssize_t wheel_led_colors_store(struct device *dev, struct device_attribut
 		ls = &ff->led_slots[slot];
 		memcpy(prev, ls->colors, sizeof(prev));
 		memcpy(ls->colors, colors, sizeof(colors));
-		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot);
+		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot, true);
 		if (ret) {
 			memcpy(ls->colors, prev, sizeof(prev));
 			return ret;
@@ -9483,7 +9498,7 @@ static ssize_t wheel_led_apply_store(struct device *dev, struct device_attribute
 
 		if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 			return -ERANGE;
-		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot);
+		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot, true);
 		if (ret)
 			return ret;
 		dd_info(hid, "LIGHTSYNC config applied to slot %u\n", slot);
@@ -9582,7 +9597,7 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 		u8 slot = READ_ONCE(ff->led_active_slot);
 
 		if (slot < HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
-			hidpp_dd_lightsync_apply_slot(hidpp, ff, slot);
+			hidpp_dd_lightsync_apply_slot(hidpp, ff, slot, true);
 	}
 
 	dd_info(hid, "LED effect set to %d (success)\n", effect);
