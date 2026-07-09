@@ -467,7 +467,7 @@ centre across power cycles (same as G Hub on Windows).
 
 ## LIGHTSYNC LED Control
 
-The RS50 wheel base has 10 RGB LEDs arranged in a strip. The driver provides per-slot configuration with 5 custom slots (0-4).
+The RS50 has 10 RGB LEDs in a horizontal strip across the upper faceplate (an engine-RPM / shift indicator). The driver provides per-slot configuration with 5 custom slots (0-4).
 
 > **Per-model availability**: the `wheel_led_*` LIGHTSYNC attributes exist on the RS50 in both native and G-PRO-compat enumeration (the rim hardware doesn't change with the PID; verified live 2026-04-29). On a **real G PRO Racing Wheel** they are hidden: that rim has level-based rev lights with no per-LED RGB, exposed as `wheel_rev_level` instead (see its entry below).
 >

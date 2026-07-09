@@ -119,7 +119,7 @@ owner to validate · - not applicable.
 | Rotation range (90-2700°) | ✅ | 🟢 |
 | FFB strength / damping / FFB filter (+ auto) | ✅ | 🟢 |
 | TrueForce intensity / sensitivity / brake-force | ✅ | 🟢 |
-| LIGHTSYNC RGB LEDs (RS50 rim) | ✅ | - |
+| LIGHTSYNC RGB LEDs (RS50 faceplate strip) | ✅ | - |
 | Rev-light level (`wheel_rev_level`, real G PRO rim) | - | 🟡 needs a tester |
 | Centre calibration | ✅ | 🟢 |
 | Mode / profile switching | ✅ | 🟢 |

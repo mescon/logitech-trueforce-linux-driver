@@ -937,8 +937,10 @@ smoothing turns out to apply only to that path.
 
 ## 9. LIGHTSYNC RGB LED Control (Feature 0x807A)
 
-The RS50 wheel rim features **10 individually addressable RGB LEDs** around the circumference.
-The LIGHTSYNC feature provides full per-LED color control with animation direction support.
+The RS50 has a horizontal strip of **10 individually addressable RGB LEDs**
+across the upper section of the faceplate, used as an engine-RPM / shift
+indicator. The LIGHTSYNC feature provides per-LED colour control plus a
+direction setting for the built-in sweep effects.
 
 > **This section describes RS50 rim hardware only** (in both native and
 > compat enumeration - the rim does not change with the PID). The **real
@@ -957,16 +959,10 @@ The LIGHTSYNC feature provides full per-LED color control with animation directi
 ### 9.1 Physical LED Layout
 
 ```
-         [LED5] [LED6]
-      [LED4]       [LED7]
-    [LED3]           [LED8]
-      [LED2]       [LED9]
-         [LED1] [LED10]
-
-       (Wheel center/hub)
+[LED1] [LED2] [LED3] [LED4] [LED5] [LED6] [LED7] [LED8] [LED9] [LED10]
 ```
 
-LEDs are numbered 1-10 from user perspective (bottom-left to bottom-right, going counterclockwise).
+LEDs are numbered 1-10, left to right across the faceplate strip.
 The protocol uses **reversed order** - see section 9.4.
 
 ### 9.2 Feature Discovery
