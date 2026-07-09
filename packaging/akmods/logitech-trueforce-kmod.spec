@@ -3,13 +3,14 @@
 # layout makes /var/lib/dkms read-only during the rpm-ostree transaction).
 #
 # ############################################################################
-# ##  BUILD-VALIDATED on Fedora Silverblue 44 (in a toolbox, against the    ##
-# ##  standard Fedora kernel-devel): both RPMs build cleanly -              ##
-# ##  kmod-logitech-trueforce-<kver> and logitech-trueforce-kmod-common.    ##
-# ##  Still to confirm on real hardware: rpm-ostree layering of the RPM,    ##
-# ##  the module loading/binding the wheel, and rebuilding on kernel        ##
-# ##  updates (a static kmod does NOT auto-rebuild - use akmods or a COPR   ##
-# ##  that tracks kernels, or rebuild per kernel). See docs/GETTING_STARTED.##
+# ##  VERIFIED on Fedora Silverblue 44 (kernel 7.1.3-200.fc44): builds in a ##
+# ##  toolbox, layers with `rpm-ostree install`, and after reboot the       ##
+# ##  module loads (modprobe hid-logitech-dd) and registers the logitech-dd ##
+# ##  driver with the 3 wheel modaliases. A wheel physically binding was    ##
+# ##  not tested in the VM (none attached), but that path is proven on bare ##
+# ##  metal. Full user steps: docs/GETTING_STARTED.md.                      ##
+# ##  NOTE: a static kmod does NOT auto-rebuild on kernel updates - rebuild ##
+# ##  and re-layer after each kernel bump (or publish an akmod/COPR).       ##
 # ############################################################################
 #
 # Modeled on the RPM Fusion kmodtool convention. Builds the same scoped
@@ -86,4 +87,6 @@ install -D -m 0644 udev/70-logitech-trueforce.rules \
 
 %changelog
 * Thu Jul 09 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.12.0-1
-- Initial UNTESTED akmods scaffold for atomic distros (Bazzite/Silverblue).
+- kmod package for atomic distros (Bazzite/Silverblue/Kinoite). Verified on
+  Fedora Silverblue 44: builds in a toolbox, layers with rpm-ostree, and the
+  module loads on the running kernel.

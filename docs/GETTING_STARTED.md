@@ -61,14 +61,11 @@ sudo dmesg | grep -iE 'rs50|g pro'   # expect: "... Force feedback initialized"
 #  "RS50 (G PRO compatibility mode):", or "G PRO:")
 ```
 
-> **Atomic / immutable distros (Bazzite, Silverblue, Kinoite):** `setup.sh`
-> and the DKMS package do not work there. The immutable layout makes DKMS's
-> build tree read-only during the `rpm-ostree` transaction, which breaks
-> DKMS module installs (a problem even for the distro's own DKMS recipes).
-> An **untested** akmods spec is provided at
-> `packaging/akmods/logitech-trueforce-kmod.spec` as a starting point; it
-> still needs a build-and-load test on real hardware before it can be
-> called supported. Help from a Bazzite owner is welcome.
+> **On an atomic / immutable distro (Bazzite, Silverblue, Kinoite)?**
+> `setup.sh` and DKMS do not apply there (DKMS needs a writable build tree,
+> which `rpm-ostree` does not provide during a transaction). Follow
+> [section 1a](#1a-atomic--immutable-distros-bazzite-silverblue-kinoite)
+> instead, then rejoin at step 2.
 
 <details>
 <summary>What setup.sh does, as manual steps (if you prefer to run them yourself)</summary>
@@ -88,6 +85,74 @@ sudo modprobe -r hid-logitech-dd 2>/dev/null; sudo modprobe hid-logitech-dd
 
 At this point every game with standard force feedback already works.
 The rest of this guide is about TrueForce and the Proton sims.
+
+## 1a. Atomic / immutable distros (Bazzite, Silverblue, Kinoite)
+
+On rpm-ostree systems the module ships as a **kmod RPM** you build once and
+layer onto the base image. You build it in a `toolbox` (a mutable Fedora
+container that shares the host kernel), then `rpm-ostree install` the result.
+Verified on Fedora Silverblue 44 (kernel 7.1.3-200.fc44): the module builds,
+layers, and loads, registering the `logitech-dd` driver with the wheel USB IDs.
+
+**Build the kmod in a toolbox.** `$(uname -r)` inside the container is the host
+kernel, so the matching `kernel-devel` is what you build against:
+
+```bash
+toolbox create -y logitech-build
+toolbox enter logitech-build
+```
+
+Then, inside the toolbox:
+
+```bash
+sudo dnf install -y rpm-build make gcc kmodtool kernel-rpm-macros \
+    elfutils-libelf-devel git kmod "kernel-devel-$(uname -r)"
+
+git clone https://github.com/mescon/logitech-trueforce-linux-driver.git
+cd logitech-trueforce-linux-driver
+
+# Build the source tarball the spec expects, straight from this checkout:
+VER=0.12.0
+mkdir -p ~/rpmbuild/SOURCES
+git archive --prefix=logitech-trueforce-linux-driver-$VER/ \
+    -o ~/rpmbuild/SOURCES/logitech-trueforce-kmod-$VER.tar.gz HEAD
+
+rpmbuild -bb packaging/akmods/logitech-trueforce-kmod.spec \
+    --define "kernels $(uname -r)"
+exit   # leave the toolbox
+```
+
+That produces two RPMs under `~/rpmbuild/RPMS/` (the toolbox home is your real
+home): a `kmod-logitech-trueforce-<kernel>` module and a noarch
+`logitech-trueforce-kmod-common` (the udev rule). If you ever bump `VER`, match
+it to the `upstream_ver` line in the spec.
+
+**Layer them onto the host and reboot** (run on the host, not in the toolbox):
+
+```bash
+sudo rpm-ostree install \
+    ~/rpmbuild/RPMS/x86_64/kmod-logitech-trueforce-*.rpm \
+    ~/rpmbuild/RPMS/noarch/logitech-trueforce-kmod-common-*.rpm
+sudo systemctl reboot
+```
+
+After the reboot the module auto-loads when you plug the wheel in (or
+`sudo modprobe hid-logitech-dd`). Confirm with `modinfo hid-logitech-dd`, then
+continue at step 2 for TrueForce. There is no `setup.sh doctor` here; the udev
+rule and module are installed by the RPMs directly.
+
+> **After a kernel update, rebuild.** A static kmod does not rebuild itself the
+> way DKMS does. When `rpm-ostree upgrade` brings in a new kernel, repeat the
+> toolbox build (its `kernel-devel` tracks the new kernel automatically) and
+> re-run `rpm-ostree install` on the fresh RPMs before rebooting into it.
+
+> **Bazzite specifically:** Bazzite ships a custom uBlue kernel, so
+> `kernel-devel-$(uname -r)` is not in the standard Fedora repos. Enable
+> uBlue's akmods repo inside the toolbox first
+> (`sudo dnf copr enable ublue-os/akmods`), then run the same steps. This path
+> is verified on vanilla Fedora atomic; the Bazzite `kernel-devel` source is
+> reported by uBlue but not yet confirmed here, so a Bazzite owner's report is
+> welcome.
 
 ## 2. Stage the Logitech SDK DLLs (TrueForce only)
 
