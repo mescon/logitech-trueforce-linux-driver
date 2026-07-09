@@ -61,6 +61,15 @@ sudo dmesg | grep -iE 'rs50|g pro'   # expect: "... Force feedback initialized"
 #  "RS50 (G PRO compatibility mode):", or "G PRO:")
 ```
 
+> **Atomic / immutable distros (Bazzite, Silverblue, Kinoite):** `setup.sh`
+> and the DKMS package do not work there. The immutable layout makes DKMS's
+> build tree read-only during the `rpm-ostree` transaction, which breaks
+> DKMS module installs (a problem even for the distro's own DKMS recipes).
+> An **untested** akmods spec is provided at
+> `packaging/akmods/logitech-trueforce-kmod.spec` as a starting point; it
+> still needs a build-and-load test on real hardware before it can be
+> called supported. Help from a Bazzite owner is welcome.
+
 <details>
 <summary>What setup.sh does, as manual steps (if you prefer to run them yourself)</summary>
 
