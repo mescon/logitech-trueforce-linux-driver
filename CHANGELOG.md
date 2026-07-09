@@ -5,6 +5,31 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.12.1 - 2026-07-09
+
+Packaging and documentation. No driver code change from v0.12.0 (the module
+is byte-identical); this release adds an install path for atomic distros and
+corrects the docs.
+
+### Atomic / immutable distros (Bazzite, Silverblue, Kinoite)
+
+DKMS cannot build on rpm-ostree systems (its build tree is read-only during
+the transaction), so the module now also ships as a static **kmod RPM**
+(`packaging/akmods/logitech-trueforce-kmod.spec`, kmodtool-based). You build
+it once in a `toolbox`, layer it with `rpm-ostree install`, and reboot.
+Verified end-to-end on Fedora Silverblue 44 (kernel 7.1.3-200.fc44): it
+builds, layers, and loads, registering the `logitech-dd` driver with the
+three wheel USB IDs. `docs/GETTING_STARTED.md` section 1a documents the flow,
+including the post-kernel-update rebuild and the Bazzite custom-kernel
+`kernel-devel` note.
+
+### Documentation
+- Corrected the RS50 LED description to match the hardware: a horizontal
+  10-LED strip across the upper faceplate (rev/shift indicator), numbered
+  left to right.
+- Accuracy pass across the doc set, checked against the driver code.
+- Trimmed verbose historical and development notes from the README.
+
 ## 0.12.0 - 2026-07-09
 
 9 commits since the `v0.11.0` tag on 2026-07-08. The fork is now scoped

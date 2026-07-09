@@ -256,6 +256,11 @@ sudo ./tools/setup.sh        # install / update everything
 The numbered steps below are what it does, kept for transparency and
 for anyone who prefers manual control.
 
+> **Atomic / immutable distros (Bazzite, Silverblue, Kinoite):** DKMS does
+> not work on rpm-ostree systems. Build the module as a static kmod in a
+> toolbox and layer it with `rpm-ostree install` instead - see
+> [section 1a of the Getting Started guide](docs/GETTING_STARTED.md#1a-atomic--immutable-distros-bazzite-silverblue-kinoite).
+
 ### Prerequisites
 
 - Linux kernel 5.15 or newer (tested through 7.1)

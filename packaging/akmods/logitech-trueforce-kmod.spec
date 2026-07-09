@@ -19,7 +19,7 @@
 # id_table to the direct-drive wheel PIDs).
 
 %global kmod_name       logitech-trueforce
-%global upstream_ver    0.12.0
+%global upstream_ver    0.12.1
 # Out-of-tree kmod: no separate debug/debugsource package.
 %global debug_package %{nil}
 
@@ -86,7 +86,7 @@ install -D -m 0644 udev/70-logitech-trueforce.rules \
     "%{buildroot}%{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules"
 
 %changelog
-* Thu Jul 09 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.12.0-1
+* Thu Jul 09 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.12.1-1
 - kmod package for atomic distros (Bazzite/Silverblue/Kinoite). Verified on
   Fedora Silverblue 44: builds in a toolbox, layers with rpm-ostree, and the
   module loads on the running kernel.
