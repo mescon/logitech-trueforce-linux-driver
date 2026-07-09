@@ -2,10 +2,10 @@
 /*
  * libtrueforce - public API surface.
  *
- * Availability/discovery functions are live. All other entry points
- * are intentional stubs at this phase (Rank 22.1) - they return
- * LOGITF_ERR_NOT_SUPPORTED so games get a predictable "no Trueforce
- * yet" response while Rank 22.2+ flesh out session and streaming.
+ * Discovery/availability, session open/close, Kinetic Force (KF) torque,
+ * the TrueForce (TF) stream, gain and pause are all live. The remaining
+ * stubs are the DirectInput-open-style entry points, which return
+ * LOGITF_ERR_NOT_SUPPORTED so callers get a predictable answer.
  *
  * The module-init pair (dllOpen/dllClose) triggers a discovery scan
  * so that the index-based availability calls answer correctly without

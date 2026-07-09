@@ -121,17 +121,21 @@ On Arch/Fedora, `winedump` ships with `wine-core`. On Debian/Ubuntu, install `wi
 
 ## DLL layout consumed by `tools/install-tf-shim.sh`
 
-The shim installer expects the four real Logitech-signed SDK DLLs under
-`sdk/Logi/`, mirroring the exact directory tree they install into on
-Windows. These files are gitignored and **must be supplied by the user**.
+The shim installer needs the four real Logitech-signed SDK DLLs, in
+Logitech's own `Logi/...` directory tree. These files are gitignored and
+**must be supplied by the user**. The installer resolves the directory
+that holds the `Logi/` tree in this order: `--sdk-dir <path>`, then
+`$LOGITECH_TRUEFORCE_SDK_DIR`, then the repo's `sdk/` subdirectory if
+present, otherwise `~/.local/share/logitech-trueforce/sdk` (the default
+when installed from the AUR, where there is no repo tree).
 
-Required paths:
+Required files, relative to that directory:
 
 ```
-sdk/Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll
-sdk/Logi/Trueforce/1_3_11/trueforce_sdk_x86.dll
-sdk/Logi/wheel_sdk/9_1_0/logi_steering_wheel_x64.dll
-sdk/Logi/wheel_sdk/9_1_0/logi_steering_wheel_x86.dll
+Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll
+Logi/Trueforce/1_3_11/trueforce_sdk_x86.dll
+Logi/wheel_sdk/9_1_0/logi_steering_wheel_x64.dll
+Logi/wheel_sdk/9_1_0/logi_steering_wheel_x86.dll
 ```
 
 How to obtain them: install Logitech G HUB on Windows (or in a throwaway
@@ -141,9 +145,9 @@ wine prefix on Linux) and copy the contents of
 File names and directory casing must match.
 
 `tools/install-tf-shim.sh` runs `require_sources` first; if any of the
-four files are missing it prints the same expected paths and exits with
-status 2 without touching any wine prefix. So you can re-run the
-installer safely after populating `sdk/Logi/`.
+four files are missing it prints the resolved directory and the expected
+paths and exits with status 2 without touching any wine prefix, so you
+can re-run it safely after populating the tree.
 
 ### Newer SDK releases are drop-in compatible
 

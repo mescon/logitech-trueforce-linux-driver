@@ -5,7 +5,7 @@
 - Logitech RS50 Direct Drive Wheel Base (USB `046d:c276`)
 - Logitech G Pro Racing Wheel (USB `046d:c272` Xbox/PC, `046d:c268` PS/PC)
 
-**Version**: 2026-07-03
+**Version**: v0.12.0 (2026-07-09)
 
 Most of the attributes documented here are shared between the RS50 and G Pro (the two wheels share the settings code path). Attributes that are currently G Pro-only or RS50-only are called out inline.
 
@@ -469,7 +469,7 @@ centre across power cycles (same as G Hub on Windows).
 
 The RS50 has 10 RGB LEDs in a horizontal strip across the upper faceplate (an engine-RPM / shift indicator). The driver provides per-slot configuration with 5 custom slots (0-4).
 
-> **Per-model availability**: the `wheel_led_*` LIGHTSYNC attributes exist on the RS50 in both native and G-PRO-compat enumeration (the rim hardware doesn't change with the PID; verified live 2026-04-29). On a **real G PRO Racing Wheel** they are hidden: that rim has level-based rev lights with no per-LED RGB, exposed as `wheel_rev_level` instead (see its entry below).
+> **Per-model availability**: the `wheel_led_*` LIGHTSYNC attributes exist on the RS50 in both native and G-PRO-compat enumeration (the RS50's faceplate LED-strip hardware doesn't change with the PID; verified live 2026-04-29). On a **real G PRO Racing Wheel** they are hidden: that rim has level-based rev lights with no per-LED RGB, exposed as `wheel_rev_level` instead (see its entry below).
 >
 > **G PRO PID (`046d:c272` / `046d:c268`)**: covers both real G PRO Racing Wheel and RS50-in-G-PRO-compat-mode. Both run through the same `hidpp_dd_ff_*` code path and expose the same wheel-config surface; the LED attributes differ per rim (see the per-model note above - the driver tells the two apart by USB product string). On the RS50 in compat mode, LIGHTSYNC works the same way as native - feature `0x807A` is advertised at the same index discovery picks up in native, and `wheel_led_*` writes drive the LED strip end-to-end (verified against the live wheel 2026-04-29). Wheel-config attributes that work via fallback feature paths (see `docs/PROTOCOL_SPECIFICATION.md` section 5.1): `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`, `wheel_ffb_filter`, `wheel_profile` (write `0` to enter desktop mode), and `wheel_calibrate`. The remaining attributes (`wheel_brake_force`, `wheel_ffb_filter_auto`, `wheel_sensitivity`) are unsupported by this firmware: once their mode gating is satisfied the store returns `-EOPNOTSUPP` (note `wheel_brake_force` still returns `-EPERM` in desktop mode and `wheel_sensitivity` in onboard mode before that check). For those, configure via the wheel's OLED menu or via Windows G Hub on a Windows host.
 

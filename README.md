@@ -243,9 +243,10 @@ This is the path most users want: from a fresh clone to a working
 wheel with full force feedback and (optionally) TrueForce in
 SDK-aware sims under Proton.
 
-**Short version** - one command covers steps 1-6 below (DKMS build,
-in-tree driver blacklist, udev rule, module load, TrueForce shim if
-the SDK DLLs are staged), and `doctor` verifies every layer:
+**Short version** - one command covers steps 1-5 below (DKMS build,
+migration off any old full-fork install, udev rule, module load,
+TrueForce shim if the SDK DLLs are staged), and `doctor` verifies every
+layer:
 
 ```bash
 sudo ./tools/setup.sh        # install / update everything
@@ -330,7 +331,7 @@ the SDK DLL installation into your wine prefixes.
    `Force feedback initialized`, prefixed with your wheel's model tag:
    `RS50 (native):`, `RS50 (G PRO compatibility mode):`, or `G PRO:`.
 
-6. **Smoke test.**
+5. **Smoke test.**
    ```bash
    fftest /dev/input/by-id/*Logitech*event-joystick
    ```
@@ -339,8 +340,8 @@ the SDK DLL installation into your wine prefixes.
    Arch-based distros (Arch, CachyOS, SteamOS) and `linuxconsoletools`
    on most others.
 
-For ACC + TrueForce specifically, see "Recipe: ACC + TrueForce on
-RS50 or G PRO Racing Wheel" further down. Other SDK-aware sims
+For ACC + TrueForce specifically, see "Recipe: SDK-aware sims (ACC,
+AC EVO, ...) on RS50 or G PRO" further down. Other SDK-aware sims
 follow the same recipe.
 
 ### Updating after `git pull`
@@ -348,7 +349,7 @@ follow the same recipe.
 ```bash
 sudo ./tools/dkms-update.sh
 ```
-Then reload as in step 5. A reboot is only needed on UEFI Secure
+Then reload as in step 4. A reboot is only needed on UEFI Secure
 Boot systems if the MOK key needs re-enrollment.
 
 ### Adding TrueForce to a Wine prefix created later
@@ -634,7 +635,7 @@ has no HID++). Full protocol in
 ### "Invalid code 768" messages during boot
 
 These come from the HID descriptor declaring more buttons than
-physically exist. **This driver filters them** (see `rs50_input_mapping`)
+physically exist. **This driver filters them** (see `hidpp_dd_input_mapping`)
 so they never reach userspace - which means if you *do* see them, the
 wheel is being handled by `hid-generic`, not this driver. That happens
 when the wheel enumerates before the module loads. See "Wheel has no FFB

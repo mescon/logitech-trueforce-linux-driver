@@ -72,8 +72,8 @@ The RS50 presents **3 HID interfaces** to the host:
 ```
 Offset  Size  Type      Description
 ------  ----  ----      -----------
-0-1     2     uint16    Button bitmask (little-endian)
-2-3     2     -         Reserved (always 0x0000)
+0-1     2     uint16    Button bitmask, buttons 0-15 (little-endian)
+2-3     2     -         Button bitmask high bytes (byte 3 bit 7 = G button; otherwise 0)
 4-5     2     uint16    Wheel position (little-endian)
 6-7     2     uint16    Accelerator pedal (little-endian)
 8-9     2     uint16    Brake pedal (little-endian)
@@ -642,7 +642,7 @@ Set:     10 05 [idx] 3D [Pos_Hi] [Pos_Lo] 00  host -> device: fn=3 SET centre
 - Bytes 4-5: absolute encoder position (big-endian u16) to adopt as the new centre
 - Byte 6: reserved, `0x00`
 
-The kernel driver does not perform the query step; it is a thin primitive that only executes the SET. The game (or userspace tool) is expected to sample the current wheel position from evdev and pass it verbatim as the new centre via the write-only sysfs attribute `wheel_calibrate` (see `docs/SYSFS_API.md`). Verified on RS50 from `2026-04-22_re_calibrate.pcapng` and on G Pro from `2026-04-18_calibrate.pcapng`.
+Two sysfs attributes drive this (see `docs/SYSFS_API.md`): `wheel_calibrate` is the raw SET primitive - the game or userspace tool samples the current wheel position from evdev and passes it verbatim as the new centre; `wheel_calibrate_here` performs the fn=1 GET then the fn=3 SET internally, adopting the wheel's current physical position in one write. Verified on RS50 from `2026-04-22_re_calibrate.pcapng` and on G Pro from `2026-04-18_calibrate.pcapng`.
 
 ### 5.1 G PRO PID Feature Set (RS50-in-compat-mode and real G PRO)
 
@@ -715,8 +715,9 @@ analysis; index-to-ID mapping derived from IFeatureSet fn1 pairing in
   steering axis - verified in `2026-01-30_desktop_sensitivity`, where a
   slider sweep produced distinct, mutually inverse curves, while sweeps
   of unrelated sliders re-upload a bit-identical curve on every config
-  apply. Exposing this would unlock custom steering/pedal response
-  curves from Linux. Unknowns: the second `03` in caps, pedal-unit
+  apply. This is exposed as the `wheel_response_curve` (steering) and
+  `wheel_pedal_response_curve` (pedal sub-device 0x02) attributes.
+  Unknowns: the second `03` in caps, pedal-unit
   `fn9 [axis]` (called on every G Hub init; possibly axis refresh), and
   whether curves persist across power cycles.
 - **Feature `0x1BC0` (REPORT_HID_USAGE; index `0x09` on RS50, `0x07` on
@@ -1476,8 +1477,10 @@ All sysfs attributes (`wheel_led_colors`, `wheel_led_slot`, etc.) trigger this f
 The following features exist but are not yet implemented in the driver:
 
 1. **In-game slot activation** - Can games trigger LED slot changes via HID++ or only via sysfs?
-2. **Onboard profile management** - The RS50 supports storing settings that persist when connected to PS5. G Hub likely uses a profile feature (possibly 0x8100 or similar) to write to onboard memory vs desktop-only settings.
-3. **Firmware update feature** - Standard HID++ devices often have a DFU feature (0x00C0 or similar). **DO NOT PROBE WRITE FUNCTIONS** on unknown features to avoid corrupting firmware.
+2. **Firmware update feature** - Standard HID++ devices often have a DFU feature (0x00C0 or similar). **DO NOT PROBE WRITE FUNCTIONS** on unknown features to avoid corrupting firmware.
+
+(Onboard profile / mode switching is implemented via feature 0x8137 - see
+Section 5 - and exposed as the `wheel_profile` / `wheel_mode` attributes.)
 
 > **SAFETY WARNING**: Some HID++ features may be related to firmware updates or critical
 > device configuration. Always use GET (read-only) functions when probing unknown features.
@@ -1485,19 +1488,17 @@ The following features exist but are not yet implemented in the driver:
 
 ### Note on Autocenter / Centering Spring
 
-The Linux driver exposes an `autocenter` sysfs attribute for compatibility with tools like Oversteer, but **this is intentionally a stub** that stores the value locally without sending commands to the device.
+The `autocenter` sysfs attribute (and the evdev `FF_AUTOCENTER` upload)
+drives a real driver-side centring spring. The driver stores the
+magnitude, and its 500 Hz effect timer sums a position-fed centring force
+on top of the game's own effects while the value is nonzero (firm within
+roughly the central eighth of travel). A game that writes autocenter 0
+disables it for its session.
 
-**Why autocenter is not implemented:**
-
-1. **G Hub does not expose autocenter** - There is no centering spring setting in Logitech G Hub for the RS50, indicating this feature either doesn't exist in hardware or Logitech chose not to expose it.
-
-2. **Modern direct-drive wheels don't need hardware autocenter** - Unlike older belt/gear-driven wheels that used hardware centering springs, direct-drive wheels like the RS50 can produce centering force purely through their motors.
-
-3. **Games implement their own centering** - Racing games and simulators calculate their own centering forces and send them via `FF_CONSTANT` effects. The driver fully supports this, so games get proper centering behavior without needing a hardware autocenter feature.
-
-4. **The stub serves Oversteer compatibility** - Oversteer's GUI expects the `autocenter` attribute to exist. The stub accepts values (0-100) and stores them locally, keeping the GUI happy without affecting device behavior.
-
-If a future firmware update or protocol discovery reveals an autocenter HID++ feature, the stub can be replaced with a real implementation.
+The spring is computed host-side from the motor: these direct-drive
+wheels have no separate hardware autocenter setting (G Hub exposes none),
+and unlike belt/gear-driven wheels they produce centring force through the
+motor directly. The same attribute backs Oversteer's autocenter control.
 
 ---
 

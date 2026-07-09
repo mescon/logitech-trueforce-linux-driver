@@ -29,12 +29,13 @@ needs a copy of Logitech G HUB to source files from.
   version: the core works and is verified on real hardware; there is
   no GUI yet (settings are files you `echo` into, or Oversteer); and
   install is one command plus a couple of per-game Steam settings
-  nobody can automate. No distro packages (AUR etc.) yet.
+  nobody can automate. An AUR package (`logitech-trueforce-dkms`) is
+  published; other distros install from source.
 
 ## 1. Install the driver
 
-One command does it all - DKMS module, in-tree driver blacklist, udev
-permissions, module load, and (if the SDK DLLs from step 2 are staged)
+One command does it all - DKMS module, migration off any old full-fork
+install, udev permissions, module load, and (if the SDK DLLs from step 2 are staged)
 the TrueForce shim into every Steam prefix:
 
 ```bash
