@@ -29,10 +29,30 @@ needs a copy of Logitech G HUB to source files from.
   version: the core works and is verified on real hardware; there is
   no GUI yet (settings are files you `echo` into, or Oversteer); and
   install is one command plus a couple of per-game Steam settings
-  nobody can automate. An AUR package (`logitech-trueforce-dkms`) is
-  published; other distros install from source.
+  nobody can automate. Most distros have a native package (see the table
+  in step 1); everything else installs from source in one command.
 
 ## 1. Install the driver
+
+### Distro packages (the easy path)
+
+If your distro is listed, use its package: no clone, and it updates with
+the rest of your system. Then replug the wheel and skip to step 2 (or
+straight to racing if you do not need TrueForce).
+
+| Distro | Install |
+|---|---|
+| Arch, CachyOS, Manjaro | `paru -S logitech-trueforce-dkms` (AUR; or your AUR helper) |
+| Fedora, Nobara | enable [RPM Fusion free](https://rpmfusion.org) (for `akmods`), then `sudo dnf copr enable mescon/logitech-trueforce && sudo dnf install akmod-logitech-trueforce` |
+| openSUSE Tumbleweed, Leap | add the OBS repo (see `packaging/obs/README.md`), then `sudo zypper install logitech-trueforce-dkms` |
+| Debian, Ubuntu, Mint, Pop!_OS | download `logitech-trueforce-dkms_*.deb` from [Releases](https://github.com/mescon/logitech-trueforce-linux-driver/releases) and `sudo apt install ./logitech-trueforce-dkms_*.deb` |
+| Bazzite, Silverblue, Kinoite | atomic; see [section 1a](#1a-atomic--immutable-distros-bazzite-silverblue-kinoite) |
+
+The Fedora `akmod` and Debian/openSUSE DKMS packages rebuild the module
+automatically on kernel upgrades. On any of them you can still stage the SDK
+DLLs and run `logitech-trueforce-install-shim` (step 2) for TrueForce.
+
+### From source (any distro)
 
 One command does it all - DKMS module, migration off any old full-fork
 install, udev permissions, module load, and (if the SDK DLLs from step 2 are staged)

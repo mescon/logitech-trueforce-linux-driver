@@ -1,0 +1,18 @@
+PACKAGE_NAME="logitech-trueforce"
+PACKAGE_VERSION="#MODULE_VERSION#"
+# Build against the `source` symlink DKMS always creates
+# (-> /usr/src/$PACKAGE_NAME-$PACKAGE_VERSION). The `build` subdir DKMS
+# also exposes is not guaranteed to be populated, which produced silent
+# no-op builds where `dkms install` reported success but kept the old .ko
+# (upstream issue #17).
+MAKE[0]="make -C ${kernel_source_dir} M=${dkms_tree}/${PACKAGE_NAME}/${PACKAGE_VERSION}/source modules"
+CLEAN="make -C ${kernel_source_dir} M=${dkms_tree}/${PACKAGE_NAME}/${PACKAGE_VERSION}/source clean"
+# The built object is hid-logitech-dd.ko - a distinct name from the in-tree
+# hid-logitech-hidpp, which it does NOT replace: this driver claims only the
+# direct-drive wheels and coexists with the in-tree driver (no blacklist).
+# dkms passes LLVM=1 automatically on clang-built kernels.
+BUILT_MODULE_NAME[0]="hid-logitech-dd"
+BUILT_MODULE_LOCATION[0]="../source"
+DEST_MODULE_NAME[0]="hid-logitech-dd"
+DEST_MODULE_LOCATION[0]="/updates/dkms"
+AUTOINSTALL="yes"

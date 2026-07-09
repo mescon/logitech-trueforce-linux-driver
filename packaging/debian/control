@@ -1,0 +1,28 @@
+Source: logitech-trueforce-dkms
+Section: kernel
+Priority: optional
+Maintainer: mescon <5875228+mescon@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), dkms, dh-dkms | dkms (<< 3.0.11)
+Standards-Version: 4.6.2
+Homepage: https://github.com/mescon/logitech-trueforce-linux-driver
+Rules-Requires-Root: no
+
+Package: logitech-trueforce-dkms
+Architecture: all
+Depends: ${misc:Depends}, dkms
+Suggests: oversteer, wine
+Description: DKMS kernel driver for Logitech TrueForce direct-drive wheels
+ Force feedback, TrueForce texture routing, and G HUB-equivalent settings
+ exposed through sysfs for the Logitech RS50 and G PRO direct-drive racing
+ wheels. The module is built and installed for the running kernel by DKMS,
+ and rebuilt automatically on kernel upgrades.
+ .
+ The module is named hid-logitech-dd and is scoped to the direct-drive
+ wheel USB IDs (c276 RS50 native, c272 G PRO Xbox/PC and RS50 compat, c268
+ G PRO PS/PC). It coexists with the in-tree hid-logitech-hidpp driver,
+ which continues to serve every other Logitech device, so no blacklist is
+ needed.
+ .
+ TrueForce in Proton sims additionally needs Logitech's proprietary signed
+ SDK DLLs, which are not shipped by this package; see the bundled Getting
+ Started guide.

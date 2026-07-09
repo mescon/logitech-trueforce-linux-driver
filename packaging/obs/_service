@@ -1,0 +1,17 @@
+<services>
+  <!-- Fetch the tagged source from GitHub as
+       logitech-trueforce-linux-driver-<version>.tar.gz (the name and top-level
+       directory the spec's Source0 / %autosetup expect). Bump `revision` and
+       `version` together on each release. -->
+  <service name="tar_scm" mode="manual">
+    <param name="scm">git</param>
+    <param name="url">https://github.com/mescon/logitech-trueforce-linux-driver.git</param>
+    <param name="revision">v0.12.1</param>
+    <param name="version">0.12.1</param>
+    <param name="filename">logitech-trueforce-linux-driver</param>
+  </service>
+  <service name="recompress" mode="manual">
+    <param name="file">logitech-trueforce-linux-driver-*.tar</param>
+    <param name="compression">gz</param>
+  </service>
+</services>

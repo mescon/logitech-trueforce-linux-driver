@@ -1,0 +1,7 @@
+logitech-trueforce-dkms (0.12.1-1) unstable; urgency=medium
+
+  * Debian/Ubuntu DKMS packaging for the Logitech direct-drive wheel driver
+    (module hid-logitech-dd). Builds the same scoped module as the AUR and
+    akmod packages, via the repo dkms.conf.
+
+ -- mescon <5875228+mescon@users.noreply.github.com>  Thu, 10 Jul 2026 12:00:00 +0000

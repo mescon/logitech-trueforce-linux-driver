@@ -33,12 +33,17 @@ Source0:        %{url}/archive/refs/tags/v%{upstream_ver}.tar.gz#/%{name}-%{upst
 
 BuildRequires:  kmodtool
 BuildRequires:  gcc, make, kernel-rpm-macros
-# Pulls in the kernel-devel set to build against (RPM Fusion buildsys macro).
-%{!?kernels:BuildRequires: buildsys-build-rpmfusion-kerneldevpkgs-current}
 
-# kmodtool emits the per-kernel kmod-%%{kmod_name}-<kver> subpackages and the
-# akmod-%%{kmod_name} package that rebuilds on kernel change.
-%{expand:%(kmodtool --target %{_target_cpu} --kmodname %{kmod_name} %{?kernels:--for-kernels "%{?kernels}"} 2>/dev/null)}
+# Two build modes from one spec, selected by whether `kernels` is defined:
+#   * kernels defined      -> compile per-kernel kmod-%%{kmod_name}-<kver>
+#     packages for exactly those kernels. This is the toolbox / atomic
+#     static-kmod path (see docs/GETTING_STARTED.md section 1a); it needs
+#     kernel-devel for each listed kernel but no RPM Fusion buildsys.
+#   * kernels NOT defined   -> emit the akmod-%%{kmod_name} package only. It
+#     embeds the SRPM and rebuilds on the user's machine via the akmods
+#     service, so it needs no kernel-devel at build time. This is the COPR
+#     path: one build serves every kernel the user ever runs.
+%{expand:%(kmodtool --target %{_target_cpu} --kmodname %{kmod_name} %{?kernels:--for-kernels "%{?kernels}"} %{!?kernels:--akmod} 2>/dev/null)}
 
 %description
 Out-of-tree kernel module (hid-logitech-dd) for Logitech direct-drive

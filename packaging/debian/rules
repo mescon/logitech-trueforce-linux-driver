@@ -1,0 +1,35 @@
+#!/usr/bin/make -f
+# DKMS packaging for the Logitech direct-drive wheel driver.
+# The module builds as hid-logitech-dd from the historically-named source
+# file via the repo Kbuild; DKMS handles the per-kernel build/rebuild.
+
+include /usr/share/dpkg/pkg-info.mk
+
+NAME := logitech-trueforce
+VER  := $(DEB_VERSION_UPSTREAM)
+PKG  := $(CURDIR)/debian/logitech-trueforce-dkms
+SRC  := $(PKG)/usr/src/$(NAME)-$(VER)
+
+%:
+	dh $@ --with dkms
+
+override_dh_install:
+	# Module source DKMS compiles in /usr/src (the .c keeps its historical
+	# name; Kbuild emits hid-logitech-dd.ko).
+	install -d $(SRC)
+	install -m 0644 mainline/hid-logitech-hidpp.c mainline/hid-ids.h \
+		mainline/hidpp_dd_tf_init.h mainline/Kbuild mainline/Makefile $(SRC)/
+	# Build-time identifier the loaded module reports back (Kbuild reads it).
+	echo "v$(VER)" > $(SRC)/.git_hash
+	# udev rule: hand the wheel's sysfs + hidraw nodes to the input group.
+	install -D -m 0644 udev/70-logitech-trueforce.rules \
+		$(PKG)/usr/lib/udev/rules.d/70-logitech-trueforce.rules
+	# TrueForce-in-Proton shim installer (no-op unless the user stages the
+	# proprietary SDK DLLs; resolves the SDK dir via --sdk-dir /
+	# $$LOGITECH_TRUEFORCE_SDK_DIR / ~/.local/share/logitech-trueforce/sdk).
+	install -D -m 0755 tools/install-tf-shim.sh \
+		$(PKG)/usr/bin/logitech-trueforce-install-shim
+	dh_install
+
+override_dh_dkms:
+	dh_dkms -V $(VER)
