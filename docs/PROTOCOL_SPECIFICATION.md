@@ -258,7 +258,13 @@ Offset  Size  Description
 
 Example: `05 07 00 00 00 00 00 FF FF 00 00 00 00 ...`
 
-This command appears to refresh/maintain FFB state during gameplay.
+> **CORRECTION (capture re-analysis):** this `05 07` packet is NOT a wheel
+> command. In every capture the `05 07 .. FF FF` packets are 32-byte
+> DualShock-4 lightbar/rumble output reports to a *game controller* that was
+> plugged in at capture time - the `FF FF` is the DS4 lightbar colour, not an
+> FFB value. G HUB never sends `05 07` to the wheel, and the wheel's FFB
+> endpoint is silent at idle. Host-alive is carried entirely by the type-0x01
+> force stream. The driver no longer sends this packet.
 
 ### Example FFB Commands
 
@@ -275,12 +281,14 @@ Maximum force RIGHT, sequence 0x01:
 
 ### Observed Behavior
 
-- Force update rate: games stream 250-1000 Hz (AC EVO at the top end);
-  the kernel driver's own force stream runs at 500 Hz, rising to a
-  unified force+audio packet per tick while a texture effect plays
-- Sequence counter increments with each command
+- Force update rate: games stream **1000 Hz** (observed in every gameplay
+  capture: ACC on RS50, ACC/BeamNG on G PRO - median inter-packet gap
+  ~1.0 ms); the kernel driver's own force stream currently runs at 500 Hz
+- Sequence counter increments with each command (one shared counter across
+  all interface-2 packet types on the wire)
 - Force value and duplicate must always match
-- `05 07` command sent periodically (~3 times per minute)
+- `05 07` is NOT sent to the wheel (see the correction above - it is a
+  DualShock-4 packet); there is no idle FFB keepalive
 
 ---
 
@@ -368,7 +376,7 @@ Device → Host: Interrupt IN (endpoint 0x82)
 | 0x03 | `0x0005` | DeviceNameType | Device name string (fn0 = length, fn1 = name at offset, fn2 = type) |
 | 0x04 | `0x00C3` | SecureDFU | Firmware update |
 | **0x09** | **`0x1BC0`** | **ReportHidUsages** | Enables extra Button-page HID usages; optional (see 5.1) |
-| 0x0A | `0x8040` | Brightness/Sensitivity | Sensitivity (desktop) + **Brightness** (onboard) |
+| 0x0A | `0x8040` | Brightness | **LED brightness only** (both modes). The steering "Sensitivity" slider is a `0x80A4` response-curve upload, NOT this feature (see below) |
 | **0x0B** | **`0x807A`** | **LIGHTSYNC** | LED effect mode selection |
 | **0x0C** | **`0x807B`** | **RGBZoneConfig** | LED RGB color data (see Section 9) |
 | 0x0D | `0x80A4` | AxisResponseCurve | Per-axis 64-point response curves (see 5.1) |
@@ -415,7 +423,7 @@ x8040 gained its illumination on/off functions in v1.)
 
 ### Setting Commands (All Verified)
 
-Each setting feature exposes a handful of HID++ functions. The encoding in byte 3 of the short report is `(function_number << 4) | SW_ID`. In the G Hub captures this analysis is derived from, SW_ID is `0xD` across the board; the Linux driver uses its own SW_ID `0x01`, so the same SET appears on the wire as e.g. `0x21` rather than `0x2D`. GET semantics are stable across settings (`fn=0` queries capabilities/limits, `fn=1` reads current value) but the SET function number varies **per feature and per wheel**. Do not assume all settings use `fn=2`: damping and TRUEFORCE each have their own SET fn, and the two wheels agree on the exceptions.
+Each setting feature exposes a handful of HID++ functions. The encoding in byte 3 of the short report is `(function_number << 4) | SW_ID`. In the G Hub captures this analysis is derived from, SW_ID is `0xD` across the board; the Linux driver uses SW_ID `0x0a` (it must not use `0x01` - the pedal sub-device's MCU silently drops sw-id `0x01`), so the same SET appears on the wire as e.g. `0x2a` rather than `0x2d`. GET semantics are *mostly* `fn=0` queries capabilities/limits and `fn=1` reads current value - **but damping is an exception: its current value is read with `fn=0`; `fn=1` is the SETTER and an empty-payload `fn=1` sets damping to 0.** The SET function number also varies **per feature and per wheel**. Do not assume all settings use `fn=2`: damping and TRUEFORCE each have their own SET fn, and the two wheels agree on the exceptions.
 
 | Feature | Page | GET caps | GET value | SET (RS50 + G Pro) |
 |---------|------|----------|-----------|--------------------|
@@ -543,7 +551,17 @@ Set: 10 FF 15 2D [Value_Hi] [Value_Lo] 00
 > ⚠️ **Note**: This setting is ONLY available in Onboard mode (profiles 1-5).
 > It is NOT available in Desktop mode (profile 0).
 
-#### Sensitivity (Feature 0x8040, Index 0x0A) - DESKTOP MODE ONLY
+#### Sensitivity - it is a 0x80A4 response curve, NOT 0x8040
+
+> **CORRECTION (capture re-analysis + hardware):** the steering "Sensitivity"
+> slider does NOT write feature 0x8040. `0x8040` is LED BrightnessControl only.
+> G HUB's Sensitivity is a full 64-point `0x80A4` AxisResponseCurve upload on
+> the steering axis (a cubic Bezier (0,0)->(1,1) with control points
+> P1=(1-s, s), P2=(s, 1-s) for s=slider/100; 50 = identity = revert to the
+> built-in curve). The `0x8040` "Set" shown below only changes LED brightness.
+> The driver's `wheel_sensitivity` now uploads the 0x80A4 curve accordingly.
+
+The 0x8040 write shown here changes LED brightness (both modes):
 ```
 Set: 10 FF 0A 2D 00 [Value] 00
 ```
