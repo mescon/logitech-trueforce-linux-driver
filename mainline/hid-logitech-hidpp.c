@@ -7539,12 +7539,21 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	 * Windows G Hub confirm it's sent successfully. The Linux HID layer
 	 * should pass through undeclared report IDs without issue.
 	 */
-	/* Send refresh immediately, then schedule periodic refreshes */
-	queue_delayed_work(ff->wq, &ff->refresh_work, 0);
+	/*
+	 * The wheel needs NO periodic 05-07 keepalive. G HUB never sends 05 07
+	 * to the wheel - in the captures those are 32-byte DualShock-4 lightbar
+	 * packets to a controller that was plugged in at the time - and G HUB's
+	 * interface-2 endpoint is silent at idle. Host-alive is carried by the
+	 * type-01 FFB stream. refresh_work (a 64-byte 05-07 every 20 s) is
+	 * therefore no longer queued; it is left dormant (not deleted) pending
+	 * feel-test confirmation that FFB persists across idle without it,
+	 * after which the work item and its plumbing can be removed outright.
+	 *
+	 * range_poll_work below is unrelated (it detects a game SDK's
+	 * launch-time rotation-range reset) and stays.
+	 */
 	queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
 			   msecs_to_jiffies(HIDPP_DD_FF_REFRESH_INTERVAL_MS));
-	dd_info(hid, "FFB refresh command queued (then every %dms)\n",
-		HIDPP_DD_FF_REFRESH_INTERVAL_MS);
 
 	/*
 	 * Effect timer is started on-demand when effects play.
@@ -9749,43 +9758,62 @@ static DEVICE_ATTR(wheel_led_effect, 0664, wheel_led_effect_show, wheel_led_effe
  */
 #define HIDPP_DD_REV_SWID		0x0d	/* G HUB's sw-id, kept verbatim */
 #define HIDPP_DD_REV_MAX_LEVEL		10
-#define HIDPP_DD_REV_MIN_GAP_MS		160	/* G HUB's observed cadence */
+#define HIDPP_DD_REV_MIN_GAP_MS		10	/* ~100 Hz. G HUB drives rev lights at ~127 Hz (~7.5 ms per pair); the old 160 ms was a misread and made a full 0->10 sweep take ~1.6 s. */
 #define HIDPP_DD_REV_ARM_GAP_MS	4
 
 static int hidpp_dd_rev_send_short(struct hidpp_device *hidpp, u8 idx, u8 fn,
 				   u8 p0)
 {
-	struct hidpp_report report = {
-		.report_id = REPORT_ID_HIDPP_SHORT,
-		.device_index = 0xff,
-		.fap = {
-			.feature_index = idx,
-			.funcindex_clientid = (fn << 4) | HIDPP_DD_REV_SWID,
-			.params = { p0, 0, 0 },
-		},
-	};
+	struct hidpp_report *report;
+	int ret;
 
-	return __hidpp_send_report(hidpp->hid_dev, &report);
+	/*
+	 * DMA-safe buffer: __hidpp_send_report() can hand this straight to a
+	 * USB interrupt-OUT URB (on FORCE_OUTPUT_REPORTS wheels), and a stack
+	 * buffer is not DMA-mappable - it WARNs in usb_hcd_map_urb_for_dma and
+	 * the send fails with -EIO. Seen live on the RS50 the first time the
+	 * rev-light path was exercised (it had only ever been gated on to the
+	 * untested G PRO before). Mirrors hidpp_dd_ff_refresh_work's kzalloc.
+	 */
+	report = kzalloc(sizeof(*report), GFP_KERNEL);
+	if (!report)
+		return -ENOMEM;
+	report->report_id = REPORT_ID_HIDPP_SHORT;
+	report->device_index = 0xff;
+	report->fap.feature_index = idx;
+	report->fap.funcindex_clientid = (fn << 4) | HIDPP_DD_REV_SWID;
+	report->fap.params[0] = p0;
+	ret = __hidpp_send_report(hidpp->hid_dev, report);
+	kfree(report);
+	return ret;
 }
 
 static int hidpp_dd_rev_send_level(struct hidpp_device *hidpp, u8 idx, u8 level)
 {
-	struct hidpp_report report = {
-		.report_id = REPORT_ID_HIDPP_LONG,
-		.device_index = 0xff,
-		.fap = {
-			.feature_index = idx,
-			.funcindex_clientid = (6 << 4) | HIDPP_DD_REV_SWID,
-			/* params start at report byte 4: 00 01 00 0a 00 LL */
-			.params = { 0x00, 0x01, 0x00, 0x0a, 0x00, level },
-		},
-	};
+	struct hidpp_report *report;
 	int ret;
 
 	ret = hidpp_dd_rev_send_short(hidpp, idx, 2, 0);
 	if (ret < 0)
 		return ret;
-	return __hidpp_send_report(hidpp->hid_dev, &report);
+
+	report = kzalloc(sizeof(*report), GFP_KERNEL);	/* DMA-safe, see above */
+	if (!report)
+		return -ENOMEM;
+	report->report_id = REPORT_ID_HIDPP_LONG;
+	report->device_index = 0xff;
+	report->fap.feature_index = idx;
+	report->fap.funcindex_clientid = (6 << 4) | HIDPP_DD_REV_SWID;
+	/* params start at report byte 4: 00 01 00 0a 00 LL */
+	report->fap.params[0] = 0x00;
+	report->fap.params[1] = 0x01;
+	report->fap.params[2] = 0x00;
+	report->fap.params[3] = 0x0a;
+	report->fap.params[4] = 0x00;
+	report->fap.params[5] = level;
+	ret = __hidpp_send_report(hidpp->hid_dev, report);
+	kfree(report);
+	return ret;
 }
 
 /*
@@ -11616,8 +11644,15 @@ static umode_t hidpp_dd_wheel_group_is_visible(struct kobject *kobj,
 	struct hid_device *hid = to_hid_device(dev);
 	bool real_gpro = dd_is_real_gpro(hid);
 
+	/*
+	 * Rev-lights use the same 0x807A level protocol on both the RS50
+	 * (10-LED faceplate strip) and the G PRO rim - G HUB captures show the
+	 * identical arm-burst + level pairs on RS50 native, so expose the
+	 * attribute on both. The store gates on the LIGHTSYNC feature at
+	 * runtime; a wheel without it returns -EOPNOTSUPP.
+	 */
 	if (attr == &dev_attr_wheel_rev_level.attr)
-		return real_gpro ? attr->mode : 0;
+		return attr->mode;
 
 	/*
 	 * Hide every wheel_led_* LIGHTSYNC attribute on a real G PRO by
