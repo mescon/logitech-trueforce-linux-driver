@@ -6632,6 +6632,25 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	}
 
 	/*
+	 * OLED-side settings edit: on the RS50 the wheel signals a profile or
+	 * settings change made at its own OLED by broadcasting on the Profile
+	 * feature (0x8137) itself - fn0, sw_id 0 (e.g. `12 ff 17 00 01 01 ...`)
+	 * - NOT on 0x80D0 (which the G Pro uses for profile broadcasts). Without
+	 * this, cached settings (strength/damping/filter/TF edited at the OLED)
+	 * go stale until the next profile switch. Our own 0x8137 GET/getInfo
+	 * responses are matched and consumed by the sync path before reaching
+	 * here, so this only fires on genuine unsolicited broadcasts.
+	 */
+	if (ff->idx_profile != HIDPP_DD_FEATURE_NOT_FOUND &&
+	    data[2] == ff->idx_profile &&
+	    data[3] == 0x00) {
+		dd_info(hidpp->hid_dev,
+			 "OLED settings-edit broadcast -> re-querying settings\n");
+		queue_work(ff->wq, &ff->settings_refresh_work);
+		return 1;
+	}
+
+	/*
 	 * Rotation-changed: <rep> <dev> <idx_range> <fn|sw=0> <hi> <lo> ...
 	 *
 	 * Same sw_id==0 unsolicited-broadcast gate as the profile handler
@@ -8213,9 +8232,12 @@ static ssize_t wheel_damping_store(struct device *dev, struct device_attribute *
 	value = (damping * 65535) / 100;
 
 	if (ff->idx_damping == HIDPP_DD_FEATURE_NOT_FOUND) {
-		/* Compat-mode fallback: best-guess feature 0x8137 / fallback
-		 * index 0x15 fn 2. See docs/HIDPP_DD_PROTOCOL_SPECIFICATION.md
-		 * section 5.1. */
+		/*
+		 * Compat mode: hidpp_dd_compat_set_damping() resolves the
+		 * damping feature 0x8133 (verified fallback index 0x14, fn1).
+		 * (The old comment here cited a disproven guess - 0x8137 is the
+		 * Profile feature, not damping.)
+		 */
 		ret = hidpp_dd_compat_set_damping(hidpp, ff, value);
 		if (ret)
 			return ret;
