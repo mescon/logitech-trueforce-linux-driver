@@ -179,8 +179,22 @@ module_param(inject_pid, uint, 0644);
 MODULE_PARM_DESC(inject_pid,
 	"PID injection on interface 0 of direct-drive (RS50/G PRO) wheels: 0=off (default), 1=dry-run (log only), 2=actuate (drive the wheel).");
 
-/* Define a non-zero software ID to identify our own requests */
-#define LINUX_KERNEL_SW_ID			0x01
+/*
+ * HID++ software-id OR'd into every request's funcindex_clientid.
+ *
+ * Upstream hid-logitech-hidpp uses 0x01. The RS50 / G PRO PEDAL unit, however,
+ * is a separate MCU bridged by the wheel base at HID++ device index 0x02, and
+ * its firmware SILENTLY DROPS every request carrying software-id 0x01 - it
+ * sends no answer at all, not even a HID++ error. Verified live by sweeping the
+ * id against the pedal's getFeature(0x80A4): 0x02, 0x05, 0x0a and 0x0f are all
+ * answered, only 0x01 gets total silence; meanwhile the base (0xff) and motor
+ * (0x05) answer any id including 0x01. Our old 0x01 therefore made every pedal
+ * query (e.g. the 0x80A4 response-curve probe in discover_settings_features)
+ * time out, and the retry loop turned that into a 15-20 s init stall (issue
+ * #30). G HUB uses 0x0a; we match it so the pedal answers on the first try.
+ * The base and motor are unaffected by the change.
+ */
+#define LINUX_KERNEL_SW_ID			0x0a
 
 #define REPORT_ID_HIDPP_SHORT			0x10
 #define REPORT_ID_HIDPP_LONG			0x11
