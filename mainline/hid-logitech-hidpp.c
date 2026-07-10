@@ -36,6 +36,7 @@
 #include <asm/unaligned.h>
 #endif
 #include <linux/math.h>
+#include <linux/math64.h>
 
 /*
  * Kernel compatibility macros
@@ -4498,14 +4499,13 @@ struct hidpp_dd_ff_data {
 	u8 fn_set_trueforce;
 	u8 fn_set_brakeforce;
 	u8 fn_set_filter;
-	u8 fn_set_sensitivity;
 	u8 fn_set_brightness;		/* feature 0x8040 SET fn; default HIDPP_DD_HIDPP_FN_SET */
 
 	/* Mode and profile state (Feature 0x8137) */
 	u8 current_mode;		/* 0=desktop, 1=onboard */
 	u8 current_profile;		/* 0=desktop, 1-5=onboard profiles */
 	bool mode_known;		/* true once hidpp_dd_get_current_mode succeeded at least once; false means current_mode/current_profile are the safe-desktop default not a fresh query */
-	u8 sensitivity;			/* Desktop-only sensitivity (0-100), uses idx_brightness */
+	u8 sensitivity;			/* Last sensitivity written via sysfs (0-100, 50=linear); uploaded as a 0x80A4 steering curve, not readable back from the wheel */
 
 	/* Wheel settings (sysfs configurable) */
 	u16 range;			/* rotation range in degrees */
@@ -4695,6 +4695,12 @@ static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range);
 static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t);
 static void hidpp_dd_process_pedals(struct hidpp_device *hidpp, u8 *data, int size);
 static struct hidpp_dd_ff_data *hidpp_dd_find_ff_data(struct hid_device *hdev);
+static int hidpp_dd_response_curve_upload(struct hidpp_device *hidpp,
+					  struct hidpp_dd_ff_data *ff,
+					  u8 dev_idx, u8 axis, u8 idx,
+					  const char *buf, size_t count);
+static int hidpp_dd_response_curve_revert(struct hidpp_device *hidpp,
+					  u8 dev_idx, u8 axis, u8 idx);
 
 /*
  * Project a FF_CONSTANT effect's signed level onto the wheel's X axis.
@@ -6677,8 +6683,11 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	 * brightnessChangeEvent with a BE16 brightness, fired on
 	 * user-initiated changes (the wheel's OLED menu) and after a
 	 * rounded setBrightness; event 1 is illuminationChangeEvent.
-	 * Without this handler the led_brightness / sensitivity caches
-	 * went stale whenever brightness was changed on the wheel itself.
+	 * Without this handler the led_brightness cache went stale
+	 * whenever brightness was changed on the wheel itself. This is
+	 * LED brightness only: the old model that 0x8040 doubled as
+	 * desktop sensitivity was disproved on hardware (writes only dim
+	 * the LEDs; G Hub's Sensitivity slider is a 0x80A4 curve upload).
 	 * Same sw_id==0 unsolicited-broadcast gate as the handlers above.
 	 */
 	if (ff->idx_brightness != HIDPP_DD_FEATURE_NOT_FOUND &&
@@ -6691,8 +6700,6 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 			u8 val = min_t(u16, raw, 100);
 
 			WRITE_ONCE(ff->led_brightness, val);
-			if (ff->mode_known && ff->current_mode == 0)
-				WRITE_ONCE(ff->sensitivity, val);
 			dd_info(hidpp->hid_dev,
 				 "Brightness change broadcast -> %u%%\n",
 				 val);
@@ -7119,7 +7126,7 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 /*
  * Query the device for its current values of the common settings
  * (range, strength, damping, trueforce, brakeforce, ffb_filter,
- * brightness/sensitivity) and populate the ff cache. Each feature is
+ * brightness) and populate the ff cache. Each feature is
  * independent; a missing or failing query leaves the pre-populated
  * default alone. Shared by the RS50 and G Pro settings init paths so
  * they cannot drift on which settings get queried (SYS.F15).
@@ -7217,17 +7224,14 @@ static void hidpp_dd_ff_query_common_settings(struct hidpp_dd_ff_data *ff)
 	}
 
 	/*
-	 * Feature 0x8040 doubles as LED brightness (both modes) and
-	 * wheel sensitivity (desktop mode only). We cache the read value
-	 * as brightness unconditionally and as sensitivity only when
-	 * mode_known confirms desktop, so a failed mode query does not
-	 * alias a brightness value onto the sensitivity cache (SYS.F35).
-	 *
-	 * Officially this feature is x8040 BrightnessControl; the
-	 * sensitivity meaning is wheel-firmware behaviour layered on top
-	 * (the official feature has no sensitivity function). Values are
-	 * 16-bit big-endian per the official spec - decode both bytes,
-	 * not just the LSB.
+	 * Feature 0x8040 is x8040 BrightnessControl: LED brightness only.
+	 * The driver used to treat it as desktop-mode sensitivity too;
+	 * that was disproved on hardware (writes only dim the LEDs) and
+	 * against the 2026-01-30 desktop_sensitivity capture, where G
+	 * Hub's Sensitivity slider is a 0x80A4 response-curve upload on
+	 * the steering axis, so the read here must never touch
+	 * ff->sensitivity. Values are 16-bit big-endian per the official
+	 * spec - decode both bytes, not just the LSB.
 	 */
 	if (ff->idx_brightness != HIDPP_DD_FEATURE_NOT_FOUND) {
 		/*
@@ -7267,11 +7271,6 @@ static void hidpp_dd_ff_query_common_settings(struct hidpp_dd_ff_data *ff)
 
 			ff->led_brightness = val;
 			hid_dbg(hid, "Wheel: LED brightness = %d%%\n", val);
-
-			if (ff->mode_known && ff->current_mode == 0) {
-				ff->sensitivity = val;
-				hid_dbg(hid, "Wheel: sensitivity = %d%%\n", val);
-			}
 		}
 	}
 }
@@ -8425,7 +8424,27 @@ static ssize_t wheel_brake_force_store(struct device *dev, struct device_attribu
 static DEVICE_ATTR(wheel_brake_force, 0664,
 		   wheel_brake_force_show, wheel_brake_force_store);
 
-/* Sensitivity - wheel responsiveness (Desktop mode only) */
+/*
+ * Sensitivity - steering responsiveness (Desktop mode only).
+ *
+ * This is NOT feature 0x8040: hardware testing showed 0x8040 is plain
+ * BrightnessControl (writes only dim the LEDs, steering is unchanged).
+ * G Hub's Sensitivity slider is a 0x80A4 AxisResponseCurve upload on
+ * steering axis 0, protocol-mapped from the 2026-01-30
+ * desktop_sensitivity capture: for slider value v (0-100, s = v/100)
+ * G Hub samples the cubic Bezier
+ *
+ *   B(t) = 3t(1-t)^2*P1 + 3t^2(1-t)*P2 + t^3*(1,1),
+ *   P1 = (1-s, s), P2 = (s, 1-s)
+ *
+ * at 64 uniform t and uploads the (x,y) pairs scaled to 0-65535. The
+ * captured slider positions 100/75/25/0 all match this model to within
+ * 1 LSB; 50 gives the identity (G Hub sends fn6 revert-to-built-in
+ * instead of uploading it). >50 sharpens the centre, <50 softens it,
+ * symmetric about (32768, 32768). We reuse wheel_response_curve's
+ * upload core, so this attribute is just a friendly 0-100 front-end
+ * for the same hardware store.
+ */
 static ssize_t wheel_sensitivity_show(struct device *dev, struct device_attribute *attr,
 				     char *buf)
 {
@@ -8442,10 +8461,10 @@ static ssize_t wheel_sensitivity_show(struct device *dev, struct device_attribut
 		return -ENODEV;
 
 	/*
-	 * Sensitivity is only live in desktop mode; in onboard mode the
-	 * device uses a stored per-profile curve. Return the last-known
-	 * desktop value anyway so numeric parsers don't break. Users who
-	 * need to know the current mode can read wheel_mode.
+	 * The wheel has no readback for the slider value (the curve
+	 * store only reports a point count), so this is a write-through
+	 * cache: the last value stored here, defaulting to 50 (linear).
+	 * Users who need to know the current mode can read wheel_mode.
 	 */
 	return sysfs_emit(buf, "%u\n", ff->sensitivity);
 }
@@ -8456,9 +8475,10 @@ static ssize_t wheel_sensitivity_store(struct device *dev, struct device_attribu
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
 	struct hidpp_dd_ff_data *ff;
-	struct hidpp_report response;
-	u8 params[3];
-	int sensitivity, ret;
+	u32 px, py, prev_in = 0;
+	int sensitivity, i, ret;
+	size_t len = 0;
+	char *curve;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -8478,32 +8498,80 @@ static ssize_t wheel_sensitivity_store(struct device *dev, struct device_attribu
 	if (ret)
 		return ret;
 
-	if (ff->idx_brightness == HIDPP_DD_FEATURE_NOT_FOUND)
+	if (ff->idx_response_curve == HIDPP_DD_FEATURE_NOT_FOUND)
 		return -EOPNOTSUPP;
 
 	sensitivity = clamp(sensitivity, 0, 100);
 
-	/* Sensitivity uses the same feature as brightness (0x8040) */
-	params[0] = 0;
-	params[1] = sensitivity;
-	params[2] = 0;
+	/*
+	 * 50 = linear = the wheel's built-in curve. Mimic G Hub, which
+	 * sends fn6 revert here instead of uploading an identity curve
+	 * (equivalent steering-wise, but leaves the store reporting
+	 * "0 = built-in" rather than 64 loaded points).
+	 */
+	if (sensitivity == 50) {
+		ret = hidpp_dd_response_curve_revert(hidpp, 0xff, 0,
+						     ff->idx_response_curve);
+		ret = hidpp_errno(hid, ret, "set sensitivity");
+		if (ret)
+			return ret;
+		ff->sensitivity = 50;
+		dd_info(hid, "Sensitivity set to 50%% (linear, built-in curve)\n");
+		return count;
+	}
 
-	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_brightness,
-					  ff->fn_set_sensitivity, params, 3, &response);
-	ret = hidpp_errno(hid, ret, "set sensitivity");
+	/* 64 "in:out" tokens of at most 12 chars ("65535:65535 ") + NUL */
+	curve = kmalloc(64 * 12 + 1, GFP_KERNEL);
+	if (!curve)
+		return -ENOMEM;
+
+	/*
+	 * Sample G Hub's sensitivity Bezier (see the block comment above
+	 * wheel_sensitivity_show) at the wheel's 64 native points and
+	 * render it as the "in:out" pair list the shared 0x80A4 uploader
+	 * parses. Control coordinates scaled to 0-65535:
+	 * P1 = (px, py), P2 = (py, px). Integer math throughout; the
+	 * +125023 / 250047 pair is round-to-nearest by 63^3 (t = i/63).
+	 * Verified against the capture: reproduces G Hub's uploaded
+	 * points for sliders 100/75/25/0 to within 1 LSB.
+	 */
+	px = (u32)(100 - sensitivity) * 65535 / 100;
+	py = (u32)sensitivity * 65535 / 100;
+	for (i = 0; i < 64; i++) {
+		/* Bernstein weights for t = i/63, scaled by 63^3 */
+		u64 w1 = 3ULL * i * (63 - i) * (63 - i);
+		u64 w2 = 3ULL * i * i * (63 - i);
+		u64 w3 = (u64)i * i * i;
+		u32 in = div_u64(w1 * px + w2 * py + w3 * 65535 + 125023,
+				 250047);
+		u32 out = div_u64(w1 * py + w2 * px + w3 * 65535 + 125023,
+				  250047);
+
+		/*
+		 * x(t) is flat around t=0.5 at the slider extremes, so
+		 * two samples can round to the same input value (G Hub
+		 * itself uploads such duplicates at slider 0). The
+		 * uploader demands strictly increasing inputs; dropping
+		 * the duplicate is safe since its resampler linearly
+		 * interpolates across the gap.
+		 */
+		if (i > 0 && in <= prev_in)
+			continue;
+		prev_in = in;
+		len += scnprintf(curve + len, 64 * 12 + 1 - len, "%u:%u ",
+				 in, out);
+	}
+
+	ret = hidpp_dd_response_curve_upload(hidpp, ff, 0xff, 0,
+					     ff->idx_response_curve,
+					     curve, len);
+	kfree(curve);
 	if (ret)
 		return ret;
 
-	/*
-	 * sensitivity and led_brightness map to the same HID++ feature
-	 * (0x8040) and the same wire byte in desktop mode. A write to
-	 * sensitivity necessarily overwrites whatever the wheel was using
-	 * for led_brightness; keep both caches in sync so a subsequent
-	 * wheel_led_brightness read doesn't lie about the device state.
-	 */
 	ff->sensitivity = sensitivity;
-	ff->led_brightness = sensitivity;
-	dd_info(hid, "Sensitivity set to %d%% (aliases LED brightness)\n", sensitivity);
+	dd_info(hid, "Sensitivity set to %d%% (0x80A4 steering curve)\n",
+		sensitivity);
 	return count;
 }
 
@@ -10059,16 +10127,12 @@ static ssize_t wheel_led_brightness_store(struct device *dev, struct device_attr
 	if (ret)
 		return ret;
 
-	ff->led_brightness = brightness;
 	/*
-	 * In desktop mode, the same wire byte drives wheel_sensitivity;
-	 * keep the caches aligned so a subsequent sensitivity read
-	 * doesn't report a stale value. In onboard mode sensitivity is
-	 * live-controlled by the stored per-profile curve, so we leave
-	 * it alone.
+	 * Brightness only: 0x8040 was once believed to double as desktop
+	 * sensitivity, but hardware testing disproved that (sensitivity
+	 * is a 0x80A4 curve upload), so ff->sensitivity is not touched.
 	 */
-	if (ff->current_mode == 0)
-		ff->sensitivity = brightness;
+	ff->led_brightness = brightness;
 	dd_info(hid, "LED brightness set to %d%%\n", brightness);
 	return count;
 }
@@ -11873,7 +11937,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 
 	/*
 	 * Default SET function numbers (verified from archived G Hub captures on RS50):
-	 *   range / strength / brakeforce / filter / sensitivity /
+	 *   range / strength / brakeforce / filter /
 	 *   brightness   -> fn=2 (0x20)    (e.g. rotation_sweep shows
 	 *                                  10ff182d for feature 0x18 RANGE)
 	 *   damping      -> fn=1 (0x10)    damping_sweep shows 10ff141d...
@@ -11887,8 +11951,14 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->fn_set_trueforce = 0x30;
 	ff->fn_set_brakeforce = HIDPP_DD_HIDPP_FN_SET;
 	ff->fn_set_filter = HIDPP_DD_HIDPP_FN_SET;
-	ff->fn_set_sensitivity = HIDPP_DD_HIDPP_FN_SET;
 	ff->fn_set_brightness = HIDPP_DD_HIDPP_FN_SET;
+
+	/*
+	 * Sensitivity has no readback (the 0x80A4 curve store only
+	 * reports a point count); seed the write-through cache with the
+	 * neutral slider midpoint (50 = linear).
+	 */
+	ff->sensitivity = 50;
 
 	/*
 	 * Initialize effect timer early so timer_delete_sync() in destroy
