@@ -22,9 +22,6 @@ on:
         description: "Existing release tag to (re)publish, e.g. v0.12.1"
         required: true
 
-permissions:
-  contents: write
-
 env:
   # tag name for either trigger; strip the leading v for the bare version
   TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
@@ -50,6 +47,9 @@ jobs:
     name: Debian/Ubuntu .deb
     needs: validate
     runs-on: ubuntu-latest
+    # Only this job needs write access, to attach the .deb to the release.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
