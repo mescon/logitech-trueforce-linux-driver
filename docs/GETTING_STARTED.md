@@ -44,7 +44,7 @@ straight to racing if you do not need TrueForce).
 |---|---|
 | Arch, CachyOS, Manjaro | `paru -S logitech-trueforce-dkms` (AUR; or your AUR helper) |
 | Fedora, Nobara | enable [RPM Fusion free](https://rpmfusion.org) (for `akmods`), then `sudo dnf copr enable mescon/logitech-trueforce && sudo dnf install akmod-logitech-trueforce` |
-| openSUSE Tumbleweed, Leap | add the OBS repo (see `packaging/obs/README.md`), then `sudo zypper install logitech-trueforce-dkms` |
+| openSUSE Tumbleweed | `sudo zypper addrepo https://download.opensuse.org/repositories/home:/mescon/openSUSE_Tumbleweed/home:mescon.repo && sudo zypper --gpg-auto-import-keys refresh && sudo zypper install logitech-trueforce-dkms` |
 | Debian, Ubuntu, Mint, Pop!_OS | download `logitech-trueforce-dkms_*.deb` from [Releases](https://github.com/mescon/logitech-trueforce-linux-driver/releases) and `sudo apt install ./logitech-trueforce-dkms_*.deb` |
 | Bazzite, Silverblue, Kinoite | atomic; see [section 1a](#1a-atomic--immutable-distros-bazzite-silverblue-kinoite) |
 

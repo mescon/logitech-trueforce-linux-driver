@@ -19,6 +19,14 @@ and it loads and registers the `logitech-dd` driver.
   tarball from the git checkout and emits the SRPM. COPR rebuilds that SRPM
   per chroot into `akmod-logitech-trueforce`.
 
+## Automated publishing
+
+Once the project exists (created once via the steps below), every published
+GitHub Release rebuilds and submits the akmod automatically:
+`.github/workflows/publish-release.yml` stamps the release version into the
+spec and runs `copr-cli build mescon/logitech-trueforce` using the repo secret
+`COPR_CONFIG`. The steps below are the one-time project setup / manual fallback.
+
 ## Publishing (maintainer, needs a Fedora account + COPR API token)
 
 `copr-cli` reads its token from `~/.config/copr` (get it from

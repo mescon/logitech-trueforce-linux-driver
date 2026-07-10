@@ -17,6 +17,15 @@ elsewhere), so the same package builds on Fedora targets too.
 - `_service` - pulls the tagged source tarball from GitHub. Bump `revision`
   and `version` together on each release.
 
+## Automated publishing
+
+Once the package exists (created once via the steps below), every published
+GitHub Release updates it automatically: `.github/workflows/publish-release.yml`
+stamps the release version into the spec + `_service`, regenerates the source
+tarball, and `osc commit`s to `home:mescon/logitech-trueforce-dkms` using the
+repo secret `OSC_CONFIG`. The steps below are the one-time setup / manual
+fallback.
+
 ## Publishing (maintainer, needs an openSUSE account + `osc` configured)
 
 `osc` reads credentials from `~/.config/osc/oscrc` (run `osc` once to create

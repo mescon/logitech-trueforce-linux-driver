@@ -1,0 +1,154 @@
+name: Publish release packages
+
+# Fires when you publish a GitHub Release (e.g. `gh release create vX.Y.Z ...`).
+# The version is taken from the tag (vX.Y.Z -> X.Y.Z) and stamped into each
+# packaging recipe at build time, so nothing in the repo needs bumping by hand.
+#
+# Channels:
+#   * Debian/Ubuntu .deb  -> built here, attached to the release (no secret)
+#   * Fedora COPR akmod   -> SRPM submitted to copr (needs secret COPR_CONFIG)
+#   * openSUSE OBS RPM    -> committed to home:mescon (needs secret OSC_CONFIG)
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   COPR_CONFIG  the contents of your ~/.config/copr
+#   OSC_CONFIG   the contents of your ~/.config/osc/oscrc
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)publish, e.g. v0.12.1"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  # tag name for either trigger; strip the leading v for the bare version
+  TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+
+jobs:
+  # Gate every publish job on a well-formed version tag. TAG comes from a
+  # maintainer-published release or a manual dispatch (both require write
+  # access), but validating it here means a malformed ref never reaches a
+  # checkout `ref:` or a secret-bearing job.
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check tag looks like vX.Y.Z
+        run: |
+          set -eu
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) echo "publishing for tag: $TAG" ;;
+            *) echo "refusing to publish for unexpected tag: '$TAG'" >&2; exit 1 ;;
+          esac
+
+  debian:
+    name: Debian/Ubuntu .deb
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev debhelper dkms dh-dkms
+      - name: Stamp version from the tag
+        run: |
+          set -eu
+          VERSION="${TAG#v}"
+          {
+            echo "logitech-trueforce-dkms (${VERSION}-1) unstable; urgency=medium"
+            echo
+            echo "  * Release ${VERSION}."
+            echo
+            echo " -- mescon <5875228+mescon@users.noreply.github.com>  $(date -R)"
+          } > packaging/debian/changelog
+      - name: Build the .deb
+        run: packaging/debian/build-deb.sh "$PWD/out"
+      - name: Attach the .deb to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" out/*.deb --clobber
+
+  copr:
+    name: Fedora COPR (akmod)
+    needs: validate
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - name: Install tools
+        run: dnf install -y --setopt=install_weak_deps=False rpm-build kmodtool kernel-rpm-macros git make copr-cli
+      - name: Configure copr-cli
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        run: |
+          mkdir -p ~/.config
+          printf '%s' "$COPR_CONFIG" > ~/.config/copr
+          chmod 600 ~/.config/copr
+      - name: Build akmod SRPM (version from tag) and submit to COPR
+        run: |
+          set -eu
+          VERSION="${TAG#v}"
+          git config --global --add safe.directory "$PWD"
+          # Stamp the version so the SRPM (and the akmod COPR rebuilds from it)
+          # carries the release version.
+          sed -i "s/^%global\\( *\\)upstream_ver.*/%global\\1upstream_ver    ${VERSION}/" \
+            packaging/akmods/logitech-trueforce-kmod.spec
+          make -f .copr/Makefile srpm outdir="$PWD/srpm"
+          copr-cli build mescon/logitech-trueforce srpm/*.src.rpm
+
+  obs:
+    name: openSUSE OBS
+    needs: validate
+    runs-on: ubuntu-latest
+    container: opensuse/tumbleweed:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - name: Install tools
+        run: zypper --non-interactive --gpg-auto-import-keys install -y osc git tar gzip sed
+      - name: Configure osc
+        env:
+          OSC_CONFIG: ${{ secrets.OSC_CONFIG }}
+        run: |
+          mkdir -p ~/.config/osc
+          printf '%s' "$OSC_CONFIG" > ~/.config/osc/oscrc
+          chmod 600 ~/.config/osc/oscrc
+      - name: Stamp version, generate tarball, commit to OBS
+        run: |
+          set -eu
+          VERSION="${TAG#v}"
+          git config --global --add safe.directory "$PWD"
+          sed -i "s/^%global\\( *\\)modver.*/%global\\1modver   ${VERSION}/" \
+            packaging/obs/logitech-trueforce-dkms.spec
+          sed -i "s/^Version:.*/Version:        ${VERSION}/" \
+            packaging/obs/logitech-trueforce-dkms.spec
+          sed -i "s#<param name=\"revision\">[^<]*</param>#<param name=\"revision\">${TAG}</param>#" \
+            packaging/obs/_service
+          sed -i "s#<param name=\"version\">[^<]*</param>#<param name=\"version\">${VERSION}</param>#" \
+            packaging/obs/_service
+          git archive --prefix=logitech-trueforce-linux-driver-${VERSION}/ \
+            -o "/tmp/logitech-trueforce-linux-driver-${VERSION}.tar.gz" HEAD
+          work="$(mktemp -d)"; cd "$work"
+          osc checkout home:mescon logitech-trueforce-dkms
+          cd home:mescon/logitech-trueforce-dkms
+          rm -f logitech-trueforce-linux-driver-*.tar.gz
+          cp "$GITHUB_WORKSPACE/packaging/obs/logitech-trueforce-dkms.spec" .
+          cp "$GITHUB_WORKSPACE/packaging/obs/_service" .
+          cp "/tmp/logitech-trueforce-linux-driver-${VERSION}.tar.gz" .
+          osc addremove
+          osc commit -m "logitech-trueforce-dkms ${VERSION} (from tag ${TAG})"
