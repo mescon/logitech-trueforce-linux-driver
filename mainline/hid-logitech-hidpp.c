@@ -564,6 +564,18 @@ static int hidpp_send_message_sync(struct hidpp_device *hidpp,
 
 	do {
 		ret = __do_hidpp_send_message_sync(hidpp, message, response);
+		/*
+		 * A transport failure (ret < 0, e.g. -ETIMEDOUT: the device
+		 * sent no answer) memsets `response`, so the report_id-keyed
+		 * BUSY checks below would never break and we would retry a dead
+		 * query up to 3x - each a full 5s timeout, all while holding
+		 * send_mutex. That is what turned one silent query into a
+		 * 15-20s init stall and blocked every other HID++ user behind
+		 * it. Retrying only helps for an explicit HID++ BUSY error;
+		 * bail out immediately on any transport error.
+		 */
+		if (ret < 0)
+			break;
 		if (response->report_id == REPORT_ID_HIDPP_SHORT &&
 		    ret != HIDPP_ERROR_BUSY)
 			break;
@@ -791,13 +803,20 @@ static inline bool hidpp_match_answer(struct hidpp_device *hidpp,
 		return false;
 
 	/*
-	 * Some devices (e.g., the direct-drive wheels) don't echo back the software
-	 * ID in the response's funcindex_clientid field - they only return
-	 * the function index in the upper nibble, leaving the lower nibble
-	 * as 0. Handle this by only comparing the function index (upper nibble)
-	 * when the response's SW_ID is 0.
+	 * The direct-drive wheels don't echo back the software ID - they return
+	 * only the function index in the upper nibble, leaving the lower nibble
+	 * 0 - so for them we compare the function nibble only when the answer's
+	 * SW_ID is 0.
+	 *
+	 * Gate this leniency on the DD quirk, exactly like the device-index
+	 * check above. Only the DD wheels zero the SW_ID; for any other
+	 * Logitech device an unsolicited SW_ID-0 event/broadcast that happens
+	 * to share a pending question's feature index and function nibble would
+	 * otherwise be mistaken for its answer. Others keep upstream-strict
+	 * matching (full funcindex_clientid compare below).
 	 */
-	if ((answer->fap.funcindex_clientid & 0x0f) == 0) {
+	if ((hidpp->quirks & HIDPP_QUIRK_DD_FFB) &&
+	    (answer->fap.funcindex_clientid & 0x0f) == 0) {
 		/* Device didn't echo SW_ID - compare function ID only */
 		return (answer->fap.feature_index == question->fap.feature_index) &&
 		       ((answer->fap.funcindex_clientid & 0xf0) ==
@@ -5470,8 +5489,16 @@ static void hidpp_dd_ff_send_force(struct hidpp_dd_ff_data *ff, s32 force)
 		return;
 
 	pending = atomic_read(&ff->pending_work);
-	if (pending >= HIDPP_DD_FF_MAX_PENDING_WORK)
+	if (pending >= HIDPP_DD_FF_MAX_PENDING_WORK) {
+		/*
+		 * Queue saturated - the USB link is likely stalled. Count the
+		 * drop like the kmalloc-failure path below (this is the more
+		 * likely drop under a stalled link), otherwise sustained
+		 * saturation silently evaporates forces with no dmesg trace.
+		 */
+		ff->err_count++;
 		return;
+	}
 
 	ff_work = kmalloc(sizeof(*ff_work), GFP_ATOMIC);
 	if (!ff_work) {
@@ -5705,7 +5732,10 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
 			pkt[HIDPP_DD_TF_INIT_SEQ_OFFSET] = seq++;
 			ret = hid_hw_output_report(hdev, pkt,
 						   HIDPP_DD_FF_REPORT_SIZE);
-			if (ret < 0 && ret != -EIO && ret != -ENODEV)
+			/* Only -ENOSYS means ->output_report is unimplemented;
+			 * fall back to raw_request then. Real transport errors
+			 * must surface, not get re-sent as a control transfer. */
+			if (ret == -ENOSYS)
 				ret = hid_hw_raw_request(hdev,
 						HIDPP_DD_FF_REPORT_ID, pkt,
 						HIDPP_DD_FF_REPORT_SIZE,
@@ -6147,8 +6177,13 @@ static void hidpp_dd_ff_work_handler(struct work_struct *work)
 	 * This mirrors what hidraw does in hidraw_write().
 	 */
 	ret = hid_hw_output_report(hdev, ff_work->report_buf, HIDPP_DD_FF_REPORT_SIZE);
-	if (ret < 0 && ret != -EIO && ret != -ENODEV) {
-		/* output_report not available, try raw_request instead */
+	/*
+	 * Only -ENOSYS means the transport has no ->output_report; fall back to
+	 * raw_request (SET_REPORT) then. Every other value is a real transport
+	 * failure - do NOT re-send it as a control transfer (that masked
+	 * -EPIPE/-ETIMEDOUT and could put the packet on the wire twice).
+	 */
+	if (ret == -ENOSYS) {
 		ret = hid_hw_raw_request(hdev, HIDPP_DD_FF_REPORT_ID,
 					 ff_work->report_buf, HIDPP_DD_FF_REPORT_SIZE,
 					 HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
@@ -7103,8 +7138,17 @@ static void hidpp_dd_ff_query_common_settings(struct hidpp_dd_ff_data *ff)
 	}
 
 	if (ff->idx_damping != HIDPP_DD_FEATURE_NOT_FOUND) {
+		/*
+		 * Damping is GET on fn0, not fn1. Unlike range/strength/brake
+		 * (fn1 = GET, fn2 = SET), the damping feature uses fn0 = GET and
+		 * fn1 = SET, and an empty-payload fn1 is "set damping = 0". This
+		 * code used to read via fn1, which ZEROED the wheel's damping on
+		 * every probe and every profile/mode switch and then cached 0.
+		 * Verified live: fn0 reads the current value; the old fn1 read
+		 * emitted a damping-changed-to-0 event.
+		 */
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_damping,
-						  HIDPP_DD_HIDPP_FN_GET, params, 0, &response);
+						  HIDPP_DD_HIDPP_FN_GET_INFO, params, 0, &response);
 		if (ret == 0) {
 			value = (response.fap.params[0] << 8) | response.fap.params[1];
 			ff->damping = value;
@@ -7114,8 +7158,15 @@ static void hidpp_dd_ff_query_common_settings(struct hidpp_dd_ff_data *ff)
 	}
 
 	if (ff->idx_trueforce != HIDPP_DD_FEATURE_NOT_FOUND) {
+		/*
+		 * TrueForce current value is GET on fn2 (HIDPP_DD_HIDPP_FN_SET's
+		 * 0x20 numbering, not a set here). fn0 returns a constant max
+		 * (0xffff) and fn1 is the change-event slot that answers a
+		 * solicited read with 0, so the old fn1 read cached a bogus 0%.
+		 * Verified live and against G HUB's read function.
+		 */
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_trueforce,
-						  HIDPP_DD_HIDPP_FN_GET, params, 0, &response);
+						  HIDPP_DD_HIDPP_FN_SET, params, 0, &response);
 		if (ret == 0) {
 			value = (response.fap.params[0] << 8) | response.fap.params[1];
 			ff->trueforce = value;
@@ -7644,10 +7695,28 @@ static u8 hidpp_dd_compat_lookup(struct hidpp_device *hidpp, u16 feature_id,
 	int ret;
 
 	ret = hidpp_root_get_feature(hidpp, feature_id, &idx);
-	if (ret == 0 && idx != 0)
-		return idx;
-	dd_dbg(hid,
-		"compat: ROOT.GetFeature(0x%04x) for %s returned %d, falling back to index 0x%02x\n",
+	if (ret == 0) {
+		/*
+		 * The wheel answered ROOT.GetFeature. A non-zero index means the
+		 * feature is present there; index 0 is HID++ for "feature not
+		 * present", so do NOT fall back to a hardcoded guess in that
+		 * case - a wrong guess once set the FFB filter while trying to
+		 * set something else. Report it absent; the caller returns
+		 * -EOPNOTSUPP rather than poking a bystander feature.
+		 */
+		if (idx != 0)
+			return idx;
+		dd_dbg(hid, "compat: wheel reports %s (0x%04x) not present\n",
+		       what, feature_id);
+		return HIDPP_DD_FEATURE_NOT_FOUND;
+	}
+	/*
+	 * Transport error, not a "not present" answer: old compat firmware may
+	 * not answer ROOT.GetFeature at all. Only then fall back to the
+	 * historically-verified index for this feature.
+	 */
+	dd_warn(hid,
+		"compat: ROOT.GetFeature(0x%04x) for %s failed (%d); using verified fallback index 0x%02x\n",
 		feature_id, what, ret, fallback_idx);
 	return fallback_idx;
 }
@@ -7674,6 +7743,8 @@ static int hidpp_dd_compat_set_u16(struct hidpp_device *hidpp,
 	if (*cached_idx == HIDPP_DD_FEATURE_NOT_FOUND)
 		*cached_idx = hidpp_dd_compat_lookup(hidpp, feature_id,
 						 fallback_idx, what);
+	if (*cached_idx == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;	/* wheel says the feature isn't there */
 
 	params[0] = (value >> 8) & 0xFF;
 	params[1] = value & 0xFF;
@@ -7699,6 +7770,8 @@ static int hidpp_dd_compat_set_filter(struct hidpp_device *hidpp,
 		ff->idx_compat_filter = hidpp_dd_compat_lookup(hidpp,
 			HIDPP_DD_COMPAT_FEATURE_ID_FILTER,
 			HIDPP_DD_COMPAT_FALLBACK_IDX_FILTER, "compat set filter");
+	if (ff->idx_compat_filter == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;	/* wheel says the filter feature isn't there */
 	params[0] = 0x00;
 	params[1] = 0x00;
 	params[2] = level;
