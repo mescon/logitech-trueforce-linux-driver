@@ -22,7 +22,13 @@
 #   sudo ./dev/tools/linux_game_capture.sh [label] [duration_seconds]
 #
 #   label    : short tag, e.g. "ace_launch" or "txr_no_ffb" (default: session)
-#   duration : how long to capture (default: 60). 0 means wait for Ctrl-C.
+#   duration : one of
+#                N         capture the next N seconds, then auto-stop (default 60)
+#                0         capture until Ctrl-C, keeping everything
+#                ring[:N]  capture until Ctrl-C, keeping only the last ~N
+#                          seconds (default 60). Use this for an intermittent
+#                          bug: start it, keep playing until the problem
+#                          happens, then Ctrl-C - the last ~N s is saved.
 #
 # Typical session for the "wheel resets to 90 degrees on game launch"
 # investigation:
@@ -37,6 +43,24 @@ set -euo pipefail
 
 LABEL="${1:-session}"
 DURATION="${2:-60}"
+
+# Capture mode. `ring[:N]` records continuously into a small rolling buffer
+# and keeps only the most recent ~N seconds; everything else is handled by
+# the plain-duration path below.
+RING=0
+RING_WINDOW=60
+case "$DURATION" in
+	ring|last)     RING=1 ;;
+	ring:*|last:*) RING=1; RING_WINDOW="${DURATION#*:}" ;;
+esac
+if [ "$RING" = 1 ] && ! { [ "$RING_WINDOW" -ge 10 ] 2>/dev/null; }; then
+	echo "error: ring window must be an integer >= 10 (e.g. ring:90)" >&2
+	exit 1
+fi
+if [ "$RING" = 0 ] && ! { [ "$DURATION" -ge 0 ] 2>/dev/null; }; then
+	echo "error: duration must be a non-negative integer, 0, or ring[:N]" >&2
+	exit 1
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # dev/captures is the scratch convention this repo uses for all
@@ -155,7 +179,7 @@ cat <<EOF
  Wheel detected: $WHEEL_LINE
  Bus $WHEEL_BUS device $WHEEL_DEV
  Capture target : $PCAP
- Duration       : ${DURATION}s ($([ "$DURATION" = 0 ] && echo "wait for Ctrl-C" || echo "auto-stops"))
+ Duration       : $(if [ "$RING" = 1 ]; then echo "ring buffer, keeps last ~${RING_WINDOW}s (Ctrl-C to stop)"; elif [ "$DURATION" = 0 ]; then echo "until Ctrl-C (keeps everything)"; else echo "${DURATION}s (auto-stops)"; fi)
  Bundle output  : $CAPTURE_DIR/${STEM}.zip
 ----------------------------------------------------------------
 
@@ -167,11 +191,9 @@ read -r -p "Press Enter when you are READY to start capturing... " _
 # post-filter on the wheel's USB IDs in the bundle phase if we want a
 # smaller artefact, but we record everything first so a missed event on
 # a control endpoint does not invalidate the session.
-if [ "$DURATION" = 0 ]; then
-	DUR_ARG=""
-else
-	DUR_ARG="-a duration:$DURATION"
-fi
+# Ctrl-C should STOP the capture and still bundle what we have, not abort
+# the script. The trap lets bash resume after tshark exits on SIGINT.
+trap ':' INT
 
 echo
 echo "====== START START START - launch the game NOW ======"
@@ -186,11 +208,26 @@ echo
 # at 60 s is small (low-100s of kB even with FFB streaming) so the
 # extra packets are not a problem.
 set +e
-tshark -i "usbmon${WHEEL_BUS}" \
-	-w "$PCAP" \
-	$DUR_ARG \
-	-q 2>&1 | tail -2
+if [ "$RING" = 1 ]; then
+	# Rolling capture: 3 files of ~RING_WINDOW/2 s each, so at least the
+	# last RING_WINDOW seconds survive at any moment. tshark discards the
+	# oldest file as it cycles, so a multi-minute session stays tiny.
+	RING_DUR=$(( RING_WINDOW / 2 )); [ "$RING_DUR" -lt 5 ] && RING_DUR=5
+	echo "(ring buffer active: press Ctrl-C right after the problem happens)"
+	tshark -i "usbmon${WHEEL_BUS}" -w "$TMPDIR/${STEM}_ring.pcap" \
+		-b duration:"$RING_DUR" -b files:3 -q 2>&1 | tail -2
+	# Stitch the surviving ring segments into the single bundle pcap.
+	if command -v mergecap >/dev/null 2>&1; then
+		mergecap -w "$PCAP" "$TMPDIR/${STEM}_ring"*.pcap 2>/dev/null
+	else
+		cp "$(ls -t "$TMPDIR/${STEM}_ring"*.pcap | head -1)" "$PCAP"
+	fi
+else
+	[ "$DURATION" = 0 ] && DUR_ARG="" || DUR_ARG="-a duration:$DURATION"
+	tshark -i "usbmon${WHEEL_BUS}" -w "$PCAP" $DUR_ARG -q 2>&1 | tail -2
+fi
 set -e
+trap - INT
 
 echo
 echo "!!!!!!! ENDING ENDING ENDING - capture stopped !!!!!!!!"
