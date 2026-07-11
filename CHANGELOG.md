@@ -5,6 +5,57 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.13.0 - 2026-07-11
+
+A correctness batch from a review of the G Hub USB captures and an audit of
+places where a symptom had been masked instead of fixed, plus validation of the
+real G PRO wheel against contributor captures. All driver changes are
+hardware-verified on an RS50 (native mode, kernel 7.1.3).
+
+### Fixed
+- **Pedal init hang (#30).** The pedal MCU (device index 0x02) silently drops
+  HID++ messages sent with software-id 0x01; it accepts 0x0a (what G Hub uses).
+  Init drops from ~15-20 s of retry timeouts to ~0.4 s.
+- **Damping was zeroed on any settings re-read.** The read used function index
+  fn1 (which *sets* damping to 0) instead of fn0 (get). Now fn0.
+- **TrueForce current-value read** used fn1 (an event slot) instead of fn2.
+- **`wheel_sensitivity`** now uploads the 0x80A4 axis-response Bezier curve (the
+  real desktop sensitivity control) instead of aliasing 0x8040 LED brightness.
+  Sensitivity and brightness are fully independent.
+- **Removed the `05 07` "FFB keepalive"**, which was a DualShock-4 lightbar
+  packet, not a wheel command. FFB does not depend on it.
+- **RS50 rev-lights** un-gated, with corrected ~100 Hz cadence and DMA-safe
+  buffers (the previous stack buffers triggered a USB DMA warning).
+- **On-wheel OLED profile edits** now trigger a settings re-read (0x8137 sw0).
+- **Transport / error-handling hardening**: output_report falls back to
+  SET_REPORT only on -ENOSYS; compat-lookup misses return -EOPNOTSUPP; dropped
+  FFB samples are counted rather than silently lost; retry-on-timeout breaks on
+  non-BUSY.
+- **G PRO compat fallback (#33).** On a real G PRO, a transport-level feature
+  lookup failure no longer applies RS50 fallback indices (which are shifted on a
+  real G PRO and would cross-wire a setting into a bystander feature); it reports
+  the feature absent and logs it.
+
+### G PRO validation
+- The real G PRO (`046d:c272`) HID++ configuration protocol is confirmed against
+  contributor G Hub captures (#8): identical to the RS50 except a uniform
+  feature-index shift, which the driver resolves dynamically. The FFB / TrueForce
+  stream itself is not yet verified on a real G PRO (those captures were
+  config-only).
+
+### Packaging
+- New distribution channels: **Debian/Ubuntu (.deb)**, **Fedora COPR (akmod)**,
+  and **openSUSE OBS (DKMS)**, auto-published on each GitHub Release.
+
+### Tooling
+- `linux_game_capture.sh` gains a ring-buffer mode (`ring[:N]`) that keeps only
+  the last N seconds, for capturing intermittent issues (#31).
+
+### Documentation
+- Protocol spec corrected (05-07 is a DS4 packet; sensitivity is 0x80A4; damping
+  is fn0; pedal software-id is 0x0a), and the `wheel_sensitivity` sysfs reference
+  rewritten to match.
+
 ## 0.12.1 - 2026-07-09
 
 Packaging and documentation. No driver code change from v0.12.0 (the module
