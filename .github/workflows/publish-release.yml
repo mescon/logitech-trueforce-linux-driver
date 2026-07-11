@@ -59,7 +59,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            dpkg-dev debhelper dkms dh-dkms
+            build-essential dpkg-dev debhelper dkms dh-dkms
       - name: Stamp version from the tag
         run: |
           set -eu
@@ -101,7 +101,7 @@ jobs:
         run: |
           set -eu
           VERSION="${TAG#v}"
-          git config --global --add safe.directory "$PWD"
+          git config --global --add safe.directory '*'
           # Stamp the version so the SRPM (and the akmod COPR rebuilds from it)
           # carries the release version.
           sed -i "s/^%global\\( *\\)upstream_ver.*/%global\\1upstream_ver    ${VERSION}/" \
@@ -132,7 +132,7 @@ jobs:
         run: |
           set -eu
           VERSION="${TAG#v}"
-          git config --global --add safe.directory "$PWD"
+          git config --global --add safe.directory '*'
           sed -i "s/^%global\\( *\\)modver.*/%global\\1modver   ${VERSION}/" \
             packaging/obs/logitech-trueforce-dkms.spec
           sed -i "s/^Version:.*/Version:        ${VERSION}/" \
