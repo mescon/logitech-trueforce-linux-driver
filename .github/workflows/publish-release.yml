@@ -106,7 +106,22 @@ jobs:
           # carries the release version.
           sed -i "s/^%global\\( *\\)upstream_ver.*/%global\\1upstream_ver    ${VERSION}/" \
             packaging/akmods/logitech-trueforce-kmod.spec
-          make -f .copr/Makefile srpm outdir="$PWD/srpm"
+          # Build the SRPM directly (git-free). The .copr/Makefile uses
+          # `git archive`, which fails inside this container job (git
+          # refuses repo discovery across the checkout mount boundary);
+          # since the tag is already checked out, tar the working tree
+          # instead. COPR's own "make srpm" build method still uses the
+          # Makefile's git path on COPR's proper git clone.
+          dnf install -y --setopt=install_weak_deps=False rpm-build tar
+          PREFIX="logitech-trueforce-linux-driver-${VERSION}"
+          SRCDIR="$HOME/rpmbuild/SOURCES"; mkdir -p "$SRCDIR" "$PWD/srpm"
+          stage="$(mktemp -d)"; mkdir -p "$stage/$PREFIX"
+          tar --exclude=./.git --exclude=./srpm --exclude=./out -cf - . \
+            | tar -xf - -C "$stage/$PREFIX"
+          tar -czf "$SRCDIR/logitech-trueforce-kmod-${VERSION}.tar.gz" \
+            -C "$stage" "$PREFIX"
+          rpmbuild -bs packaging/akmods/logitech-trueforce-kmod.spec \
+            --define "_sourcedir $SRCDIR" --define "_srcrpmdir $PWD/srpm"
           copr-cli build mescon/logitech-trueforce srpm/*.src.rpm
 
   obs:
@@ -141,8 +156,15 @@ jobs:
             packaging/obs/_service
           sed -i "s#<param name=\"version\">[^<]*</param>#<param name=\"version\">${VERSION}</param>#" \
             packaging/obs/_service
-          git archive --prefix=logitech-trueforce-linux-driver-${VERSION}/ \
-            -o "/tmp/logitech-trueforce-linux-driver-${VERSION}.tar.gz" HEAD
+          # git-free tarball: `git archive` fails in this container job
+          # (git refuses repo discovery across the checkout mount
+          # boundary), and the tag is already checked out, so tar the
+          # working tree with the versioned prefix directory.
+          PREFIX="logitech-trueforce-linux-driver-${VERSION}"
+          stage="$(mktemp -d)"; mkdir -p "$stage/$PREFIX"
+          tar --exclude=./.git --exclude=./srpm --exclude=./out -cf - . \
+            | tar -xf - -C "$stage/$PREFIX"
+          tar -czf "/tmp/${PREFIX}.tar.gz" -C "$stage" "$PREFIX"
           work="$(mktemp -d)"; cd "$work"
           osc checkout home:mescon logitech-trueforce-dkms
           cd home:mescon/logitech-trueforce-dkms
