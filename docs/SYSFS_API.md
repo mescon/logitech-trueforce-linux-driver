@@ -5,7 +5,7 @@
 - Logitech RS50 Direct Drive Wheel Base (USB `046d:c276`)
 - Logitech G Pro Racing Wheel (USB `046d:c272` Xbox/PC, `046d:c268` PS/PC)
 
-**Version**: v0.12.1 (2026-07-09)
+**Version**: v0.13.0 (2026-07-11)
 
 Most of the attributes documented here are shared between the RS50 and G Pro (the two wheels share the settings code path). Attributes that are currently G Pro-only or RS50-only are called out inline.
 
@@ -230,21 +230,26 @@ echo 75 > wheel_brake_force
 **Values**: `0` to `100` (percentage)
 **Mode Restriction**: Writes only accepted in **desktop mode**; reads always succeed.
 
-Sets the wheel sensitivity/responsiveness (Feature 0x8040, the same wire
-feature that carries LED brightness in onboard mode; the driver tracks
-them as separate caches and gates the sensitivity cache update on a
-confirmed desktop-mode query to avoid aliasing a brightness value into
-sensitivity).
+Shapes the steering response curve via feature `0x80A4`
+(AxisResponseCurve): a 64-point cubic Bezier from (0,0) to (1,1) with
+control points P1=(1-s, s), P2=(s, 1-s) for s = value/100. Values below
+`50` soften the response near centre; values above `50` sharpen it. `50`
+is the identity curve, so the driver reverts to the wheel's built-in
+curve (as G Hub does) rather than uploading a flat line.
 
-Reads return the last-known desktop sensitivity (initialised to 0 until
-the wheel has been observed in desktop mode at least once). The value
-has no effect while the wheel is in onboard mode; read `wheel_mode` to
-know which is current. Writes in onboard mode fail with `-EPERM`.
+This is unrelated to LED brightness. Feature `0x8040` (behind
+`wheel_led_brightness`) is brightness only; sensitivity and brightness are
+fully independent.
+
+Reads return the last value written, defaulting to `50`. The wheel has no
+read-back for the slider, so this is a write-through cache. Writes in
+onboard mode fail with `-EPERM`; if the wheel does not expose the
+response-curve feature, writes return `-EOPNOTSUPP`.
 
 ```bash
-# Set sensitivity to 50% (must be in desktop mode)
+# Sharpen the centre response (must be in desktop mode)
 echo "desktop" > wheel_mode
-echo 50 > wheel_sensitivity
+echo 65 > wheel_sensitivity
 ```
 
 ### wheel_ffb_filter

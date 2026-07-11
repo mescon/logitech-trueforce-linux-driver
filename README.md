@@ -127,8 +127,13 @@ owner to validate · - not applicable.
 The RS50 is the development hardware, so its column is verified directly
 in both native (`046d:c276`) and G PRO compatibility (`046d:c272`) modes,
 including SDK game TrueForce under Proton in each. A real G PRO runs the
-**same `hidpp_dd_ff_*` code path** as an RS50 in G PRO compatibility mode,
-so it is expected to work; we just do not have one to confirm against.
+**same `hidpp_dd_ff_*` code path** as an RS50 in G PRO compatibility mode.
+Its HID++ configuration protocol is now confirmed against real G PRO G Hub
+captures ([issue #8](https://github.com/mescon/logitech-trueforce-linux-driver/issues/8)):
+every wheel-config feature matches, differing only by a feature-index shift
+the driver resolves at runtime. Those captures did not include the
+force-feedback / TrueForce stream itself, so G PRO FFB and TrueForce are
+expected to work but not yet verified end to end.
 **G920 / G923** are handled by the
 in-tree `hid-logitech-hidpp` driver (this scoped fork no longer claims
 them); their standard HID++ FFB is unaffected, and the RS50/G-PRO-specific
