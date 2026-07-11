@@ -7741,7 +7741,25 @@ static u8 hidpp_dd_compat_lookup(struct hidpp_device *hidpp, u16 feature_id,
 	 * Transport error, not a "not present" answer: old compat firmware may
 	 * not answer ROOT.GetFeature at all. Only then fall back to the
 	 * historically-verified index for this feature.
+	 *
+	 * BUT these fallback indices are the RS50's catalog, and PID c272/c268
+	 * is shared by two very different wheels: an RS50 spoofing the G PRO
+	 * PID in compatibility mode (RS50 catalog - the fallbacks are correct)
+	 * and a REAL G PRO, whose catalog is shifted down by 2 (verified from
+	 * the issue #8 G HUB captures: e.g. idx 0x18 is the FFB FILTER on a
+	 * real G PRO, not rotation range). Applying an RS50 fallback index on a
+	 * real G PRO would cross-wire a setting into a bystander feature - the
+	 * same class of bug the ROOT.GetFeature guard above already prevents. A
+	 * real G PRO only reaches this path if native resolution also failed,
+	 * so there is no reliable index to use: report the feature absent
+	 * rather than guess.
 	 */
+	if (dd_is_real_gpro(hid)) {
+		dd_warn(hid,
+			"compat: ROOT.GetFeature(0x%04x) for %s failed (%d) on a real G PRO; RS50 fallback idx 0x%02x is wrong here, reporting absent\n",
+			feature_id, what, ret, fallback_idx);
+		return HIDPP_DD_FEATURE_NOT_FOUND;
+	}
 	dd_warn(hid,
 		"compat: ROOT.GetFeature(0x%04x) for %s failed (%d); using verified fallback index 0x%02x\n",
 		feature_id, what, ret, fallback_idx);
