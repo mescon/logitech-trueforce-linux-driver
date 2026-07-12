@@ -122,25 +122,28 @@ def run(cfg: Config) -> int:
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
 
+    def apply_sample(s: Sample | None, state: dict) -> None:
+        """Handle one telemetry read: drive the LEDs, or turn them off once
+        when telemetry goes away (sim closed / between sessions)."""
+        if s is None:
+            if state["idle"] == 0:
+                writer.off()
+            state["idle"] += 1
+            return
+        state["idle"] = 0
+        lvl = mapper.level(s)
+        writer.set(lvl)
+        if cfg.verbose:
+            print(f"\rrpm={s.rpm:6.0f} gear={s.gear:+d} "
+                  f"lvl={lvl:2d} {'#' * lvl:<{MAX_LEVEL}}", end="")
+
     source.open()
     period = 1.0 / cfg.rate_hz
-    idle_ticks = 0
+    state = {"idle": 0}
     try:
         while running["go"]:
             t0 = time.monotonic()
-            s = source.read()
-            if s is None:
-                # No telemetry (sim closed / between sessions): LEDs off.
-                idle_ticks += 1
-                if idle_ticks == 1:
-                    writer.off()
-            else:
-                idle_ticks = 0
-                lvl = mapper.level(s)
-                writer.set(lvl)
-                if cfg.verbose:
-                    print(f"\rrpm={s.rpm:6.0f} gear={s.gear:+d} "
-                          f"lvl={lvl:2d} {'#' * lvl:<{MAX_LEVEL}}", end="")
+            apply_sample(source.read(), state)
             dt = time.monotonic() - t0
             if dt < period:
                 time.sleep(period - dt)
