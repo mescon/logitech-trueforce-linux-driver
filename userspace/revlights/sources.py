@@ -38,7 +38,8 @@ class Source:
         raise NotImplementedError
 
     def close(self) -> None:
-        pass
+        """Optional teardown hook. No-op by default; override to release
+        anything acquired in open()."""
 
 
 class SyntheticSource(Source):
@@ -126,7 +127,10 @@ class AcEvoShmSource(Source):
         self._last_locate = 0.0
 
     def _segments(self):
-        return glob.glob("/dev/shm/u%d-Shm_*" % os.getuid())
+        # Proton maps the sim's shared memory here. Read-only, and every byte
+        # is range-validated before use (see _read_head); a hostile segment
+        # can at worst suppress the LEDs.
+        return glob.glob("/dev/shm/u%d-Shm_*" % os.getuid())  # NOSONAR
 
     def _read_head(self, path, n=512):
         # /dev/shm is world-writable, but this is a READ-ONLY, best-effort
