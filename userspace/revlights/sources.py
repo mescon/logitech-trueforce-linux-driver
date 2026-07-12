@@ -31,7 +31,8 @@ class Source:
     name = "base"
 
     def open(self) -> None:  # noqa: A003 - deliberate verb
-        pass
+        """Optional setup hook. No-op by default; sources that need to acquire
+        a resource (locate a segment, open a socket) override this."""
 
     def read(self) -> Sample | None:
         raise NotImplementedError
@@ -128,8 +129,12 @@ class AcEvoShmSource(Source):
         return glob.glob("/dev/shm/u%d-Shm_*" % os.getuid())
 
     def _read_head(self, path, n=512):
+        # /dev/shm is world-writable, but this is a READ-ONLY, best-effort
+        # telemetry read: the bytes are never trusted as code or paths, only
+        # decoded as numbers and range-validated (_plausible_phys) before use,
+        # and a hostile segment can at worst suppress the LEDs. Safe.
         try:
-            with open(path, "rb") as f:
+            with open(path, "rb") as f:  # NOSONAR - read-only, validated
                 return f.read(n)
         except OSError:
             return b""
