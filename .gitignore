@@ -188,3 +188,7 @@ sphinx_*/
 
 # Compiled test binaries (sources are tracked, binaries are not)
 /tests/ff_matrix_test
+
+# Python bytecode
+__pycache__/
+*.pyc
