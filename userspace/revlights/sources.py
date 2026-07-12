@@ -98,8 +98,12 @@ def _plausible_phys(p) -> bool:
     if p is None:
         return False
     _pid, gas, brake, fuel, gear, rpms, _steer, kmh = p
+    # fuel > 0: a car in a session always has some. This is the cheap
+    # discriminator that rejects the all-float-zero Wine counter segments,
+    # which otherwise pass every other bound and get falsely locked (their
+    # incrementing counter masquerades as a packetId).
     return (0.0 <= gas <= 1.01 and 0.0 <= brake <= 1.01
-            and 0.0 <= fuel <= 1000.0
+            and 0.1 < fuel <= 1000.0
             and -1 <= gear <= 10 and 0 <= rpms <= 20000
             and 0.0 <= kmh <= 500.0)
 

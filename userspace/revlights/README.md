@@ -51,11 +51,20 @@ writes.
 
 - **synthetic** - a triangle-wave RPM sweep, idle → redline → idle. No game.
   Used to verify the LED pipeline; verified live on an RS50.
-- **acevo** - reads `acpmf_physics` from AC EVO's Proton shared memory. The
-  Windows mapping lands in `/dev/shm/u<uid>-Shm_<hash>` under a hashed name, so
-  the source scans segments and locks onto the one whose `packetId` strictly
-  increases (the live physics loop), then reads `rpms`. **Status: written,
-  pending live verification against the running game.**
+- **acevo** - targets the Assetto Corsa family `acpmf_physics` shared memory.
+  The Windows mapping lands in Proton's `/dev/shm/u<uid>-Shm_<hash>` under a
+  hashed name, so the source scans segments and locks onto one holding a live,
+  self-consistent physics record (strictly-increasing `packetId` and a plausible
+  car state, `fuel > 0` - which rejects Wine's all-zero counter segments), then
+  reads `rpms`.
+
+  **Status: parked for AC EVO.** Live investigation (usbmon + a full
+  `/dev/shm` sweep while driving) found **no acpmf physics segment** for Assetto
+  Corsa EVO - as an early-access title it does not appear to expose the classic
+  AC shared memory yet, so this source finds nothing there and correctly leaves
+  the LEDs off. It is kept for AC-family titles that *do* expose acpmf, but is
+  unverified against a specific game. Revisit AC EVO when its telemetry API is
+  clearer (a Wine-side helper using the official mapping API is the fallback).
 
 ## Design notes
 
