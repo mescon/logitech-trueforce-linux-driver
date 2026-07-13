@@ -9,11 +9,21 @@ pub struct EditState {
 
 impl EditState {
     pub fn start(attr: &'static str, kind: Kind, current: &Value) -> EditState {
-        let buffer = match (kind, current) {
-            (Kind::TextField { .. }, Value::Text(s)) => s.clone(),
+        // Text-mode kinds (free text, RGB strip, curve) are edited as their raw
+        // sysfs string; seed the buffer with the current value's encoding.
+        let buffer = match kind {
+            Kind::TextField { .. } => match current {
+                Value::Text(s) => s.clone(),
+                _ => String::new(),
+            },
+            Kind::RgbStrip { .. } | Kind::Curve => kind.format(current).unwrap_or_default(),
             _ => String::new(),
         };
         EditState { attr, kind, draft: current.clone(), buffer }
+    }
+
+    fn is_text_mode(&self) -> bool {
+        matches!(self.kind, Kind::TextField { .. } | Kind::RgbStrip { .. } | Kind::Curve)
     }
 
     pub fn bump(&mut self, d: i32) {
@@ -34,24 +44,40 @@ impl EditState {
     }
 
     pub fn push_char(&mut self, c: char) {
-        if let Kind::TextField { max_len } = self.kind {
-            if self.buffer.chars().count() < max_len {
-                self.buffer.push(c);
-                self.draft = Value::Text(self.buffer.clone());
+        match self.kind {
+            Kind::TextField { max_len } => {
+                if self.buffer.chars().count() < max_len {
+                    self.buffer.push(c);
+                }
             }
+            Kind::RgbStrip { .. } | Kind::Curve => self.buffer.push(c),
+            _ => {}
         }
     }
 
     pub fn backspace(&mut self) {
-        if matches!(self.kind, Kind::TextField { .. }) {
+        if self.is_text_mode() {
             self.buffer.pop();
-            self.draft = Value::Text(self.buffer.clone());
         }
     }
 
     pub fn commit_value(&self) -> Result<Value, Error> {
-        self.kind.validate(&self.draft)?;
-        Ok(self.draft.clone())
+        if self.is_text_mode() {
+            // Parse the raw buffer (validates encoding/length).
+            self.kind.parse(&self.buffer)
+        } else {
+            self.kind.validate(&self.draft)?;
+            Ok(self.draft.clone())
+        }
+    }
+
+    /// What to show for the row currently being edited.
+    pub fn display(&self) -> String {
+        if self.is_text_mode() {
+            format!("{}_", self.buffer)
+        } else {
+            self.kind.display(&self.draft)
+        }
     }
 }
 
@@ -92,5 +118,30 @@ mod tests {
         assert_eq!(e.commit_value().unwrap(), Value::Text("RACER".into()));
         e.backspace();
         assert_eq!(e.commit_value().unwrap(), Value::Text("RACE".into()));
+    }
+
+    #[test]
+    fn rgb_edited_as_raw_string() {
+        let ten = "000000 000000 000000 000000 000000 000000 000000 000000 000000 000000";
+        let start = Kind::RgbStrip { leds: 10 }.parse(ten).unwrap();
+        let mut e = EditState::start("wheel_led_colors", Kind::RgbStrip { leds: 10 }, &start);
+        e.backspace();
+        e.push_char('f');
+        match e.commit_value().unwrap() {
+            Value::Rgb(cs) => assert_eq!(cs[9].b, 0x0f),
+            _ => panic!("not rgb"),
+        }
+    }
+
+    #[test]
+    fn curve_edited_as_raw_string() {
+        let mut e = EditState::start("wheel_response_curve", Kind::Curve, &Value::Curve(vec![]));
+        for _ in 0.."reset".len() {
+            e.backspace();
+        }
+        for c in "0:0 65535:65535".chars() {
+            e.push_char(c);
+        }
+        assert_eq!(e.commit_value().unwrap(), Value::Curve(vec![(0, 0), (65535, 65535)]));
     }
 }
