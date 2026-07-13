@@ -13,7 +13,9 @@ impl Color {
     }
     pub fn from_hex(s: &str) -> Result<Color, Error> {
         let s = s.trim();
-        if s.len() != 6 {
+        // Guard is_ascii() so the byte-offset slicing below cannot land inside
+        // a multi-byte UTF-8 char (which would panic).
+        if s.len() != 6 || !s.is_ascii() {
             return Err(Error::Invalid);
         }
         let byte = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| Error::Invalid);
@@ -48,5 +50,11 @@ mod tests {
     fn color_bad_hex_errors() {
         assert!(Color::from_hex("zz0000").is_err());
         assert!(Color::from_hex("fff").is_err());
+    }
+
+    #[test]
+    fn color_non_ascii_six_bytes_errors() {
+        // 6 bytes but 4 chars (a multi-byte char): must Err, not panic.
+        assert!(Color::from_hex("ff\u{20ac}0").is_err());
     }
 }

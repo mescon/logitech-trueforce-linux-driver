@@ -43,7 +43,12 @@ impl Kind {
                 "1" => Ok(Value::Bool(true)),
                 _ => Err(Error::Parse(raw.into())),
             },
-            Kind::TextField { .. } => Ok(Value::Text(raw.to_string())),
+            Kind::TextField { max_len } => {
+                if raw.chars().count() > *max_len {
+                    return Err(Error::Invalid);
+                }
+                Ok(Value::Text(raw.to_string()))
+            }
             Kind::RgbStrip { leds } => {
                 let cs: Result<Vec<Color>, Error> =
                     raw.split_whitespace().map(Color::from_hex).collect();
@@ -70,6 +75,8 @@ impl Kind {
         }
     }
 
+    /// Encode a value to its sysfs string. Does NOT enforce Kind constraints
+    /// (range, length, count); call `validate` first for outside input.
     pub fn format(&self, v: &Value) -> Result<String, Error> {
         Ok(match (self, v) {
             (Kind::Percent, Value::Percent(n)) => n.to_string(),
@@ -184,5 +191,12 @@ mod tests {
         let v = k.parse("0:0 32768:16384 65535:65535").unwrap();
         assert_eq!(v, Value::Curve(vec![(0, 0), (32768, 16384), (65535, 65535)]));
         assert_eq!(k.format(&v).unwrap(), "0:0 32768:16384 65535:65535");
+    }
+
+    #[test]
+    fn textfield_max_len_enforced() {
+        let k = Kind::TextField { max_len: 8 };
+        assert!(k.parse("RACE").is_ok());
+        assert!(matches!(k.parse("waytoolongname"), Err(Error::Invalid)));
     }
 }
