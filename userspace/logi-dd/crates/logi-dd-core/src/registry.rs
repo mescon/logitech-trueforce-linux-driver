@@ -20,7 +20,10 @@ pub const REGISTRY: &[SettingSpec] = &[
     SettingSpec { attr: "wheel_range_restore", label: "Auto range restore", help: "Auto-recover from a launch-time 90-degree reset.", category: Rotation, kind: Kind::Toggle { off: "off", on: "on" }, access: ReadWrite, mode_req: Any },
     // --- Sensitivity ---
     SettingSpec { attr: "wheel_sensitivity", label: "Sensitivity", help: "Steering response (0-100%, 50=built-in). Desktop mode only.", category: Sensitivity, kind: PCT, access: ReadWrite, mode_req: DesktopOnly },
-    SettingSpec { attr: "wheel_response_curve", label: "Response curve", help: "Full steering response curve. 'reset' for built-in.", category: Sensitivity, kind: Kind::Curve, access: ReadWrite, mode_req: DesktopOnly },
+    // Any, not DesktopOnly: unlike wheel_sensitivity, the driver's
+    // wheel_response_curve_store does not gate on mode (no -EPERM), so a
+    // DesktopOnly pre-check would falsely reject onboard-mode writes.
+    SettingSpec { attr: "wheel_response_curve", label: "Response curve", help: "Full steering response curve. 'reset' for built-in.", category: Sensitivity, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
     // --- TrueForce ---
     SettingSpec { attr: "wheel_trueforce", label: "TrueForce intensity", help: "Audio-haptic texture intensity (0-100%).", category: TrueForce, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_texture_route", label: "Texture routing", help: "Route rumble/texture to TrueForce (tf) or steering (kf).", category: TrueForce, kind: Kind::Enum(&["kf", "tf"]), access: ReadWrite, mode_req: Any },
