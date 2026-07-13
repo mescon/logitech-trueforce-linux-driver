@@ -3,6 +3,8 @@
 pub mod error;
 pub use error::{Error, Mode};
 pub mod sysfs;
+pub mod value;
+pub use value::{Color, Value};
 
 #[cfg(test)]
 mod smoke {
