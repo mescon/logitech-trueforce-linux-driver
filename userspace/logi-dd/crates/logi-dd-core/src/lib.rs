@@ -5,6 +5,8 @@ pub use error::{Error, Mode};
 pub mod sysfs;
 pub mod value;
 pub use value::{Color, Value};
+pub mod kind;
+pub use kind::Kind;
 
 #[cfg(test)]
 mod smoke {
