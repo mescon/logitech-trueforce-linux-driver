@@ -26,23 +26,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen)?;
-    let mut term = Terminal::new(CrosstermBackend::new(out))?;
+    if let Err(e) = execute!(out, EnterAlternateScreen) {
+        let _ = disable_raw_mode();
+        return Err(e.into());
+    }
+    let mut term = match Terminal::new(CrosstermBackend::new(out)) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            return Err(e.into());
+        }
+    };
 
-    let res = loop {
-        term.draw(|f| ui::draw(f, &app))?;
-        if let Event::Key(k) = event::read()? {
-            if k.kind == event::KeyEventKind::Press {
-                app.on_key(k.code);
-            }
+    // Run the loop, capturing any error via `break` instead of `?`, so the
+    // teardown below always runs and never leaves the terminal in raw mode.
+    let res: Result<(), Box<dyn std::error::Error>> = loop {
+        if let Err(e) = term.draw(|f| ui::draw(f, &app)) {
+            break Err(e.into());
+        }
+        match event::read() {
+            Ok(Event::Key(k)) if k.kind == event::KeyEventKind::Press => app.on_key(k.code),
+            Ok(_) => {}
+            Err(e) => break Err(e.into()),
         }
         if app.quit {
             break Ok(());
         }
     };
 
-    disable_raw_mode()?;
-    execute!(term.backend_mut(), LeaveAlternateScreen)?;
-    term.show_cursor()?;
+    // Always restore the terminal, regardless of how the loop ended.
+    let _ = disable_raw_mode();
+    let _ = execute!(term.backend_mut(), LeaveAlternateScreen);
+    let _ = term.show_cursor();
     res
 }
