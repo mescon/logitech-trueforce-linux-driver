@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/logi-dd-core", "crates/logi-dd-tui"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.74"
+version = "0.1.0"
+license = "GPL-2.0"
