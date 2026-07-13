@@ -11,6 +11,8 @@ pub mod setting;
 pub use setting::{Access, Category, ModeReq, SettingSpec};
 pub mod registry;
 pub use registry::REGISTRY;
+pub mod device;
+pub use device::{Device, DeviceInfo};
 
 #[cfg(test)]
 mod smoke {
