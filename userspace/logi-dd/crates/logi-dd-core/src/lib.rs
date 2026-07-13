@@ -7,6 +7,10 @@ pub mod value;
 pub use value::{Color, Value};
 pub mod kind;
 pub use kind::Kind;
+pub mod setting;
+pub use setting::{Access, Category, ModeReq, SettingSpec};
+pub mod registry;
+pub use registry::REGISTRY;
 
 #[cfg(test)]
 mod smoke {
