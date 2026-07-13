@@ -192,3 +192,6 @@ sphinx_*/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Subagent-driven-development scratch
+.superpowers/
