@@ -1,0 +1,13 @@
+[package]
+name = "logi-dd-tui"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "logi-dd-tui"
+path = "src/main.rs"
+
+[dependencies]
+logi-dd-core = { path = "../logi-dd-core" }
