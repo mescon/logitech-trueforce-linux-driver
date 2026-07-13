@@ -47,7 +47,7 @@ pub const REGISTRY: &[SettingSpec] = &[
     // --- Profiles / mode ---
     SettingSpec { attr: "wheel_mode", label: "Mode", help: "desktop (host-controlled) or onboard (wheel-stored).", category: Profiles, kind: Kind::Enum(&["desktop", "onboard"]), access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_profile", label: "Profile", help: "Active profile (0=desktop, 1-5 onboard).", category: Profiles, kind: Kind::IntRange { min: 0, max: 5, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
-    SettingSpec { attr: "wheel_profile_names", label: "Profile names", help: "The 5 onboard slot names.", category: Profiles, kind: Kind::TextField { max_len: 64 }, access: ReadOnly, mode_req: Any },
+    SettingSpec { attr: "wheel_profile_names", label: "Profile names", help: "The 5 onboard slot names.", category: Profiles, kind: Kind::TextField { max_len: 256 }, access: ReadOnly, mode_req: Any },
     // --- Calibration ---
     SettingSpec { attr: "wheel_calibrate_here", label: "Calibrate centre here", help: "Adopt the current physical position as centre.", category: Calibration, kind: Kind::Action, access: Action, mode_req: Any },
     // --- Info ---

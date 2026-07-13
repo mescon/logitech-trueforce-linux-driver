@@ -53,7 +53,7 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
                 (Ok(v), Some(s)) => {
                     if let Some(ed) = &app.edit {
                         if i == app.row_idx {
-                            s.kind.display(&ed.draft)
+                            ed.display()
                         } else {
                             s.kind.display(v)
                         }

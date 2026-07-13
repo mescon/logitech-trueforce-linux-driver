@@ -195,7 +195,10 @@ Interaction:
 - Navigate categories/settings with arrow keys; `Enter`/`e` edits the focused
   setting. Editing is kind-aware: a percent/int gets a slider + numeric entry
   (left/right adjust, type to set); an enum/toggle cycles; text opens an input;
-  RGB opens a per-LED colour editor; an action prompts confirm then triggers.
+  RGB and curves are edited as their raw sysfs string in Phase 1 (a text buffer
+  seeded with the current encoding, parsed on commit); a per-LED colour picker
+  and a curve point-editor are Phase 2 GUI features. An action prompts confirm
+  then triggers.
 - On write, validation runs first; a `WrongMode` error pops a confirm: "This
   needs desktop mode. Switch now?" -> `ensure_desktop_mode()` then retry.
 - `Unsupported` shows a clear "not available on this wheel/firmware" note and
@@ -242,6 +245,14 @@ mean two controls for one setting and an inconsistent cross-wheel set. The one
 with no `wheel_*` equivalent is `autocenter` (a host-side centring spring, which
 G HUB itself does not expose on these DD wheels); it is revisited in Phase 2
 alongside the evdev FF_GAIN/FF_AUTOCENTER controls.
+
+Three further documented settable attrs are deferred to Phase 2 and are not in
+the Phase 1 registry: `wheel_throttle_deadzone`/`wheel_brake_deadzone`/
+`wheel_clutch_deadzone` (need a dedicated deadzone `Kind` for the
+"<lower> <upper>" encoding), `wheel_pedal_response_curve` (an axis-prefixed
+curve, belongs with the Phase 2 curve editor), and `wheel_calibrate`
+(a write-only raw-encoder primitive, superseded for the common case by
+`wheel_calibrate_here`, which is present).
 
 ## 7. Testing
 
