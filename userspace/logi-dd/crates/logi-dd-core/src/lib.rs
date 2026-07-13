@@ -2,6 +2,7 @@
 
 pub mod error;
 pub use error::{Error, Mode};
+pub mod sysfs;
 
 #[cfg(test)]
 mod smoke {
