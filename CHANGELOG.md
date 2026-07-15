@@ -24,10 +24,12 @@ the contract is "it works on RS50 and G Pro as listed here".
   skip the HID++ demux.
 
 ### Added
-- **Profile rename.** `wheel_profile_names` is writable (0664): `echo
-  "3:My Profile" > wheel_profile_names` renames an onboard slot via feature
-  `0x8137` fn4. The wheel persists the name to its own NVM on the single write;
-  there is no separate save step. Slots 1-5, 1-14 characters.
+- **Profile rename.** `wheel_profile_names` is writable (0664): `echo "3:RACE" >
+  wheel_profile_names` renames an onboard slot via feature `0x8137` fn4. The
+  wheel persists the name to its own NVM on the single write; there is no
+  separate save step. Slots are 1-5. An RS50 takes names of up to 9 characters
+  (matching its own stock `PROFILE 3`), stores them uppercased, and accepts
+  spaces; it refuses a longer name at the HID++ layer, reported as `-EIO`.
 
 ### Removed
 - **Pedal shaping attributes** - `wheel_{throttle,brake,clutch}_curve`,

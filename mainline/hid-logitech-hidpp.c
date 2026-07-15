@@ -11125,10 +11125,18 @@ static ssize_t wheel_profile_names_show(struct device *dev,
  * persists the name to its own NVM on this one write.
  *
  * Write syntax mirrors the show format's "N: name" line:
- *   echo "3:My Profile" > wheel_profile_names
+ *   echo "3:RACE" > wheel_profile_names
  * slot is 1-5; the name is the rest of the line (a leading space after the
- * colon and one trailing newline are stripped), 1-14 bytes so [slot][len][name]
- * fits a single long HID++ report.
+ * colon and one trailing newline are stripped). The length check below is the
+ * transport limit: 1-14 bytes, so [slot][len][name] fits one long HID++ report.
+ *
+ * The wheel is stricter than the transport. An RS50 accepts at most 9
+ * characters (its own stock names are "PROFILE 3"/"PROFILE 4") and fails a
+ * longer name at the HID++ layer, which surfaces here as -EIO rather than
+ * -EINVAL; it also stores names uppercased, and accepts spaces. We keep the
+ * check at the transport limit rather than hard-coding 9, because that bound is
+ * observed on the RS50 and other wheels in this family may differ - the device
+ * remains the authority, and its refusal is reported.
  */
 static ssize_t wheel_profile_names_store(struct device *dev,
 					 struct device_attribute *attr,
