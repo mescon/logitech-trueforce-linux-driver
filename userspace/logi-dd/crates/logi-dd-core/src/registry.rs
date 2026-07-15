@@ -28,11 +28,9 @@ pub const REGISTRY: &[SettingSpec] = &[
     SettingSpec { attr: "wheel_trueforce", label: "TrueForce intensity", help: "Audio-haptic texture intensity (0-100%).", category: TrueForce, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_texture_route", label: "Texture routing", help: "Route rumble/texture to TrueForce (tf) or steering (kf).", category: TrueForce, kind: Kind::Enum(&["kf", "tf"]), access: ReadWrite, mode_req: Any },
     // --- Pedals ---
+    // The driver reports pedals raw and exposes no curve/deadzone/combined
+    // attributes, so there is nothing else to list here.
     SettingSpec { attr: "wheel_brake_force", label: "Brake force", help: "Load-cell brake threshold (0-100%). Onboard mode only.", category: Pedals, kind: PCT, access: ReadWrite, mode_req: OnboardOnly },
-    SettingSpec { attr: "wheel_combined_pedals", label: "Combined pedals", help: "Throttle and brake on one axis.", category: Pedals, kind: Kind::Toggle { off: "separate", on: "combined" }, access: ReadWrite, mode_req: Any },
-    SettingSpec { attr: "wheel_throttle_curve", label: "Throttle curve", help: "0=linear, 1=low-sensitivity, 2=high-sensitivity.", category: Pedals, kind: Kind::Enum(&["linear", "low", "high"]), access: ReadWrite, mode_req: Any },
-    SettingSpec { attr: "wheel_brake_curve", label: "Brake curve", help: "0=linear, 1=low-sensitivity, 2=high-sensitivity.", category: Pedals, kind: Kind::Enum(&["linear", "low", "high"]), access: ReadWrite, mode_req: Any },
-    SettingSpec { attr: "wheel_clutch_curve", label: "Clutch curve", help: "0=linear, 1=low-sensitivity, 2=high-sensitivity.", category: Pedals, kind: Kind::Enum(&["linear", "low", "high"]), access: ReadWrite, mode_req: Any },
     // --- LEDs (RS50 LIGHTSYNC) ---
     SettingSpec { attr: "wheel_led_brightness", label: "LED brightness", help: "Global LED brightness (0-100%).", category: Leds, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_led_effect", label: "LED effect", help: "Animation mode (1-9).", category: Leds, kind: Kind::IntRange { min: 1, max: 9, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
