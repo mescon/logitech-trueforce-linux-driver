@@ -371,6 +371,15 @@ struct hidpp_device {
 	bool connected_once;
 
 	/*
+	 * Set on a direct-drive wheel's interface 0, which we claim only to
+	 * track the steering position. That interface's input report carries
+	 * no report ID, so its first byte is joystick DATA (hat + buttons 1-4)
+	 * and can collide with REPORT_ID_HIDPP_*. hidpp_raw_event must not
+	 * parse those frames as HID++ - see the comment there.
+	 */
+	bool no_hidpp_reports;
+
+	/*
 	 * Scratch buffer for the PID-injected interface-0 descriptor. Filled
 	 * in hidpp_report_fixup when inject_pid=1; devm-allocated on hdev so
 	 * it lives as long as hdev does. NULL means no injection happened
@@ -13358,46 +13367,56 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
 	int ret = 0;
 
-	/*
-	 * Direct-drive wheels: we only claim interface 1 (HID++).
-	 * Interface 0 (joystick) is handled by hid-generic.
-	 */
-
 	if (!hidpp)
 		return 0;
 
-	/* Generic HID++ processing. */
-	switch (data[0]) {
-	case REPORT_ID_HIDPP_VERY_LONG:
-		if (size != hidpp->very_long_report_length) {
-			hid_err(hdev, "received hid++ report of bad size (%d)",
-				size);
-			return 1;
+	/*
+	 * Generic HID++ processing, but only on an interface that actually
+	 * carries HID++.
+	 *
+	 * A direct-drive wheel's interface 0 is a joystick whose input report
+	 * declares no report ID, so data[0] is the first DATA byte: the 4-bit
+	 * hat switch plus buttons 1-4. That byte can equal a HID++ report ID
+	 * (D-pad Up + button 1 is 0x10 = REPORT_ID_HIDPP_SHORT; Up-Right and
+	 * Right give 0x11 and 0x12). Parsing such a frame as HID++ hit the
+	 * size check below, logged a "bad size" storm and - because a non-zero
+	 * return tells hid-core the report was consumed - dropped the frame
+	 * outright, freezing steering, pedals and buttons for as long as the
+	 * combination was held.
+	 */
+	if (!hidpp->no_hidpp_reports) {
+		switch (data[0]) {
+		case REPORT_ID_HIDPP_VERY_LONG:
+			if (size != hidpp->very_long_report_length) {
+				hid_err(hdev, "received hid++ report of bad size (%d)",
+					size);
+				return 1;
+			}
+			ret = hidpp_raw_hidpp_event(hidpp, data, size);
+			break;
+		case REPORT_ID_HIDPP_LONG:
+			if (size != HIDPP_REPORT_LONG_LENGTH) {
+				hid_err(hdev, "received hid++ report of bad size (%d)",
+					size);
+				return 1;
+			}
+			ret = hidpp_raw_hidpp_event(hidpp, data, size);
+			break;
+		case REPORT_ID_HIDPP_SHORT:
+			if (size != HIDPP_REPORT_SHORT_LENGTH) {
+				hid_err(hdev, "received hid++ report of bad size (%d)",
+					size);
+				return 1;
+			}
+			ret = hidpp_raw_hidpp_event(hidpp, data, size);
+			break;
 		}
-		ret = hidpp_raw_hidpp_event(hidpp, data, size);
-		break;
-	case REPORT_ID_HIDPP_LONG:
-		if (size != HIDPP_REPORT_LONG_LENGTH) {
-			hid_err(hdev, "received hid++ report of bad size (%d)",
-				size);
-			return 1;
-		}
-		ret = hidpp_raw_hidpp_event(hidpp, data, size);
-		break;
-	case REPORT_ID_HIDPP_SHORT:
-		if (size != HIDPP_REPORT_SHORT_LENGTH) {
-			hid_err(hdev, "received hid++ report of bad size (%d)",
-				size);
-			return 1;
-		}
-		ret = hidpp_raw_hidpp_event(hidpp, data, size);
-		break;
-	}
 
-	/* If no report is available for further processing, skip calling
-	 * raw_event of subclasses. */
-	if (ret != 0)
-		return ret;
+		/* If no report is available for further processing, skip calling
+		 * raw_event of subclasses. */
+		if (ret != 0)
+			return ret;
+	}
 
 	if (hidpp->quirks & HIDPP_QUIRK_CLASS_WTP)
 		return wtp_raw_event(hdev, data, size);
@@ -13972,13 +13991,16 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 			int ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
 
 			if (ifnum == 0) {
-				dd_info(hdev, "Claiming interface 0 for pedal processing\n");
+				dd_info(hdev, "Claiming interface 0 for steering-position tracking\n");
 				/*
-				 * We need raw_event for pedals but nothing HID++
-				 * below applies: take the minimal path that just
-				 * registers the input device and keeps hidpp
-				 * attached so raw_event reaches us.
+				 * We need raw_event to track the steering axis
+				 * but nothing HID++ below applies: take the
+				 * minimal path that just registers the input
+				 * device and keeps hidpp attached so raw_event
+				 * reaches us. This interface carries no HID++
+				 * reports and its report has no report ID.
 				 */
+				hidpp->no_hidpp_reports = true;
 				return hidpp_dd_minimal_probe(hdev);
 			}
 			dd_info(hdev, "Letting hid-generic handle interface %d\n", ifnum);
@@ -13991,6 +14013,7 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 
 			if (ifnum == 0) {
 				dd_info(hdev, "Claiming interface 0 for input\n");
+				hidpp->no_hidpp_reports = true;
 				return hidpp_dd_minimal_probe(hdev);
 			}
 			dd_info(hdev, "Letting hid-generic handle interface %d\n", ifnum);
