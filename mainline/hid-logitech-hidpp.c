@@ -11640,7 +11640,71 @@ static ssize_t wheel_profile_names_show(struct device *dev,
 	}
 	return len;
 }
-static DEVICE_ATTR(wheel_profile_names, 0444, wheel_profile_names_show, NULL);
+
+/*
+ * Rename one onboard slot. Feature 0x8137 fn4 is the write counterpart of the
+ * fn3 read above; from the G Hub capture (dev/captures/2026-07-14_profile_rename)
+ * a rename to "QZX7" of slot 1 was: `11ff17 4a 01 04 51 5a 58 37` =
+ * [slot][length][ASCII name]. There is no separate save/commit - the wheel
+ * persists the name to its own NVM on this one write.
+ *
+ * Write syntax mirrors the show format's "N: name" line:
+ *   echo "3:My Profile" > wheel_profile_names
+ * slot is 1-5; the name is the rest of the line (a leading space after the
+ * colon and one trailing newline are stripped), 1-14 bytes so [slot][len][name]
+ * fits a single long HID++ report.
+ */
+static ssize_t wheel_profile_names_store(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_report response;
+	unsigned int slot;
+	int consumed = 0, namelen, ret;
+	const char *name;
+	u8 params[16];
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_profile == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	if (sscanf(buf, "%u:%n", &slot, &consumed) < 1 || slot < 1 || slot > 5)
+		return -EINVAL;
+	name = buf + consumed;
+	if (*name == ' ')	/* skip the "N: name" colon-space */
+		name++;
+	namelen = strlen(name);
+	if (namelen > 0 && name[namelen - 1] == '\n')
+		namelen--;
+	/* [slot][len][name...] must fit one long report's 16 param bytes. */
+	if (namelen < 1 || namelen > (int)sizeof(params) - 2)
+		return -EINVAL;
+
+	params[0] = slot;
+	params[1] = namelen;
+	memcpy(&params[2], name, namelen);
+
+	memset(&response, 0, sizeof(response));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile,
+					  0x40 /* fn4 setProfileName */,
+					  params, 2 + namelen, &response);
+	if (ret)
+		return hidpp_errno(hid, ret, "set profile name");
+
+	dd_info(hid, "Profile %u renamed (%d chars)\n", slot, namelen);
+	return count;
+}
+static DEVICE_ATTR(wheel_profile_names, 0664, wheel_profile_names_show,
+		   wheel_profile_names_store);
 
 /*
  * Sysfs attribute groups.
