@@ -45,7 +45,10 @@ pub const REGISTRY: &[SettingSpec] = &[
     // --- Profiles / mode ---
     SettingSpec { attr: "wheel_mode", label: "Mode", help: "desktop (host-controlled) or onboard (wheel-stored).", category: Profiles, kind: Kind::Enum(&["desktop", "onboard"]), access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_profile", label: "Profile", help: "Active profile (0=desktop, 1-5 onboard).", category: Profiles, kind: Kind::IntRange { min: 0, max: 5, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
-    SettingSpec { attr: "wheel_profile_names", label: "Profile names", help: "The 5 onboard slot names.", category: Profiles, kind: Kind::TextField { max_len: 256 }, access: ReadOnly, mode_req: Any },
+    // max_len is the wheel's limit (9), not the driver's protocol cap (14):
+    // the RS50 rejects a longer name with -EIO. The wheel stores names
+    // uppercased.
+    SettingSpec { attr: "wheel_profile_names", label: "Profile names", help: "Rename an onboard slot: left/right picks the slot, type a name (1-9 chars, stored uppercase).", category: Profiles, kind: Kind::SlotText { slots: 5, max_len: 9 }, access: ReadWrite, mode_req: Any },
     // --- Calibration ---
     SettingSpec { attr: "wheel_calibrate_here", label: "Calibrate centre here", help: "Adopt the current physical position as centre.", category: Calibration, kind: Kind::Action, access: Action, mode_req: Any },
     // --- Info ---
@@ -66,6 +69,9 @@ pub(crate) fn sample_raw(s: &SettingSpec) -> String {
         Kind::RgbStrip { leds } => vec!["000000"; leds].join(" "),
         Kind::Curve => "reset".into(),
         Kind::Action => "1".into(),
+        Kind::SlotText { slots, .. } => {
+            (1..=slots).map(|i| format!("{i}: NAME{i}")).collect::<Vec<_>>().join("\n")
+        }
     }
 }
 
@@ -88,6 +94,14 @@ mod tests {
         // drawn from its own current default, proving the registry is coherent.
         for s in REGISTRY {
             if matches!(s.access, Access::Action) {
+                continue;
+            }
+            // SlotText reads back the whole list but writes a single slot, so
+            // parse->format is deliberately not a round-trip; its own tests
+            // cover both directions.
+            if matches!(s.kind, crate::Kind::SlotText { .. }) {
+                let raw = super::sample_raw(s);
+                s.kind.parse(&raw).unwrap_or_else(|e| panic!("{}: {e}", s.attr));
                 continue;
             }
             // pick a trivially valid raw for this kind and round-trip it
