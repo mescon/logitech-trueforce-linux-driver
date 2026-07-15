@@ -5,7 +5,15 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.14.0 - 2026-07-16
+
+An input-dropping bug fixed, onboard profiles renameable, and the pedal
+attributes that never did anything removed. Also the first release carrying
+`logi-dd`, the settings app. All driver changes are hardware-verified on an RS50
+(native mode, kernel 7.1.3).
+
+The sysfs surface loses the pedal shaping attributes (see **Removed**). That is
+an API break, but not a behaviour change: pedals were already reported raw.
 
 ### Fixed
 - **Joystick frames were parsed as HID++ and dropped.** A direct-drive wheel's
@@ -30,6 +38,12 @@ the contract is "it works on RS50 and G Pro as listed here".
   separate save step. Slots are 1-5. An RS50 takes names of up to 9 characters
   (matching its own stock `PROFILE 3`), stores them uppercased, and accepts
   spaces; it refuses a longer name at the HID++ layer, reported as `-EIO`.
+- **`logi-dd`, a settings app** (`userspace/logi-dd`): a Rust core plus a
+  terminal UI over the `wheel_*` sysfs surface - typed reads/writes, per-setting
+  validation, mode gating, and a profile selector that shows the slots by name.
+  Onboard slots can be renamed from it (pick the slot, type a name); it caps the
+  name at the wheel's 9 characters, so it cannot compose one the wheel refuses.
+  First part of a G HUB replacement.
 
 ### Removed
 - **Pedal shaping attributes** - `wheel_{throttle,brake,clutch}_curve`,

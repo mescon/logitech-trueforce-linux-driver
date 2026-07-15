@@ -132,7 +132,7 @@ git clone https://github.com/mescon/logitech-trueforce-linux-driver.git
 cd logitech-trueforce-linux-driver
 
 # Build the source tarball the spec expects, straight from this checkout:
-VER=0.13.0
+VER=0.14.0
 mkdir -p ~/rpmbuild/SOURCES
 git archive --prefix=logitech-trueforce-linux-driver-$VER/ \
     -o ~/rpmbuild/SOURCES/logitech-trueforce-kmod-$VER.tar.gz HEAD
