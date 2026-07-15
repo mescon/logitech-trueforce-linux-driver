@@ -80,7 +80,8 @@ resolve_sdk_dir() {
 usage() {
 	cat <<EOF
 Usage:
-  $0 --all-steam               Install into every Steam wine prefix under ~/.local/share/Steam
+  $0 --all-steam               Install into every Steam wine prefix, in every Steam
+                               library (including libraries on other drives)
   $0 --prefix <path>           Install into a single wine prefix (the .../pfx directory)
   $0 --uninstall               Remove from all Steam prefixes
 
@@ -255,12 +256,35 @@ PY
 	echo "  uninstalled $prefix"
 }
 
-steam_prefixes() {
-	# Standard Steam install (Arch, Fedora, most distros).
-	echo "$HOME"/.local/share/Steam/steamapps/compatdata/*/pfx
-	# Debian's steam-installer package keeps prefixes here instead
+# Every Steam library root: the install itself, plus any library folders the
+# user added on other drives. Steam records those in libraryfolders.vdf; without
+# reading it we silently skip every game outside the default library, which
+# looks like the shim "not working" for that game (issue #27, found and
+# diagnosed by @sugituber, whose games live on a second drive).
+steam_library_roots() {
+	local base vdf
+	# Standard Steam install (Arch, Fedora, most distros), then Debian's
+	# steam-installer package, which keeps its tree here instead
 	# (issue #18, reported by @matthiasvegh).
-	echo "$HOME"/.steam/debian-installation/steamapps/compatdata/*/pfx
+	for base in "$HOME/.local/share/Steam" "$HOME/.steam/debian-installation"; do
+		[ -d "$base" ] || continue
+		printf '%s\n' "$base"
+		vdf="$base/steamapps/libraryfolders.vdf"
+		[ -f "$vdf" ] || continue
+		# Entries look like:  "path"    "/run/media/you/Games/SteamLibrary"
+		sed -nE 's/^[[:space:]]*"path"[[:space:]]+"(.*)"[[:space:]]*$/\1/p' "$vdf"
+	done
+}
+
+# One prefix per line, so library paths containing spaces survive.
+steam_prefixes() {
+	local root pfx
+	steam_library_roots | sort -u | while IFS= read -r root; do
+		[ -d "$root" ] || continue
+		for pfx in "$root"/steamapps/compatdata/*/pfx; do
+			[ -d "$pfx" ] && printf '%s\n' "$pfx"
+		done
+	done
 }
 
 # Parse flags in any order: a mode (--all-steam / --prefix / --uninstall)
@@ -300,11 +324,11 @@ case "$MODE" in
 --all-steam)
 	require_sources
 	count=0
-	for pfx in $(steam_prefixes); do
-		[ -d "$pfx" ] || continue
+	while IFS= read -r pfx; do
+		[ -n "$pfx" ] || continue
 		install_in_prefix "$pfx"
 		count=$((count+1))
-	done
+	done < <(steam_prefixes)
 	echo "installed in $count Steam prefix(es)"
 	;;
 --prefix)
@@ -312,9 +336,9 @@ case "$MODE" in
 	install_in_prefix "$PREFIX_ARG"
 	;;
 --uninstall)
-	for pfx in $(steam_prefixes); do
-		[ -d "$pfx" ] && uninstall_in_prefix "$pfx"
-	done
+	while IFS= read -r pfx; do
+		[ -n "$pfx" ] && uninstall_in_prefix "$pfx"
+	done < <(steam_prefixes)
 	;;
 *) usage ;;
 esac
