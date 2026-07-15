@@ -95,15 +95,6 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
                     _ => -1,
                 };
                 (profile_label(n, &names), value_style(editing.is_some(), false))
-            } else if row.attr == "wheel_profile_names" {
-                match &row.value {
-                    Ok(Value::Text(s)) => (
-                        s.lines().collect::<Vec<_>>().join("    "),
-                        Style::default().fg(Color::Gray),
-                    ),
-                    Err(e) => (format!("<{e}>"), Style::default().fg(Color::Red)),
-                    _ => ("?".to_string(), Style::default()),
-                }
             } else {
                 match (&row.value, spec) {
                     (Ok(v), Some(s)) => {

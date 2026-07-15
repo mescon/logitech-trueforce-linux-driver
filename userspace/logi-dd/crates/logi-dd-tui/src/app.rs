@@ -121,12 +121,10 @@ impl<S: SysfsIo> App<S> {
     /// does not expose them.
     pub fn profile_names(&self) -> BTreeMap<u8, String> {
         let mut m = BTreeMap::new();
-        if let Ok(Value::Text(s)) = self.device.read("wheel_profile_names") {
-            for line in s.lines() {
-                if let Some((num, name)) = line.split_once(':') {
-                    if let Ok(n) = num.trim().parse::<u8>() {
-                        m.insert(n, name.trim().to_string());
-                    }
+        if let Ok(Value::SlotNames(names)) = self.device.read("wheel_profile_names") {
+            for (i, name) in names.iter().enumerate() {
+                if !name.is_empty() {
+                    m.insert(i as u8 + 1, name.clone());
                 }
             }
         }

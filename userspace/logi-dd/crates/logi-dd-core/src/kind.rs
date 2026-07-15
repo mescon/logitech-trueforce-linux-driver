@@ -11,6 +11,10 @@ pub enum Kind {
     RgbStrip { leds: usize },
     Curve,
     Action,
+    /// An attribute that reads back as a `N: name` list but is written one
+    /// slot at a time as `N:name` (the onboard profile names). Reads yield
+    /// `Value::SlotNames`, writes take `Value::SlotName`.
+    SlotText { slots: u8, max_len: usize },
 }
 
 impl Kind {
@@ -72,6 +76,24 @@ impl Kind {
                 Ok(Value::Curve(pts))
             }
             Kind::Action => Ok(Value::Trigger),
+            Kind::SlotText { slots, .. } => {
+                // Reads back one "N: name" line per slot. Unlisted slots stay
+                // empty rather than failing the whole read.
+                let mut names = vec![String::new(); *slots as usize];
+                for line in raw.lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let (n, rest) = line.split_once(':').ok_or(Error::Parse(line.into()))?;
+                    let idx: usize =
+                        n.trim().parse().map_err(|_| Error::Parse(line.into()))?;
+                    if idx >= 1 && idx <= *slots as usize {
+                        names[idx - 1] = rest.trim().to_string();
+                    }
+                }
+                Ok(Value::SlotNames(names))
+            }
         }
     }
 
@@ -95,11 +117,30 @@ impl Kind {
                 }
             }
             (Kind::Action, Value::Trigger) => "1".into(),
+            // Writes rename a single slot; the whole list is not writable.
+            (Kind::SlotText { .. }, Value::SlotName { slot, name }) => format!("{slot}:{name}"),
             _ => return Err(Error::Invalid),
         })
     }
 
     pub fn validate(&self, v: &Value) -> Result<(), Error> {
+        // SlotText reads and writes different shapes, so the parse(format(v))
+        // round-trip below does not apply: check the write form directly.
+        if let Kind::SlotText { slots, max_len } = self {
+            return match v {
+                Value::SlotName { slot, name } => {
+                    let len = name.chars().count();
+                    if *slot >= 1 && *slot <= *slots && len >= 1 && len <= *max_len
+                        && !name.contains('\n')
+                    {
+                        Ok(())
+                    } else {
+                        Err(Error::Invalid)
+                    }
+                }
+                _ => Err(Error::Invalid),
+            };
+        }
         // parse(format(v)) proves the value satisfies this kind's constraints.
         let s = self.format(v)?;
         match self {
@@ -125,6 +166,13 @@ impl Kind {
             (Kind::Curve, Value::Curve(p)) if p.is_empty() => "built-in".into(),
             (Kind::Curve, Value::Curve(p)) => format!("{} points", p.len()),
             (Kind::Action, _) => "[trigger]".into(),
+            (Kind::SlotText { .. }, Value::SlotNames(names)) => names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| format!("{}: {}", i + 1, n))
+                .collect::<Vec<_>>()
+                .join("  "),
+            (Kind::SlotText { .. }, Value::SlotName { slot, name }) => format!("{slot}: {name}"),
             _ => "?".into(),
         }
     }
@@ -198,5 +246,74 @@ mod tests {
         let k = Kind::TextField { max_len: 8 };
         assert!(k.parse("RACE").is_ok());
         assert!(matches!(k.parse("waytoolongname"), Err(Error::Invalid)));
+    }
+}
+
+#[cfg(test)]
+mod slot_text_tests {
+    use super::*;
+
+    const K: Kind = Kind::SlotText { slots: 5, max_len: 9 };
+
+    #[test]
+    fn parses_the_drivers_list_read() {
+        let v = K.parse("1: QZX7\n2: GT7\n3: PROFILE 3\n4: PROFILE 4\n5: TEST").unwrap();
+        assert_eq!(
+            v,
+            Value::SlotNames(vec![
+                "QZX7".into(),
+                "GT7".into(),
+                "PROFILE 3".into(),
+                "PROFILE 4".into(),
+                "TEST".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn missing_slots_read_back_empty() {
+        let v = K.parse("2: GT7").unwrap();
+        let Value::SlotNames(names) = v else { panic!("wrong variant") };
+        assert_eq!(names.len(), 5);
+        assert_eq!(names[1], "GT7");
+        assert_eq!(names[0], "");
+    }
+
+    #[test]
+    fn writes_one_slot_as_n_colon_name() {
+        let w = Value::SlotName { slot: 3, name: "My Profile".into() };
+        assert_eq!(K.format(&w).unwrap(), "3:My Profile");
+    }
+
+    #[test]
+    fn the_whole_list_is_not_writable() {
+        // Reads yield SlotNames; writing it back would send the list to a
+        // store that takes a single "N:name".
+        assert!(K.format(&Value::SlotNames(vec!["a".into()])).is_err());
+        assert!(K.validate(&Value::SlotNames(vec!["a".into()])).is_err());
+    }
+
+    #[test]
+    fn validate_enforces_the_drivers_limits() {
+        let ok = |s: u8, n: &str| K.validate(&Value::SlotName { slot: s, name: n.into() });
+        assert!(ok(1, "A").is_ok());
+        assert!(ok(5, "PROFILE 3").is_ok()); // 9 = the wheel's own stock name
+        assert!(ok(0, "A").is_err(), "slot 0 is below the 1-5 range");
+        assert!(ok(6, "A").is_err(), "slot 6 is above the 1-5 range");
+        assert!(ok(1, "").is_err(), "empty name is rejected by the driver");
+        // The wheel rejects >9 with -EIO (verified on an RS50); 14 is only the
+        // HID++ payload cap, so cap at what the hardware actually takes.
+        assert!(ok(1, "ABCDEFGHIJ").is_err(), "10 chars is refused by the wheel");
+        assert!(ok(1, "two\nlines").is_err());
+    }
+
+    #[test]
+    fn name_may_contain_spaces_and_colons() {
+        // The driver splits on the FIRST colon only, so both survive.
+        assert!(K.validate(&Value::SlotName { slot: 2, name: "GT7: race".into() }).is_ok());
+        assert_eq!(
+            K.format(&Value::SlotName { slot: 2, name: "GT7: race".into() }).unwrap(),
+            "2:GT7: race"
+        );
     }
 }

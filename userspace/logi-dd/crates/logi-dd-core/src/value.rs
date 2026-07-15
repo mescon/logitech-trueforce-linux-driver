@@ -33,6 +33,11 @@ pub enum Value {
     Rgb(Vec<Color>),
     Curve(Vec<(u16, u16)>),
     Trigger,
+    /// Every slot name, as read back (index 0 = slot 1).
+    SlotNames(Vec<String>),
+    /// Rename one slot. The attribute reads back as the whole list but writes
+    /// one slot at a time, so reads yield `SlotNames` and writes take this.
+    SlotName { slot: u8, name: String },
 }
 
 #[cfg(test)]
