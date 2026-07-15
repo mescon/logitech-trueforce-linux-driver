@@ -74,11 +74,10 @@ echo 0 > wheel_profile
 ## Force Feedback Settings
 
 ### wheel_profile_names
-**Access**: Read-only
+**Access**: Read/Write
 
-The five onboard slots' user-assigned names (set via G Hub or the
-wheel's OLED menu), queried live from the wheel. Use this to know
-which slot number `wheel_profile` should get.
+The five onboard slots' names, queried live from the wheel. Use this to
+know which slot number `wheel_profile` should get.
 
 ```bash
 cat wheel_profile_names
@@ -88,6 +87,21 @@ cat wheel_profile_names
 # 4: PROFILE 4
 # 5: PROFILE 5
 ```
+
+Writing renames one slot, as `<slot>:<name>` (feature `0x8137` fn4). The
+wheel persists the name to its own NVM on the write; there is no separate
+save step.
+
+```bash
+# Rename slot 3
+echo "3:RACE" > wheel_profile_names
+```
+
+Slot is 1-5. On an RS50 the name may be up to **9 characters** (the same
+length as its stock `PROFILE 3`), may contain spaces, and is stored
+**uppercased** - `echo "3:Race"` reads back as `3: RACE`. A longer name is
+refused by the wheel itself and surfaces as `-EIO`; a bad slot, an empty
+name, or one over the 14-byte HID++ payload gives `-EINVAL`.
 
 ### wheel_range
 **Access**: Read/Write
