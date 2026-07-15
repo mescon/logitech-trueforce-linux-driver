@@ -5,6 +5,44 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+### Fixed
+- **Joystick frames were parsed as HID++ and dropped.** A direct-drive wheel's
+  interface 0 is a joystick whose input report declares no report ID, so its
+  first byte is data - the 4-bit hat switch plus buttons 1-4. We claim that
+  interface (to track the steering axis) and register no `report_table`, so
+  `hidpp_raw_event` ran on those frames and switched on that byte as if it were
+  a HID++ report ID. D-pad Up + button 1 is `0x10` (`REPORT_ID_HIDPP_SHORT`);
+  Up-Right and Right give `0x11` and `0x12`. The 30-byte frame then failed the
+  HID++ size check, logged `received hid++ report of bad size (30)` and returned
+  1 - telling the HID core the report was consumed, so the frame was dropped
+  before reaching the input layer. Holding such a combination discarded every
+  input report: steering, pedals and buttons froze while dmesg flooded.
+  Reproduced on an RS50 (170 errors in a few seconds of D-pad + button presses;
+  zero afterwards). The interfaces claimed for input only are now flagged and
+  skip the HID++ demux.
+
+### Added
+- **Profile rename.** `wheel_profile_names` is writable (0664): `echo
+  "3:My Profile" > wheel_profile_names` renames an onboard slot via feature
+  `0x8137` fn4. The wheel persists the name to its own NVM on the single write;
+  there is no separate save step. Slots 1-5, 1-14 characters.
+
+### Removed
+- **Pedal shaping attributes** - `wheel_{throttle,brake,clutch}_curve`,
+  `wheel_{throttle,brake,clutch}_deadzone`, `wheel_combined_pedals`, the
+  Oversteer-compat `combine_pedals`, and `wheel_pedal_response_curve`.
+  API-breaking for the sysfs surface, but not a behaviour change: these
+  transforms never reached userspace (the rewritten report did not survive to
+  the input layer), so the attributes accepted settings that did nothing.
+  `wheel_pedal_response_curve` uploaded a hardware curve that a raw-HID capture
+  showed the wheel stores but never applies to its PC output. Pedals are
+  reported raw, exactly as before; shape them in userspace instead. The steering
+  `wheel_response_curve` is unaffected. Oversteer hides its combine-pedals
+  control when the attribute is absent; every other Oversteer attribute is
+  unchanged.
+
 ## 0.13.0 - 2026-07-11
 
 A correctness batch from a review of the G Hub USB captures and an audit of

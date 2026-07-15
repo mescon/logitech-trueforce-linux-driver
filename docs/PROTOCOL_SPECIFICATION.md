@@ -733,8 +733,11 @@ analysis; index-to-ID mapping derived from IFeatureSet fn1 pairing in
   steering axis - verified in `2026-01-30_desktop_sensitivity`, where a
   slider sweep produced distinct, mutually inverse curves, while sweeps
   of unrelated sliders re-upload a bit-identical curve on every config
-  apply. This is exposed as the `wheel_response_curve` (steering) and
-  `wheel_pedal_response_curve` (pedal sub-device 0x02) attributes.
+  apply. This is exposed as the `wheel_response_curve` (steering)
+  attribute. The pedal sub-device (0x02) exposes the same feature, but the
+  driver does not drive it: a raw-HID capture showed the wheel stores such
+  a curve without applying it to its PC HID output, so the attribute was
+  removed rather than left uploading curves with no effect.
   Unknowns: the second `03` in caps, pedal-unit
   `fn9 [axis]` (called on every G Hub init; possibly axis refresh), and
   whether curves persist across power cycles.

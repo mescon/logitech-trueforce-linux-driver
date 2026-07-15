@@ -641,36 +641,6 @@ cat wheel_response_curve
 steering feels wrong after an upload. Whether curves persist across
 power cycles is unknown.**
 
-### wheel_pedal_response_curve
-**Access**: Read/Write
-**Availability**: wheels whose pedal unit exposes feature `0x80A4` on
-HID++ sub-device `0x02` (`-EOPNOTSUPP` otherwise)
-
-Hardware response curves for the pedal unit's three axes - the same
-64-point store as `wheel_response_curve`, addressed per axis. First
-token selects the axis (0-2), then `reset` or the pair list:
-
-```bash
-# Soften pedal axis 1's top end
-echo "1 0:0 32768:40000 65535:65535" > wheel_pedal_response_curve
-
-# Axis 1 back to built-in
-echo "1 reset" > wheel_pedal_response_curve
-
-cat wheel_pedal_response_curve
-# 0: 64/64 points (usage 0x31)
-# 1: 0/64 points (usage 0x33)
-# 2: 0/64 points (usage 0x32)
-```
-
-Which axis is which pedal is reported live via each axis's HID usage
-(shown by the read) rather than assumed. Note these are the wheel's
-onboard hardware curves; the driver's software pedal shaping
-(`wheel_throttle_curve` etc.) is separate and applied on top.
-
-**Status: implemented from the G Hub capture protocol map, untested on
-hardware. `<axis> reset` is the escape hatch.**
-
 ### wheel_rev_level
 **Access**: Read/Write
 **Values**: `0`-`10` (number of rev LEDs lit)
@@ -738,49 +708,17 @@ echo 1 > wheel_led_apply
 
 ## Pedal Configuration
 
-### wheel_combined_pedals
-**Access**: Read/Write
-**Values**: `0` (separate), `1` (combined)
+The driver reports the throttle, brake and clutch axes exactly as the wheel
+sends them; it does not shape them. There are no pedal curve, deadzone or
+combined-pedals attributes.
 
-Enables combined pedal axis mode (throttle and brake on single axis).
-
-```bash
-# Enable combined pedals
-echo 1 > wheel_combined_pedals
-
-# Disable (separate axes)
-echo 0 > wheel_combined_pedals
-```
-
-### wheel_throttle_curve / wheel_brake_curve / wheel_clutch_curve
-**Access**: Read/Write
-**Values**: `0` (linear), `1` (low sensitivity), `2` (high sensitivity)
-
-Sets the response curve for each pedal:
-- `0` = Linear (1:1 mapping)
-- `1` = Low sensitivity (less sensitive at start)
-- `2` = High sensitivity (more sensitive at start)
-
-```bash
-# Set brake to low sensitivity curve
-echo 1 > wheel_brake_curve
-```
-
-### wheel_throttle_deadzone / wheel_brake_deadzone / wheel_clutch_deadzone
-**Access**: Read/Write
-**Format**: two space-separated integers `"<lower> <upper>"`, each `0`-`100` (percent)
-
-Sets both ends of the deadzone for a pedal axis. `lower` trims the bottom of the travel (ignore the first N%); `upper` trims the top. The sum must be `<= 100`, otherwise the write fails with `-EINVAL`.
-
-Reading returns the two stored values in the same format.
-
-```bash
-# 5% dead at release, 2% dead at fully-pressed for the brake
-echo "5 2" > wheel_brake_deadzone
-
-# No deadzone
-echo "0 0" > wheel_throttle_deadzone
-```
+Earlier releases exposed `wheel_{throttle,brake,clutch}_curve`,
+`wheel_{throttle,brake,clutch}_deadzone`, `wheel_combined_pedals` and
+`wheel_pedal_response_curve`. Those transforms never reached userspace - the
+rewritten report did not survive to the input layer - so the attributes
+accepted settings that did nothing. They were removed rather than left
+advertising a feature that silently no-ops. Shape pedals in userspace (for
+example with a HID-BPF program) instead.
 
 ---
 
@@ -841,12 +779,6 @@ class across all games, 0 mutes it. Note `damper_level` scales DAMPER
 EFFECTS from games; the wheel's own firmware damping remains
 `wheel_damping`. (Earlier revisions aliased `damper_level` to
 `wheel_damping`; the semantics now match what tools expect.)
-
-### combine_pedals
-**Access**: Read/Write
-**Values**: `0`, `1`
-
-Same functionality as `wheel_combined_pedals`.
 
 ---
 

@@ -548,17 +548,11 @@ echo 1 | sudo tee $WHEEL_DEV/wheel_led_apply
 | `wheel_led_brightness` | 0-100 | Global LED brightness percentage |
 | `wheel_led_apply` | (write) | Apply current slot config to device |
 
-**Pedal Configuration:**
+**Pedals:**
 
-| Attribute | Range | Description |
-|-----------|-------|-------------|
-| `wheel_combined_pedals` | 0-1 | Combined pedals mode |
-| `wheel_throttle_curve` | 0-2 | Throttle response curve (0=linear, 1=low sens, 2=high sens) |
-| `wheel_brake_curve` | 0-2 | Brake response curve |
-| `wheel_clutch_curve` | 0-2 | Clutch response curve |
-| `wheel_throttle_deadzone` | "L U" | Throttle deadzone (lower% upper%) |
-| `wheel_brake_deadzone` | "L U" | Brake deadzone |
-| `wheel_clutch_deadzone` | "L U" | Clutch deadzone |
+The throttle, brake and clutch are reported exactly as the wheel sends them.
+The driver does not shape them, so there are no pedal curve, deadzone or
+combined-pedals attributes - see `docs/SYSFS_API.md`.
 
 See `docs/SYSFS_API.md` for complete API documentation with examples.
 
@@ -566,8 +560,10 @@ See `docs/SYSFS_API.md` for complete API documentation with examples.
 
 The driver exposes the standard new-lg4ff attribute set for
 [Oversteer](https://github.com/berarma/oversteer): `range` (to 2700°),
-`gain`, `autocenter`, `spring_level`/`damper_level`/`friction_level`, and
-`combine_pedals`, verified through Oversteer against a live wheel.
+`gain`, `autocenter`, and `spring_level`/`damper_level`/`friction_level`,
+verified through Oversteer against a live wheel. `combine_pedals` is not
+exposed: the driver reports pedals raw and does not combine them, so
+Oversteer simply hides that control.
 
 Full support needs a patch (`oversteer-logitech-trueforce.patch`, in this
 repo): it adds RS50 detection (`046d:c276`), the 2700° range, and finds
