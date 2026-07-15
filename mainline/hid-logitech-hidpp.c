@@ -4226,7 +4226,6 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_PAGE_FILTER		0x8140	/* FFB Filter */
 #define HIDPP_DD_PAGE_RESPONSE_CURVE	0x80A4	/* Per-axis 64-point response curves */
 #define HIDPP_DD_PAGE_CALIBRATE		0x812C	/* Centre calibration (G Pro sub-device 0x05) */
-#define HIDPP_DD_PEDAL_DEV_IDX		0x02	/* HID++ sub-device index of the pedal unit (0x80A4 axis curves) */
 #define HIDPP_DD_PAGE_SYNC			0x1BC0	/* Unknown sync/prepare feature */
 
 /*
@@ -4358,14 +4357,6 @@ struct hidpp_dd_lightsync_slot {
  */
 #define HIDPP_DD_FF_SPRING_DAMPING_DEFAULT	25
 
-/*
- * Direct-drive wheel pedal response curve types.
- * These curves are applied in software to pedal axis values.
- */
-#define HIDPP_DD_CURVE_LINEAR		0	/* 1:1 linear mapping */
-#define HIDPP_DD_CURVE_LOW_SENS		1	/* Less sensitive at start */
-#define HIDPP_DD_CURVE_HIGH_SENS		2	/* More sensitive at start */
-
 /* Effect state tracking */
 struct hidpp_dd_ff_effect {
 	struct ff_effect effect;
@@ -4457,7 +4448,6 @@ struct hidpp_dd_ff_data {
 	u8 idx_brakeforce;		/* Feature index for brake force */
 	u8 idx_filter;			/* Feature index for FFB filter */
 	u8 idx_response_curve;		/* Feature index for 0x80A4 axis response curves (steering, base dev 0xff) */
-	u8 idx_pedal_curve;		/* Feature index for 0x80A4 axis response curves on pedal sub-device 0x02 */
 	u8 idx_brightness;		/* Feature index for LED brightness */
 	u8 idx_lightsync;		/* Feature index for LIGHTSYNC effects */
 	u8 idx_rgb_config;		/* Feature index for RGB Zone Config */
@@ -4555,18 +4545,6 @@ struct hidpp_dd_ff_data {
 	 * or it would yank an untouched wheel.
 	 */
 	bool wheel_pos_seen;
-
-	/* Pedal response curve and combined mode settings */
-	u8 combined_pedals;		/* 0=off, 1=on (throttle - brake) */
-	u8 throttle_curve;		/* HIDPP_DD_CURVE_* type */
-	u8 brake_curve;			/* HIDPP_DD_CURVE_* type */
-	u8 clutch_curve;		/* HIDPP_DD_CURVE_* type */
-	u8 throttle_deadzone_lower;	/* Lower deadzone 0-100% */
-	u8 throttle_deadzone_upper;	/* Upper deadzone 0-100% */
-	u8 brake_deadzone_lower;	/* Lower deadzone 0-100% */
-	u8 brake_deadzone_upper;	/* Upper deadzone 0-100% */
-	u8 clutch_deadzone_lower;	/* Lower deadzone 0-100% */
-	u8 clutch_deadzone_upper;	/* Upper deadzone 0-100% */
 
 	/* FFB effects tracking */
 	struct hidpp_dd_ff_effect effects[HIDPP_DD_FF_MAX_EFFECTS];
@@ -4693,7 +4671,7 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work);
 static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff);
 static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range);
 static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t);
-static void hidpp_dd_process_pedals(struct hidpp_device *hidpp, u8 *data, int size);
+static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp, u8 *data, int size);
 static struct hidpp_dd_ff_data *hidpp_dd_find_ff_data(struct hid_device *hdev);
 static int hidpp_dd_response_curve_upload(struct hidpp_device *hidpp,
 					  struct hidpp_dd_ff_data *ff,
@@ -5241,7 +5219,7 @@ static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t)
 
 	/*
 	 * Refresh derived wheel state. wheel_pos is updated lock-free by
-	 * the interface-0 raw-event path (hidpp_dd_process_pedals); we derive
+	 * the interface-0 raw-event path (hidpp_dd_track_wheel_pos); we derive
 	 * velocity and acceleration here at the fixed timer cadence so
 	 * the derivatives are stable. Two-sample priming avoids bogus
 	 * first-tick velocity spikes.
@@ -6763,7 +6741,6 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	ff->idx_brakeforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_response_curve = HIDPP_DD_FEATURE_NOT_FOUND;
-	ff->idx_pedal_curve = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile_notify = HIDPP_DD_FEATURE_NOT_FOUND;
@@ -6833,18 +6810,6 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	if (ret == 0)
 		dd_dbg(hid, "Calibrate feature at dev 0x%02x index 0x%02x\n",
 			ff->calibrate_dev_idx, ff->idx_calibrate);
-
-	/*
-	 * The pedal unit carries its own 0x80A4 AxisResponseCurve instance on
-	 * HID++ sub-device 0x02 (three axes, distinct feature index from the
-	 * base's steering one). Resolve it per sub-device, mirroring calibrate.
-	 */
-	ret = hidpp_root_get_feature_on_device(hidpp, HIDPP_DD_PEDAL_DEV_IDX,
-					       HIDPP_DD_PAGE_RESPONSE_CURVE,
-					       &ff->idx_pedal_curve);
-	if (ret == 0)
-		dd_dbg(hid, "Pedal response curve feature at dev 0x%02x index 0x%02x\n",
-		       HIDPP_DD_PEDAL_DEV_IDX, ff->idx_pedal_curve);
 
 	hidpp_dd_query_device_identity(ff);
 }
@@ -7929,7 +7894,7 @@ static ssize_t wheel_range_store(struct device *dev, struct device_attribute *at
 	/*
 	 * Numeric range attrs clamp to the supported interval; enum /
 	 * mode attrs reject out-of-range values with -EINVAL (see e.g.
-	 * wheel_throttle_curve_store). Clamping is the convention for
+	 * wheel_texture_route_store). Clamping is the convention for
 	 * percentages, angles and filter levels across the driver.
 	 */
 	range = clamp(range, 90, 2700);
@@ -10286,372 +10251,6 @@ static ssize_t wheel_hidpp_debug_store(struct device *dev, struct device_attribu
 static DEVICE_ATTR(wheel_hidpp_debug, 0600, wheel_hidpp_debug_show, wheel_hidpp_debug_store);
 #endif /* CONFIG_HID_LOGITECH_HIDPP_DEBUG */
 
-/* Combined pedals mode - outputs (throttle - brake) on single axis */
-static ssize_t wheel_combined_pedals_show(struct device *dev, struct device_attribute *attr,
-					 char *buf)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	return sysfs_emit(buf, "%u\n", ff->combined_pedals);
-}
-
-static ssize_t wheel_combined_pedals_store(struct device *dev, struct device_attribute *attr,
-					  const char *buf, size_t count)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-	int val, ret;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	WRITE_ONCE(ff->combined_pedals, val ? 1 : 0);
-	dd_info(hid, "Combined pedals mode %s\n",
-		 READ_ONCE(ff->combined_pedals) ? "enabled" : "disabled");
-	return count;
-}
-
-static DEVICE_ATTR(wheel_combined_pedals, 0664,
-		   wheel_combined_pedals_show, wheel_combined_pedals_store);
-
-/*
- * Oversteer-compatible 'combine_pedals' attribute - same as wheel_combined_pedals.
- */
-static struct device_attribute dev_attr_wheel_compat_combine_pedals =
-	__ATTR(combine_pedals, 0664, wheel_combined_pedals_show, wheel_combined_pedals_store);
-
-/* Throttle response curve: 0=linear, 1=low sensitivity, 2=high sensitivity */
-static ssize_t wheel_throttle_curve_show(struct device *dev, struct device_attribute *attr,
-					char *buf)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	return sysfs_emit(buf, "%u\n", ff->throttle_curve);
-}
-
-static ssize_t wheel_throttle_curve_store(struct device *dev, struct device_attribute *attr,
-					 const char *buf, size_t count)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-	int val, ret;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	if (val < 0 || val > 2)
-		return -EINVAL;
-
-	WRITE_ONCE(ff->throttle_curve, val);
-	dd_info(hid, "Throttle curve set to %d (%s)\n", val,
-		 val == 0 ? "linear" : (val == 1 ? "low sens" : "high sens"));
-	return count;
-}
-
-static DEVICE_ATTR(wheel_throttle_curve, 0664,
-		   wheel_throttle_curve_show, wheel_throttle_curve_store);
-
-/* Brake response curve: 0=linear, 1=low sensitivity, 2=high sensitivity */
-static ssize_t wheel_brake_curve_show(struct device *dev, struct device_attribute *attr,
-				     char *buf)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	return sysfs_emit(buf, "%u\n", ff->brake_curve);
-}
-
-static ssize_t wheel_brake_curve_store(struct device *dev, struct device_attribute *attr,
-				      const char *buf, size_t count)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-	int val, ret;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	if (val < 0 || val > 2)
-		return -EINVAL;
-
-	WRITE_ONCE(ff->brake_curve, val);
-	dd_info(hid, "Brake curve set to %d (%s)\n", val,
-		 val == 0 ? "linear" : (val == 1 ? "low sens" : "high sens"));
-	return count;
-}
-
-static DEVICE_ATTR(wheel_brake_curve, 0664,
-		   wheel_brake_curve_show, wheel_brake_curve_store);
-
-/* Clutch response curve: 0=linear, 1=low sensitivity, 2=high sensitivity */
-static ssize_t wheel_clutch_curve_show(struct device *dev, struct device_attribute *attr,
-				      char *buf)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	return sysfs_emit(buf, "%u\n", ff->clutch_curve);
-}
-
-static ssize_t wheel_clutch_curve_store(struct device *dev, struct device_attribute *attr,
-				       const char *buf, size_t count)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-	int val, ret;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	if (val < 0 || val > 2)
-		return -EINVAL;
-
-	WRITE_ONCE(ff->clutch_curve, val);
-	dd_info(hid, "Clutch curve set to %d (%s)\n", val,
-		 val == 0 ? "linear" : (val == 1 ? "low sens" : "high sens"));
-	return count;
-}
-
-static DEVICE_ATTR(wheel_clutch_curve, 0664,
-		   wheel_clutch_curve_show, wheel_clutch_curve_store);
-
-/* Throttle deadzone: format "lower upper" (0-100 each) */
-static ssize_t wheel_throttle_deadzone_show(struct device *dev, struct device_attribute *attr,
-					   char *buf)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	return sysfs_emit(buf, "%u %u\n",
-			 ff->throttle_deadzone_lower, ff->throttle_deadzone_upper);
-}
-
-static ssize_t wheel_throttle_deadzone_store(struct device *dev, struct device_attribute *attr,
-					    const char *buf, size_t count)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-	int lower, upper;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	if (sscanf(buf, "%d %d", &lower, &upper) != 2)
-		return -EINVAL;
-
-	lower = clamp(lower, 0, 100);
-	upper = clamp(upper, 0, 100);
-	if (lower + upper > 100)
-		return -EINVAL;
-
-	WRITE_ONCE(ff->throttle_deadzone_lower, lower);
-	WRITE_ONCE(ff->throttle_deadzone_upper, upper);
-	dd_info(hid, "Throttle deadzone set to %d%% - %d%%\n", lower, 100 - upper);
-	return count;
-}
-
-static DEVICE_ATTR(wheel_throttle_deadzone, 0664,
-		   wheel_throttle_deadzone_show, wheel_throttle_deadzone_store);
-
-/* Brake deadzone: format "lower upper" (0-100 each) */
-static ssize_t wheel_brake_deadzone_show(struct device *dev, struct device_attribute *attr,
-					char *buf)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	return sysfs_emit(buf, "%u %u\n",
-			 ff->brake_deadzone_lower, ff->brake_deadzone_upper);
-}
-
-static ssize_t wheel_brake_deadzone_store(struct device *dev, struct device_attribute *attr,
-					 const char *buf, size_t count)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-	int lower, upper;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	if (sscanf(buf, "%d %d", &lower, &upper) != 2)
-		return -EINVAL;
-
-	lower = clamp(lower, 0, 100);
-	upper = clamp(upper, 0, 100);
-	if (lower + upper > 100)
-		return -EINVAL;
-
-	WRITE_ONCE(ff->brake_deadzone_lower, lower);
-	WRITE_ONCE(ff->brake_deadzone_upper, upper);
-	dd_info(hid, "Brake deadzone set to %d%% - %d%%\n", lower, 100 - upper);
-	return count;
-}
-
-static DEVICE_ATTR(wheel_brake_deadzone, 0664,
-		   wheel_brake_deadzone_show, wheel_brake_deadzone_store);
-
-/* Clutch deadzone: format "lower upper" (0-100 each) */
-static ssize_t wheel_clutch_deadzone_show(struct device *dev, struct device_attribute *attr,
-					 char *buf)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	return sysfs_emit(buf, "%u %u\n",
-			 ff->clutch_deadzone_lower, ff->clutch_deadzone_upper);
-}
-
-static ssize_t wheel_clutch_deadzone_store(struct device *dev, struct device_attribute *attr,
-					  const char *buf, size_t count)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-	int lower, upper;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-
-	if (sscanf(buf, "%d %d", &lower, &upper) != 2)
-		return -EINVAL;
-
-	lower = clamp(lower, 0, 100);
-	upper = clamp(upper, 0, 100);
-	if (lower + upper > 100)
-		return -EINVAL;
-
-	WRITE_ONCE(ff->clutch_deadzone_lower, lower);
-	WRITE_ONCE(ff->clutch_deadzone_upper, upper);
-	dd_info(hid, "Clutch deadzone set to %d%% - %d%%\n", lower, 100 - upper);
-	return count;
-}
-
-static DEVICE_ATTR(wheel_clutch_deadzone, 0664,
-		   wheel_clutch_deadzone_show, wheel_clutch_deadzone_store);
-
 /*
  * Direct-drive wheel mode/profile sysfs attributes
  *
@@ -11125,10 +10724,6 @@ static DEVICE_ATTR(wheel_range_restore, 0664,
  *   echo "0:0 32768:16384 65535:65535" > wheel_response_curve
  * uploads a softened centre. Reads report the loaded/max point count
  * straight from the wheel (fn1).
- *
- * The pedal unit exposes the same feature on sub-device 0x02 (three
- * axes); that hardware store is wired separately as
- * wheel_pedal_response_curve, which shares this attribute's upload core.
  */
 static ssize_t wheel_response_curve_show(struct device *dev,
 					 struct device_attribute *attr,
@@ -11401,134 +10996,6 @@ static DEVICE_ATTR(wheel_response_curve, 0664, wheel_response_curve_show,
 		   wheel_response_curve_store);
 
 /*
- * wheel_pedal_response_curve: the pedal unit's per-axis 64-point response
- * curves (HID++ feature 0x80A4 on sub-device 0x02, three axes). Same store
- * protocol as the steering curve above, addressed to dev 0x02 with an
- * explicit axis. Read emits one line per axis with the wheel-reported
- * loaded/max point counts and the HID usage the axis reports for itself
- * (0x31/0x33/0x32 per the capture map, but taken live from fn1 rather than
- * assumed, since axis<->pedal mapping is not fixed here).
- *
- * IMPLEMENTED FROM THE G HUB CAPTURE PROTOCOL MAP (spec section 5.1/5.3),
- * UNTESTED ON HARDWARE. `reset` (per axis) is the escape hatch back to the
- * built-in curve. G Hub also calls fn9 [axis] on every init here; its role
- * is unknown, so this driver does not send it.
- *
- * Write syntax: "<axis> reset" or "<axis> <in:out>...", e.g.
- *   echo "1 0:0 32768:40000 65535:65535" > wheel_pedal_response_curve
- *   echo "1 reset" > wheel_pedal_response_curve
- * axis is 0-2; the pair list obeys the same rules as wheel_response_curve
- * (2-64 pairs, strictly increasing in, non-decreasing out, 0:0 first,
- * 65535:65535 last, resampled to 64 points).
- */
-static ssize_t wheel_pedal_response_curve_show(struct device *dev,
-					       struct device_attribute *attr,
-					       char *buf)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-	struct hidpp_report response;
-	ssize_t len = 0;
-	u8 axis;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-	if (ff->idx_pedal_curve == HIDPP_DD_FEATURE_NOT_FOUND)
-		return -EOPNOTSUPP;
-
-	for (axis = 0; axis < 3; axis++) {
-		u8 params[1] = { axis };
-		u16 loaded, max;
-		int ret;
-
-		/*
-		 * Re-check between axes: teardown can start mid-loop, and each
-		 * remaining sync send would then ride its full timeout against
-		 * a dead device (three axes back to back).
-		 */
-		if (atomic_read_acquire(&ff->stopping))
-			return -ENODEV;
-
-		/*
-		 * Zero the response first: a SHORT/LONG reply fills only the
-		 * leading params bytes and the device-reported length is
-		 * untrusted, so without this a stale-stack read could leak
-		 * through this world-readable attribute (infoleak).
-		 */
-		memset(&response, 0, sizeof(response));
-		ret = hidpp_send_fap_to_device_sync(hidpp, HIDPP_DD_PEDAL_DEV_IDX,
-						    ff->idx_pedal_curve,
-						    0x10 /* fn1 axis info */,
-						    params, 1, &response);
-		if (ret) {
-			len += sysfs_emit_at(buf, len, "%u: ?\n", axis);
-			continue;
-		}
-		/*
-		 * fn1 reply: [axis][00 01 00][usage][bit width][loaded u16 BE]
-		 * [max u16 BE].
-		 */
-		loaded = get_unaligned_be16(&response.fap.params[6]);
-		max = get_unaligned_be16(&response.fap.params[8]);
-		len += sysfs_emit_at(buf, len,
-				     "%u: %u/%u points (usage 0x%02x)\n",
-				     axis, loaded, max,
-				     response.fap.params[4]);
-	}
-	return len;
-}
-
-static ssize_t wheel_pedal_response_curve_store(struct device *dev,
-						struct device_attribute *attr,
-						const char *buf, size_t count)
-{
-	struct hid_device *hid = to_hid_device(dev);
-	struct hidpp_device *hidpp = hid_get_drvdata(hid);
-	struct hidpp_dd_ff_data *ff;
-	unsigned int axis;
-	int consumed = 0, ret;
-	const char *rest;
-
-	if (!hidpp)
-		return -ENODEV;
-	ff = READ_ONCE(hidpp->private_data);
-	if (!ff)
-		return -ENODEV;
-	if (atomic_read_acquire(&ff->stopping))
-		return -ENODEV;
-	if (ff->idx_pedal_curve == HIDPP_DD_FEATURE_NOT_FOUND)
-		return -EOPNOTSUPP;
-
-	/* First token = axis (0-2); the rest is "reset" or the pair list. */
-	if (sscanf(buf, "%u %n", &axis, &consumed) < 1 || axis > 2)
-		return -EINVAL;
-	rest = buf + consumed;
-
-	if (sysfs_streq(rest, "reset")) {
-		ret = hidpp_dd_response_curve_revert(hidpp,
-						     HIDPP_DD_PEDAL_DEV_IDX,
-						     axis, ff->idx_pedal_curve);
-		return ret ? hidpp_errno(hid, ret, "reset pedal response curve")
-			   : count;
-	}
-
-	ret = hidpp_dd_response_curve_upload(hidpp, ff, HIDPP_DD_PEDAL_DEV_IDX,
-					     axis, ff->idx_pedal_curve, rest,
-					     count - consumed);
-	return ret < 0 ? ret : count;
-}
-
-static DEVICE_ATTR(wheel_pedal_response_curve, 0664,
-		   wheel_pedal_response_curve_show,
-		   wheel_pedal_response_curve_store);
-
-/*
  * wheel_serial / wheel_firmware: read-only identity from DeviceInfo
  * (feature 0x0003), read once at init. The serial is the real
  * 12-character device serial (matches the USB iSerial); firmware shows
@@ -11741,13 +11208,6 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 #ifdef CONFIG_HID_LOGITECH_HIDPP_DEBUG
 	&dev_attr_wheel_hidpp_debug.attr,
 #endif
-	&dev_attr_wheel_combined_pedals.attr,
-	&dev_attr_wheel_throttle_curve.attr,
-	&dev_attr_wheel_brake_curve.attr,
-	&dev_attr_wheel_clutch_curve.attr,
-	&dev_attr_wheel_throttle_deadzone.attr,
-	&dev_attr_wheel_brake_deadzone.attr,
-	&dev_attr_wheel_clutch_deadzone.attr,
 	&dev_attr_wheel_mode.attr,
 	&dev_attr_wheel_profile.attr,
 	&dev_attr_wheel_calibrate.attr,
@@ -11760,14 +11220,12 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_profile_names.attr,
 	&dev_attr_wheel_range_restore.attr,
 	&dev_attr_wheel_response_curve.attr,
-	&dev_attr_wheel_pedal_response_curve.attr,
 	&dev_attr_wheel_compat_range.attr,
 	&dev_attr_wheel_compat_gain.attr,
 	&dev_attr_wheel_compat_autocenter.attr,
 	&dev_attr_wheel_compat_spring_level.attr,
 	&dev_attr_wheel_compat_damper_level.attr,
 	&dev_attr_wheel_compat_friction_level.attr,
-	&dev_attr_wheel_compat_combine_pedals.attr,
 	NULL,
 };
 
@@ -11952,18 +11410,6 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 		}
 	}
 
-	/* Pedal response curves and combined mode defaults */
-	ff->combined_pedals = 0;	/* Default: off */
-	ff->throttle_curve = HIDPP_DD_CURVE_LINEAR;
-	ff->brake_curve = HIDPP_DD_CURVE_LINEAR;
-	ff->clutch_curve = HIDPP_DD_CURVE_LINEAR;
-	ff->throttle_deadzone_lower = 0;
-	ff->throttle_deadzone_upper = 0;
-	ff->brake_deadzone_lower = 0;
-	ff->brake_deadzone_upper = 0;
-	ff->clutch_deadzone_lower = 0;
-	ff->clutch_deadzone_upper = 0;
-
 	ff->constant_force = 0;
 	ff->last_force = 0;
 	ff->gain = 0xFFFF;		/* 100%, games scale down from here */
@@ -12002,7 +11448,6 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->idx_brakeforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_response_curve = HIDPP_DD_FEATURE_NOT_FOUND;
-	ff->idx_pedal_curve = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_lightsync = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_rgb_config = HIDPP_DD_FEATURE_NOT_FOUND;
@@ -12158,7 +11603,7 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 
 	/*
 	 * Invalidate interface 0's cached copy of the shared ff pointer
-	 * BEFORE this struct is freed: hidpp_dd_process_pedals caches ff into
+	 * BEFORE this struct is freed: hidpp_dd_track_wheel_pos caches ff into
 	 * the input interface's hidpp->private_data, and if that iface
 	 * stays bound while the owner is torn down, its 500 Hz raw-event
 	 * path would keep writing wheel_pos through a dangling pointer.
@@ -13960,12 +13405,15 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 		return m560_raw_event(hdev, data, size);
 
 	/*
-	 * Process direct-drive joystick reports for pedal handling.
+	 * Process direct-drive joystick reports for steering-position tracking.
 	 * Only process 30-byte reports from interface 0 (joystick).
 	 * Checking the interface number first guards against a 30-byte
-	 * non-HID++ report arriving on interface 1 or 2 being rewritten
-	 * in-place as pedal axes (hidpp_dd_process_pedals writes back via
-	 * put_unaligned_le16).
+	 * non-HID++ report arriving on interface 1 or 2 being mistaken for
+	 * a joystick report.
+	 *
+	 * Pedal axes (throttle/brake/clutch) are left untouched here and
+	 * reach userspace raw; shaping them is done in HID-BPF, not this
+	 * driver.
 	 *
 	 * The D-pad is left to hid-input's native hat-switch mapping: the
 	 * interface-0 descriptor declares a standard Hat Switch usage (logical
@@ -13982,103 +13430,29 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 	    hid_is_usb(hdev)) {
 		struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
 
-		if (intf->cur_altsetting->desc.bInterfaceNumber == 0) {
-			/* Process pedals: curves, deadzones, combined mode */
-			hidpp_dd_process_pedals(hidpp, data, size);
-		}
+		if (intf->cur_altsetting->desc.bInterfaceNumber == 0)
+			hidpp_dd_track_wheel_pos(hidpp, data, size);
 	}
 
 	return 0;
 }
 
 /*
- * Pedal curve and deadzone transforms are applied in software in the driver.
- * There is no HID++ feature for per-pedal curves or deadzones on these wheels; the
- * G Hub pedal UI sends nothing to the wheel for these settings. The wheel
- * always reports raw 16-bit axis values and we reshape them here before
- * forwarding to userspace.
- *
- * Apply response curve transformation to a pedal value.
- * Input/output range: 0x0000 - 0xFFFF
- *
- * Curves:
- * - LINEAR: output = input (1:1 mapping)
- * - LOW_SENS: output = input^2 / 65535 (less sensitive at start, more at end)
- * - HIGH_SENS: output = sqrt(input * 65535) (more sensitive at start, less at end)
- */
-static u16 hidpp_dd_apply_curve(u16 input, u8 curve_type)
-{
-	u64 val;
-
-	switch (curve_type) {
-	case HIDPP_DD_CURVE_LOW_SENS:
-		/* Quadratic curve: less responsive at start
-		 * Use u64 to prevent overflow: 65535 * 65535 = 4,294,836,225
-		 * which is close to u32 limit.
-		 */
-		val = ((u64)input * (u64)input) / 65535;
-		return (u16)val;
-
-	case HIDPP_DD_CURVE_HIGH_SENS:
-		/* Square root curve: more responsive at start
-		 * Use u64 for safety in intermediate calculation.
-		 */
-		val = (u64)input * 65535;
-		return (u16)int_sqrt(val);
-
-	case HIDPP_DD_CURVE_LINEAR:
-	default:
-		return input;
-	}
-}
-
-/*
- * Apply deadzone to a pedal value.
- * Lower deadzone: values below this threshold are zeroed
- * Upper deadzone: values above (100 - upper)% are maxed out
- * The range between deadzones is scaled to full 0-65535 range.
- */
-static u16 hidpp_dd_apply_deadzone(u16 input, u8 lower_pct, u8 upper_pct)
-{
-	u32 lower_threshold, upper_threshold;
-	u32 effective_range;
-	u32 val;
-
-	/* Convert percentages to threshold values */
-	lower_threshold = ((u32)lower_pct * 65535) / 100;
-	upper_threshold = 65535 - (((u32)upper_pct * 65535) / 100);
-
-	/* Clamp and scale */
-	if (input <= lower_threshold)
-		return 0;
-	if (input >= upper_threshold)
-		return 65535;
-
-	/* Scale the value between the deadzones to full range */
-	effective_range = upper_threshold - lower_threshold;
-	if (effective_range == 0)
-		return 65535;
-
-	val = ((u32)(input - lower_threshold) * 65535) / effective_range;
-	return (u16)min(val, (u32)65535);
-}
-
-/*
- * Process direct-drive pedal values: apply response curves, deadzones, and combined mode.
- * This function modifies the raw HID data in place before the HID subsystem
- * processes it.
+ * Track the live steering-wheel position from interface-0 input reports.
+ * Pedal shaping (curves/deadzones/combined mode) used to happen here in
+ * software; it never actually worked (a report-propagation bug meant the
+ * G Hub pedal UI settings never reached this path) and has been removed.
+ * Pedal axes now reach userspace raw; shaping them is HID-BPF's job.
  *
  * Joystick report format (30 bytes, offset 4+):
  *   Offset 4-5: Wheel position (u16 LE)
- *   Offset 6-7: Accelerator/Throttle (u16 LE)
- *   Offset 8-9: Brake (u16 LE)
- *   Offset 10-11: Clutch (u16 LE)
+ *   Offset 6-7: Accelerator/Throttle (u16 LE, passed through raw)
+ *   Offset 8-9: Brake (u16 LE, passed through raw)
+ *   Offset 10-11: Clutch (u16 LE, passed through raw)
  */
-static void hidpp_dd_process_pedals(struct hidpp_device *hidpp, u8 *data, int size)
+static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp, u8 *data, int size)
 {
 	struct hidpp_dd_ff_data *ff;
-	u16 throttle, brake, clutch;
-	u16 combined;
 
 	if (!hidpp || !(hidpp->quirks & HIDPP_QUIRK_DD_FFB))
 		return;
@@ -14089,9 +13463,8 @@ static void hidpp_dd_process_pedals(struct hidpp_device *hidpp, u8 *data, int si
 	 * hidpp->private_data. At raw_event time the shared ff_data lives
 	 * on interface 1's hidpp instead. If our own slot is empty, walk
 	 * the siblings, cache the pointer, and use it. This is what kept
-	 * the interface-0 input path from ever updating wheel_pos (and,
-	 * silently, what kept pedal curve / deadzone processing from
-	 * firing) before this commit.
+	 * the interface-0 input path from ever updating wheel_pos before
+	 * this commit.
 	 */
 	ff = READ_ONCE(hidpp->private_data);
 	if (!ff) {
@@ -14105,8 +13478,8 @@ static void hidpp_dd_process_pedals(struct hidpp_device *hidpp, u8 *data, int si
 	if (atomic_read_acquire(&ff->stopping))
 		return;
 
-	/* Need at least 12 bytes for all pedal data */
-	if (size < 12)
+	/* Need at least the wheel-position field */
+	if (size < 6)
 		return;
 
 	/*
@@ -14119,61 +13492,6 @@ static void hidpp_dd_process_pedals(struct hidpp_device *hidpp, u8 *data, int si
 	WRITE_ONCE(ff->wheel_pos, get_unaligned_le16(&data[4]));
 	if (!READ_ONCE(ff->wheel_pos_seen))
 		WRITE_ONCE(ff->wheel_pos_seen, true);
-
-	/* Read current pedal values (little-endian) */
-	throttle = get_unaligned_le16(&data[6]);
-	brake = get_unaligned_le16(&data[8]);
-	clutch = get_unaligned_le16(&data[10]);
-
-	/*
-	 * Apply deadzones first (before curve transformation).
-	 * Use READ_ONCE for settings that may be changed from sysfs context
-	 * while we're processing in interrupt/atomic context.
-	 */
-	throttle = hidpp_dd_apply_deadzone(throttle,
-				       READ_ONCE(ff->throttle_deadzone_lower),
-				       READ_ONCE(ff->throttle_deadzone_upper));
-	brake = hidpp_dd_apply_deadzone(brake,
-				    READ_ONCE(ff->brake_deadzone_lower),
-				    READ_ONCE(ff->brake_deadzone_upper));
-	clutch = hidpp_dd_apply_deadzone(clutch,
-				     READ_ONCE(ff->clutch_deadzone_lower),
-				     READ_ONCE(ff->clutch_deadzone_upper));
-
-	/* Apply response curves */
-	throttle = hidpp_dd_apply_curve(throttle, READ_ONCE(ff->throttle_curve));
-	brake = hidpp_dd_apply_curve(brake, READ_ONCE(ff->brake_curve));
-	clutch = hidpp_dd_apply_curve(clutch, READ_ONCE(ff->clutch_curve));
-
-	/* Combined pedals mode: output = throttle - brake on throttle axis */
-	if (READ_ONCE(ff->combined_pedals)) {
-		s32 combined_s;
-
-		/*
-		 * Combined mode calculation:
-		 * - Full throttle, no brake: 65535 (full forward)
-		 * - No throttle, full brake: 0 (full reverse/brake)
-		 * - Both released: 32768 (center/neutral, 0x8000)
-		 * - Both fully pressed: 32768 (neutral)
-		 *
-		 * Formula: combined = (throttle - brake + 65536) / 2
-		 * Using 65536 ensures neutral is exactly 0x8000 (32768).
-		 */
-		combined_s = ((s32)throttle - (s32)brake + 65536) / 2;
-		combined = (u16)clamp(combined_s, (s32)0, (s32)65535);
-
-		/* Write combined value to throttle position */
-		put_unaligned_le16(combined, &data[6]);
-		/* Zero out brake (or set to center if games expect it) */
-		put_unaligned_le16(0, &data[8]);
-	} else {
-		/* Normal mode: write back transformed values */
-		put_unaligned_le16(throttle, &data[6]);
-		put_unaligned_le16(brake, &data[8]);
-	}
-
-	/* Always write back clutch */
-	put_unaligned_le16(clutch, &data[10]);
 }
 
 static int hidpp_event(struct hid_device *hdev, struct hid_field *field,
@@ -14910,8 +14228,8 @@ static void hidpp_remove(struct hid_device *hdev)
 		/*
 		 * Only the OWNER takes the full-teardown path. Interface 0
 		 * also carries a non-NULL private_data these days - the
-		 * pedal/steering raw-event path caches the shared ff there
-		 * (hidpp_dd_process_pedals) - and letting it in here made its
+		 * steering raw-event path caches the shared ff there
+		 * (hidpp_dd_track_wheel_pos) - and letting it in here made its
 		 * removal set the global stopping flag (killing FFB for a
 		 * still-alive owner) and run an unbalanced hid_hw_close on
 		 * itself (ff->hid_open tracks the OWNER's hid_hw_open from
