@@ -1,7 +1,7 @@
 # Logitech TrueForce Direct-Drive Wheel Protocol Specification
 
-**Document Version**: 6.7
-**Date**: 2026-07-06
+**Document Version**: 6.8
+**Date**: 2026-07-16
 **Author**: Verified from USB capture analysis
 **Status**: Protocol reference for Linux driver development
 
@@ -734,10 +734,24 @@ analysis; index-to-ID mapping derived from IFeatureSet fn1 pairing in
   slider sweep produced distinct, mutually inverse curves, while sweeps
   of unrelated sliders re-upload a bit-identical curve on every config
   apply. This is exposed as the `wheel_response_curve` (steering)
-  attribute. The pedal sub-device (0x02) exposes the same feature, but the
-  driver does not drive it: a raw-HID capture showed the wheel stores such
-  a curve without applying it to its PC HID output, so the attribute was
-  removed rather than left uploading curves with no effect.
+  attribute, **validated live on an RS50 (2026-07-16)**: with a curve
+  pinning raw 27000-30000 to 5000, centre moved ~32957 -> ~9473, matching
+  the uploaded mapping. The pedal sub-device (`0x02`) exposes the same
+  feature on three axes (0=throttle, 1=brake, 2=clutch; index `0x0a`), and
+  **it also applies the curve to its PC HID output** - proven on all three
+  pedals with artifact-proof tests (a two-plateau throttle curve, step
+  curves on the load-cell brake and clutch). An earlier draft claimed the
+  pedal MCU stored curves without applying them; that was a false negative
+  from noisy manual testing, corrected here. Both axis groups are driven by
+  the driver (`wheel_response_curve` for steering, `wheel_<p>_curve` /
+  `_sensitivity` / `_deadzone` for the pedals).
+
+  A measurement trap worth knowing: the wheel emits no HID reports while an
+  axis is held still, so an upload does not change what `evtest` /
+  `EVIOCGABS` report until the axis next moves. Testing a curve on a
+  stationary axis reads a stale pre-upload value and looks exactly like a
+  curve being ignored (this is what produced the false negative above).
+
   Unknowns: the second `03` in caps, pedal-unit
   `fn9 [axis]` (called on every G Hub init; possibly axis refresh), and
   whether curves persist across power cycles.
@@ -1635,3 +1649,4 @@ This returns the PAGE ID at each index. G Hub queries indices 0x00 through ~0x1F
 | 6.5 | 2026-07-03 | Renamed from RS50_PROTOCOL_SPECIFICATION.md (covers the whole direct-drive family); driver symbols updated to the hidpp_dd_ prefix; documented that the RS50 keeps its own USB product string in G PRO compatibility mode ("RS50 Base for PlayStation/PC" under PID c272) while a real G PRO reports "PRO Racing Wheel" - the driver uses this to tag log output per model |
 | 6.6 | 2026-07-04 | Cross-pollination from the TF4ALL project (issue #20): the Windows game-FFB path for DD wheels is HID++ 0x8123 fn2 (int16 BE at offset 10-11; catalog index 0x10 native / 0x0e G-PRO-PID); stream-packet bytes 6-9 ("cur") are the motor torque target and override 0x8123 while a session is active, with the window additive on top; AC EVO streams unified cur+audio packets at up to ~1000 pkt/s; texture amplitudes above ~0.5-0.7 FS cross from vibration into steering pull; the REAL G PRO rim has level-based rev lights on 0x807A (SHORT fn2 + LONG fn6, byte 9 = 0-10) with no per-LED RGB - section 9 describes RS50 hardware only |
 | 6.7 | 2026-07-06 | Section 4 corrected and de-duplicated against TRUEFORCE_PROTOCOL.md: byte 10 is the new-sample count that demuxes the shared ep-0x03 packet family (0 = constant force, 4 = unified force+audio), not padding; bytes 6-9 named as the "cur" motor torque target; force rate note updated (games 250-1000 Hz, driver 500 Hz); TRUEFORCE_PROTOCOL.md pointed to as the authoritative framing reference, with a reciprocal link back. Removed the RS50_PROTOCOL_SPECIFICATION.md redirect stub (rename complete). |
+| 6.8 | 2026-07-16 | `0x80A4` response curves validated live on an RS50 and the pedal claim corrected: BOTH the wheel base (steering, dev `0xff` axis 0) AND the pedal sub-device (dev `0x02`, axes 0/1/2, index `0x0a`) apply an uploaded curve to their PC HID output. The earlier "pedal MCU stores but does not apply" claim was a false negative from noisy manual testing. Also recorded the measurement trap: the wheel emits no HID reports while an axis is still, so an upload does not change the reported value until it next moves. |

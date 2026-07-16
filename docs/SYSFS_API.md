@@ -650,10 +650,19 @@ cat wheel_response_curve
 # 64/64 points loaded (0 = built-in curve)
 ```
 
-**Status: implemented from the 2026-01-30 G Hub capture
-(`desktop_sensitivity`), not yet validated live - use `reset` if
-steering feels wrong after an upload. Whether curves persist across
-power cycles is unknown.**
+**Validated live on an RS50 (2026-07-16).** The wheel applies this curve
+to the steering axis it reports to the PC: with a curve pinning raw
+27000-30000 to 5000, centre read ~32957 with the built-in curve and
+~9473 with that curve loaded, matching the upload. Use `reset` if steering
+feels wrong after an upload.
+
+> **The axis does not change until the wheel next moves.** The wheel sends
+> no HID reports while held still, so an upload appears to do nothing until
+> you nudge the axis. `cat wheel_response_curve` reads the point count back
+> from the wheel and is the honest check. The same is true of the pedal
+> curves.
+
+Whether curves persist across power cycles is still untested.
 
 ### wheel_rev_level
 **Access**: Read/Write
