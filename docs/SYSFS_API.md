@@ -722,17 +722,62 @@ echo 1 > wheel_led_apply
 
 ## Pedal Configuration
 
-The driver reports the throttle, brake and clutch axes exactly as the wheel
-sends them; it does not shape them. There are no pedal curve, deadzone or
-combined-pedals attributes.
+The pedal unit is a separate MCU (HID++ sub-device `0x02`) that applies a
+64-point `0x80A4` response curve to each axis it reports to the PC. This was
+verified live on an RS50 (2026-07-16) with a two-plateau throttle curve: the
+reported axis dwelt at exactly the two programmed output values with an empty
+gap between them, which a linear axis cannot do. So these are real shaping
+controls, the same mechanism as the steering `wheel_response_curve`.
 
-Earlier releases exposed `wheel_{throttle,brake,clutch}_curve`,
-`wheel_{throttle,brake,clutch}_deadzone`, `wheel_combined_pedals` and
-`wheel_pedal_response_curve`. Those transforms never reached userspace - the
-rewritten report did not survive to the input layer - so the attributes
-accepted settings that did nothing. They were removed rather than left
-advertising a feature that silently no-ops. Shape pedals in userspace (for
-example with a HID-BPF program) instead.
+Each pedal `<p>` in {`throttle`, `brake`, `clutch`} exposes three attributes.
+**They all write the single curve the axis holds, so the last write wins.** The
+`_curve` attribute always reads back the wheel's true loaded-point count.
+
+### wheel_&lt;p&gt;_curve
+**Access**: Read/Write
+
+The raw 64-point curve, identical in format to `wheel_response_curve`: write
+`reset` for the built-in linear curve, or 2-64 whitespace-separated `in:out`
+pairs (0-65535, strictly increasing `in`, non-decreasing `out`, starting `0:0`
+and ending `65535:65535`; fewer than 64 pairs are resampled). Reads back
+`"<loaded>/<max> points loaded"`.
+
+```bash
+# Dead-until-30%, then linear, on the throttle
+echo "0:0 19660:0 65535:65535" > wheel_throttle_curve
+echo reset > wheel_throttle_curve
+cat wheel_throttle_curve      # e.g. "64/64 points loaded (0 = built-in curve)"
+```
+
+### wheel_&lt;p&gt;_sensitivity
+**Access**: Read/Write, **Values**: `0`-`100` (`50` = linear)
+
+G HUB's simple sensitivity slider. Values above 50 make the pedal more
+responsive early in its travel, below 50 less; `50` reverts to the built-in
+linear curve. Generates the same symmetric-Bezier curve G HUB uploads. The
+wheel stores only the resulting curve, so this reads back the last written
+slider value, not a device query.
+
+```bash
+echo 70 > wheel_brake_sensitivity
+```
+
+### wheel_&lt;p&gt;_deadzone
+**Access**: Read/Write, **Values**: `"<lower> <upper>"` percent
+
+Dead travel at each end: output holds 0 until the pedal passes `lower`%, and
+reaches full by `(100 - upper)`%. `lower + upper` must be at most 99. `"0 0"`
+reverts to the built-in curve. Reads back the last written pair.
+
+```bash
+# 8% dead at the bottom, 5% saturation at the top of the clutch
+echo "8 5" > wheel_clutch_deadzone
+```
+
+> Because sensitivity, deadzone and the raw curve all write the one hardware
+> curve per axis, use one of them at a time per pedal. To combine a deadzone
+> with a custom shape, author the whole thing as a single `_curve` upload (this
+> is what the logi-dd editor does).
 
 ---
 
