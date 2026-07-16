@@ -11040,6 +11040,243 @@ static DEVICE_ATTR(wheel_response_curve, 0664, wheel_response_curve_show,
 		   wheel_response_curve_store);
 
 /*
+ * Pedal shaping: 0x80A4 response curves on the pedal sub-device (0x02), axes
+ * 0=throttle, 1=brake, 2=clutch. Hardware-verified 2026-07-16 that the pedal
+ * MCU applies an uploaded curve to its PC HID output (double-plateau test).
+ *
+ * Each pedal exposes three sysfs generators that all write the ONE curve the
+ * axis holds, so the last write wins:
+ *   wheel_<p>_curve        raw "in:out" points (or "reset"), like the steering
+ *                          wheel_response_curve; reads back the true loaded/max
+ *                          point count from the device (fn1).
+ *   wheel_<p>_sensitivity  0-100 slider (50 = linear); generates the G Hub
+ *                          Bezier curve. Cached for readback (the wheel stores
+ *                          only the resulting curve, not the slider value).
+ *   wheel_<p>_deadzone     "<lower> <upper>" percent dead travel; generates a
+ *                          curve flat at 0 below lower% and flat at full above
+ *                          (100-upper)%. Cached for readback.
+ */
+static struct hidpp_dd_ff_data *hidpp_dd_pedal_ff(struct hidpp_device *hidpp,
+						  int *err)
+{
+	struct hidpp_dd_ff_data *ff;
+
+	if (!hidpp) {
+		*err = -ENODEV;
+		return NULL;
+	}
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff || atomic_read_acquire(&ff->stopping)) {
+		*err = -ENODEV;
+		return NULL;
+	}
+	if (ff->idx_pedal_curve == HIDPP_DD_FEATURE_NOT_FOUND) {
+		*err = -EOPNOTSUPP;
+		return NULL;
+	}
+	*err = 0;
+	return ff;
+}
+
+static ssize_t hidpp_dd_pedal_curve_show(struct hid_device *hid, u8 axis,
+					 char *buf)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_report response;
+	struct hidpp_dd_ff_data *ff;
+	u8 params[1] = { axis };
+	u16 loaded, max;
+	int ret;
+
+	ff = hidpp_dd_pedal_ff(hidpp, &ret);
+	if (!ff)
+		return ret;
+
+	memset(&response, 0, sizeof(response));
+	ret = hidpp_send_fap_to_device_sync(hidpp, HIDPP_DD_PEDAL_DEV_IDX,
+					    ff->idx_pedal_curve,
+					    0x10 /* fn1 axis info */,
+					    params, 1, &response);
+	if (ret)
+		return hidpp_errno(hid, ret, "read pedal curve info");
+	loaded = get_unaligned_be16(&response.fap.params[6]);
+	max = get_unaligned_be16(&response.fap.params[8]);
+	return sysfs_emit(buf, "%u/%u points loaded (0 = built-in curve)\n",
+			  loaded, max);
+}
+
+static ssize_t hidpp_dd_pedal_curve_store(struct hid_device *hid, u8 axis,
+					  const char *buf, size_t count)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	int ret;
+
+	ff = hidpp_dd_pedal_ff(hidpp, &ret);
+	if (!ff)
+		return ret;
+
+	if (sysfs_streq(buf, "reset")) {
+		ret = hidpp_dd_response_curve_revert(hidpp, HIDPP_DD_PEDAL_DEV_IDX,
+						     axis, ff->idx_pedal_curve);
+		return ret ? hidpp_errno(hid, ret, "reset pedal curve") : count;
+	}
+	ret = hidpp_dd_response_curve_upload(hidpp, ff, HIDPP_DD_PEDAL_DEV_IDX,
+					     axis, ff->idx_pedal_curve, buf, count);
+	return ret < 0 ? ret : count;
+}
+
+static ssize_t hidpp_dd_pedal_sensitivity_show(struct hid_device *hid, u8 axis,
+					       char *buf)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	int ret;
+
+	ff = hidpp_dd_pedal_ff(hidpp, &ret);
+	if (!ff)
+		return ret;
+	return sysfs_emit(buf, "%u\n", ff->pedal_sens[axis]);
+}
+
+static ssize_t hidpp_dd_pedal_sensitivity_store(struct hid_device *hid, u8 axis,
+						const char *buf, size_t count)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	int sensitivity, ret;
+	size_t len;
+	char *curve;
+
+	ff = hidpp_dd_pedal_ff(hidpp, &ret);
+	if (!ff)
+		return ret;
+	ret = kstrtoint(buf, 10, &sensitivity);
+	if (ret)
+		return ret;
+	sensitivity = clamp(sensitivity, 0, 100);
+
+	if (sensitivity == 50) {
+		ret = hidpp_dd_response_curve_revert(hidpp, HIDPP_DD_PEDAL_DEV_IDX,
+						     axis, ff->idx_pedal_curve);
+		if (ret)
+			return hidpp_errno(hid, ret, "set pedal sensitivity");
+		ff->pedal_sens[axis] = 50;
+		return count;
+	}
+
+	curve = kmalloc(HIDPP_DD_SENS_CURVE_BUFSZ, GFP_KERNEL);
+	if (!curve)
+		return -ENOMEM;
+	len = hidpp_dd_build_sensitivity_curve(sensitivity, curve,
+					       HIDPP_DD_SENS_CURVE_BUFSZ);
+	ret = hidpp_dd_response_curve_upload(hidpp, ff, HIDPP_DD_PEDAL_DEV_IDX,
+					     axis, ff->idx_pedal_curve, curve, len);
+	kfree(curve);
+	if (ret)
+		return ret;
+	ff->pedal_sens[axis] = sensitivity;
+	return count;
+}
+
+static ssize_t hidpp_dd_pedal_deadzone_show(struct hid_device *hid, u8 axis,
+					    char *buf)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	int ret;
+
+	ff = hidpp_dd_pedal_ff(hidpp, &ret);
+	if (!ff)
+		return ret;
+	return sysfs_emit(buf, "%u %u\n", ff->pedal_deadzone[axis][0],
+			  ff->pedal_deadzone[axis][1]);
+}
+
+static ssize_t hidpp_dd_pedal_deadzone_store(struct hid_device *hid, u8 axis,
+					     const char *buf, size_t count)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	unsigned int lower, upper;
+	char curve[64];
+	u32 lo_in, hi_in;
+	int ret, n = 0;
+
+	ff = hidpp_dd_pedal_ff(hidpp, &ret);
+	if (!ff)
+		return ret;
+	if (sscanf(buf, "%u %u", &lower, &upper) != 2 ||
+	    lower > 100 || upper > 100 || lower + upper > 99)
+		return -EINVAL;
+
+	if (lower == 0 && upper == 0) {
+		ret = hidpp_dd_response_curve_revert(hidpp, HIDPP_DD_PEDAL_DEV_IDX,
+						     axis, ff->idx_pedal_curve);
+		if (ret)
+			return hidpp_errno(hid, ret, "reset pedal deadzone");
+		ff->pedal_deadzone[axis][0] = 0;
+		ff->pedal_deadzone[axis][1] = 0;
+		return count;
+	}
+
+	/*
+	 * Output holds 0 until input passes lower%, then rises to full by
+	 * (100-upper)%. Only the non-zero deadzone points are emitted so the
+	 * curve keeps strictly-increasing inputs and the pinned 0:0 / 65535
+	 * endpoints the uploader requires.
+	 */
+	lo_in = (u32)lower * 65535 / 100;
+	hi_in = (u32)(100 - upper) * 65535 / 100;
+	n += scnprintf(curve + n, sizeof(curve) - n, "0:0");
+	if (lower > 0)
+		n += scnprintf(curve + n, sizeof(curve) - n, " %u:0", lo_in);
+	if (upper > 0)
+		n += scnprintf(curve + n, sizeof(curve) - n, " %u:65535", hi_in);
+	n += scnprintf(curve + n, sizeof(curve) - n, " 65535:65535");
+
+	ret = hidpp_dd_response_curve_upload(hidpp, ff, HIDPP_DD_PEDAL_DEV_IDX,
+					     axis, ff->idx_pedal_curve, curve, n);
+	if (ret)
+		return ret;
+	ff->pedal_deadzone[axis][0] = lower;
+	ff->pedal_deadzone[axis][1] = upper;
+	return count;
+}
+
+/* Generate the nine per-pedal sysfs wrappers (curve/sensitivity/deadzone). */
+#define HIDPP_DD_PEDAL_ATTRS(pname, axis)				       \
+static ssize_t wheel_##pname##_curve_show(struct device *dev,		       \
+		struct device_attribute *attr, char *buf)		       \
+{ return hidpp_dd_pedal_curve_show(to_hid_device(dev), axis, buf); }	       \
+static ssize_t wheel_##pname##_curve_store(struct device *dev,		       \
+		struct device_attribute *attr, const char *buf, size_t count)  \
+{ return hidpp_dd_pedal_curve_store(to_hid_device(dev), axis, buf, count); }    \
+static DEVICE_ATTR(wheel_##pname##_curve, 0664,				       \
+		   wheel_##pname##_curve_show, wheel_##pname##_curve_store);    \
+static ssize_t wheel_##pname##_sensitivity_show(struct device *dev,	       \
+		struct device_attribute *attr, char *buf)		       \
+{ return hidpp_dd_pedal_sensitivity_show(to_hid_device(dev), axis, buf); }      \
+static ssize_t wheel_##pname##_sensitivity_store(struct device *dev,	       \
+		struct device_attribute *attr, const char *buf, size_t count)  \
+{ return hidpp_dd_pedal_sensitivity_store(to_hid_device(dev), axis, buf, count); } \
+static DEVICE_ATTR(wheel_##pname##_sensitivity, 0664,			       \
+		   wheel_##pname##_sensitivity_show,			       \
+		   wheel_##pname##_sensitivity_store);			       \
+static ssize_t wheel_##pname##_deadzone_show(struct device *dev,	       \
+		struct device_attribute *attr, char *buf)		       \
+{ return hidpp_dd_pedal_deadzone_show(to_hid_device(dev), axis, buf); }	       \
+static ssize_t wheel_##pname##_deadzone_store(struct device *dev,	       \
+		struct device_attribute *attr, const char *buf, size_t count)  \
+{ return hidpp_dd_pedal_deadzone_store(to_hid_device(dev), axis, buf, count); } \
+static DEVICE_ATTR(wheel_##pname##_deadzone, 0664,			       \
+		   wheel_##pname##_deadzone_show, wheel_##pname##_deadzone_store)
+
+HIDPP_DD_PEDAL_ATTRS(throttle, 0);
+HIDPP_DD_PEDAL_ATTRS(brake, 1);
+HIDPP_DD_PEDAL_ATTRS(clutch, 2);
+
+/*
  * wheel_serial / wheel_firmware: read-only identity from DeviceInfo
  * (feature 0x0003), read once at init. The serial is the real
  * 12-character device serial (matches the USB iSerial); firmware shows
@@ -11272,6 +11509,15 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_profile_names.attr,
 	&dev_attr_wheel_range_restore.attr,
 	&dev_attr_wheel_response_curve.attr,
+	&dev_attr_wheel_throttle_curve.attr,
+	&dev_attr_wheel_throttle_sensitivity.attr,
+	&dev_attr_wheel_throttle_deadzone.attr,
+	&dev_attr_wheel_brake_curve.attr,
+	&dev_attr_wheel_brake_sensitivity.attr,
+	&dev_attr_wheel_brake_deadzone.attr,
+	&dev_attr_wheel_clutch_curve.attr,
+	&dev_attr_wheel_clutch_sensitivity.attr,
+	&dev_attr_wheel_clutch_deadzone.attr,
 	&dev_attr_wheel_compat_range.attr,
 	&dev_attr_wheel_compat_gain.attr,
 	&dev_attr_wheel_compat_autocenter.attr,
