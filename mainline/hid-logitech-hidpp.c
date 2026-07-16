@@ -4234,6 +4234,7 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_PAGE_TRUEFORCE		0x8139	/* TRUEFORCE Bass Shaker */
 #define HIDPP_DD_PAGE_FILTER		0x8140	/* FFB Filter */
 #define HIDPP_DD_PAGE_RESPONSE_CURVE	0x80A4	/* Per-axis 64-point response curves */
+#define HIDPP_DD_PEDAL_DEV_IDX		0x02	/* HID++ sub-device index of the pedal unit (0x80A4 axis curves) */
 #define HIDPP_DD_PAGE_CALIBRATE		0x812C	/* Centre calibration (G Pro sub-device 0x05) */
 #define HIDPP_DD_PAGE_SYNC			0x1BC0	/* Unknown sync/prepare feature */
 
@@ -4457,6 +4458,7 @@ struct hidpp_dd_ff_data {
 	u8 idx_brakeforce;		/* Feature index for brake force */
 	u8 idx_filter;			/* Feature index for FFB filter */
 	u8 idx_response_curve;		/* Feature index for 0x80A4 axis response curves (steering, base dev 0xff) */
+	u8 idx_pedal_curve;		/* Feature index for 0x80A4 curves on the pedal unit (dev 0x02, axes 0-2) */
 	u8 idx_brightness;		/* Feature index for LED brightness */
 	u8 idx_lightsync;		/* Feature index for LIGHTSYNC effects */
 	u8 idx_rgb_config;		/* Feature index for RGB Zone Config */
@@ -4505,6 +4507,14 @@ struct hidpp_dd_ff_data {
 	u8 current_profile;		/* 0=desktop, 1-5=onboard profiles */
 	bool mode_known;		/* true once hidpp_dd_get_current_mode succeeded at least once; false means current_mode/current_profile are the safe-desktop default not a fresh query */
 	u8 sensitivity;			/* Last sensitivity written via sysfs (0-100, 50=linear); uploaded as a 0x80A4 steering curve, not readable back from the wheel */
+	/*
+	 * Pedal shaping generator inputs, indexed 0=throttle 1=brake 2=clutch.
+	 * Like steering sensitivity, the wheel stores only the resulting 0x80A4
+	 * curve, not these inputs, so the last value written is cached here for
+	 * readback. pedal_sens defaults to 50 (linear); pedal_deadzone to 0/0.
+	 */
+	u8 pedal_sens[3];
+	u8 pedal_deadzone[3][2];		/* [axis][0]=lower %, [axis][1]=upper % */
 
 	/* Wheel settings (sysfs configurable) */
 	u16 range;			/* rotation range in degrees */
@@ -6750,6 +6760,8 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	ff->idx_brakeforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_response_curve = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_pedal_curve = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->pedal_sens[0] = ff->pedal_sens[1] = ff->pedal_sens[2] = 50;
 	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile_notify = HIDPP_DD_FEATURE_NOT_FOUND;
@@ -6791,6 +6803,20 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	if (ret == 0)
 		dd_dbg(hid, "Response curve feature at index 0x%02x\n",
 		       ff->idx_response_curve);
+
+	/*
+	 * The pedal unit is a separate MCU (device index 0x02) that exposes the
+	 * same 0x80A4 feature at its own index, covering three axes (0=throttle,
+	 * 1=brake, 2=clutch). Hardware-verified 2026-07-16: the pedal MCU applies
+	 * an uploaded curve to its PC HID output, so these are real shaping
+	 * controls, not just onboard/console storage.
+	 */
+	ret = hidpp_root_get_feature_on_device(hidpp, HIDPP_DD_PEDAL_DEV_IDX,
+					       HIDPP_DD_PAGE_RESPONSE_CURVE,
+					       &ff->idx_pedal_curve);
+	if (ret == 0)
+		dd_dbg(hid, "Pedal response curve feature at index 0x%02x (dev 0x%02x)\n",
+		       ff->idx_pedal_curve, HIDPP_DD_PEDAL_DEV_IDX);
 
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_BRIGHTNESS, &ff->idx_brightness);
 	if (ret == 0)
@@ -8461,15 +8487,60 @@ static ssize_t wheel_sensitivity_show(struct device *dev, struct device_attribut
 	return sysfs_emit(buf, "%u\n", ff->sensitivity);
 }
 
+/* 64 "in:out" tokens of at most 12 chars ("65535:65535 ") + NUL. */
+#define HIDPP_DD_SENS_CURVE_BUFSZ	(64 * 12 + 1)
+
+/*
+ * Render G Hub's symmetric-Bezier sensitivity curve for slider value
+ * `sensitivity` (1-100 excluding 50) into `curve` (capacity `cap`) as the
+ * "in:out" pair list the 0x80A4 uploader parses; returns the byte length.
+ * Control coordinates scaled to 0-65535: P1 = (px, py), P2 = (py, px).
+ * Integer math throughout; the +125023 / 250047 pair is round-to-nearest by
+ * 63^3 (t = i/63). Verified against the capture: reproduces G Hub's uploaded
+ * points for sliders 100/75/25/0 to within 1 LSB. Slider 50 is the linear
+ * built-in curve and is handled by callers via fn6 revert, not here. Used for
+ * both the steering (dev 0xff) and pedal (dev 0x02) sensitivity sliders.
+ */
+static size_t hidpp_dd_build_sensitivity_curve(int sensitivity, char *curve,
+					       size_t cap)
+{
+	u32 px = (u32)(100 - sensitivity) * 65535 / 100;
+	u32 py = (u32)sensitivity * 65535 / 100;
+	u32 prev_in = 0;
+	size_t len = 0;
+	int i;
+
+	for (i = 0; i < 64; i++) {
+		/* Bernstein weights for t = i/63, scaled by 63^3 */
+		u64 w1 = 3ULL * i * (63 - i) * (63 - i);
+		u64 w2 = 3ULL * i * i * (63 - i);
+		u64 w3 = (u64)i * i * i;
+		u32 in = div_u64(w1 * px + w2 * py + w3 * 65535 + 125023, 250047);
+		u32 out = div_u64(w1 * py + w2 * px + w3 * 65535 + 125023, 250047);
+
+		/*
+		 * x(t) is flat around t=0.5 at the slider extremes, so two
+		 * samples can round to the same input value (G Hub itself
+		 * uploads such duplicates at slider 0). The uploader demands
+		 * strictly increasing inputs; dropping the duplicate is safe
+		 * since its resampler interpolates across the gap.
+		 */
+		if (i > 0 && in <= prev_in)
+			continue;
+		prev_in = in;
+		len += scnprintf(curve + len, cap - len, "%u:%u ", in, out);
+	}
+	return len;
+}
+
 static ssize_t wheel_sensitivity_store(struct device *dev, struct device_attribute *attr,
 				      const char *buf, size_t count)
 {
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
 	struct hidpp_dd_ff_data *ff;
-	u32 px, py, prev_in = 0;
-	int sensitivity, i, ret;
-	size_t len = 0;
+	int sensitivity, ret;
+	size_t len;
 	char *curve;
 
 	if (!hidpp)
@@ -8512,48 +8583,12 @@ static ssize_t wheel_sensitivity_store(struct device *dev, struct device_attribu
 		return count;
 	}
 
-	/* 64 "in:out" tokens of at most 12 chars ("65535:65535 ") + NUL */
-	curve = kmalloc(64 * 12 + 1, GFP_KERNEL);
+	curve = kmalloc(HIDPP_DD_SENS_CURVE_BUFSZ, GFP_KERNEL);
 	if (!curve)
 		return -ENOMEM;
 
-	/*
-	 * Sample G Hub's sensitivity Bezier (see the block comment above
-	 * wheel_sensitivity_show) at the wheel's 64 native points and
-	 * render it as the "in:out" pair list the shared 0x80A4 uploader
-	 * parses. Control coordinates scaled to 0-65535:
-	 * P1 = (px, py), P2 = (py, px). Integer math throughout; the
-	 * +125023 / 250047 pair is round-to-nearest by 63^3 (t = i/63).
-	 * Verified against the capture: reproduces G Hub's uploaded
-	 * points for sliders 100/75/25/0 to within 1 LSB.
-	 */
-	px = (u32)(100 - sensitivity) * 65535 / 100;
-	py = (u32)sensitivity * 65535 / 100;
-	for (i = 0; i < 64; i++) {
-		/* Bernstein weights for t = i/63, scaled by 63^3 */
-		u64 w1 = 3ULL * i * (63 - i) * (63 - i);
-		u64 w2 = 3ULL * i * i * (63 - i);
-		u64 w3 = (u64)i * i * i;
-		u32 in = div_u64(w1 * px + w2 * py + w3 * 65535 + 125023,
-				 250047);
-		u32 out = div_u64(w1 * py + w2 * px + w3 * 65535 + 125023,
-				  250047);
-
-		/*
-		 * x(t) is flat around t=0.5 at the slider extremes, so
-		 * two samples can round to the same input value (G Hub
-		 * itself uploads such duplicates at slider 0). The
-		 * uploader demands strictly increasing inputs; dropping
-		 * the duplicate is safe since its resampler linearly
-		 * interpolates across the gap.
-		 */
-		if (i > 0 && in <= prev_in)
-			continue;
-		prev_in = in;
-		len += scnprintf(curve + len, 64 * 12 + 1 - len, "%u:%u ",
-				 in, out);
-	}
-
+	len = hidpp_dd_build_sensitivity_curve(sensitivity, curve,
+					       HIDPP_DD_SENS_CURVE_BUFSZ);
 	ret = hidpp_dd_response_curve_upload(hidpp, ff, 0xff, 0,
 					     ff->idx_response_curve,
 					     curve, len);
