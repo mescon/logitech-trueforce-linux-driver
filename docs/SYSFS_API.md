@@ -796,6 +796,37 @@ echo 0 > wheel_combined_pedals   # separate (default)
 cat wheel_combined_pedals        # 0 or 1
 ```
 
+### wheel_handbrake_curve / wheel_handbrake_sensitivity
+
+Response-curve shaping for the **RS Shifter & Handbrake** in analog handbrake
+mode. The handbrake drives a base axis (`0x80A4` axis 4, evdev `ABS_Z`), and the
+driver shapes it with the same mechanism as the pedals, verified on an RS50.
+
+- `wheel_handbrake_curve` - raw `in:out` points or `reset`, like `wheel_response_curve`.
+- `wheel_handbrake_sensitivity` - the 0-100 G HUB slider (50 = linear).
+
+Both write the one curve the axis holds; last write wins. The handbrake *input*
+itself needs no configuration: connected to the wheel base, it works out of the
+box as `ABS_Z`. These attributes only shape it.
+
+```bash
+echo 70 > wheel_handbrake_sensitivity
+echo "0:0 26000:0 65535:65535" > wheel_handbrake_curve   # 40% dead travel
+echo reset > wheel_handbrake_curve
+```
+
+### RS Shifter & Handbrake input mapping
+
+The accessory rides the wheel's existing report, so its inputs reach evdev with
+no driver change. By its mode switch:
+
+| Mode | Action | evdev |
+|------|--------|-------|
+| Sequential shifter | shift up | `BTN_TOP2` |
+| Sequential shifter | shift down | `BTN_PINKIE` |
+| Digital handbrake | pull past point | `BTN_THUMB2` (face button) |
+| Analog handbrake | pull | `ABS_Z` axis |
+
 ---
 
 ## Compatibility Attributes

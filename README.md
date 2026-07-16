@@ -568,7 +568,9 @@ The `logi-dd` app has a G HUB-style point editor for these curves. See
 The **RS Shifter & Handbrake** accessory works with no extra setup: plugged
 into the wheel base, its inputs ride the wheel's existing report (sequential
 shift = paddle buttons, digital handbrake = a face button, analog handbrake =
-an axis, `ABS_Z` on the RS50).
+an axis, `ABS_Z` on the RS50). The analog handbrake can be shaped like the
+pedals via `wheel_handbrake_curve` / `wheel_handbrake_sensitivity`. See
+`docs/SYSFS_API.md` for the full input mapping.
 
 ### Oversteer Compatibility
 
