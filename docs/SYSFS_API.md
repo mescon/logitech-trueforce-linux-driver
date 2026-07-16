@@ -650,10 +650,27 @@ cat wheel_response_curve
 # 64/64 points loaded (0 = built-in curve)
 ```
 
-**Status: implemented from the 2026-01-30 G Hub capture
-(`desktop_sensitivity`), not yet validated live - use `reset` if
-steering feels wrong after an upload. Whether curves persist across
-power cycles is unknown.**
+**Validated live on an RS50 (2026-07-16).** The wheel applies the curve
+to the steering axis it reports to the PC. Measured with a curve pinning
+raw positions 27000-30000 to 5000: centre reads ~32957 with the built-in
+curve and ~9473 with that curve loaded, matching the uploaded mapping,
+and the reported value holds at exactly 5000 across the whole pinned
+band. Use `reset` if steering feels wrong after an upload.
+
+> **The axis does not change until the wheel next moves.** The wheel
+> sends no HID reports while it is held still, so an upload appears to do
+> nothing: `evtest` and `EVIOCGABS` keep returning the value from before
+> the write. Nudge the wheel and the new curve takes effect at once. This
+> is reporting behaviour, not a failed upload; `cat wheel_response_curve`
+> reads the point count back from the wheel itself and is the honest
+> check. It is easy to mistake this for a dead attribute.
+
+Whether curves persist across power cycles is still untested.
+
+Note the contrast with the pedals, which are a **separate MCU** and do
+**not** apply `0x80A4` to their PC output at all (see
+`docs/PROTOCOL_SPECIFICATION.md` section 5.3). Steering curves work
+because the steering axis belongs to the wheel base itself.
 
 ### wheel_rev_level
 **Access**: Read/Write

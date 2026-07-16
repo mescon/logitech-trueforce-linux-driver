@@ -1,7 +1,7 @@
 # Logitech TrueForce Direct-Drive Wheel Protocol Specification
 
-**Document Version**: 6.7
-**Date**: 2026-07-06
+**Document Version**: 6.8
+**Date**: 2026-07-16
 **Author**: Verified from USB capture analysis
 **Status**: Protocol reference for Linux driver development
 
@@ -734,10 +734,28 @@ analysis; index-to-ID mapping derived from IFeatureSet fn1 pairing in
   slider sweep produced distinct, mutually inverse curves, while sweeps
   of unrelated sliders re-upload a bit-identical curve on every config
   apply. This is exposed as the `wheel_response_curve` (steering)
-  attribute. The pedal sub-device (0x02) exposes the same feature, but the
-  driver does not drive it: a raw-HID capture showed the wheel stores such
-  a curve without applying it to its PC HID output, so the attribute was
-  removed rather than left uploading curves with no effect.
+  attribute.
+
+  **The feature behaves differently on the base than on the pedals, and
+  the difference is the sub-device, not the feature.** On the wheel base
+  (dev `0xff`, axis 0 = steering) the curve **is applied** to the PC HID
+  output: validated live on an RS50 2026-07-16 with a curve pinning raw
+  positions 27000-30000 to 5000, where centre moved from ~32957 to ~9473
+  exactly as the uploaded mapping predicts. On the pedal sub-device
+  (`0x02`) the same feature **stores a curve without applying it**, shown
+  by raw-HID capture, so the pedal attributes were removed rather than
+  left uploading curves with no effect. The pedals are a separate MCU
+  bridged by the base (see 5.3), and its curve never reaches the input
+  report the base assembles. Do not generalise either result to the other
+  axis group.
+
+  A measurement trap worth knowing: the wheel sends no HID reports while
+  it is held still, so an upload does not change what `evtest` /
+  `EVIOCGABS` report until the axis next moves. Testing a curve on a
+  stationary wheel reads a stale pre-upload value and looks exactly like
+  a curve that is being ignored. Move the axis, or read the point count
+  back with `fn1`, which queries the wheel directly.
+
   Unknowns: the second `03` in caps, pedal-unit
   `fn9 [axis]` (called on every G Hub init; possibly axis refresh), and
   whether curves persist across power cycles.
@@ -1635,3 +1653,4 @@ This returns the PAGE ID at each index. G Hub queries indices 0x00 through ~0x1F
 | 6.5 | 2026-07-03 | Renamed from RS50_PROTOCOL_SPECIFICATION.md (covers the whole direct-drive family); driver symbols updated to the hidpp_dd_ prefix; documented that the RS50 keeps its own USB product string in G PRO compatibility mode ("RS50 Base for PlayStation/PC" under PID c272) while a real G PRO reports "PRO Racing Wheel" - the driver uses this to tag log output per model |
 | 6.6 | 2026-07-04 | Cross-pollination from the TF4ALL project (issue #20): the Windows game-FFB path for DD wheels is HID++ 0x8123 fn2 (int16 BE at offset 10-11; catalog index 0x10 native / 0x0e G-PRO-PID); stream-packet bytes 6-9 ("cur") are the motor torque target and override 0x8123 while a session is active, with the window additive on top; AC EVO streams unified cur+audio packets at up to ~1000 pkt/s; texture amplitudes above ~0.5-0.7 FS cross from vibration into steering pull; the REAL G PRO rim has level-based rev lights on 0x807A (SHORT fn2 + LONG fn6, byte 9 = 0-10) with no per-LED RGB - section 9 describes RS50 hardware only |
 | 6.7 | 2026-07-06 | Section 4 corrected and de-duplicated against TRUEFORCE_PROTOCOL.md: byte 10 is the new-sample count that demuxes the shared ep-0x03 packet family (0 = constant force, 4 = unified force+audio), not padding; bytes 6-9 named as the "cur" motor torque target; force rate note updated (games 250-1000 Hz, driver 500 Hz); TRUEFORCE_PROTOCOL.md pointed to as the authoritative framing reference, with a reciprocal link back. Removed the RS50_PROTOCOL_SPECIFICATION.md redirect stub (rename complete). |
+| 6.8 | 2026-07-16 | `0x80A4` steering response curves validated live on an RS50: the wheel base (dev `0xff`, axis 0) DOES apply an uploaded curve to its PC HID output (centre moved ~32957 -> ~9473 under a curve pinning 27000-30000 to 5000), while the pedal sub-device (`0x02`) stores curves without applying them. The difference is the sub-device, not the feature, so neither result generalises to the other axis group. Also recorded the measurement trap: the wheel emits no HID reports while stationary, so an upload does not change the reported axis until it next moves, which reads as a dead attribute. |

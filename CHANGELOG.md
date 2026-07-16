@@ -5,6 +5,26 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+### Documentation
+
+- **`wheel_response_curve` validated live on an RS50.** It had shipped marked
+  "not yet validated live". The wheel base does apply an uploaded steering
+  curve to its PC HID output: with a curve pinning raw positions 27000-30000
+  to 5000, centre moved from ~32957 to ~9473, matching the uploaded mapping.
+  No code change, the attribute worked as written.
+- Documented that the pedals behave the **opposite** way on the same feature:
+  the pedal sub-device stores `0x80A4` curves without applying them, because it
+  is a separate MCU bridged by the base. The difference is the sub-device, not
+  the feature, so neither result generalises to the other axis group.
+- Documented the measurement trap behind both: the wheel sends no HID reports
+  while held still, so an upload does not change the reported axis until it
+  next moves, which looks exactly like an attribute that does nothing.
+- Corrected the `inject_pid` docs, which claimed the parameter was unrelated to
+  `PROTON_ENABLE_HIDRAW`. The hidraw path is the only one where it does
+  anything (#43).
+
 ## 0.14.0 - 2026-07-16
 
 An input-dropping bug fixed, onboard profiles renameable, and the pedal
