@@ -6761,7 +6761,14 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_response_curve = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_pedal_curve = HIDPP_DD_FEATURE_NOT_FOUND;
+	/*
+	 * Re-discovery (e.g. after a replug) drops the wheel's uploaded curves
+	 * back to built-in, so the generator caches must reset to match: 50 =
+	 * linear sensitivity, no deadzone. Otherwise a stale deadzone readback
+	 * would claim shaping the axis no longer has.
+	 */
 	ff->pedal_sens[0] = ff->pedal_sens[1] = ff->pedal_sens[2] = 50;
+	memset(ff->pedal_deadzone, 0, sizeof(ff->pedal_deadzone));
 	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile_notify = HIDPP_DD_FEATURE_NOT_FOUND;

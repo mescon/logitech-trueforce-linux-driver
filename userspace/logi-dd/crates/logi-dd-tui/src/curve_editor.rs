@@ -91,13 +91,19 @@ impl CurveEditor {
             push_pt(&mut out, FULL, FULL);
         }
 
-        // Guarantee the pinned endpoints the uploader demands.
+        // Guarantee the pinned endpoints the uploader demands: it rejects any
+        // curve not starting exactly 0:0 and ending FULL:FULL. Pin both the
+        // inputs and the outputs, defensively, so a stray control point can
+        // never produce a curve the driver refuses.
         if out.first().map(|p| p.0) != Some(0) {
             out.insert(0, (0, 0));
         }
         if out.last().map(|p| p.0) != Some(FULL) {
             push_pt(&mut out, FULL, FULL);
         }
+        out[0].1 = 0;
+        let n = out.len() - 1;
+        out[n].1 = FULL;
         out
     }
 
@@ -152,10 +158,16 @@ impl CurveEditor {
     }
 
     /// Move the selected point's output, clamped so outputs stay non-decreasing.
+    /// The endpoint outputs are pinned (first at 0, last at FULL), like their
+    /// inputs: the driver's uploader requires the curve to start 0:0 and end
+    /// FULL:FULL, and the deadzones handle any dead/saturated ends.
     fn move_output(&mut self, delta: i32) {
         let last = self.pts.len() - 1;
-        let lo = if self.sel == 0 { 0 } else { self.pts[self.sel - 1].1 as i32 };
-        let hi = if self.sel == last { FULL as i32 } else { self.pts[self.sel + 1].1 as i32 };
+        if self.sel == 0 || self.sel == last {
+            return;
+        }
+        let lo = self.pts[self.sel - 1].1 as i32;
+        let hi = self.pts[self.sel + 1].1 as i32;
         let cur = self.pts[self.sel].1 as i32;
         self.pts[self.sel].1 = (cur + delta).clamp(lo, hi) as u16;
     }
@@ -319,6 +331,21 @@ mod tests {
         e.sel = 1;
         e.adjust(-10);
         assert_eq!(e.pts[1].0, FULL, "last input stays FULL");
+    }
+
+    #[test]
+    fn endpoint_outputs_are_pinned_so_compose_stays_valid() {
+        // Regression: raising the first point's output or lowering the last
+        // point's output must not produce a curve the driver rejects.
+        let mut e = linear();
+        e.field = Field::Output;
+        e.sel = 0;
+        e.adjust(5); // try to lift (0,0) -> (0, >0)
+        assert_eq!(e.pts[0].1, 0, "first output stays 0");
+        e.sel = 1;
+        e.adjust(-5); // try to drop (FULL,FULL) -> (FULL, <FULL)
+        assert_eq!(e.pts[1].1, FULL, "last output stays FULL");
+        is_valid(&e.compose());
     }
 
     #[test]
