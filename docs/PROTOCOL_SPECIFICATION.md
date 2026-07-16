@@ -730,17 +730,31 @@ analysis; index-to-ID mapping derived from IFeatureSet fn1 pairing in
   from `(0,0)` to `(0xFFFF,0xFFFF)`), then `fn5` commit (echoes
   `[axis][00][0040]`); `fn6 [axis]` reverts an axis to the built-in
   curve. This is what G Hub's **Sensitivity** slider uploads for the
-  steering axis - verified in `2026-01-30_desktop_sensitivity`, where a
-  slider sweep produced distinct, mutually inverse curves, while sweeps
-  of unrelated sliders re-upload a bit-identical curve on every config
-  apply. This is exposed as the `wheel_response_curve` (steering)
-  attribute. The pedal sub-device (0x02) exposes the same feature, but the
-  driver does not drive it: a raw-HID capture showed the wheel stores such
-  a curve without applying it to its PC HID output, so the attribute was
-  removed rather than left uploading curves with no effect.
+  steering axis, exposed as `wheel_response_curve`; the wheel applies it
+  to the steering axis it reports to the PC.
+
+  The same feature applies curves on three axis groups, each of which the
+  driver drives:
+  - **Steering** (base dev `0xff`, axis 0): `wheel_response_curve` and
+    `wheel_sensitivity`.
+  - **Pedals** (pedal sub-device `0x02`, axes 0/1/2 = throttle/brake/clutch):
+    `wheel_{throttle,brake,clutch}_{curve,sensitivity,deadzone}`. The pedal MCU
+    applies its curve to the axis it reports to the PC (hardware-verified).
+  - **Analog handbrake** (base dev `0xff`, axis 4, HID usage 0x32 = Z, evdev
+    `ABS_Z`): `wheel_handbrake_curve` and `wheel_handbrake_sensitivity`.
+
+  A measurement note: the wheel emits no HID reports while an axis is held
+  still, so an upload does not change the reported axis until it next moves;
+  read the point count back with `fn1` for a motion-free check.
   Unknowns: the second `03` in caps, pedal-unit
   `fn9 [axis]` (called on every G Hub init; possibly axis refresh), and
   whether curves persist across power cycles.
+- **Feature `0x80D0` (combined pedals; on the wheel base dev `0xff`).** A
+  boolean: `fn1` sets it (`10 ff <idx> 1a 01` on / `...00` off), `fn0` reads it
+  back. When on, the wheel merges the throttle and brake into a single centred
+  axis for legacy games. Exposed as `wheel_combined_pedals` (desktop mode only).
+  The same feature also emits the profile-change broadcast events the driver
+  consumes, so its index is shared.
 - **Feature `0x1BC0` (REPORT_HID_USAGE; index `0x09` on RS50, `0x07` on
   G Pro).** On every config apply, G Hub sends `fn2` (empty) followed by
   LONG `fn1` writes of `01 0009 00XX` with XX iterating `{0x0d..0x12,
@@ -835,8 +849,8 @@ Recommended initialization order:
 2. **Claim Interfaces** - Claim interfaces 0, 1, 2
 3. **Feature Discovery** - Use IRoot (index 0x00) to find feature indices
 4. **Read Settings** - Query current rotation, FFB gain
-5. **Start FFB Loop** - Begin sending force commands at ~250-500 Hz
-6. **Periodic Refresh** - Send `05 07` command every ~30 seconds
+5. **Start FFB Loop** - Begin sending force commands (the driver runs a
+   fixed 500 Hz timer)
 
 ---
 
@@ -916,7 +930,7 @@ re-enumerate it.
 | Sequence Field | 2 bytes | 1 byte |
 | Max Rotation | 900° | 2700° |
 | Motor Type | Belt/Gear | Direct drive |
-| FFB Refresh | Not needed | `05 07` periodic |
+| FFB refresh keepalive | Not needed | Not needed |
 | USB Interfaces | Unified HID++ | 3 separate (joystick, HID++, FFB) |
 
 ### Architecture Note
@@ -1562,7 +1576,7 @@ Where `HH LL` is the 16-bit Page ID (e.g., 0x8138 for rotation range).
 
 ### Software ID (SW_ID) Behavior
 
-The HID++ protocol uses a Software ID (SW_ID) in the lower nibble of the function byte to correlate requests with responses. G Hub uses SW_ID `0xB` (11), while the Linux driver uses SW_ID `0x01`.
+The HID++ protocol uses a Software ID (SW_ID) in the lower nibble of the function byte to correlate requests with responses. G Hub uses SW_ID `0xB` (11), while the Linux driver uses SW_ID `0x0a` (it must not use `0x01`: the pedal sub-device silently drops requests carrying sw-id `0x01`).
 
 **Observed RS50 behavior:**
 - G Hub sends: `10 ff 00 0b 81 38 00` (function 0, SW_ID 11)

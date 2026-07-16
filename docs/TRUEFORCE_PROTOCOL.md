@@ -15,7 +15,7 @@ The protocol runs entirely on **USB Interface 2** (endpoints `0x03 OUT` / `0x83 
 
 ## Wheel Coverage
 
-Verified against two wheels this session:
+Verified against two wheels:
 
 | Wheel | PID | Capture | Date |
 |-------|-----|---------|------|
@@ -69,11 +69,11 @@ The sequence counter is rewritten at send time from a session-local counter. Eac
 | `0x07` | Query / handshake |
 | `0x09` | Runtime parameter update |
 | `0x0b` | Unknown (observed from AC EVO's session init with float `1.0`) |
-| `0x0e` | **Operating range, IEEE 754 LE float degrees** (previously misread as a frequency config) |
+| `0x0e` | **Operating range, IEEE 754 LE float degrees** |
 
 ## Initialisation Sequence (sent twice)
 
-G Hub sends a 68-packet init sequence, then sends the **same 68 packets a second time** (sequence counter reset to 1 at the start of each pass) before the main per-sample stream begins. We replicate this two-pass behaviour exactly. Single-pass init did produce audible TRUEFORCE on the bench but was less reliable on cold boot; both the 2026-04-19 G Pro + BeamNG and 2026-04-21 RS50 + ACC captures show the duplicate pass. See commit `0aebf70`.
+G Hub sends a 68-packet init sequence, then sends the **same 68 packets a second time** (sequence counter reset to 1 at the start of each pass) before the main per-sample stream begins. The init must be sent twice: a single pass is unreliable on cold boot. Both the 2026-04-19 G Pro + BeamNG and 2026-04-21 RS50 + ACC captures show the duplicate pass.
 
 The 68 packets are stored verbatim in `userspace/libtrueforce/src/tf_init_data.h`. Breakdown:
 
@@ -81,7 +81,7 @@ The 68 packets are stored verbatim in `userspace/libtrueforce/src/tf_init_data.h
 |---------|------|---------|
 | 1-48 | `0x05` | 48 parameters (indices `0x00`-`0x1d` and `0x2b`-`0x3c`) as IEEE 754 LE floats |
 | 49 | `0x01` | Neutral sample (primes the stream) |
-| 50 | `0x0e` | Operating range = float `2700.0` (the wheel's max range; previously misread as a frequency) |
+| 50 | `0x0e` | Operating range = float `2700.0` (the wheel's max range) |
 | 51 | `0x01` | Neutral sample |
 | 52 | `0x07` | Handshake / query |
 | 53 | `0x01` | Neutral sample |
@@ -144,8 +144,7 @@ byte[60-63]: window[12]
   force path. In G Hub/SDK captures cur usually tracks the newest window
   sample only because the games stream their FFB there - AC EVO carries its
   game force in cur and independent audio in the window of the same packet.
-  (Semantics established by the TF4ALL project's Windows captures, 2026-07-04;
-  earlier revisions of this doc described 6-9 as "the newest sample".)
+  (Semantics from the TF4ALL project's Windows captures.)
 - Bytes 10 (`0x04`) and 11 (`0x0d`) are constants per capture.
 
 Packet cadence in libtrueforce is 250 Hz (4 new samples * 250 Hz = 1000 sample/s effective); the kernel driver's unified stream runs 500 Hz (2 kHz slot rate, 1 kHz unique content). Games vary: ACC captures show 250-500 pkt/s, AC EVO up to ~1000 pkt/s (4 kHz audio) per TF4ALL measurements - the wheel accepts the whole range. If userspace can't keep up the thread repeats the previous window (Windows does the same under input starvation) and the wheel gradually unwinds. If userspace overruns the ring, `logitf_stream_push_s16()` blocks on `ring_space`.
@@ -209,7 +208,7 @@ byte[18-32]: status/counters
 byte[33-63]: zeros
 ```
 
-Responses arrive at the same cadence as the host's packet rate, giving real-time wheel-position feedback for synchronisation. libtrueforce's stream thread consumes them while a stream is active (since 2026-07-02) and exposes the latest snapshot via the Linux-native `logitf_get_stream_feedback()` API (wheel position, device counter, and the still-undecoded motor/status fields); the kernel driver ignores them.
+Responses arrive at the same cadence as the host's packet rate, giving real-time wheel-position feedback for synchronisation. libtrueforce's stream thread consumes them while a stream is active and exposes the latest snapshot via the Linux-native `logitf_get_stream_feedback()` API (wheel position, device counter, and the still-undecoded motor/status fields); the kernel driver ignores them.
 
 ## PID FFB Commands (report `0x10`/`0x11`, for reference)
 

@@ -18,19 +18,26 @@ needs a copy of Logitech G HUB to source files from.
   steps 2-3 - unverified, testers wanted in [issue #27].)
 - **Games, verified end-to-end**: Assetto Corsa Competizione and
   Assetto Corsa EVO under Proton, with simultaneous steering FFB and
-  TrueForce. Other Logitech-SDK sims (Le Mans Ultimate, AMS2, Assetto
-  Corsa, rFactor 2, iRacing) use the same SDK and are expected to
-  behave the same; if you play one, your confirmation is wanted
-  (open an issue, good or bad).
+  TrueForce. Other Logitech-SDK sims (AMS2, Assetto Corsa, rFactor 2,
+  iRacing) use the same SDK and are expected to behave the same; if you
+  play one, your confirmation is wanted (open an issue, good or bad).
+  Sims that drive force feedback through **DirectInput** rather than the
+  SDK (Le Mans Ultimate, for example) need `PROTON_ENABLE_HIDRAW=0`
+  instead of the recipe's `=1`, or they lose force feedback.
 - **Everything else** (native Linux games, non-SDK titles): you get
   the standard force-feedback suite (constant, spring, damper,
   friction, periodic, rumble) with no extra setup beyond step 1.
+- **Tuning**: rotation range, force feedback, LEDs, profiles and the
+  pedal / handbrake response curves are all configurable. The friendliest
+  way is **logi-dd**, a terminal settings app with a G HUB-style curve
+  editor (`userspace/logi-dd/`); the same settings are also plain sysfs
+  files, documented in `docs/SYSFS_API.md`.
 - Honest expectations: see "State of the driver" in the README. Short
-  version: the core works and is verified on real hardware; there is
-  no GUI yet (settings are files you `echo` into, or Oversteer); and
-  install is one command plus a couple of per-game Steam settings
-  nobody can automate. Most distros have a native package (see the table
-  in step 1); everything else installs from source in one command.
+  version: the core works and is verified on real hardware; settings are
+  a terminal app (logi-dd) or sysfs files, not a full GUI; and install is
+  one command plus a couple of per-game Steam settings nobody can automate.
+  Most distros have a native package (see the table in step 1); everything
+  else installs from source in one command.
 
 ## 1. Install the driver
 
@@ -43,13 +50,14 @@ straight to racing if you do not need TrueForce).
 | Distro | Install |
 |---|---|
 | Arch, CachyOS, Manjaro | `paru -S logitech-trueforce-dkms` (AUR; or your AUR helper) |
-| Fedora, Nobara | enable [RPM Fusion free](https://rpmfusion.org) (for `akmods`), then `sudo dnf copr enable mescon/logitech-trueforce && sudo dnf install akmod-logitech-trueforce` |
-| openSUSE Tumbleweed | `sudo zypper addrepo https://download.opensuse.org/repositories/home:/mescon/openSUSE_Tumbleweed/home:mescon.repo && sudo zypper --gpg-auto-import-keys refresh && sudo zypper install logitech-trueforce-dkms` |
 | Debian, Ubuntu, Mint, Pop!_OS | download `logitech-trueforce-dkms_*.deb` from [Releases](https://github.com/mescon/logitech-trueforce-linux-driver/releases) and `sudo apt install ./logitech-trueforce-dkms_*.deb` |
 | Bazzite, Silverblue, Kinoite | atomic; see [section 1a](#1a-atomic--immutable-distros-bazzite-silverblue-kinoite) |
+| Fedora, openSUSE, others | build from source (below) |
 
-The Fedora `akmod` and Debian/openSUSE DKMS packages rebuild the module
-automatically on kernel upgrades. On any of them you can still stage the SDK
+The AUR package and the Debian `.deb` are DKMS-based and rebuild the module
+automatically on kernel upgrades. Native Fedora (COPR akmod) and openSUSE (OBS)
+packages are prepared but not yet published; until they are, install from
+source with the one-command setup below. On any install you can stage the SDK
 DLLs and run `logitech-trueforce-install-shim` (step 2) for TrueForce.
 
 ### From source (any distro)
@@ -225,14 +233,13 @@ For each sim, in Steam:
    this game, so the game sees the wheel directly instead of a
    virtual gamepad.
 
-**(RS50, optional)** you can switch the wheel into "G PRO compatibility"
-mode via its OLED menu, but as of 2026-07-08 this is no longer required:
-the SDK also accepts the RS50's **native** identity (`046d:c276`), verified
-end-to-end in AC EVO (usbmon-confirmed TrueForce stream). Native mode
-additionally unlocks the full 2700 range. Compat mode remains a safe
-fallback if a particular game's SDK build does not recognise the native
-PID; if TrueForce does not engage in native, try compat and please open
-an issue noting the game.
+**(RS50, optional)** the SDK accepts the RS50's **native** identity
+(`046d:c276`), verified end-to-end in AC EVO (usbmon-confirmed TrueForce
+stream), and native mode unlocks the full 2700 range, so you do not need to do
+anything special. If a particular game's SDK build does not recognise the native
+PID, you can switch the wheel into "G PRO compatibility" mode via its OLED menu
+as a fallback; if TrueForce does not engage in native, try compat and please
+open an issue noting the game.
 
 ## 4. Set your steering range, then race
 
