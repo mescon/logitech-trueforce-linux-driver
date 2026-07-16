@@ -624,12 +624,21 @@ under [Verified game support](#verified-game-support); TrueForce in
 SDK-aware sims needs the Proton recipe above. Some games want Steam Input
 enabled as a gamepad, or `SDL_JOYSTICK_DEVICE=/dev/input/eventX`.
 
-**Experimental `inject_pid` module parameter:** for non-SDK games that use
-standard DirectInput PID force feedback (older/indie sims), the driver can
-inject a PID output collection on interface 0 and translate DInput FFB
-into evdev. Off by default (`inject_pid=0`); `=1` dry-runs (logs only,
-no actuation), `=2` actuates (bench-tested only). Unrelated to
-`PROTON_ENABLE_HIDRAW`, and not needed for any SDK-aware sim.
+**Experimental `inject_pid` module parameter:** the wheel's own report
+descriptor carries no PID (force-feedback) collection on any of its three
+interfaces. That costs nothing while Wine is on its SDL/evdev backend, which
+reaches force feedback through evdev, and nothing for SDK-aware sims, whose
+force arrives over the SDK path (which is why ACC and AC EVO keep full FFB
+with `PROTON_ENABLE_HIDRAW=1`). It matters for a sim that drives FFB through
+**DirectInput** rather than the SDK: with `PROTON_ENABLE_HIDRAW=1` Wine talks
+to the wheel over hidraw, looks for a PID collection to send effects to, finds
+none, and the game loses force feedback entirely while its inputs keep
+working. Turning this parameter on makes the driver inject a PID output
+collection on interface 0 and translate the DirectInput FFB writes back into
+evdev. Off by default (`inject_pid=0`); `=1` dry-runs (logs only, no
+actuation), `=2` actuates. Bench-tested only, so hold the wheel loosely and
+start at a low `wheel_strength`. Without it, a DirectInput-FFB sim has to run
+`PROTON_ENABLE_HIDRAW=0`, which costs TrueForce.
 
 ## Technical details
 
