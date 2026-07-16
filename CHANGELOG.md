@@ -8,6 +8,12 @@ the contract is "it works on RS50 and G Pro as listed here".
 ## Unreleased
 
 ### Added
+- **Combined pedals.** `wheel_combined_pedals` (0/1, desktop only) toggles G HUB's
+  legacy throttle+brake axis merge via feature `0x80D0`. Verified on an RS50: on,
+  the two pedals collapse to a single centred axis (`ABS_RX` re-centres, `ABS_RY`
+  goes silent); off restores separate axes. Wired into logi-dd. The **RS Shifter
+  & Handbrake** accessory needs no driver change: its inputs ride the wheel's
+  existing report (analog handbrake = `ABS_Z`, verified).
 - **Hardware pedal shaping.** The pedal unit (HID++ sub-device `0x02`) applies a
   `0x80A4` response curve to each axis it reports to the PC, the same mechanism
   as the steering wheel. Verified on an RS50 for all three pedals with an

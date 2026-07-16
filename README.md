@@ -560,9 +560,15 @@ one curve the axis holds (last write wins):
 | `wheel_<p>_curve` | `reset` or `in:out` pairs | Full response curve (like `wheel_response_curve`) |
 | `wheel_<p>_sensitivity` | 0-100 (50=linear) | G HUB sensitivity slider |
 | `wheel_<p>_deadzone` | `"lower upper"` % | Dead travel at each end (sum ≤ 99) |
+| `wheel_combined_pedals` | 0-1 | Merge throttle+brake into one axis (legacy games; desktop only) |
 
 The `logi-dd` app has a G HUB-style point editor for these curves. See
 `docs/SYSFS_API.md` for the complete reference with examples.
+
+The **RS Shifter & Handbrake** accessory works with no extra setup: plugged
+into the wheel base, its inputs ride the wheel's existing report (sequential
+shift = paddle buttons, digital handbrake = a face button, analog handbrake =
+an axis, `ABS_Z` on the RS50).
 
 ### Oversteer Compatibility
 

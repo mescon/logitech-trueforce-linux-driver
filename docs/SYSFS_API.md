@@ -779,6 +779,23 @@ echo "8 5" > wheel_clutch_deadzone
 > with a custom shape, author the whole thing as a single `_curve` upload (this
 > is what the logi-dd editor does).
 
+### wheel_combined_pedals
+**Access**: Read/Write, **Values**: `0` (separate) / `1` (combined)
+**Mode**: desktop only
+
+G HUB's "combined pedals" toggle (feature `0x80D0`). When on, the wheel merges
+the throttle and brake into a single centred axis for legacy games that expect
+one pedal axis: released = centre, one pedal drives it up, the other down. The
+brake's own axis goes silent. Off for any modern sim. Verified on an RS50: with
+it on, `ABS_RX` re-centres to ~32768 and `ABS_RY` (the separate brake axis)
+stops reporting.
+
+```bash
+echo 1 > wheel_combined_pedals   # merge (legacy games)
+echo 0 > wheel_combined_pedals   # separate (default)
+cat wheel_combined_pedals        # 0 or 1
+```
+
 ---
 
 ## Compatibility Attributes
