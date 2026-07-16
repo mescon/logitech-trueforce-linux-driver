@@ -5,6 +5,27 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+### Added
+- **Hardware pedal shaping.** The pedal unit (HID++ sub-device `0x02`) applies a
+  `0x80A4` response curve to each axis it reports to the PC, the same mechanism
+  as the steering wheel. Verified on an RS50 for all three pedals with an
+  artifact-proof test (a two-plateau throttle curve, and step curves on the
+  load-cell brake and clutch, each producing a bimodal axis a linear pedal
+  cannot). Each pedal `<p>` in {throttle, brake, clutch} gains three attributes,
+  all writing the single curve the axis holds (last write wins):
+  - `wheel_<p>_curve` - raw `in:out` points or `reset`, like `wheel_response_curve`.
+  - `wheel_<p>_sensitivity` - the 0-100 G HUB slider (50 = linear).
+  - `wheel_<p>_deadzone` - `"lower upper"` percent dead travel (sum <= 99).
+
+  This corrects the v0.14.0 removal, which rested on a single untested capture;
+  the pedal MCU does apply the curve, it was a measurement error.
+- **logi-dd curve editor.** A G HUB-style modal point editor for the pedal and
+  steering curves: edit control points (input/output percent) plus deadzones
+  with a live ASCII preview, then upload. Plus registry entries for the nine new
+  pedal attributes.
+
 ## 0.14.0 - 2026-07-16
 
 An input-dropping bug fixed, onboard profiles renameable, and the pedal

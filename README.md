@@ -550,11 +550,19 @@ echo 1 | sudo tee $WHEEL_DEV/wheel_led_apply
 
 **Pedals:**
 
-The throttle, brake and clutch are reported exactly as the wheel sends them.
-The driver does not shape them, so there are no pedal curve, deadzone or
-combined-pedals attributes - see `docs/SYSFS_API.md`.
+The pedal unit applies a hardware response curve to each axis it reports (the
+same `0x80A4` mechanism as the steering wheel; verified on an RS50). Each pedal
+`<p>` in {`throttle`, `brake`, `clutch`} has three attributes, all writing the
+one curve the axis holds (last write wins):
 
-See `docs/SYSFS_API.md` for complete API documentation with examples.
+| Attribute | Values | Description |
+|-----------|--------|-------------|
+| `wheel_<p>_curve` | `reset` or `in:out` pairs | Full response curve (like `wheel_response_curve`) |
+| `wheel_<p>_sensitivity` | 0-100 (50=linear) | G HUB sensitivity slider |
+| `wheel_<p>_deadzone` | `"lower upper"` % | Dead travel at each end (sum ≤ 99) |
+
+The `logi-dd` app has a G HUB-style point editor for these curves. See
+`docs/SYSFS_API.md` for the complete reference with examples.
 
 ### Oversteer Compatibility
 
