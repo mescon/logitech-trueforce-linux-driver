@@ -4477,7 +4477,7 @@ struct hidpp_dd_ff_data {
 	u8 rev_target;			/* newest requested level, WRITE_ONCE/READ_ONCE */
 	unsigned long rev_last_write;	/* jiffies of last level-pair attempt (rev_lock) */
 	u8 idx_profile;			/* Feature index for Profile switching */
-	u8 idx_profile_notify;		/* Feature index for profile-change broadcasts (0x80D0) */
+	u8 idx_profile_notify;		/* Feature index for 0x80D0 (dual-purpose: profile-change broadcasts AND the combined-pedals get/set fn0/fn1) */
 	u8 idx_sync;			/* Feature index for sync/prepare (0x1BC0) */
 	u8 idx_calibrate;		/* Feature index for centre calibration (G Pro sub-device 0x05, page 0x812C) */
 	u8 calibrate_dev_idx;		/* HID++ device index used for calibrate sends (0x05 on G Pro) */
@@ -11047,6 +11047,75 @@ static DEVICE_ATTR(wheel_response_curve, 0664, wheel_response_curve_show,
 		   wheel_response_curve_store);
 
 /*
+ * Combined pedals (feature 0x80D0 on the wheel base). G Hub's "Kombinerade
+ * pedaler" toggle: it merges the throttle and brake into a single split axis
+ * for legacy games that expect one pedal axis. Off for modern sims. Protocol
+ * from the 2026-07-14 capture: fn1 sets the boolean (`10 ff 0e 1a 01` on /
+ * `...00` off); fn0 reads it back. Desktop mode only, like the other host-side
+ * transforms.
+ */
+static ssize_t wheel_combined_pedals_show(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_report response;
+	int ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff || atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_profile_notify == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	memset(&response, 0, sizeof(response));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile_notify,
+					  0x00 /* fn0 get */, NULL, 0, &response);
+	if (ret)
+		return hidpp_errno(hid, ret, "read combined pedals");
+	return sysfs_emit(buf, "%u\n", response.fap.params[0] ? 1 : 0);
+}
+
+static ssize_t wheel_combined_pedals_store(struct device *dev,
+					   struct device_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_report response;
+	bool on;
+	u8 params[1];
+	int ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff || atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_profile_notify == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+	if (kstrtobool(buf, &on))
+		return -EINVAL;
+
+	params[0] = on ? 1 : 0;
+	memset(&response, 0, sizeof(response));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile_notify,
+					  0x10 /* fn1 set */, params, 1,
+					  &response);
+	if (ret)
+		return hidpp_errno(hid, ret, "set combined pedals");
+	dd_info(hid, "Combined pedals %s\n", on ? "enabled" : "disabled");
+	return count;
+}
+static DEVICE_ATTR(wheel_combined_pedals, 0664, wheel_combined_pedals_show,
+		   wheel_combined_pedals_store);
+
+/*
  * Pedal shaping: 0x80A4 response curves on the pedal sub-device (0x02), axes
  * 0=throttle, 1=brake, 2=clutch. Hardware-verified 2026-07-16 that the pedal
  * MCU applies an uploaded curve to its PC HID output (double-plateau test).
@@ -11516,6 +11585,7 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_profile_names.attr,
 	&dev_attr_wheel_range_restore.attr,
 	&dev_attr_wheel_response_curve.attr,
+	&dev_attr_wheel_combined_pedals.attr,
 	&dev_attr_wheel_throttle_curve.attr,
 	&dev_attr_wheel_throttle_sensitivity.attr,
 	&dev_attr_wheel_throttle_deadzone.attr,
