@@ -32,6 +32,8 @@ pub enum Value {
     Text(String),
     Rgb(Vec<Color>),
     Curve(Vec<(u16, u16)>),
+    /// A `(lower, upper)` percent pair, e.g. a pedal deadzone.
+    Pair(u8, u8),
     Trigger,
     /// Every slot name, as read back (index 0 = slot 1).
     SlotNames(Vec<String>),

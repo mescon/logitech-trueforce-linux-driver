@@ -28,9 +28,20 @@ pub const REGISTRY: &[SettingSpec] = &[
     SettingSpec { attr: "wheel_trueforce", label: "TrueForce intensity", help: "Audio-haptic texture intensity (0-100%).", category: TrueForce, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_texture_route", label: "Texture routing", help: "Route rumble/texture to TrueForce (tf) or steering (kf).", category: TrueForce, kind: Kind::Enum(&["kf", "tf"]), access: ReadWrite, mode_req: Any },
     // --- Pedals ---
-    // The driver reports pedals raw and exposes no curve/deadzone/combined
-    // attributes, so there is nothing else to list here.
+    // Each pedal has three generators that all write the one 0x80A4 curve the
+    // pedal MCU applies to its axis (hardware-verified 2026-07-16). Last write
+    // wins; the curve attr reads back the true device state. mode_req Any: the
+    // driver's pedal stores do not gate on mode.
     SettingSpec { attr: "wheel_brake_force", label: "Brake force", help: "Load-cell brake threshold (0-100%). Onboard mode only.", category: Pedals, kind: PCT, access: ReadWrite, mode_req: OnboardOnly },
+    SettingSpec { attr: "wheel_throttle_curve", label: "Throttle curve", help: "Full throttle response curve. 'reset' for built-in.", category: Pedals, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_throttle_sensitivity", label: "Throttle sensitivity", help: "Throttle response (0-100, 50=linear).", category: Pedals, kind: PCT, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_throttle_deadzone", label: "Throttle deadzone", help: "Dead travel 'lower upper' percent (sum <= 99).", category: Pedals, kind: Kind::Pair { max: 99 }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_brake_curve", label: "Brake curve", help: "Full brake response curve. 'reset' for built-in.", category: Pedals, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_brake_sensitivity", label: "Brake sensitivity", help: "Brake response (0-100, 50=linear).", category: Pedals, kind: PCT, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_brake_deadzone", label: "Brake deadzone", help: "Dead travel 'lower upper' percent (sum <= 99).", category: Pedals, kind: Kind::Pair { max: 99 }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_clutch_curve", label: "Clutch curve", help: "Full clutch response curve. 'reset' for built-in.", category: Pedals, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_clutch_sensitivity", label: "Clutch sensitivity", help: "Clutch response (0-100, 50=linear).", category: Pedals, kind: PCT, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_clutch_deadzone", label: "Clutch deadzone", help: "Dead travel 'lower upper' percent (sum <= 99).", category: Pedals, kind: Kind::Pair { max: 99 }, access: ReadWrite, mode_req: Any },
     // --- LEDs (RS50 LIGHTSYNC) ---
     SettingSpec { attr: "wheel_led_brightness", label: "LED brightness", help: "Global LED brightness (0-100%).", category: Leds, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_led_effect", label: "LED effect", help: "Animation mode (1-9).", category: Leds, kind: Kind::IntRange { min: 1, max: 9, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
@@ -68,6 +79,7 @@ pub(crate) fn sample_raw(s: &SettingSpec) -> String {
         Kind::TextField { .. } => "RACE".into(),
         Kind::RgbStrip { leds } => vec!["000000"; leds].join(" "),
         Kind::Curve => "reset".into(),
+        Kind::Pair { .. } => "0 0".into(),
         Kind::Action => "1".into(),
         Kind::SlotText { slots, .. } => {
             (1..=slots).map(|i| format!("{i}: NAME{i}")).collect::<Vec<_>>().join("\n")
