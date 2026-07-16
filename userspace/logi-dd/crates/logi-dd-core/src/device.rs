@@ -56,13 +56,19 @@ impl<S: SysfsIo> Device<S> {
         };
         Ok(DeviceInfo {
             serial: read("wheel_serial"),
-            firmware: read("wheel_firmware"),
+            // The driver returns "base: ...\nmotor: ..."; keep it on one line.
+            firmware: read("wheel_firmware").replace('\n', " / "),
             mode: self.current_mode()?,
         })
     }
 
     pub fn read(&self, attr: &str) -> Result<Value, Error> {
         let spec = Self::spec(attr).ok_or(Error::Invalid)?;
+        // Action attributes are write-only triggers; reading the sysfs file
+        // returns EACCES. Report the trigger value instead of a permission error.
+        if spec.access == Access::Action {
+            return Ok(Value::Trigger);
+        }
         let raw = self.io.read(attr).map_err(|e| map_io_error(&e, attr))?;
         // wheel_mode / wheel_texture_route report words; map to the enum index.
         if let Kind::Enum(variants) = spec.kind {
@@ -141,6 +147,29 @@ mod tests {
     fn texture_route_word_parses_to_enum() {
         // driver reports "tf"; registry models it as Enum index 1
         assert_eq!(dev().read("wheel_texture_route").unwrap(), Value::Enum(1));
+    }
+
+    #[test]
+    fn action_attrs_read_as_trigger_not_permission_error() {
+        // wheel_led_apply / wheel_calibrate_here are write-only (0220); reading
+        // the file gives EACCES. read() must report the trigger, not the error.
+        let fs = FakeSysfs::new();
+        fs.set_errno("wheel_led_apply", 13); // EACCES if it tried to read
+        let d = Device::with_io(fs);
+        assert_eq!(d.read("wheel_led_apply").unwrap(), Value::Trigger);
+        // even with the file entirely absent
+        assert_eq!(d.read("wheel_calibrate_here").unwrap(), Value::Trigger);
+    }
+
+    #[test]
+    fn firmware_info_is_single_line() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_serial", "X");
+        fs.set("wheel_firmware", "base: U1 65.04.B0039\nmotor: SC 02.01.B0042\n");
+        let info = Device::with_io(fs).info().unwrap();
+        assert!(!info.firmware.contains('\n'), "firmware: {:?}", info.firmware);
+        assert_eq!(info.firmware, "base: U1 65.04.B0039 / motor: SC 02.01.B0042");
     }
 
     #[test]

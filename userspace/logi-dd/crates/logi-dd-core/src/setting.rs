@@ -3,38 +3,33 @@ use crate::kind::Kind;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     Ffb,
-    Rotation,
-    Sensitivity,
-    TrueForce,
+    Steering,
     Pedals,
     Leds,
     Profiles,
-    Calibration,
     Info,
 }
 
 impl Category {
     pub const ALL: &'static [Category] = &[
         Category::Ffb,
-        Category::Rotation,
-        Category::Sensitivity,
-        Category::TrueForce,
+        Category::Steering,
         Category::Pedals,
         Category::Leds,
         Category::Profiles,
-        Category::Calibration,
         Category::Info,
     ];
     pub fn label(&self) -> &'static str {
         match self {
+            // Ffb folds in TrueForce (a haptic layer of the same force path).
             Category::Ffb => "Force feedback",
-            Category::Rotation => "Rotation",
-            Category::Sensitivity => "Sensitivity",
-            Category::TrueForce => "TrueForce",
+            // Steering folds in the old Rotation, Sensitivity and Calibration:
+            // range, response curve, sensitivity and centre calibration are all
+            // the one steering axis.
+            Category::Steering => "Steering",
             Category::Pedals => "Pedals",
             Category::Leds => "LEDs",
             Category::Profiles => "Profiles / mode",
-            Category::Calibration => "Calibration",
             Category::Info => "Info",
         }
     }

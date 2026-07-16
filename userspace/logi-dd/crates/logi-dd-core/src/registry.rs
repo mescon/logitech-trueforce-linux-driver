@@ -16,17 +16,17 @@ pub const REGISTRY: &[SettingSpec] = &[
     SettingSpec { attr: "wheel_spring_damping", label: "Spring damping", help: "Anti-oscillation damping on the emulated spring (0-100%).", category: Ffb, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_ffb_constant_sign", label: "Invert constant force", help: "Flip the sign of constant forces (Wine/native fix).", category: Ffb, kind: Kind::Toggle { off: "normal", on: "inverted" }, access: ReadWrite, mode_req: Any },
     // --- Rotation ---
-    SettingSpec { attr: "wheel_range", label: "Rotation range", help: "Steering rotation (90-2700 deg).", category: Rotation, kind: Kind::IntRange { min: 90, max: 2700, step: 10, unit: "deg" }, access: ReadWrite, mode_req: Any },
-    SettingSpec { attr: "wheel_range_restore", label: "Auto range restore", help: "Auto-recover from a launch-time 90-degree reset.", category: Rotation, kind: Kind::Toggle { off: "off", on: "on" }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_range", label: "Rotation range", help: "Steering rotation (90-2700 deg).", category: Steering, kind: Kind::IntRange { min: 90, max: 2700, step: 10, unit: "deg" }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_range_restore", label: "Auto range restore", help: "Auto-recover from a launch-time 90-degree reset.", category: Steering, kind: Kind::Toggle { off: "off", on: "on" }, access: ReadWrite, mode_req: Any },
     // --- Sensitivity ---
-    SettingSpec { attr: "wheel_sensitivity", label: "Sensitivity", help: "Steering response (0-100%, 50=built-in). Desktop mode only.", category: Sensitivity, kind: PCT, access: ReadWrite, mode_req: DesktopOnly },
+    SettingSpec { attr: "wheel_sensitivity", label: "Sensitivity", help: "Steering response (0-100%, 50=built-in). Desktop mode only.", category: Steering, kind: PCT, access: ReadWrite, mode_req: DesktopOnly },
     // Any, not DesktopOnly: unlike wheel_sensitivity, the driver's
     // wheel_response_curve_store does not gate on mode (no -EPERM), so a
     // DesktopOnly pre-check would falsely reject onboard-mode writes.
-    SettingSpec { attr: "wheel_response_curve", label: "Response curve", help: "Full steering response curve. 'reset' for built-in.", category: Sensitivity, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_response_curve", label: "Response curve", help: "Full steering response curve. 'reset' for built-in.", category: Steering, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
     // --- TrueForce ---
-    SettingSpec { attr: "wheel_trueforce", label: "TrueForce intensity", help: "Audio-haptic texture intensity (0-100%).", category: TrueForce, kind: PCT, access: ReadWrite, mode_req: Any },
-    SettingSpec { attr: "wheel_texture_route", label: "Texture routing", help: "Route rumble/texture to TrueForce (tf) or steering (kf).", category: TrueForce, kind: Kind::Enum(&["kf", "tf"]), access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_trueforce", label: "TrueForce intensity", help: "Audio-haptic texture intensity (0-100%).", category: Ffb, kind: PCT, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_texture_route", label: "Texture routing", help: "Route rumble/texture to TrueForce (tf) or steering (kf).", category: Ffb, kind: Kind::Enum(&["kf", "tf"]), access: ReadWrite, mode_req: Any },
     // --- Pedals ---
     // Each pedal has three generators that all write the one 0x80A4 curve the
     // pedal MCU applies to its axis (hardware-verified 2026-07-16). Last write
@@ -61,7 +61,7 @@ pub const REGISTRY: &[SettingSpec] = &[
     // uppercased.
     SettingSpec { attr: "wheel_profile_names", label: "Profile names", help: "Rename an onboard slot: left/right picks the slot, type a name (1-9 chars, stored uppercase).", category: Profiles, kind: Kind::SlotText { slots: 5, max_len: 9 }, access: ReadWrite, mode_req: Any },
     // --- Calibration ---
-    SettingSpec { attr: "wheel_calibrate_here", label: "Calibrate centre here", help: "Adopt the current physical position as centre.", category: Calibration, kind: Kind::Action, access: Action, mode_req: Any },
+    SettingSpec { attr: "wheel_calibrate_here", label: "Calibrate centre here", help: "Adopt the current physical position as centre.", category: Steering, kind: Kind::Action, access: Action, mode_req: Any },
     // --- Info ---
     SettingSpec { attr: "wheel_serial", label: "Serial", help: "Device serial number.", category: Info, kind: Kind::TextField { max_len: 32 }, access: ReadOnly, mode_req: Any },
     SettingSpec { attr: "wheel_firmware", label: "Firmware", help: "Base and motor firmware versions.", category: Info, kind: Kind::TextField { max_len: 128 }, access: ReadOnly, mode_req: Any },

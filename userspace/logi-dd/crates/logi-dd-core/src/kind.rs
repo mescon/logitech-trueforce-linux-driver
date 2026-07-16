@@ -179,7 +179,9 @@ impl Kind {
             (Kind::Toggle { off, on }, Value::Bool(b)) => {
                 (if *b { *on } else { *off }).to_string()
             }
-            (Kind::TextField { .. }, Value::Text(s)) => s.clone(),
+            // Collapse newlines so a multi-line value (e.g. the two-part
+            // firmware string) renders on the single line the TUI gives it.
+            (Kind::TextField { .. }, Value::Text(s)) => s.replace('\n', " / "),
             (Kind::RgbStrip { .. }, Value::Rgb(cs)) => format!("{} LEDs", cs.len()),
             (Kind::Curve, Value::Curve(p)) if p.is_empty() => "built-in".into(),
             (Kind::Curve, Value::Curve(p)) => format!("{} points", p.len()),
