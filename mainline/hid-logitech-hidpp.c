@@ -4235,6 +4235,7 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_PAGE_FILTER		0x8140	/* FFB Filter */
 #define HIDPP_DD_PAGE_RESPONSE_CURVE	0x80A4	/* Per-axis 64-point response curves */
 #define HIDPP_DD_PEDAL_DEV_IDX		0x02	/* HID++ sub-device index of the pedal unit (0x80A4 axis curves) */
+#define HIDPP_DD_HANDBRAKE_AXIS		4	/* 0x80A4 axis on the base (dev 0xff) for the RS handbrake (HID usage 0x32 = Z) */
 #define HIDPP_DD_PAGE_CALIBRATE		0x812C	/* Centre calibration (G Pro sub-device 0x05) */
 #define HIDPP_DD_PAGE_SYNC			0x1BC0	/* Unknown sync/prepare feature */
 
@@ -4477,7 +4478,7 @@ struct hidpp_dd_ff_data {
 	u8 rev_target;			/* newest requested level, WRITE_ONCE/READ_ONCE */
 	unsigned long rev_last_write;	/* jiffies of last level-pair attempt (rev_lock) */
 	u8 idx_profile;			/* Feature index for Profile switching */
-	u8 idx_profile_notify;		/* Feature index for profile-change broadcasts (0x80D0) */
+	u8 idx_profile_notify;		/* Feature index for 0x80D0 (dual-purpose: profile-change broadcasts AND the combined-pedals get/set fn0/fn1) */
 	u8 idx_sync;			/* Feature index for sync/prepare (0x1BC0) */
 	u8 idx_calibrate;		/* Feature index for centre calibration (G Pro sub-device 0x05, page 0x812C) */
 	u8 calibrate_dev_idx;		/* HID++ device index used for calibrate sends (0x05 on G Pro) */
@@ -4515,6 +4516,7 @@ struct hidpp_dd_ff_data {
 	 */
 	u8 pedal_sens[3];
 	u8 pedal_deadzone[3][2];		/* [axis][0]=lower %, [axis][1]=upper % */
+	u8 handbrake_sens;		/* Last handbrake sensitivity written (0-100, 50=linear); base 0x80A4 axis 4 */
 
 	/* Wheel settings (sysfs configurable) */
 	u16 range;			/* rotation range in degrees */
@@ -6768,6 +6770,7 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	 * would claim shaping the axis no longer has.
 	 */
 	ff->pedal_sens[0] = ff->pedal_sens[1] = ff->pedal_sens[2] = 50;
+	ff->handbrake_sens = 50;
 	memset(ff->pedal_deadzone, 0, sizeof(ff->pedal_deadzone));
 	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_profile = HIDPP_DD_FEATURE_NOT_FOUND;
@@ -11047,6 +11050,215 @@ static DEVICE_ATTR(wheel_response_curve, 0664, wheel_response_curve_show,
 		   wheel_response_curve_store);
 
 /*
+ * Combined pedals (feature 0x80D0 on the wheel base). G Hub's "Kombinerade
+ * pedaler" toggle: it merges the throttle and brake into a single split axis
+ * for legacy games that expect one pedal axis. Off for modern sims. Protocol
+ * from the 2026-07-14 capture: fn1 sets the boolean (`10 ff 0e 1a 01` on /
+ * `...00` off); fn0 reads it back. Desktop mode only, like the other host-side
+ * transforms.
+ */
+static ssize_t wheel_combined_pedals_show(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_report response;
+	int ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff || atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_profile_notify == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	memset(&response, 0, sizeof(response));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile_notify,
+					  0x00 /* fn0 get */, NULL, 0, &response);
+	if (ret)
+		return hidpp_errno(hid, ret, "read combined pedals");
+	return sysfs_emit(buf, "%u\n", response.fap.params[0] ? 1 : 0);
+}
+
+static ssize_t wheel_combined_pedals_store(struct device *dev,
+					   struct device_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_report response;
+	bool on;
+	u8 params[1];
+	int ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff || atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_profile_notify == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+	if (kstrtobool(buf, &on))
+		return -EINVAL;
+
+	params[0] = on ? 1 : 0;
+	memset(&response, 0, sizeof(response));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_profile_notify,
+					  0x10 /* fn1 set */, params, 1,
+					  &response);
+	if (ret)
+		return hidpp_errno(hid, ret, "set combined pedals");
+	dd_info(hid, "Combined pedals %s\n", on ? "enabled" : "disabled");
+	return count;
+}
+static DEVICE_ATTR(wheel_combined_pedals, 0664, wheel_combined_pedals_show,
+		   wheel_combined_pedals_store);
+
+/*
+ * Handbrake shaping. The RS Shifter & Handbrake, in analog handbrake mode,
+ * drives a base axis (0x80A4 axis 4, HID usage 0x32 = Z, evdev ABS_Z). Unlike
+ * the pedals (which shape on the pedal MCU), the handbrake shapes on the wheel
+ * base, verified 2026-07-16. Two generators, both writing the one curve the
+ * axis holds: _curve (raw points) and _sensitivity (the G Hub slider). The
+ * input itself needs no driver help; these only shape it.
+ */
+static ssize_t wheel_handbrake_curve_show(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_report response;
+	u8 params[1] = { HIDPP_DD_HANDBRAKE_AXIS };
+	u16 loaded, max;
+	int ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff || atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_response_curve == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	memset(&response, 0, sizeof(response));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_response_curve,
+					  0x10 /* fn1 axis info */, params, 1,
+					  &response);
+	if (ret)
+		return hidpp_errno(hid, ret, "read handbrake curve info");
+	loaded = get_unaligned_be16(&response.fap.params[6]);
+	max = get_unaligned_be16(&response.fap.params[8]);
+	return sysfs_emit(buf, "%u/%u points loaded (0 = built-in curve)\n",
+			  loaded, max);
+}
+
+static ssize_t wheel_handbrake_curve_store(struct device *dev,
+					   struct device_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	int ret;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff || atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_response_curve == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	if (sysfs_streq(buf, "reset")) {
+		ret = hidpp_dd_response_curve_revert(hidpp, 0xff,
+						     HIDPP_DD_HANDBRAKE_AXIS,
+						     ff->idx_response_curve);
+		return ret ? hidpp_errno(hid, ret, "reset handbrake curve") : count;
+	}
+	ret = hidpp_dd_response_curve_upload(hidpp, ff, 0xff,
+					     HIDPP_DD_HANDBRAKE_AXIS,
+					     ff->idx_response_curve, buf, count);
+	return ret < 0 ? ret : count;
+}
+static DEVICE_ATTR(wheel_handbrake_curve, 0664, wheel_handbrake_curve_show,
+		   wheel_handbrake_curve_store);
+
+static ssize_t wheel_handbrake_sensitivity_show(struct device *dev,
+						struct device_attribute *attr,
+						char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff || atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_response_curve == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+	return sysfs_emit(buf, "%u\n", ff->handbrake_sens);
+}
+
+static ssize_t wheel_handbrake_sensitivity_store(struct device *dev,
+						 struct device_attribute *attr,
+						 const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	int sensitivity, ret;
+	size_t len;
+	char *curve;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff || atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	if (ff->idx_response_curve == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+	ret = kstrtoint(buf, 10, &sensitivity);
+	if (ret)
+		return ret;
+	sensitivity = clamp(sensitivity, 0, 100);
+
+	if (sensitivity == 50) {
+		ret = hidpp_dd_response_curve_revert(hidpp, 0xff,
+						     HIDPP_DD_HANDBRAKE_AXIS,
+						     ff->idx_response_curve);
+		if (ret)
+			return hidpp_errno(hid, ret, "set handbrake sensitivity");
+		ff->handbrake_sens = 50;
+		return count;
+	}
+
+	curve = kmalloc(HIDPP_DD_SENS_CURVE_BUFSZ, GFP_KERNEL);
+	if (!curve)
+		return -ENOMEM;
+	len = hidpp_dd_build_sensitivity_curve(sensitivity, curve,
+					       HIDPP_DD_SENS_CURVE_BUFSZ);
+	ret = hidpp_dd_response_curve_upload(hidpp, ff, 0xff,
+					     HIDPP_DD_HANDBRAKE_AXIS,
+					     ff->idx_response_curve, curve, len);
+	kfree(curve);
+	if (ret)
+		return ret;
+	ff->handbrake_sens = sensitivity;
+	return count;
+}
+static DEVICE_ATTR(wheel_handbrake_sensitivity, 0664,
+		   wheel_handbrake_sensitivity_show,
+		   wheel_handbrake_sensitivity_store);
+
+/*
  * Pedal shaping: 0x80A4 response curves on the pedal sub-device (0x02), axes
  * 0=throttle, 1=brake, 2=clutch. Hardware-verified 2026-07-16 that the pedal
  * MCU applies an uploaded curve to its PC HID output (double-plateau test).
@@ -11516,6 +11728,9 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_profile_names.attr,
 	&dev_attr_wheel_range_restore.attr,
 	&dev_attr_wheel_response_curve.attr,
+	&dev_attr_wheel_combined_pedals.attr,
+	&dev_attr_wheel_handbrake_curve.attr,
+	&dev_attr_wheel_handbrake_sensitivity.attr,
 	&dev_attr_wheel_throttle_curve.attr,
 	&dev_attr_wheel_throttle_sensitivity.attr,
 	&dev_attr_wheel_throttle_deadzone.attr,

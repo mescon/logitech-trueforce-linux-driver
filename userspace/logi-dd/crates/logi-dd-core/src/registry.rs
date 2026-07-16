@@ -33,6 +33,12 @@ pub const REGISTRY: &[SettingSpec] = &[
     // wins; the curve attr reads back the true device state. mode_req Any: the
     // driver's pedal stores do not gate on mode.
     SettingSpec { attr: "wheel_brake_force", label: "Brake force", help: "Load-cell brake threshold (0-100%). Onboard mode only.", category: Pedals, kind: PCT, access: ReadWrite, mode_req: OnboardOnly },
+    SettingSpec { attr: "wheel_combined_pedals", label: "Combined pedals", help: "Merge throttle+brake into one axis for legacy games. Off for modern sims. Desktop mode only.", category: Pedals, kind: Kind::Toggle { off: "separate", on: "combined" }, access: ReadWrite, mode_req: DesktopOnly },
+    // RS Shifter & Handbrake accessory (analog handbrake axis shaping). Only
+    // present when the handbrake is connected; the row reads unavailable
+    // otherwise. Same 0x80A4 curve type as the pedals, on the wheel base.
+    SettingSpec { attr: "wheel_handbrake_curve", label: "Handbrake curve", help: "Full handbrake response curve. 'reset' for built-in.", category: Pedals, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_handbrake_sensitivity", label: "Handbrake sensitivity", help: "Handbrake response (0-100, 50=linear).", category: Pedals, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_throttle_curve", label: "Throttle curve", help: "Full throttle response curve. 'reset' for built-in.", category: Pedals, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_throttle_sensitivity", label: "Throttle sensitivity", help: "Throttle response (0-100, 50=linear).", category: Pedals, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_throttle_deadzone", label: "Throttle deadzone", help: "Dead travel 'lower upper' percent (sum <= 99).", category: Pedals, kind: Kind::Pair { max: 99 }, access: ReadWrite, mode_req: Any },

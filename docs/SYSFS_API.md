@@ -779,6 +779,54 @@ echo "8 5" > wheel_clutch_deadzone
 > with a custom shape, author the whole thing as a single `_curve` upload (this
 > is what the logi-dd editor does).
 
+### wheel_combined_pedals
+**Access**: Read/Write, **Values**: `0` (separate) / `1` (combined)
+**Mode**: desktop only
+
+G HUB's "combined pedals" toggle (feature `0x80D0`). When on, the wheel merges
+the throttle and brake into a single centred axis for legacy games that expect
+one pedal axis: released = centre, one pedal drives it up, the other down. The
+brake's own axis goes silent. Off for any modern sim. Verified on an RS50: with
+it on, `ABS_RX` re-centres to ~32768 and `ABS_RY` (the separate brake axis)
+stops reporting.
+
+```bash
+echo 1 > wheel_combined_pedals   # merge (legacy games)
+echo 0 > wheel_combined_pedals   # separate (default)
+cat wheel_combined_pedals        # 0 or 1
+```
+
+### wheel_handbrake_curve / wheel_handbrake_sensitivity
+
+Response-curve shaping for the **RS Shifter & Handbrake** in analog handbrake
+mode. The handbrake drives a base axis (`0x80A4` axis 4, evdev `ABS_Z`), and the
+driver shapes it with the same mechanism as the pedals, verified on an RS50.
+
+- `wheel_handbrake_curve` - raw `in:out` points or `reset`, like `wheel_response_curve`.
+- `wheel_handbrake_sensitivity` - the 0-100 G HUB slider (50 = linear).
+
+Both write the one curve the axis holds; last write wins. The handbrake *input*
+itself needs no configuration: connected to the wheel base, it works out of the
+box as `ABS_Z`. These attributes only shape it.
+
+```bash
+echo 70 > wheel_handbrake_sensitivity
+echo "0:0 26000:0 65535:65535" > wheel_handbrake_curve   # 40% dead travel
+echo reset > wheel_handbrake_curve
+```
+
+### RS Shifter & Handbrake input mapping
+
+The accessory rides the wheel's existing report, so its inputs reach evdev with
+no driver change. By its mode switch:
+
+| Mode | Action | evdev |
+|------|--------|-------|
+| Sequential shifter | shift up | `BTN_TOP2` |
+| Sequential shifter | shift down | `BTN_PINKIE` |
+| Digital handbrake | pull past point | `BTN_THUMB2` (face button) |
+| Analog handbrake | pull | `ABS_Z` axis |
+
 ---
 
 ## Compatibility Attributes
