@@ -10,6 +10,9 @@ pub enum Kind {
     TextField { max_len: usize },
     RgbStrip { leds: usize },
     Curve,
+    /// Two percent values `"lower upper"` whose sum must not exceed `max`
+    /// (a pedal deadzone: dead travel at each end). Yields `Value::Pair`.
+    Pair { max: u8 },
     Action,
     /// An attribute that reads back as a `N: name` list but is written one
     /// slot at a time as `N:name` (the onboard profile names). Reads yield
@@ -75,6 +78,20 @@ impl Kind {
                 }
                 Ok(Value::Curve(pts))
             }
+            Kind::Pair { max } => {
+                let mut it = raw.split_whitespace();
+                let lower = it.next().ok_or_else(|| Error::Parse(raw.into()))?;
+                let upper = it.next().ok_or_else(|| Error::Parse(raw.into()))?;
+                if it.next().is_some() {
+                    return Err(Error::Parse(raw.into()));
+                }
+                let lower: u8 = lower.parse().map_err(|_| Error::Parse(raw.into()))?;
+                let upper: u8 = upper.parse().map_err(|_| Error::Parse(raw.into()))?;
+                if lower as u16 + upper as u16 > *max as u16 {
+                    return Err(Error::OutOfRange);
+                }
+                Ok(Value::Pair(lower, upper))
+            }
             Kind::Action => Ok(Value::Trigger),
             Kind::SlotText { slots, .. } => {
                 // Reads back one "N: name" line per slot. Unlisted slots stay
@@ -116,6 +133,7 @@ impl Kind {
                     pts.iter().map(|(a, b)| format!("{a}:{b}")).collect::<Vec<_>>().join(" ")
                 }
             }
+            (Kind::Pair { .. }, Value::Pair(lo, hi)) => format!("{lo} {hi}"),
             (Kind::Action, Value::Trigger) => "1".into(),
             // Writes rename a single slot; the whole list is not writable.
             (Kind::SlotText { .. }, Value::SlotName { slot, name }) => format!("{slot}:{name}"),
@@ -165,6 +183,8 @@ impl Kind {
             (Kind::RgbStrip { .. }, Value::Rgb(cs)) => format!("{} LEDs", cs.len()),
             (Kind::Curve, Value::Curve(p)) if p.is_empty() => "built-in".into(),
             (Kind::Curve, Value::Curve(p)) => format!("{} points", p.len()),
+            (Kind::Pair { .. }, Value::Pair(lo, hi)) if *lo == 0 && *hi == 0 => "none".into(),
+            (Kind::Pair { .. }, Value::Pair(lo, hi)) => format!("{lo}% / {hi}%"),
             (Kind::Action, _) => "[trigger]".into(),
             (Kind::SlotText { .. }, Value::SlotNames(names)) => names
                 .iter()
@@ -246,6 +266,29 @@ mod tests {
         let k = Kind::TextField { max_len: 8 };
         assert!(k.parse("RACE").is_ok());
         assert!(matches!(k.parse("waytoolongname"), Err(Error::Invalid)));
+    }
+
+    #[test]
+    fn pair_parse_format_validate() {
+        let k = Kind::Pair { max: 99 };
+        assert_eq!(k.parse("8 5").unwrap(), Value::Pair(8, 5));
+        assert_eq!(k.parse("0 0").unwrap(), Value::Pair(0, 0));
+        assert_eq!(k.format(&Value::Pair(8, 5)).unwrap(), "8 5");
+        assert!(k.validate(&Value::Pair(50, 49)).is_ok()); // sum 99 exactly
+        // sum over max is rejected
+        assert!(matches!(k.parse("60 50"), Err(Error::OutOfRange)));
+        assert!(matches!(k.validate(&Value::Pair(60, 50)), Err(Error::OutOfRange)));
+        // shape errors
+        assert!(matches!(k.parse("8"), Err(Error::Parse(_))));
+        assert!(matches!(k.parse("8 5 3"), Err(Error::Parse(_))));
+        assert!(matches!(k.parse("a b"), Err(Error::Parse(_))));
+    }
+
+    #[test]
+    fn pair_display() {
+        let k = Kind::Pair { max: 99 };
+        assert_eq!(k.display(&Value::Pair(0, 0)), "none");
+        assert_eq!(k.display(&Value::Pair(8, 5)), "8% / 5%");
     }
 }
 

@@ -1,7 +1,8 @@
+use crate::curve_editor::CurveEditor;
 use crate::edit;
 use logi_dd_core::setting::Access;
 use logi_dd_core::sysfs::SysfsIo;
-use logi_dd_core::{Category, Device, Error, Mode, Value, REGISTRY};
+use logi_dd_core::{Category, Device, Error, Kind, Mode, Value, REGISTRY};
 use std::collections::BTreeMap;
 
 pub struct Row {
@@ -18,6 +19,8 @@ pub struct App<S: SysfsIo> {
     pub rows: Vec<Row>,
     pub status: String,
     pub edit: Option<edit::EditState>,
+    /// The modal curve editor, active while shaping a `Kind::Curve` attribute.
+    pub curve_edit: Option<CurveEditor>,
     pub quit: bool,
 }
 
@@ -30,6 +33,7 @@ impl<S: SysfsIo> App<S> {
             rows: Vec::new(),
             status: String::new(),
             edit: None,
+            curve_edit: None,
             quit: false,
         };
         a.reload();
@@ -100,7 +104,28 @@ impl<S: SysfsIo> App<S> {
                 return;
             }
         };
+        // Curves get the modal point-list editor; everything else the inline
+        // field editor.
+        if matches!(spec.kind, Kind::Curve) {
+            self.curve_edit = Some(CurveEditor::from_value(spec.attr, &cur));
+            return;
+        }
         self.edit = Some(edit::EditState::start(spec.attr, spec.kind, &cur));
+    }
+
+    pub fn commit_curve_edit(&mut self) {
+        let Some(ed) = self.curve_edit.take() else { return };
+        let attr = ed.attr;
+        let label = Device::<S>::spec(attr).map(|s| s.label).unwrap_or(attr);
+        match self.device.write(attr, &ed.to_value()) {
+            Ok(()) => self.status = format!("{label} set ({} points)", ed.point_count()),
+            Err(Error::WrongMode { needed }) => {
+                let m = if needed == Mode::Desktop { "desktop" } else { "onboard" };
+                self.status = format!("needs {m} mode: press 'd' to toggle, then retry");
+            }
+            Err(err) => self.status = format!("{label}: {err}"),
+        }
+        self.reload();
     }
 
     /// Switch the wheel between desktop and onboard mode (the `d` shortcut).
@@ -152,6 +177,20 @@ impl<S: SysfsIo> App<S> {
 
     pub fn on_key(&mut self, key: crossterm::event::KeyCode) {
         use crossterm::event::KeyCode::*;
+        if let Some(ce) = self.curve_edit.as_mut() {
+            match key {
+                Enter => self.commit_curve_edit(),
+                Esc => self.curve_edit = None,
+                Up => ce.prev_field(),
+                Down => ce.next_field(),
+                Left => ce.adjust(-1),
+                Right => ce.adjust(1),
+                Char('+') => ce.add_point(),
+                Char('-') => ce.delete_point(),
+                _ => {}
+            }
+            return;
+        }
         if let Some(ed) = self.edit.as_mut() {
             match key {
                 Enter => self.commit_edit(),
@@ -253,6 +292,61 @@ mod tests {
         assert_eq!(a.device.current_mode().unwrap(), Mode::Onboard);
         a.on_key(KeyCode::Char('d'));
         assert_eq!(a.device.current_mode().unwrap(), Mode::Desktop);
+    }
+
+    fn pedal_app() -> App<FakeSysfs> {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_throttle_curve", "0/64 points loaded (0 = built-in curve)");
+        let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
+        a.reload();
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_throttle_curve").unwrap();
+        a
+    }
+
+    #[test]
+    fn curve_row_opens_modal_not_inline_editor() {
+        use crossterm::event::KeyCode;
+        let mut a = pedal_app();
+        a.on_key(KeyCode::Enter);
+        assert!(a.curve_edit.is_some(), "curve opens the modal editor");
+        assert!(a.edit.is_none(), "not the inline field editor");
+    }
+
+    #[test]
+    fn curve_editor_commit_writes_a_multipoint_curve() {
+        use crossterm::event::KeyCode;
+        let mut a = pedal_app();
+        a.on_key(KeyCode::Enter); // open
+        a.on_key(KeyCode::Char('+')); // add a middle point (now 3 points)
+        a.on_key(KeyCode::Down); // move to Output field
+        a.on_key(KeyCode::Right); // bend the point
+        a.on_key(KeyCode::Enter); // save
+        assert!(a.curve_edit.is_none());
+        assert!(a.status.contains("set"), "status: {}", a.status);
+        // the stored curve is a real multi-point list ending at full scale
+        match a.device.read("wheel_throttle_curve").unwrap() {
+            Value::Curve(pts) => {
+                assert!(pts.len() >= 3, "points: {pts:?}");
+                assert_eq!(*pts.last().unwrap(), (65535, 65535));
+            }
+            v => panic!("expected a curve, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn curve_editor_esc_cancels_without_writing() {
+        use crossterm::event::KeyCode;
+        let mut a = pedal_app();
+        a.on_key(KeyCode::Enter);
+        a.on_key(KeyCode::Char('+'));
+        a.on_key(KeyCode::Esc);
+        assert!(a.curve_edit.is_none());
+        // nothing was written: the store still reads built-in (empty curve)
+        assert_eq!(
+            a.device.read("wheel_throttle_curve").unwrap(),
+            Value::Curve(vec![])
+        );
     }
 
     #[test]

@@ -1,10 +1,11 @@
 use crate::app::App;
+use crate::curve_editor::CurveEditor;
 use logi_dd_core::sysfs::SysfsIo;
 use logi_dd_core::{Category, Device, Mode, Value};
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 use std::collections::BTreeMap;
 
@@ -129,8 +130,15 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         body[1],
     );
 
+    // The curve editor takes over the body area as a modal when active.
+    if let Some(ce) = &app.curve_edit {
+        draw_curve_editor(f, ce, root[1]);
+    }
+
     // status line (green on success, red on trouble) + a dim help line
-    let help = if app.edit.is_some() {
+    let help = if app.curve_edit.is_some() {
+        "curve:  up/down field   <-/-> adjust   + add point   - delete   Enter save   Esc cancel"
+    } else if app.edit.is_some() {
         "editing:  <-/->  adjust    type  text    Enter  commit    Esc  cancel"
     } else {
         "up/down select   <-/-> category   Enter edit   d toggle desktop/onboard   r refresh   q quit"
@@ -146,6 +154,59 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         )),
     ];
     f.render_widget(Paragraph::new(lines), root[2]);
+}
+
+/// Render the modal curve editor over `area`: a left field panel and a right
+/// live ASCII preview of the composed curve.
+fn draw_curve_editor(f: &mut Frame, ce: &CurveEditor, area: Rect) {
+    f.render_widget(Clear, area);
+    let title = format!(" Curve editor: {} ", ce.attr.replace("wheel_", ""));
+    let outer = Block::default().borders(Borders::ALL).title(title);
+    let inner = outer.inner(area);
+    f.render_widget(outer, area);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(30), Constraint::Min(10)])
+        .split(inner);
+
+    // Left: the editable fields, selected one highlighted.
+    let mut lines: Vec<Line> = CurveEditor::FIELDS
+        .iter()
+        .map(|fld| {
+            let selected = *fld == ce.field;
+            let marker = if selected { "> " } else { "  " };
+            let style = if selected {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            Line::from(vec![
+                Span::styled(format!("{marker}{:<16}", fld.label()), style),
+                Span::styled(ce.value_of(*fld), style),
+            ])
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "+ add point   - delete",
+        Style::default().fg(Color::DarkGray),
+    )));
+    f.render_widget(Paragraph::new(lines), cols[0]);
+
+    // Right: the ASCII curve, bordered, with 0%/100% guides.
+    let plot = Block::default().borders(Borders::ALL).title("output vs input");
+    let pinner = plot.inner(cols[1]);
+    f.render_widget(plot, cols[1]);
+    let (w, h) = (pinner.width as usize, pinner.height as usize);
+    if w >= 4 && h >= 2 {
+        let rows = ce.render(w, h);
+        let text: Vec<Line> = rows
+            .into_iter()
+            .map(|r| Line::from(Span::styled(r, Style::default().fg(Color::Cyan))))
+            .collect();
+        f.render_widget(Paragraph::new(text), pinner);
+    }
 }
 
 /// Render a profile number with its onboard slot name.

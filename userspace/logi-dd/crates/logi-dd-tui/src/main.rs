@@ -1,4 +1,5 @@
 mod app;
+mod curve_editor;
 mod edit;
 mod ui;
 
