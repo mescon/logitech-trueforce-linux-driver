@@ -273,7 +273,7 @@ mod tests {
         fs.set("wheel_mode", "onboard");
         fs.set("wheel_sensitivity", "50");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
-        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Sensitivity).unwrap();
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Steering).unwrap();
         a.reload();
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_sensitivity").unwrap();
         a.on_key(KeyCode::Enter);
