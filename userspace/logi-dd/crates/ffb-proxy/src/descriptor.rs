@@ -6,7 +6,7 @@ pub const NAME: &str = "Logitech RS50 Base for PlayStation/PC";
 pub const INPUT_REPORT_ID: u8 = 0x01;
 pub const INPUT_REPORT_LEN: usize = 14;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputReport {
     pub steering: u16,
     pub throttle: u16,
@@ -14,6 +14,20 @@ pub struct InputReport {
     pub clutch: u16,
     pub buttons: u32,
     pub hat: u8,
+}
+
+/// The hat switch's centered value. The descriptor declares the hat as
+/// `Input(Data,Var,Abs,Null)` over the logical range `0..=7` (the 8 POV
+/// directions): a "null" input outside that range is how the HID spec
+/// represents "no direction pressed". `0` is North, a real direction, so it
+/// cannot double as centered; `0x0F` is the first value past the declared
+/// range and reads as null/centered.
+const HAT_CENTERED: u8 = 0x0F;
+
+impl Default for InputReport {
+    fn default() -> Self {
+        InputReport { steering: 0, throttle: 0, brake: 0, clutch: 0, buttons: 0, hat: HAT_CENTERED }
+    }
 }
 
 impl InputReport {
@@ -159,6 +173,17 @@ pub fn report_descriptor() -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_report_centers_the_hat_out_of_the_declared_range() {
+        // The hat's declared logical range is 0..=7 with Null set, so 0
+        // reads as "North pressed", not centered; the default (no input yet)
+        // must be a value outside that range, and `to_bytes` must emit it.
+        let r = InputReport::default();
+        assert_eq!(r.hat, 0x0F);
+        let b = r.to_bytes();
+        assert_eq!(b[b.len() - 1], 0x0F);
+    }
 
     #[test]
     fn input_report_serializes_report_id_and_axes_little_endian() {

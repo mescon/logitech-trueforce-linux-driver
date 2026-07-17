@@ -28,8 +28,12 @@ pub const UHID_START: u32 = 2;
 pub const UHID_OPEN: u32 = 4;
 pub const UHID_CLOSE: u32 = 5;
 pub const UHID_OUTPUT: u32 = 6;
+pub const UHID_GET_REPORT: u32 = 9;
+pub const UHID_GET_REPORT_REPLY: u32 = 10;
 pub const UHID_CREATE2: u32 = 11;
 pub const UHID_INPUT2: u32 = 12;
+pub const UHID_SET_REPORT: u32 = 13;
+pub const UHID_SET_REPORT_REPLY: u32 = 14;
 
 pub const BUS_USB: u16 = 0x03;
 
@@ -39,6 +43,7 @@ const UNIQ_LEN: usize = 64;
 const RD_DATA_LEN: usize = 4096;
 const INPUT2_DATA_LEN: usize = 4096;
 const OUTPUT_DATA_LEN: usize = 4096;
+const REPORT_DATA_LEN: usize = 4096;
 
 /// Mirrors `struct uhid_create2_req` from `linux/uhid.h` (packed, native
 /// endian). Not read/written directly; used only for its `size_of` so the
@@ -72,6 +77,44 @@ pub struct OutputReq {
     pub rtype: u8,
 }
 
+/// Mirrors `struct uhid_get_report_req`: a `Get_Report(Feature)` request from
+/// the kernel, e.g. PID Block Load (`0x56`) or PID Pool (`0x57`).
+#[repr(C, packed)]
+pub struct GetReportReq {
+    pub id: u32,
+    pub rnum: u8,
+    pub rtype: u8,
+}
+
+/// Mirrors `struct uhid_get_report_reply_req`: our reply to a
+/// [`GetReportReq`], echoing its `id`.
+#[repr(C, packed)]
+pub struct GetReportReplyReq {
+    pub id: u32,
+    pub err: u16,
+    pub size: u16,
+    pub data: [u8; REPORT_DATA_LEN],
+}
+
+/// Mirrors `struct uhid_set_report_req`: a `Set_Report(Feature)` request from
+/// the kernel, e.g. Create New Effect (`0x54`).
+#[repr(C, packed)]
+pub struct SetReportReq {
+    pub id: u32,
+    pub rnum: u8,
+    pub rtype: u8,
+    pub size: u16,
+    pub data: [u8; REPORT_DATA_LEN],
+}
+
+/// Mirrors `struct uhid_set_report_reply_req`: our reply to a
+/// [`SetReportReq`], echoing its `id`.
+#[repr(C, packed)]
+pub struct SetReportReplyReq {
+    pub id: u32,
+    pub err: u16,
+}
+
 /// Byte offsets of each field within the union, i.e. relative to the byte
 /// right after the leading `u32 type` field of `struct uhid_event`.
 mod create2_off {
@@ -101,6 +144,32 @@ mod output_off {
     // currently consumed, only the raw report bytes are.
 }
 
+mod get_report_off {
+    pub const ID: usize = 0;
+    pub const RNUM: usize = 4;
+    pub const RTYPE: usize = 5;
+}
+
+mod get_report_reply_off {
+    pub const ID: usize = 0;
+    pub const ERR: usize = 4;
+    pub const SIZE: usize = 6;
+    pub const DATA: usize = 8;
+}
+
+mod set_report_off {
+    pub const ID: usize = 0;
+    pub const RNUM: usize = 4;
+    pub const RTYPE: usize = 5;
+    pub const SIZE: usize = 6;
+    pub const DATA: usize = 8;
+}
+
+mod set_report_reply_off {
+    pub const ID: usize = 0;
+    pub const ERR: usize = 4;
+}
+
 /// Size of the fixed record read from / written to `/dev/uhid`: the leading
 /// `u32 type` field plus the largest union member (`uhid_create2_req`).
 pub const EVENT_SIZE: usize = 4 + core::mem::size_of::<Create2Req>();
@@ -117,6 +186,14 @@ pub enum Event {
     /// `UHID_OUTPUT`: an output report (FFB command) from the driver, carrying
     /// the raw report bytes (report id first, if any).
     Output(Vec<u8>),
+    /// `UHID_GET_REPORT`: the driver is reading a Feature report (e.g. PID
+    /// Block Load `0x56`, PID Pool `0x57`) and is blocked until we answer
+    /// with [`Device::send_get_report_reply`], echoing `id`.
+    GetReport { id: u32, rnum: u8, rtype: u8 },
+    /// `UHID_SET_REPORT`: the driver is writing a Feature report (e.g.
+    /// Create New Effect `0x54`) and is blocked until we answer with
+    /// [`Device::send_set_report_reply`], echoing `id`.
+    SetReport { id: u32, rnum: u8, rtype: u8, data: Vec<u8> },
     /// Any other event type we do not act on, carrying the raw type number.
     Other(u32),
 }
@@ -183,6 +260,44 @@ fn encode_bare(event_type: u32) -> Vec<u8> {
     buf
 }
 
+/// Build a `UHID_GET_REPORT_REPLY` event buffer answering the request `id`
+/// with `err` (0 = success) and `data` as the report body.
+pub fn encode_get_report_reply(id: u32, err: u16, data: &[u8]) -> Vec<u8> {
+    assert!(data.len() <= REPORT_DATA_LEN, "get-report reply data too large");
+
+    let mut buf = vec![0u8; EVENT_SIZE];
+    buf[0..4].copy_from_slice(&UHID_GET_REPORT_REPLY.to_le_bytes());
+
+    let id_off = 4 + get_report_reply_off::ID;
+    buf[id_off..id_off + 4].copy_from_slice(&id.to_le_bytes());
+
+    let err_off = 4 + get_report_reply_off::ERR;
+    buf[err_off..err_off + 2].copy_from_slice(&err.to_le_bytes());
+
+    let size_off = 4 + get_report_reply_off::SIZE;
+    buf[size_off..size_off + 2].copy_from_slice(&(data.len() as u16).to_le_bytes());
+
+    let data_off = 4 + get_report_reply_off::DATA;
+    buf[data_off..data_off + data.len()].copy_from_slice(data);
+
+    buf
+}
+
+/// Build a `UHID_SET_REPORT_REPLY` event buffer answering the request `id`
+/// with `err` (0 = success).
+pub fn encode_set_report_reply(id: u32, err: u16) -> Vec<u8> {
+    let mut buf = vec![0u8; EVENT_SIZE];
+    buf[0..4].copy_from_slice(&UHID_SET_REPORT_REPLY.to_le_bytes());
+
+    let id_off = 4 + set_report_reply_off::ID;
+    buf[id_off..id_off + 4].copy_from_slice(&id.to_le_bytes());
+
+    let err_off = 4 + set_report_reply_off::ERR;
+    buf[err_off..err_off + 2].copy_from_slice(&err.to_le_bytes());
+
+    buf
+}
+
 /// Parse a raw `EVENT_SIZE` buffer read from `/dev/uhid` into an [`Event`].
 ///
 /// Returns `Err` only if `buf` is shorter than a valid event buffer; unknown
@@ -209,6 +324,34 @@ pub fn parse_event(buf: &[u8]) -> Result<Event> {
                 return Err(Error::Protocol("uhid output event truncated before report data".into()));
             }
             Event::Output(buf[data_off..data_off + size].to_vec())
+        }
+        UHID_GET_REPORT => {
+            let rtype_off = 4 + get_report_off::RTYPE;
+            if buf.len() < rtype_off + 1 {
+                return Err(Error::Protocol("uhid get-report event truncated before rtype field".into()));
+            }
+            let id_off = 4 + get_report_off::ID;
+            let id = u32::from_le_bytes(buf[id_off..id_off + 4].try_into().unwrap());
+            let rnum = buf[4 + get_report_off::RNUM];
+            let rtype = buf[rtype_off];
+            Event::GetReport { id, rnum, rtype }
+        }
+        UHID_SET_REPORT => {
+            let size_off = 4 + set_report_off::SIZE;
+            if buf.len() < size_off + 2 {
+                return Err(Error::Protocol("uhid set-report event truncated before size field".into()));
+            }
+            let id_off = 4 + set_report_off::ID;
+            let id = u32::from_le_bytes(buf[id_off..id_off + 4].try_into().unwrap());
+            let rnum = buf[4 + set_report_off::RNUM];
+            let rtype = buf[4 + set_report_off::RTYPE];
+            let size = u16::from_le_bytes(buf[size_off..size_off + 2].try_into().unwrap()) as usize;
+
+            let data_off = 4 + set_report_off::DATA;
+            if buf.len() < data_off + size {
+                return Err(Error::Protocol("uhid set-report event truncated before report data".into()));
+            }
+            Event::SetReport { id, rnum, rtype, data: buf[data_off..data_off + size].to_vec() }
         }
         other => Event::Other(other),
     })
@@ -256,6 +399,25 @@ impl Device {
         Ok(())
     }
 
+    /// Answer a pending `UHID_GET_REPORT` (`Event::GetReport`), unblocking the
+    /// kernel request with the same `id` it carried, `err` (0 = success) and
+    /// `data` as the report body.
+    pub fn send_get_report_reply(&mut self, id: u32, err: u16, data: &[u8]) -> Result<()> {
+        let event = encode_get_report_reply(id, err, data);
+        write(&self.fd, &event)
+            .map_err(|e| Error::Io("write UHID_GET_REPORT_REPLY".into(), std::io::Error::from(e)))?;
+        Ok(())
+    }
+
+    /// Answer a pending `UHID_SET_REPORT` (`Event::SetReport`), unblocking the
+    /// kernel request with the same `id` it carried and `err` (0 = success).
+    pub fn send_set_report_reply(&mut self, id: u32, err: u16) -> Result<()> {
+        let event = encode_set_report_reply(id, err);
+        write(&self.fd, &event)
+            .map_err(|e| Error::Io("write UHID_SET_REPORT_REPLY".into(), std::io::Error::from(e)))?;
+        Ok(())
+    }
+
     /// The raw file descriptor, for callers that want to poll it alongside
     /// other sources (e.g. the real wheel's evdev FF node).
     pub fn raw_fd(&self) -> RawFd {
@@ -285,6 +447,64 @@ mod tests {
         assert_eq!(&bytes[4..9], b"wheel");
         // rd_size and rd_data present
         assert!(bytes.len() >= 4 + core::mem::size_of::<Create2Req>());
+    }
+
+    #[test]
+    fn set_report_event_parses_rnum_and_data() {
+        // craft a raw event buffer with type=UHID_SET_REPORT, id=7, rnum=0x54
+        // (Create New Effect), rtype=3 (feature), one data byte.
+        let mut buf = vec![0u8; EVENT_SIZE];
+        buf[0..4].copy_from_slice(&UHID_SET_REPORT.to_le_bytes());
+        let id_off = 4 + set_report_off::ID;
+        buf[id_off..id_off + 4].copy_from_slice(&7u32.to_le_bytes());
+        buf[4 + set_report_off::RNUM] = 0x54;
+        buf[4 + set_report_off::RTYPE] = 3;
+        let size_off = 4 + set_report_off::SIZE;
+        buf[size_off..size_off + 2].copy_from_slice(&1u16.to_le_bytes());
+        let data_off = 4 + set_report_off::DATA;
+        buf[data_off] = 0x26; // EFFECT_TYPE_CONSTANT
+
+        let ev = parse_event(&buf).unwrap();
+        assert_eq!(ev, Event::SetReport { id: 7, rnum: 0x54, rtype: 3, data: vec![0x26] });
+    }
+
+    #[test]
+    fn get_report_event_parses_id_and_rnum() {
+        // craft a raw event buffer with type=UHID_GET_REPORT, id=11, rnum=0x56
+        // (PID Block Load), rtype=3 (feature).
+        let mut buf = vec![0u8; EVENT_SIZE];
+        buf[0..4].copy_from_slice(&UHID_GET_REPORT.to_le_bytes());
+        let id_off = 4 + get_report_off::ID;
+        buf[id_off..id_off + 4].copy_from_slice(&11u32.to_le_bytes());
+        buf[4 + get_report_off::RNUM] = 0x56;
+        buf[4 + get_report_off::RTYPE] = 3;
+
+        let ev = parse_event(&buf).unwrap();
+        assert_eq!(ev, Event::GetReport { id: 11, rnum: 0x56, rtype: 3 });
+    }
+
+    #[test]
+    fn get_report_reply_encodes_type_and_echoes_id() {
+        let bytes = encode_get_report_reply(42, 0, &[1, 2, 0xFF, 0xFF]);
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), UHID_GET_REPORT_REPLY);
+        let id_off = 4 + get_report_reply_off::ID;
+        assert_eq!(u32::from_le_bytes(bytes[id_off..id_off + 4].try_into().unwrap()), 42);
+        let err_off = 4 + get_report_reply_off::ERR;
+        assert_eq!(u16::from_le_bytes(bytes[err_off..err_off + 2].try_into().unwrap()), 0);
+        let size_off = 4 + get_report_reply_off::SIZE;
+        assert_eq!(u16::from_le_bytes(bytes[size_off..size_off + 2].try_into().unwrap()), 4);
+        let data_off = 4 + get_report_reply_off::DATA;
+        assert_eq!(&bytes[data_off..data_off + 4], &[1, 2, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn set_report_reply_encodes_type_and_echoes_id() {
+        let bytes = encode_set_report_reply(99, 0);
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), UHID_SET_REPORT_REPLY);
+        let id_off = 4 + set_report_reply_off::ID;
+        assert_eq!(u32::from_le_bytes(bytes[id_off..id_off + 4].try_into().unwrap()), 99);
+        let err_off = 4 + set_report_reply_off::ERR;
+        assert_eq!(u16::from_le_bytes(bytes[err_off..err_off + 2].try_into().unwrap()), 0);
     }
 
     #[test]

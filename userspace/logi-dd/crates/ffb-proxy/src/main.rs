@@ -5,7 +5,7 @@ fn main() -> ExitCode {
     match ffb_proxy::cli::dispatch(&args) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("logi-dd-ffb: {e}");
+            eprintln!("logi-ffb: {e}");
             ExitCode::FAILURE
         }
     }

@@ -97,12 +97,36 @@ pub fn discover_wheel() -> Result<WheelPaths> {
     Err(Error::WheelNotFound)
 }
 
+/// Assigns the next PID effect block index and advances `next_block` past
+/// it. Pure and side-effect-free besides the counter, so it is unit
+/// testable without a live uhid device. Block indices are 1-based (the PID
+/// protocol's Effect Block Index usages all declare a logical minimum of 1,
+/// see `descriptor::PID_COLLECTION`'s report id 0x54/0x56 collections) and
+/// increment by one per call: 1, 2, 3, ...
+///
+/// Wraps rather than panics past 255: exhausting a `u8` of effect blocks
+/// without ever destroying one is not expected in practice (DirectInput
+/// games reuse a handful of blocks), and a wrapped index simply reuses an
+/// earlier block's slot rather than crashing the proxy.
+fn assign_block(next_block: &mut u8) -> u8 {
+    let block = *next_block;
+    *next_block = next_block.wrapping_add(1);
+    block
+}
+
 /// Ties the virtual device, the real-wheel input source, and the real-wheel
 /// FF sink together and drives the poll loop between them.
 pub struct Proxy {
     device: uhid::Device,
     source: source::Source,
     sink: sink::Sink,
+    /// Next PID effect block index to assign on a Create New Effect
+    /// (`0x54`) request. Starts at 1 (0 is not a valid Effect Block Index
+    /// per the descriptor's logical range).
+    next_block: u8,
+    /// The most recently assigned block index, reported back on a PID Block
+    /// Load (`0x56`) Get_Report. 0 until the first Create.
+    last_created_block: u8,
 }
 
 impl Proxy {
@@ -112,7 +136,7 @@ impl Proxy {
         let device = uhid::Device::create()?;
         let source = source::Source::open(&paths.evdev)?;
         let sink = sink::Sink::open(&paths.evdev)?;
-        Ok(Proxy { device, source, sink })
+        Ok(Proxy { device, source, sink, next_block: 1, last_created_block: 0 })
     }
 
     /// Run the poll loop until `stop` is set (checked at least every
@@ -182,6 +206,76 @@ impl Proxy {
                             }
                         }
                     }
+
+                    // Create New Effect (0x54) is a Feature report: the host
+                    // sends a one-byte Effect Type via Set_Report(Feature),
+                    // and we assign the block index (the device's job, not
+                    // the host's), record it via the same Create handling
+                    // the Output path uses, and ack. An unrecognized type
+                    // byte or empty body still gets an ack (err 0) so the
+                    // host is never left blocked on this request; we simply
+                    // skip creating a block for it.
+                    Ok(uhid::Event::SetReport { rnum: 0x54, data, id, .. }) => {
+                        if let Some(kind) = data.first().and_then(|&b| pidff::effect_kind_from_type_byte(b)) {
+                            let block = assign_block(&mut self.next_block);
+                            self.last_created_block = block;
+                            if let Err(e) = self.sink.apply(pidff::EffectOp::Create { block, kind }) {
+                                eprintln!("logi-ffb: failed to create FF effect: {e}");
+                            }
+                        }
+                        if let Err(e) = self.device.send_set_report_reply(id, 0) {
+                            break Err(e);
+                        }
+                    }
+
+                    // Any other Feature Set_Report (e.g. Device Control,
+                    // 0x50): best-effort, reuse the Output decoder by
+                    // prepending the report id byte it expects, apply if it
+                    // decodes to something, then ack regardless.
+                    Ok(uhid::Event::SetReport { rnum, data, id, .. }) => {
+                        let mut report = Vec::with_capacity(data.len() + 1);
+                        report.push(rnum);
+                        report.extend_from_slice(&data);
+                        if let Some(op) = pidff::decode(&report) {
+                            if let Err(e) = self.sink.apply(op) {
+                                eprintln!("logi-ffb: failed to apply FF feature report: {e}");
+                            }
+                        }
+                        if let Err(e) = self.device.send_set_report_reply(id, 0) {
+                            break Err(e);
+                        }
+                    }
+
+                    // PID Block Load (0x56): report the block just assigned
+                    // by the most recent 0x54, load success, and a nonzero
+                    // RAM pool so the host does not treat us as full.
+                    Ok(uhid::Event::GetReport { rnum: 0x56, id, .. }) => {
+                        let reply = pidff::pid_block_load_reply(self.last_created_block);
+                        if let Err(e) = self.device.send_get_report_reply(id, 0, &reply) {
+                            break Err(e);
+                        }
+                    }
+
+                    // PID Pool (0x57): capacity/capability reply, built from
+                    // the descriptor's field layout (see
+                    // pidff::pid_pool_reply's doc comment for how each byte
+                    // was derived and what is still unconfirmed).
+                    Ok(uhid::Event::GetReport { rnum: 0x57, id, .. }) => {
+                        let reply = pidff::pid_pool_reply();
+                        if let Err(e) = self.device.send_get_report_reply(id, 0, &reply) {
+                            break Err(e);
+                        }
+                    }
+
+                    // Any other Feature Get_Report: an empty success reply so
+                    // the host is never left blocking on a request we do not
+                    // specifically implement.
+                    Ok(uhid::Event::GetReport { id, .. }) => {
+                        if let Err(e) = self.device.send_get_report_reply(id, 0, &[]) {
+                            break Err(e);
+                        }
+                    }
+
                     Ok(_) => {}
                     Err(e) => break Err(e),
                 }
@@ -196,6 +290,15 @@ impl Proxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assign_block_returns_sequential_indices_and_advances_counter() {
+        let mut next = 1u8;
+        assert_eq!(assign_block(&mut next), 1);
+        assert_eq!(assign_block(&mut next), 2);
+        assert_eq!(assign_block(&mut next), 3);
+        assert_eq!(next, 4);
+    }
 
     #[test]
     fn recognizes_dd_wheel_names() {
