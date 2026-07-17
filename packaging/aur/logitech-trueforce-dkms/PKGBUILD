@@ -16,10 +16,9 @@ provides=("$_dkmsname")
 conflicts=("$_dkmsname")
 install="$pkgname.install"
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-# PLACEHOLDER (fails the integrity check on purpose): regenerate against the
-# v0.15.0 release tarball once the tag exists, then refresh .SRCINFO:
+# sha256 of the v0.15.0 release tarball. On the next version bump, regenerate:
 #   updpkgsums && makepkg --printsrcinfo > .SRCINFO
-sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+sha256sums=('9755bb8261ef00fd4f3308230943fbc07804ee8707330b023312241e40da3ec2')
 
 build() {
 	local _src="$srcdir/logitech-trueforce-linux-driver-$pkgver"
