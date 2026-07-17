@@ -6,7 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "logi-dd-ffb"
+name = "logi-ffb"
 path = "src/main.rs"
 
 [dependencies]

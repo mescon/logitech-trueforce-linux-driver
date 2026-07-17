@@ -3,6 +3,6 @@ use std::process::ExitCode;
 
 pub fn dispatch(args: &[String]) -> crate::Result<ExitCode> {
     let _ = args;
-    eprintln!("usage: logi-dd-ffb run -- <game command>\n       logi-dd-ffb daemon");
+    eprintln!("usage: logi-ffb <game command>\n       logi-ffb --daemon");
     Ok(ExitCode::SUCCESS)
 }
