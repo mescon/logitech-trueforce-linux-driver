@@ -486,7 +486,18 @@ mod tests {
         // nix's ioctl macro bakes in from size_of::<ff_effect>().
         assert_eq!(std::mem::size_of::<ff_effect>(), 48);
         assert_eq!(std::mem::align_of::<ff_effect>(), 8);
-        assert_eq!(std::mem::offset_of!(ff_effect, u), 16);
+
+        // Compute union offset via pointer arithmetic (offset_of! requires Rust 1.77+).
+        let e = ff_effect {
+            type_: 0,
+            id: 0,
+            direction: 0,
+            trigger: ff_trigger::default(),
+            replay: ff_replay::default(),
+            u: FfUnion([0u8; FF_UNION_SIZE]),
+        };
+        let union_offset = (&e.u as *const _ as usize) - (&e as *const _ as usize);
+        assert_eq!(union_offset, 16);
     }
 
     #[test]
