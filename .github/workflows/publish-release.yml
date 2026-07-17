@@ -122,7 +122,9 @@ jobs:
             -C "$stage" "$PREFIX"
           rpmbuild -bs packaging/akmods/logitech-trueforce-kmod.spec \
             --define "_sourcedir $SRCDIR" --define "_srcrpmdir $PWD/srpm"
-          copr-cli build mescon/logitech-trueforce srpm/*.src.rpm
+          # --enable-net on: the spec builds the userspace tools with cargo,
+          # which fetches crate dependencies over the network (nothing vendored).
+          copr-cli build --enable-net on mescon/logitech-trueforce srpm/*.src.rpm
 
   obs:
     name: openSUSE OBS
