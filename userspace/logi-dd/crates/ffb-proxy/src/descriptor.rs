@@ -1,0 +1,1 @@
+//! descriptor module stub.

@@ -1,0 +1,1 @@
+//! pidff module stub.
