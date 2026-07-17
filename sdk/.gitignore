@@ -14,3 +14,6 @@ Demo/
 Lib/
 Samples/
 ReadMe.txt
+
+# Logitech public SDK headers (obtain from Logitech; not redistributed here)
+Include/

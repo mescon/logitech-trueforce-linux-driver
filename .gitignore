@@ -195,3 +195,6 @@ __pycache__/
 
 # Subagent-driven-development scratch
 .superpowers/
+
+# Internal planning/design scratch (not user docs)
+/docs/superpowers/

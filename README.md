@@ -23,21 +23,21 @@ wheels**:
 - **Logitech G PRO Racing Wheel for Xbox/PC** (`046d:c272`)
 - **Logitech G PRO Racing Wheel for PS/PC** (`046d:c268`)
 
-> **Note**: this project was previously named
-> `logitech-rs50-linux-driver`. It was renamed 2026-07-02 because the
-> driver covers the whole TrueForce direct-drive family, not just the
-> RS50. Old GitHub links and clones redirect automatically. As of
-> v0.12.0 the kernel module is `hid-logitech-dd` (previously the fork
-> shipped as `hid-logitech-hidpp` and shadowed the in-tree driver); the
-> installer migrates existing systems automatically.
+> **Note**: this project was renamed from `logitech-rs50-linux-driver`
+> because the driver covers the whole TrueForce direct-drive family, not
+> just the RS50. Old GitHub links and clones redirect automatically. The
+> kernel module is `hid-logitech-dd`; if you previously installed the
+> full fork as `hid-logitech-hidpp`, the installer migrates you across.
 
 You get the full evdev force-feedback suite (constant, spring, damper,
 friction, inertia, periodic, ramp, rumble, gain), all buttons,
 encoders, paddles, hat switch, 16-bit pedal axes, and G Hub-equivalent
 settings (rotation range, FFB strength / damping / TRUEFORCE / filter,
-pedal curves, LIGHTSYNC LEDs) exposed via sysfs. **TrueForce haptics
-work in supported sims under Proton** via Logitech's own signed SDK
-DLLs - see the recipe below.
+pedal and handbrake curves, LIGHTSYNC LEDs). You configure the wheel with
+**logi-dd**, an included terminal settings app with a G HUB-style curve
+editor (`userspace/logi-dd/`), or directly through sysfs. **TrueForce
+haptics work in supported sims under Proton** via Logitech's own signed
+SDK DLLs - see the recipe below.
 
 This is a fork of the in-kernel `hid-logitech-hidpp` driver, **scoped to
 only the Logitech direct-drive wheels** - the RS50 and G PRO, across their
@@ -70,7 +70,7 @@ its native `046d:c276` enumeration):
 - Rotation range (90 to 2700°)
 - FFB strength, damping, TRUEFORCE level, FFB filter (with auto)
 - Sensitivity (desktop mode) and brake-force (onboard mode)
-- Per-pedal response curves and deadzones, combined-pedals mode
+- Per-pedal response curves, sensitivity and deadzones; combined-pedals mode
 - LIGHTSYNC LED slots, colors, effects, direction, brightness
 - Mode + profile switching (desktop / onboard 1-5)
 - Centre calibration (`wheel_calibrate`, `wheel_calibrate_here`)
@@ -119,6 +119,9 @@ owner to validate · - not applicable.
 | Rotation range (90-2700°) | ✅ | 🟢 |
 | FFB strength / damping / FFB filter (+ auto) | ✅ | 🟢 |
 | TrueForce intensity / sensitivity / brake-force | ✅ | 🟢 |
+| Pedal response curves / sensitivity / deadzones | ✅ | 🟢 |
+| Combined-pedals mode (`wheel_combined_pedals`) | ✅ | 🟢 |
+| RS Shifter & Handbrake (shift, digital + analog handbrake) | ✅ | 🟢 |
 | LIGHTSYNC RGB LEDs (RS50 faceplate strip) | ✅ | - |
 | Rev-light level (`wheel_rev_level`, real G PRO rim) | - | 🟡 needs a tester |
 | Centre calibration | ✅ | 🟢 |
@@ -577,9 +580,9 @@ pedals via `wheel_handbrake_curve` / `wheel_handbrake_sensitivity`. See
 The driver exposes the standard new-lg4ff attribute set for
 [Oversteer](https://github.com/berarma/oversteer): `range` (to 2700°),
 `gain`, `autocenter`, and `spring_level`/`damper_level`/`friction_level`,
-verified through Oversteer against a live wheel. `combine_pedals` is not
-exposed: the driver reports pedals raw and does not combine them, so
-Oversteer simply hides that control.
+verified through Oversteer against a live wheel. Oversteer's `combine_pedals`
+control is not wired to a driver attribute, so Oversteer hides it; combine the
+pedals through the `wheel_combined_pedals` sysfs attribute (or logi-dd) instead.
 
 Full support needs a patch (`oversteer-logitech-trueforce.patch`, in this
 repo): it adds RS50 detection (`046d:c276`), the 2700° range, and finds
@@ -622,6 +625,21 @@ In-repo references for users and contributors:
 
 ## Userspace components
 
+`userspace/logi-dd/` is **logi-dd**, a terminal settings app for the wheel: a
+native-Linux stand-in for the parts of G HUB that configure force feedback,
+rotation range, LEDs, profiles and pedal/handbrake response curves. It reads and
+writes the `wheel_*` sysfs attributes with typed, validated edits and a G HUB-
+style point-list curve editor, so you do not have to `echo` values into sysfs by
+hand. Build and run it with a Rust toolchain:
+
+```bash
+cd userspace/logi-dd && cargo build --release
+./target/release/logi-dd-tui        # needs your user in the `input` group
+```
+
+See [`userspace/logi-dd/README.md`](userspace/logi-dd/README.md) for features,
+keys and permissions.
+
 `userspace/libtrueforce/` is a native-Linux C reimplementation of
 Logitech's TrueForce SDK. **You do not need it for the ACC + TF
 recipe above** - that path runs Logitech's own signed DLLs through
@@ -640,21 +658,24 @@ under [Verified game support](#verified-game-support); TrueForce in
 SDK-aware sims needs the Proton recipe above. Some games want Steam Input
 enabled as a gamepad, or `SDL_JOYSTICK_DEVICE=/dev/input/eventX`.
 
-**Experimental `inject_pid` module parameter:** the wheel's own report
+**DirectInput force feedback and `PROTON_ENABLE_HIDRAW`:** the wheel's report
 descriptor carries no PID (force-feedback) collection on any of its three
-interfaces. That costs nothing while Wine is on its SDL/evdev backend, which
-reaches force feedback through evdev, and nothing for SDK-aware sims, whose
-force arrives over the SDK path (which is why ACC and AC EVO keep full FFB
-with `PROTON_ENABLE_HIDRAW=1`). It matters for a sim that drives FFB through
-**DirectInput** rather than the SDK: with `PROTON_ENABLE_HIDRAW=1` Wine talks
-to the wheel over hidraw, looks for a PID collection to send effects to, finds
-none, and the game loses force feedback entirely while its inputs keep
-working. Turning this parameter on makes the driver inject a PID output
-collection on interface 0 and translate the DirectInput FFB writes back into
-evdev. Off by default (`inject_pid=0`); `=1` dry-runs (logs only, no
-actuation), `=2` actuates. Bench-tested only, so hold the wheel loosely and
-start at a low `wheel_strength`. Without it, a DirectInput-FFB sim has to run
-`PROTON_ENABLE_HIDRAW=0`, which costs TrueForce.
+interfaces. That costs nothing on Wine's SDL/evdev backend, which reaches force
+feedback through evdev, nor for SDK-aware sims, whose force arrives over the SDK
+path (which is why ACC and AC EVO keep full FFB with `PROTON_ENABLE_HIDRAW=1`).
+It does affect a sim that drives FFB through **DirectInput** rather than the
+SDK (Le Mans Ultimate, for example): with `PROTON_ENABLE_HIDRAW=1` Wine talks to
+the wheel over hidraw, looks for a PID collection to send effects to, finds
+none, and the game loses force feedback while its inputs keep working. **Run
+DirectInput-FFB sims with `PROTON_ENABLE_HIDRAW=0`**, which gives force feedback
+through evdev.
+
+The `inject_pid` module parameter is an incomplete attempt to fill that gap by
+injecting a PID output collection on interface 0. It does **not** currently work
+on this wheel: the injected PID collection uses HID report IDs, but the joystick
+report has none, and mixing the two makes the joystick input reports unparseable
+so no axis input reaches the game. It is off by default and there is no reason
+to enable it; use `PROTON_ENABLE_HIDRAW=0` for DirectInput FFB instead.
 
 ## Technical details
 

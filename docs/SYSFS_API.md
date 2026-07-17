@@ -5,7 +5,7 @@
 - Logitech RS50 Direct Drive Wheel Base (USB `046d:c276`)
 - Logitech G Pro Racing Wheel (USB `046d:c272` Xbox/PC, `046d:c268` PS/PC)
 
-**Version**: v0.14.0 (2026-07-16)
+**Applies to**: the `hid-logitech-dd` driver in this repository.
 
 Most of the attributes documented here are shared between the RS50 and G Pro (the two wheels share the settings code path). Attributes that are currently G Pro-only or RS50-only are called out inline.
 
@@ -167,7 +167,7 @@ Safety gates, each earned from a real incident:
 - an explicit `wheel_range` write supersedes any pending restore
   and resets the strike counter.
 
-`0` = detect-and-report only (the pre-2026-07-03 behaviour): the
+`0` = detect-and-report only: the
 change is still logged and `wheel_range` stays honest, but recovery
 is manual (`wheel_profile=0` then `wheel_range=<degrees>` once FFB
 is idle).
@@ -351,12 +351,9 @@ cat wheel_ffb_constant_sign    # -> 1
 echo 0 | sudo tee wheel_ffb_constant_sign
 ```
 
-If a future Wine release fixes the sign mismatch and the native
-convention starts working under Proton too, the default will flip to
-`0` and the attribute will become a legacy compatibility knob. Until
-then the inversion has been confirmed empirically on Assetto Corsa
-Competizione with this wheel; a test harness in `tests/ff_matrix_test.c`
-cross-checks each toggle value against native evdev expectations.
+The inversion is confirmed empirically on Assetto Corsa Competizione with this
+wheel; a test harness in `tests/ff_matrix_test.c` cross-checks each toggle value
+against native evdev expectations.
 
 ### wheel_spring_damping
 **Access**: Read/Write
@@ -374,7 +371,7 @@ game-uploaded spring ring - a growing back-and-forth oscillation that
 ends with the wheel's over-torque failsafe cutting power (observed
 live with Assetto Corsa EVO's map-load centring spring). Real wheels
 damp the spring inside the firmware servo loop; this knob restores
-that behaviour. `0` disables (the pre-2026-07 behaviour). The damping
+that behaviour. `0` disables it. The damping
 scales with the spring's own coefficient, so stiff springs get
 proportionally stronger damping.
 
@@ -650,18 +647,22 @@ cat wheel_response_curve
 # 64/64 points loaded (0 = built-in curve)
 ```
 
-**Status: implemented from the 2026-01-30 G Hub capture
-(`desktop_sensitivity`), not yet validated live - use `reset` if
-steering feels wrong after an upload. Whether curves persist across
-power cycles is unknown.**
+The wheel applies this curve to the steering axis it reports to the PC (base
+`0x80A4` axis 0, the same `wheel_sensitivity` uploads its slider curve to).
+`wheel_sensitivity` and `wheel_response_curve` both write that one axis-0 curve,
+so the last one written wins. The axis does not change until the wheel next
+moves: it sends no HID reports while held still, so an upload appears to do
+nothing until you nudge the wheel; `cat wheel_response_curve` reads the point
+count back from the wheel and is the honest check. Use `reset` if steering feels
+wrong after an upload. Whether curves persist across power cycles is untested.
 
 ### wheel_rev_level
 **Access**: Read/Write
 **Values**: `0`-`10` (number of rev LEDs lit)
-**Visibility**: real G PRO Racing Wheel only (hidden on RS50, including
-RS50 in G PRO compatibility mode - the two rims have different LED
-hardware; the RS50 gets the `wheel_led_*` LIGHTSYNC attributes instead,
-which are hidden on a real G PRO)
+**Availability**: real G PRO rim only. The attribute is present on every model,
+but the store returns `-EOPNOTSUPP` on hardware without the level-based rev-light
+feature (the RS50 uses the `wheel_led_*` LIGHTSYNC strip instead, which is hidden
+on a real G PRO).
 
 Rev-light level for the G PRO rim. The G PRO's rim lights are
 level-based: the host commands how many LEDs are lit (0-10) and the
@@ -834,11 +835,10 @@ no driver change. By its mode switch:
 These attributes provide compatibility with existing wheel management tools (e.g., Oversteer).
 The sysfs filenames use standard Oversteer names (without the `wheel_` prefix).
 
-**Note:** These are only created for the RS50. The G Pro Racing Wheel uses the G920 FFB
-layer, which already creates its own `range` attribute at the same path, so creating the
-`wheel_compat_range` alias would fail with `-EEXIST`. The rest of the compat aliases are
-skipped on the G Pro for consistency; reach Oversteer via the G920 FFB layer's attributes
-on that wheel.
+**Note:** These aliases are created for every wheel this driver binds (RS50 and
+G PRO). They exist so Oversteer, which looks for the new-lg4ff attribute names,
+can drive the wheel; the same settings are also available under their `wheel_*`
+names documented above.
 
 These attributes follow the de-facto Linux wheel convention (the
 new-lg4ff attribute names and scales) that Oversteer and similar tools
@@ -866,7 +866,7 @@ percent scale; the two stay in sync.
 **Access**: Read/Write
 **Values**: `0` to `65535` (raw; the FF_AUTOCENTER scale)
 
-A real, driver-emulated centring spring (no longer a stub): while
+A real, driver-emulated centring spring: while
 nonzero, the wheel pulls itself toward centre with a damped spring
 computed in the 500 Hz effect loop - firm within roughly the central
 eighth of the axis, like hardware autocenter on other wheels. Also
@@ -882,10 +882,8 @@ without a game, or as idle centring.
 Global output scales for the emulated `FF_SPRING` / `FF_DAMPER` /
 `FF_FRICTION` effect classes, matching the new-lg4ff semantics: 100 =
 effects play as the game commanded, lower values tame that effect
-class across all games, 0 mutes it. Note `damper_level` scales DAMPER
-EFFECTS from games; the wheel's own firmware damping remains
-`wheel_damping`. (Earlier revisions aliased `damper_level` to
-`wheel_damping`; the semantics now match what tools expect.)
+class across all games, 0 mutes it. `damper_level` scales DAMPER
+effects from games; the wheel's own firmware damping is `wheel_damping`.
 
 ---
 

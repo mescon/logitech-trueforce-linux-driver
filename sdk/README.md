@@ -1,19 +1,32 @@
 # Logitech SDK Inventory
 
-This directory holds copies of Logitech Windows SDK artifacts we use to reason about the driver's Linux-side API shape and the Wine bridge design.
+This directory documents the Logitech Windows SDK artifacts used to reason about
+the driver's Linux-side API shape and the Wine bridge design. The SDK files
+themselves are Logitech's and are **not** redistributed here (see the licensing
+note below); what is tracked is our own derived research, chiefly the export
+listings. Where an SDK file is referenced, obtain it as noted.
 
-## What's here
+## What's here (tracked) and what you supply
 
-| Path | Contents | Origin |
+| Path | Contents | Tracked? |
 |---|---|---|
-| `Include/LogitechSteeringWheelLib.h` | Public C header for the legacy Steering Wheel SDK | Published 2015 (C# + C++) |
-| `Include/LogitechGSDK.cs` | C# binding for the same legacy SDK | Same |
-| `Lib/` | Prebuilt .lib files for the legacy SDK | Same |
-| `Doc/`, `Demo/`, `Samples/` | Reference material and sample projects | Same |
-| `trueforce_1_3_11/trueforce_sdk_{x64,x86}.dll` | **Trueforce SDK 1.3.11** (post-2020, private to partnered developers) | Extracted from a game install |
-| `trueforce_1_3_11/exports_x64.txt` | Full export listing (75 symbols) | `winedump -j export` |
-| `wheel_9_1_0/logi_steering_wheel_{x64,x86}.dll` | **Wheel SDK 9.1.0** (successor to the 2015 public SDK) | Extracted from a game install |
-| `wheel_9_1_0/exports_x64.txt` | Full export listing (58 symbols) | `winedump -j export` |
+| `trueforce_1_3_11/exports_x64.txt` | Trueforce SDK 1.3.11 export listing (75 symbols), from `winedump -j export` | yes (our research) |
+| `wheel_9_1_0/exports_x64.txt` | Wheel SDK 9.1.0 export listing (58 symbols) | yes (our research) |
+| `Include/LogitechSteeringWheelLib.h`, `Include/LogitechGSDK.cs` | Public Steering Wheel SDK (2015) C header + C# binding | no - see "Obtaining the SDK files" |
+| `trueforce_1_3_11/*.dll`, `wheel_9_1_0/*.dll`, `Logi/` | Trueforce SDK 1.3.11 and Wheel SDK 9.1.0 DLLs | no - see "Obtaining the SDK files" |
+
+## Obtaining the SDK files
+
+- **Public Steering Wheel SDK (2015)** - the `LogitechSteeringWheelLib.h` header
+  and `LogitechGSDK.cs` binding ship in Logitech's public Gaming SDK, from the
+  [Logitech G developer lab](https://www.logitechg.com/en-us/innovation/developer-lab.html).
+  They are only needed for reference; the driver does not compile against them.
+- **Trueforce / Wheel SDK DLLs** - not public. Copy them from a Logitech G HUB
+  install (Windows, or unpacked into a throwaway wine prefix); see "DLL layout"
+  below for the exact paths.
+
+Drop either into this `sdk/` tree if you want them locally; the DLLs and the
+public headers are listed in `sdk/.gitignore`, so they stay out of the repo.
 
 ## Legacy public SDK vs newer SDKs - what changed
 
@@ -169,9 +182,9 @@ cause of missing force feedback.
 
 ## Licensing note
 
-The DLL files in `trueforce_1_3_11/`, `wheel_9_1_0/`, and `Logi/` are
-Logitech's copyrighted binaries. They are kept locally for reference /
-interoperability purposes only. We do not redistribute them publicly;
-all three trees are listed in `sdk/.gitignore`. The export listings we
-produce alongside the binaries are derived research data and are
-tracked.
+The Logitech SDK files - the DLLs in `trueforce_1_3_11/`, `wheel_9_1_0/` and
+`Logi/`, and the public SDK headers in `Include/` - are Logitech's copyrighted
+material. They are kept locally for reference and interoperability only and are
+not redistributed here; every one of those paths is listed in `sdk/.gitignore`.
+Obtain them from Logitech as described in "Obtaining the SDK files". Only the
+export listings we generate ourselves are derived research data and tracked.
