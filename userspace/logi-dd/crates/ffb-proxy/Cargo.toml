@@ -10,5 +10,5 @@ name = "logi-ffb"
 path = "src/main.rs"
 
 [dependencies]
-nix = { version = "0.31", features = ["ioctl", "poll", "fs"] }
+nix = { version = "0.31", features = ["ioctl", "poll", "fs", "signal"] }
 libc = "0.2"
