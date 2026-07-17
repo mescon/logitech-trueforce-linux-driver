@@ -9,7 +9,7 @@
 %global modver   0.12.1
 
 Name:           logitech-trueforce-dkms
-Version:        0.12.1
+Version:        0.15.0
 Release:        1
 Summary:        DKMS kernel driver for Logitech TrueForce direct-drive wheels (RS50, G PRO)
 License:        GPL-2.0-only
@@ -112,7 +112,7 @@ fi
 dkms remove -m %{module} -v %{modver} --all --rpm_safe_upgrade >/dev/null 2>&1 || true
 
 %changelog
-* Fri Jul 17 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.12.1-1
+* Sat Jul 18 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.15.0-1
 - Add a logitech-trueforce-tools subpackage with logi-ffb (DirectInput
   force-feedback proxy) and logi-dd-tui (settings TUI), built from the
   userspace/logi-dd Rust workspace, plus the udev rule for /dev/uhid access.

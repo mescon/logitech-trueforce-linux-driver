@@ -19,13 +19,13 @@
 # id_table to the direct-drive wheel PIDs).
 
 %global kmod_name       logitech-trueforce
-%global upstream_ver    0.14.0
+%global upstream_ver    0.15.0
 # Out-of-tree kmod: no separate debug/debugsource package.
 %global debug_package %{nil}
 
 Name:           %{kmod_name}-kmod
 Version:        %{upstream_ver}
-Release:        2%{?dist}
+Release:        1%{?dist}
 Summary:        Kernel module for Logitech TrueForce direct-drive wheels (RS50, G PRO)
 License:        GPL-2.0-only
 URL:            https://github.com/mescon/logitech-trueforce-linux-driver
@@ -128,7 +128,7 @@ install -D -m 0644 udev/71-logi-ffb-uhid.rules \
     "%{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules"
 
 %changelog
-* Fri Jul 17 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.14.0-2
+* Sat Jul 18 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.15.0-1
 - Add a logitech-trueforce-tools subpackage with logi-ffb (DirectInput
   force-feedback proxy) and logi-dd-tui (settings TUI), built from the
   userspace/logi-dd Rust workspace, plus the udev rule for /dev/uhid access.

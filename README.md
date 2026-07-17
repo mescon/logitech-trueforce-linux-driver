@@ -640,6 +640,21 @@ cd userspace/logi-dd && cargo build --release
 See [`userspace/logi-dd/README.md`](userspace/logi-dd/README.md) for features,
 keys and permissions.
 
+`userspace/logi-dd/crates/ffb-proxy/` builds **logi-ffb**, a DirectInput
+force-feedback proxy. It presents a virtual force-feedback wheel that mirrors the
+real wheel's input and forwards the DirectInput effects a game sends onto the
+real wheel's own force feedback, so sims that drive FFB through DirectInput over
+hidraw (see "DirectInput force feedback and `PROTON_ENABLE_HIDRAW`" below) get
+force feedback that would otherwise be lost. Prepend it to a game command:
+
+```bash
+cd userspace/logi-dd && cargo build --release
+logi-ffb <game command>      # or paste `logi-ffb %command%` into Steam launch options
+```
+
+See [`userspace/logi-dd/crates/ffb-proxy/README.md`](userspace/logi-dd/crates/ffb-proxy/README.md)
+for how it works and its requirements.
+
 `userspace/libtrueforce/` is a native-Linux C reimplementation of
 Logitech's TrueForce SDK. **You do not need it for the ACC + TF
 recipe above** - that path runs Logitech's own signed DLLs through
@@ -647,8 +662,9 @@ Wine, which talk directly to our kernel driver. libtrueforce exists
 for native-Linux applications that want to drive TrueForce without
 going through Wine (for example a telemetry-driven haptic generator
 or a custom test rig). It has its own README and tests under
-`userspace/libtrueforce/`. Nothing in `userspace/` is built or
-installed by the regular install flow.
+`userspace/libtrueforce/`. The distribution packages (AUR, `.deb`,
+COPR, OBS) build and install both **logi-dd** and **logi-ffb** to
+`/usr/bin`; libtrueforce is not part of the regular install flow.
 
 ## Game compatibility
 
@@ -666,16 +682,27 @@ path (which is why ACC and AC EVO keep full FFB with `PROTON_ENABLE_HIDRAW=1`).
 It does affect a sim that drives FFB through **DirectInput** rather than the
 SDK (Le Mans Ultimate, for example): with `PROTON_ENABLE_HIDRAW=1` Wine talks to
 the wheel over hidraw, looks for a PID collection to send effects to, finds
-none, and the game loses force feedback while its inputs keep working. **Run
-DirectInput-FFB sims with `PROTON_ENABLE_HIDRAW=0`**, which gives force feedback
-through evdev.
+none, and the game loses force feedback while its inputs keep working.
 
-The `inject_pid` module parameter is an incomplete attempt to fill that gap by
-injecting a PID output collection on interface 0. It does **not** currently work
-on this wheel: the injected PID collection uses HID report IDs, but the joystick
-report has none, and mixing the two makes the joystick input reports unparseable
-so no axis input reaches the game. It is off by default and there is no reason
-to enable it; use `PROTON_ENABLE_HIDRAW=0` for DirectInput FFB instead.
+Two ways to get force feedback in those sims:
+
+- **The simple one:** run them with `PROTON_ENABLE_HIDRAW=0`, which routes force
+  feedback through evdev.
+- **logi-ffb** (new in 0.15.0): prepend `logi-ffb %command%` to the game's
+  launch (see "Userspace components"). It presents a virtual wheel that *does*
+  advertise a PID collection, catches the DirectInput effects the game sends it,
+  and forwards them to the real wheel's force feedback, so FFB works even on the
+  hidraw path. The mechanism is validated on hardware (effects reach the wheel as
+  real force); in-game validation with a DirectInput sim is still wanted, so if
+  you have Le Mans Ultimate or a similar title, testing and reporting back is
+  very welcome.
+
+The `inject_pid` module parameter was an earlier, in-kernel attempt at the same
+goal, injecting a PID output collection on interface 0. It does **not** work on
+this wheel: the injected PID collection uses HID report IDs, but the joystick
+report has none, and mixing the two makes the joystick input reports unparseable,
+so no axis input reaches the game. It is off by default and superseded by
+logi-ffb; there is no reason to enable it.
 
 ## Technical details
 

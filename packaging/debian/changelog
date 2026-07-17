@@ -1,3 +1,11 @@
+logitech-trueforce-dkms (0.15.0-1) unstable; urgency=medium
+
+  * Build and install the userspace tools: logi-ffb (DirectInput force-feedback
+    proxy) and logi-dd-tui (settings TUI), from the userspace/logi-dd Rust
+    workspace, plus the udev rule granting the input group access to /dev/uhid.
+
+ -- mescon <5875228+mescon@users.noreply.github.com>  Sat, 18 Jul 2026 12:00:00 +0000
+
 logitech-trueforce-dkms (0.12.1-1) unstable; urgency=medium
 
   * Debian/Ubuntu DKMS packaging for the Logitech direct-drive wheel driver
