@@ -55,15 +55,13 @@ extern "C" fn handle_stop_signal(_signal: libc::c_int) {
 }
 
 /// Install `handle_stop_signal` for `SIGINT` and `SIGTERM`.
-///
-/// # Safety
-/// `sigaction` is unsafe because a handler that is not async-signal-safe
-/// (or that panics/unwinds across the signal boundary) can corrupt process
-/// state if invoked mid-syscall. `handle_stop_signal` performs nothing but
-/// an atomic store, so installing it here is sound.
 fn install_daemon_signal_handlers() -> crate::Result<()> {
     let action = SigAction::new(SigHandler::Handler(handle_stop_signal), SaFlags::empty(), SigSet::empty());
     for sig in [Signal::SIGINT, Signal::SIGTERM] {
+        // SAFETY: `sigaction` is unsafe because a handler that is not async-signal-safe
+        // (or that panics/unwinds across the signal boundary) can corrupt process
+        // state if invoked mid-syscall. `handle_stop_signal` performs nothing but
+        // an atomic store, so installing it here is sound.
         unsafe { signal::sigaction(sig, &action) }
             .map_err(|e| crate::Error::Io(format!("sigaction({sig})"), std::io::Error::from(e)))?;
     }
@@ -104,14 +102,17 @@ fn run_daemon() -> crate::Result<ExitCode> {
 fn run_game(cmd: Vec<String>) -> crate::Result<ExitCode> {
     let paths = proxy::discover_wheel()?;
     let (vendor, product, name) = (paths.vendor, paths.product, paths.name.clone());
-    let mut proxy = Proxy::new(paths)?;
 
+    // Compute and apply enumeration steering BEFORE bringing up the proxy, so a
+    // steering failure cannot leave an abandoned proxy thread or an FF sink that
+    // was never shut down.
+    let plan = steering::plan_for(vendor, product, &name);
+    steering::apply(&plan, std::env::var("WINEPREFIX").ok().as_deref())?;
+
+    let mut proxy = Proxy::new(paths)?;
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = Arc::clone(&stop);
     let proxy_thread = std::thread::spawn(move || proxy.run(&stop_for_thread));
-
-    let plan = steering::plan_for(vendor, product, &name);
-    steering::apply(&plan, std::env::var("WINEPREFIX").ok().as_deref())?;
 
     let mut command = std::process::Command::new(&cmd[0]);
     command.args(&cmd[1..]);
