@@ -10,12 +10,13 @@ needs a copy of Logitech G HUB to source files from.
 
 ## 0. Will this work for me?
 
-- **Wheels**: RS50 (`046d:c276` / `046d:c272`) and G PRO Racing Wheel
-  (`046d:c272` Xbox/PC, `046d:c268` PS/PC). G920/G923 keep working
-  through this module too, but the features described here target the
-  direct-drive family. (G923 owners: your wheel speaks the same
-  TrueForce protocol, and TrueForce under Proton may already work via
-  steps 2-3 - unverified, testers wanted in [issue #27].)
+- **Wheels**: the Logitech **RS50** and the **G PRO Racing Wheel** (both the
+  Xbox/PC and PS/PC versions). If you have a G920, G923 or G29 instead, those
+  keep working as they did before, but the extras this guide covers (TrueForce
+  tuning, pedal and handbrake curves) are for the direct-drive RS50 and G PRO.
+  (G923 owners: your wheel uses the same TrueForce protocol, so TrueForce under
+  Proton may already work via steps 2-3 - not yet confirmed, testers wanted in
+  [issue #27].)
 - **Games, verified end-to-end**: Assetto Corsa Competizione and
   Assetto Corsa EVO under Proton, with simultaneous steering FFB and
   TrueForce. Other Logitech-SDK sims (AMS2, Assetto Corsa, rFactor 2,
@@ -72,8 +73,8 @@ cd logitech-trueforce-linux-driver
 sudo ./tools/setup.sh
 ```
 
-It is idempotent - run it again after `git pull` or a kernel update
-and it converges. It finishes with a diagnosis of every layer; you
+It is safe to run again - after a `git pull` or a kernel update, just
+re-run it. It ends by checking every part of the setup is in place; you
 can re-run that health check alone at any time, as your normal user:
 
 ```bash
@@ -113,6 +114,28 @@ sudo modprobe -r hid-logitech-dd 2>/dev/null; sudo modprobe hid-logitech-dd
 
 At this point every game with standard force feedback already works.
 The rest of this guide is about TrueForce and the Proton sims.
+
+### The settings app: logi-dd (recommended)
+
+You can change every wheel setting by writing to files (the commands in step 4
+show how), but the friendly way is **logi-dd**, a small terminal app that puts
+force feedback, rotation range, LEDs, onboard profiles, and the pedal and
+handbrake response curves on one screen, with a G HUB-style curve editor. Most
+people will want it.
+
+It builds from source with Rust (`rustup` from your distro, or
+[rustup.rs](https://rustup.rs)):
+
+```bash
+cd userspace/logi-dd
+cargo build --release
+./target/release/logi-dd-tui
+```
+
+Changing settings needs your user to be in the `input` group (a one-time
+`sudo usermod -aG input "$USER"`, then log out and back in). Full features,
+keys and permissions are in
+[`userspace/logi-dd/README.md`](../userspace/logi-dd/README.md).
 
 ## 1a. Atomic / immutable distros (Bazzite, Silverblue, Kinoite)
 
@@ -216,7 +239,7 @@ not sudo):
 logitech-trueforce-install-shim --all-steam
 ```
 
-Games installed later: re-run that command (it is idempotent), or
+Games installed later: re-run that command (it is safe to repeat), or
 `--prefix /path/to/pfx` for non-Steam prefixes (Heroic, Lutris).
 
 ## 3. Per-game Steam setup
@@ -234,8 +257,7 @@ For each sim, in Steam:
    virtual gamepad.
 
 **(RS50, optional)** the SDK accepts the RS50's **native** identity
-(`046d:c276`), verified end-to-end in AC EVO (usbmon-confirmed TrueForce
-stream), and native mode unlocks the full 2700 range, so you do not need to do
+(`046d:c276`), verified end-to-end in AC EVO, and native mode unlocks the full 2700 range, so you do not need to do
 anything special. If a particular game's SDK build does not recognise the native
 PID, you can switch the wheel into "G PRO compatibility" mode via its OLED menu
 as a fallback; if TrueForce does not engage in native, try compat and please
@@ -243,8 +265,12 @@ open an issue noting the game.
 
 ## 4. Set your steering range, then race
 
-The wheel's compat-mode factory default is 90 degrees. Set what you
-actually want (this survives game launches - see below):
+The wheel's compat-mode factory default is 90 degrees, so set what you actually
+want (this survives game launches - see below). The easy way is **logi-dd** (set
+it up above): open it, and set **Rotation range** and **FFB strength** in the
+menu.
+
+If you would rather not build logi-dd, the same settings are plain files:
 
 ```bash
 H=$(ls -d /sys/class/hidraw/*/device/wheel_range | head -1 | xargs dirname)

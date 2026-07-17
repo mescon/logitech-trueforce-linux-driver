@@ -33,9 +33,11 @@ You get the full evdev force-feedback suite (constant, spring, damper,
 friction, inertia, periodic, ramp, rumble, gain), all buttons,
 encoders, paddles, hat switch, 16-bit pedal axes, and G Hub-equivalent
 settings (rotation range, FFB strength / damping / TRUEFORCE / filter,
-pedal curves, LIGHTSYNC LEDs) exposed via sysfs. **TrueForce haptics
-work in supported sims under Proton** via Logitech's own signed SDK
-DLLs - see the recipe below.
+pedal and handbrake curves, LIGHTSYNC LEDs). You configure the wheel with
+**logi-dd**, an included terminal settings app with a G HUB-style curve
+editor (`userspace/logi-dd/`), or directly through sysfs. **TrueForce
+haptics work in supported sims under Proton** via Logitech's own signed
+SDK DLLs - see the recipe below.
 
 This is a fork of the in-kernel `hid-logitech-hidpp` driver, **scoped to
 only the Logitech direct-drive wheels** - the RS50 and G PRO, across their
