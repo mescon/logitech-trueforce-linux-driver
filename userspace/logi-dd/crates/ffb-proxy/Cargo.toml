@@ -1,15 +1,14 @@
 [package]
-name = "logi-dd-tui"
+name = "ffb-proxy"
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "logi-dd"
+name = "logi-ffb"
 path = "src/main.rs"
 
 [dependencies]
-logi-dd-core = { path = "../logi-dd-core" }
-ratatui = "0.28"
-crossterm = "0.28"
+nix = { version = "0.31", features = ["ioctl", "poll", "fs", "signal"] }
+libc = "0.2"

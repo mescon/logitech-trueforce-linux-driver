@@ -26,22 +26,22 @@ to `echo` values into sysfs by hand.
 
 ## Building
 
-logi-dd is a Rust workspace (`logi-dd-core` library + `logi-dd-tui` binary).
-It needs a Rust toolchain (edition 2021, Rust 1.74 or newer) and no system
-libraries beyond the standard terminal.
+logi-dd is a Rust workspace: a `logi-dd-core` library and the `logi-dd-tui`
+crate that builds the `logi-dd` binary. It needs a Rust toolchain (edition
+2021, Rust 1.74 or newer) and no system libraries beyond the standard terminal.
 
 ```bash
 cd userspace/logi-dd
 cargo build --release
 ```
 
-The binary lands at `userspace/logi-dd/target/release/logi-dd-tui`. Copy it
+The binary lands at `userspace/logi-dd/target/release/logi-dd`. Copy it
 somewhere on your `PATH` if you like, or run it in place.
 
 ## Running
 
 ```bash
-./target/release/logi-dd-tui
+./target/release/logi-dd
 ```
 
 logi-dd finds the wheel automatically (it looks for the driver's sysfs
@@ -79,9 +79,30 @@ Enter commits, Esc cancels.
 selected field, `+` / `-` add or delete a point, Enter uploads the curve, Esc
 cancels.
 
+## DirectInput force feedback (`logi-ffb`)
+
+DirectInput games under Wine/Proton that need `PROTON_ENABLE_HIDRAW=1` get no
+force feedback on the real wheel, because its HID descriptor has no PID
+(force-feedback) collection. The `logi-ffb` binary, built from the
+`ffb-proxy` crate in this workspace, fixes that: it presents a virtual
+force-feedback wheel and forwards effects onto the real wheel's existing
+kernel evdev FF interface, so the hidraw path gets the same force feedback
+the native path already has.
+
+Usage is a single prepended command, or the same string pasted into a Steam
+title's launch options:
+
+```
+logi-ffb %command%
+```
+
+See [`crates/ffb-proxy/README.md`](crates/ffb-proxy/README.md) for how it
+works, build instructions, and the standalone `--daemon` mode.
+
 ## Layout
 
 - `crates/logi-dd-core` - the library: the setting registry, typed values,
   validation, and the sysfs read/write layer. Reusable without the TUI.
 - `crates/logi-dd-tui` - the terminal UI (ratatui + crossterm) and the curve
   editor.
+- `crates/ffb-proxy` - the `logi-ffb` DirectInput force-feedback proxy binary.

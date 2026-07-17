@@ -5,7 +5,8 @@
 #
 #   packaging/debian/build-deb.sh [output-dir]
 #
-# Needs: dpkg-dev, debhelper, dkms, dh-dkms (or dkms providing dh_dkms).
+# Needs: dpkg-dev, debhelper, dkms, dh-dkms (or dkms providing dh_dkms), cargo.
+# Also builds and packages logi-ffb and logi-dd from userspace/logi-dd.
 set -euo pipefail
 
 repo="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"

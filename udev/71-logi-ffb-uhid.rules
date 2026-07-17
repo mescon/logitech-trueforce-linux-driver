@@ -1,0 +1,4 @@
+# Grant the "input" group read/write on /dev/uhid so the logi-ffb DirectInput
+# force-feedback proxy can create its virtual wheel without root. The same
+# "input" group already governs the wheel's sysfs attributes and hidraw node.
+KERNEL=="uhid", GROUP="input", MODE="0660"

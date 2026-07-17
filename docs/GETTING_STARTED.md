@@ -129,7 +129,7 @@ It builds from source with Rust (`rustup` from your distro, or
 ```bash
 cd userspace/logi-dd
 cargo build --release
-./target/release/logi-dd-tui
+./target/release/logi-dd
 ```
 
 Changing settings needs your user to be in the `input` group (a one-time

@@ -15,9 +15,17 @@ and it loads and registers the `logitech-dd` driver.
 - `packaging/akmods/logitech-trueforce-kmod.spec` builds akmod-only when
   `kernels` is undefined (it passes `kmodtool --akmod`); no kernel-devel is
   needed at build time.
+- The same spec also builds a `logitech-trueforce-tools` subpackage with the
+  userspace companions, `logi-ffb` (a DirectInput force-feedback proxy) and
+  `logi-dd` (a terminal settings UI), from the `userspace/logi-dd` Rust
+  workspace. This pulls `cargo`/`rust` into the build dependencies alongside
+  `gcc`/`make`/`kernel-rpm-macros`.
+- The userspace binaries are built with `cargo`, which needs build-time
+  network access to fetch crate dependencies (nothing is vendored), so the
+  COPR project must have build networking enabled.
 - `.copr/Makefile` is COPR's "make srpm" entrypoint: it builds the source
   tarball from the git checkout and emits the SRPM. COPR rebuilds that SRPM
-  per chroot into `akmod-logitech-trueforce`.
+  per chroot into `akmod-logitech-trueforce` (plus `logitech-trueforce-tools`).
 
 ## Automated publishing
 
@@ -58,8 +66,10 @@ Enabling automatic rebuilds on new commits via a GitHub webhook is optional.
 sudo dnf install -y \
   https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
 sudo dnf copr enable <owner>/logitech-trueforce
-sudo dnf install akmod-logitech-trueforce
+sudo dnf install akmod-logitech-trueforce logitech-trueforce-tools
 ```
 
 The first `akmods` run builds the module for the running kernel (and every
-kernel installed afterwards). See `docs/GETTING_STARTED.md` for the full flow.
+kernel installed afterwards). `logitech-trueforce-tools` installs `logi-ffb`
+and `logi-dd` to `/usr/bin`, built from the same repo checkout. See
+`docs/GETTING_STARTED.md` for the full flow.
