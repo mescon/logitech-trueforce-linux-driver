@@ -18,6 +18,7 @@ Source0:        logitech-trueforce-linux-driver-%{version}.tar.gz
 BuildArch:      noarch
 BuildRequires:  cargo, rust
 Requires:       dkms >= 2.1.0.0
+Requires:       logitech-trueforce-tools
 Requires(post): dkms
 Requires(preun): dkms
 # The user needs kernel headers + a compiler for DKMS to build against.
@@ -59,6 +60,8 @@ to create its virtual force-feedback device.
 %build
 # Nothing to compile here for the DKMS package: DKMS builds the module on
 # the target machine. The userspace companions do build here.
+# cargo fetches crate dependencies over the network at build time (nothing
+# is vendored), so the OBS project must allow build-time network access.
 cargo build --release --manifest-path userspace/logi-dd/Cargo.toml
 
 %install

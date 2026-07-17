@@ -20,6 +20,9 @@ and it loads and registers the `logitech-dd` driver.
   `logi-dd-tui` (a terminal settings UI), from the `userspace/logi-dd` Rust
   workspace. This pulls `cargo`/`rust` into the build dependencies alongside
   `gcc`/`make`/`kernel-rpm-macros`.
+- The userspace binaries are built with `cargo`, which needs build-time
+  network access to fetch crate dependencies (nothing is vendored), so the
+  COPR project must have build networking enabled.
 - `.copr/Makefile` is COPR's "make srpm" entrypoint: it builds the source
   tarball from the git checkout and emits the SRPM. COPR rebuilds that SRPM
   per chroot into `akmod-logitech-trueforce` (plus `logitech-trueforce-tools`).

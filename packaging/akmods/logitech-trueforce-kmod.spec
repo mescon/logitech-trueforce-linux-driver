@@ -60,6 +60,10 @@ hid-logitech-hidpp, which continues to serve every other Logitech device.
 %package -n %{kmod_name}-kmod-common
 Summary:        udev rule for the %{kmod_name} kernel module
 BuildArch:      noarch
+# kmodtool wires each generated kmod-%%{kmod_name}-<kver> package to Require
+# this -kmod-common package, so installing the driver always pulls the
+# userspace tools in too.
+Requires:       %{kmod_name}-tools
 
 %description -n %{kmod_name}-kmod-common
 udev rule granting the "input" group read/write access to the wheel's
@@ -100,6 +104,8 @@ for kver in %{?kernel_versions}; do
 done
 # Userspace companions: not kernel-specific, built once regardless of the
 # akmod-vs-static-kmod mode selected above.
+# cargo fetches crate dependencies over the network at build time (nothing
+# is vendored); enable networking for the COPR project or the build.
 cargo build --release --manifest-path userspace/logi-dd/Cargo.toml
 
 %install
