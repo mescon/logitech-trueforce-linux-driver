@@ -8,6 +8,7 @@ arch=('x86_64')
 url="https://github.com/mescon/logitech-trueforce-linux-driver"
 license=('GPL-2.0-only')
 depends=('dkms')
+makedepends=('cargo')
 optdepends=('oversteer: GUI to configure wheel settings'
             'wine: run Logitech SDK DLLs for TrueForce in Proton sims'
             'python: required by the TrueForce Proton shim installer')
@@ -16,6 +17,14 @@ conflicts=("$_dkmsname")
 install="$pkgname.install"
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('1efa005c4f6e6e77889e698cb8045b6526d63002c34cb4b21906cadb4d3a4ea6')
+
+build() {
+	local _src="$srcdir/logitech-trueforce-linux-driver-$pkgver"
+
+	# logi-ffb (DirectInput FFB proxy) and logi-dd-tui (settings TUI), the
+	# userspace companions to the kernel module.
+	cargo build --release --manifest-path "$_src/userspace/logi-dd/Cargo.toml"
+}
 
 package() {
 	local _src="$srcdir/logitech-trueforce-linux-driver-$pkgver"
@@ -37,9 +46,20 @@ package() {
 	# Build-time identifier the loaded module reports (Kbuild reads it).
 	echo "v$pkgver" > "$_dst/.git_hash"
 
-	# udev rule: hand the wheel's sysfs + hidraw nodes to the input group.
+	# udev rules: hand the wheel's sysfs + hidraw nodes, and /dev/uhid for
+	# the logi-ffb virtual-device proxy, to the input group.
 	install -Dm644 "$_src/udev/70-logitech-trueforce.rules" \
 		"$pkgdir/usr/lib/udev/rules.d/70-logitech-trueforce.rules"
+	install -Dm644 "$_src/udev/71-logi-ffb-uhid.rules" \
+		"$pkgdir/usr/lib/udev/rules.d/71-logi-ffb-uhid.rules"
+
+	# Userspace binaries: the DirectInput FFB proxy and the settings TUI.
+	install -Dm755 \
+		"$_src/userspace/logi-dd/target/release/logi-ffb" \
+		"$pkgdir/usr/bin/logi-ffb"
+	install -Dm755 \
+		"$_src/userspace/logi-dd/target/release/logi-dd-tui" \
+		"$pkgdir/usr/bin/logi-dd-tui"
 
 	# TrueForce-in-Proton helper (resolves the SDK DLL dir via --sdk-dir /
 	# $LOGITECH_TRUEFORCE_SDK_DIR / ~/.local/share/logitech-trueforce/sdk).

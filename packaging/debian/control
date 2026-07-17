@@ -2,14 +2,14 @@ Source: logitech-trueforce-dkms
 Section: kernel
 Priority: optional
 Maintainer: mescon <5875228+mescon@users.noreply.github.com>
-Build-Depends: debhelper-compat (= 13), dkms, dh-dkms | dkms (<< 3.0.11)
+Build-Depends: debhelper-compat (= 13), dkms, dh-dkms | dkms (<< 3.0.11), cargo
 Standards-Version: 4.6.2
 Homepage: https://github.com/mescon/logitech-trueforce-linux-driver
 Rules-Requires-Root: no
 
 Package: logitech-trueforce-dkms
-Architecture: all
-Depends: ${misc:Depends}, dkms
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}, dkms
 Suggests: oversteer, wine
 Description: DKMS kernel driver for Logitech TrueForce direct-drive wheels
  Force feedback, TrueForce texture routing, and G HUB-equivalent settings
@@ -22,6 +22,10 @@ Description: DKMS kernel driver for Logitech TrueForce direct-drive wheels
  G PRO PS/PC). It coexists with the in-tree hid-logitech-hidpp driver,
  which continues to serve every other Logitech device, so no blacklist is
  needed.
+ .
+ Also installs two userspace companions built from the repo's Rust
+ workspace: logi-ffb, a DirectInput force-feedback proxy, and logi-dd-tui,
+ a terminal settings UI.
  .
  TrueForce in Proton sims additionally needs Logitech's proprietary signed
  SDK DLLs, which are not shipped by this package; see the bundled Getting

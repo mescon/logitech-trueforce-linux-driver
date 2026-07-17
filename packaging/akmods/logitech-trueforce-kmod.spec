@@ -25,7 +25,7 @@
 
 Name:           %{kmod_name}-kmod
 Version:        %{upstream_ver}
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Kernel module for Logitech TrueForce direct-drive wheels (RS50, G PRO)
 License:        GPL-2.0-only
 URL:            https://github.com/mescon/logitech-trueforce-linux-driver
@@ -33,6 +33,8 @@ Source0:        %{url}/archive/refs/tags/v%{upstream_ver}.tar.gz#/%{name}-%{upst
 
 BuildRequires:  kmodtool
 BuildRequires:  gcc, make, kernel-rpm-macros
+# Userspace companions (logi-ffb, logi-dd-tui) built alongside the module.
+BuildRequires:  cargo, rust
 
 # Two build modes from one spec, selected by whether `kernels` is defined:
 #   * kernels defined      -> compile per-kernel kmod-%%{kmod_name}-<kver>
@@ -66,6 +68,24 @@ wheel_* sysfs attributes and hidraw nodes, so settings do not need root.
 %files -n %{kmod_name}-kmod-common
 %{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules
 
+# Userspace companions are ordinary compiled binaries (arch-specific, not
+# tied to a kernel version), so they get their own subpackage rather than
+# joining the noarch -common package or the per-kernel kmod packages.
+%package -n %{kmod_name}-tools
+Summary:        Userspace tools for the %{kmod_name} direct-drive wheel driver
+BuildRequires:  cargo, rust
+
+%description -n %{kmod_name}-tools
+logi-ffb, a DirectInput force-feedback proxy, and logi-dd-tui, a terminal
+settings UI, for the Logitech direct-drive wheel driver. Includes the udev
+rule granting the "input" group access to /dev/uhid, which logi-ffb needs
+to create its virtual force-feedback device.
+
+%files -n %{kmod_name}-tools
+%{_bindir}/logi-ffb
+%{_bindir}/logi-dd-tui
+%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
+
 %prep
 %setup -q -n logitech-trueforce-linux-driver-%{upstream_ver}
 # One build tree per target kernel (kmodtool convention).
@@ -78,6 +98,9 @@ done
 for kver in %{?kernel_versions}; do
     make -C "${kver##*___}" M="$PWD/_kmod_build_${kver%%___*}" modules
 done
+# Userspace companions: not kernel-specific, built once regardless of the
+# akmod-vs-static-kmod mode selected above.
+cargo build --release --manifest-path userspace/logi-dd/Cargo.toml
 
 %install
 for kver in %{?kernel_versions}; do
@@ -90,7 +113,20 @@ done
 install -D -m 0644 udev/70-logitech-trueforce.rules \
     "%{buildroot}%{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules"
 
+# Userspace binaries + their udev rule ship in the -tools package.
+install -D -m 0755 userspace/logi-dd/target/release/logi-ffb \
+    "%{buildroot}%{_bindir}/logi-ffb"
+install -D -m 0755 userspace/logi-dd/target/release/logi-dd-tui \
+    "%{buildroot}%{_bindir}/logi-dd-tui"
+install -D -m 0644 udev/71-logi-ffb-uhid.rules \
+    "%{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules"
+
 %changelog
+* Fri Jul 17 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.14.0-2
+- Add a logitech-trueforce-tools subpackage with logi-ffb (DirectInput
+  force-feedback proxy) and logi-dd-tui (settings TUI), built from the
+  userspace/logi-dd Rust workspace, plus the udev rule for /dev/uhid access.
+
 * Thu Jul 09 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.12.1-1
 - kmod package for atomic distros (Bazzite/Silverblue/Kinoite). Verified on
   Fedora Silverblue 44: builds in a toolbox, layers with rpm-ostree, and the
