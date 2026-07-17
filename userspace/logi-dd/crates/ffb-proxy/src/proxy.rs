@@ -211,12 +211,14 @@ impl Proxy {
                     // sends a one-byte Effect Type via Set_Report(Feature),
                     // and we assign the block index (the device's job, not
                     // the host's), record it via the same Create handling
-                    // the Output path uses, and ack. An unrecognized type
-                    // byte or empty body still gets an ack (err 0) so the
-                    // host is never left blocked on this request; we simply
-                    // skip creating a block for it.
+                    // the Output path uses, and ack. Set_Report `data` carries
+                    // the report id in byte 0 (hidraw passes the whole buffer
+                    // for a numbered report), so the Effect Type is data[1].
+                    // An unrecognized type byte or short body still gets an ack
+                    // (err 0) so the host is never left blocked on this request;
+                    // we simply skip creating a block for it.
                     Ok(uhid::Event::SetReport { rnum: 0x54, data, id, .. }) => {
-                        if let Some(kind) = data.first().and_then(|&b| pidff::effect_kind_from_type_byte(b)) {
+                        if let Some(kind) = data.get(1).and_then(|&b| pidff::effect_kind_from_type_byte(b)) {
                             let block = assign_block(&mut self.next_block);
                             self.last_created_block = block;
                             if let Err(e) = self.sink.apply(pidff::EffectOp::Create { block, kind }) {
@@ -229,14 +231,13 @@ impl Proxy {
                     }
 
                     // Any other Feature Set_Report (e.g. Device Control,
-                    // 0x50): best-effort, reuse the Output decoder by
-                    // prepending the report id byte it expects, apply if it
-                    // decodes to something, then ack regardless.
-                    Ok(uhid::Event::SetReport { rnum, data, id, .. }) => {
-                        let mut report = Vec::with_capacity(data.len() + 1);
-                        report.push(rnum);
-                        report.extend_from_slice(&data);
-                        if let Some(op) = pidff::decode(&report) {
+                    // 0x50): best-effort, feed it straight to the Output
+                    // decoder. Set_Report `data` already leads with the report
+                    // id byte the decoder keys on, so it is passed as-is (not
+                    // re-prefixed). Apply if it decodes to something, then ack
+                    // regardless.
+                    Ok(uhid::Event::SetReport { data, id, .. }) => {
+                        if let Some(op) = pidff::decode(&data) {
                             if let Err(e) = self.sink.apply(op) {
                                 eprintln!("logi-ffb: failed to apply FF feature report: {e}");
                             }
@@ -267,11 +268,13 @@ impl Proxy {
                         }
                     }
 
-                    // Any other Feature Get_Report: an empty success reply so
-                    // the host is never left blocking on a request we do not
-                    // specifically implement.
-                    Ok(uhid::Event::GetReport { id, .. }) => {
-                        if let Err(e) = self.device.send_get_report_reply(id, 0, &[]) {
+                    // Any other Feature Get_Report: a minimal success reply
+                    // carrying just the report id (byte 0 of a numbered report)
+                    // so the host is never left blocking on a request we do not
+                    // specifically implement, and never sees the reply body
+                    // shifted into the report-id position.
+                    Ok(uhid::Event::GetReport { rnum, id, .. }) => {
+                        if let Err(e) = self.device.send_get_report_reply(id, 0, &[rnum]) {
                             break Err(e);
                         }
                     }

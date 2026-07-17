@@ -105,7 +105,18 @@ fn set_report_create_then_get_report_block_load_round_trips() {
         let mut saw_get_report = false;
         while !(saw_set_report && saw_get_report) {
             match dev.read_event().expect("read event") {
-                ffb_proxy::uhid::Event::SetReport { rnum: 0x54, id, .. } => {
+                ffb_proxy::uhid::Event::SetReport { rnum: 0x54, id, data, .. } => {
+                    // Set_Report `data` for a numbered report carries the report
+                    // id in byte 0 (hidraw passes the whole buffer), so the
+                    // Effect Type the host wrote is data[1], exactly as
+                    // Proxy::run reads it. Confirm that framing against the real
+                    // kernel transport (set_buf was [0x54, EFFECT_TYPE_CONSTANT]).
+                    assert_eq!(data.first().copied(), Some(0x54u8), "Set_Report data must lead with the report id");
+                    assert_eq!(
+                        data.get(1).copied(),
+                        Some(ffb_proxy::pidff::EFFECT_TYPE_CONSTANT),
+                        "Effect Type must be at data[1]"
+                    );
                     dev.send_set_report_reply(id, 0).expect("reply UHID_SET_REPORT");
                     saw_set_report = true;
                 }

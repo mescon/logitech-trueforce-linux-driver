@@ -80,18 +80,17 @@ pub fn effect_kind_from_type_byte(b: u8) -> Option<EffectKind> {
     }
 }
 
-/// Reply body for a `Get_Report(Feature, 0x56)` (PID Block Load) request:
-/// the just-assigned effect block index, a load-status byte (1 = success,
-/// per the descriptor's `Block Load Success` usage), and the remaining RAM
-/// pool capacity (u16 LE), from the descriptor's report id 0x56 collection
-/// (`descriptor::PID_COLLECTION`: Effect Block Index u8, Block Load Status
-/// u8, RAM Pool Available u16).
-pub fn pid_block_load_reply(block: u8) -> [u8; 4] {
-    let mut body = [0u8; 4];
-    body[0] = block;
-    body[1] = 1; // Block Load Status: Block Load Success.
-    body[2..4].copy_from_slice(&PID_POOL_RAM_SIZE.to_le_bytes());
-    body
+/// Reply report for a `Get_Report(Feature, 0x56)` (PID Block Load) request.
+///
+/// Byte 0 is the report id (0x56): hidraw copies the bytes we supply straight
+/// into the caller's buffer without adding a report id itself, and the host
+/// expects a numbered report's id in byte 0, so the id must be included here.
+/// The remaining bytes follow the descriptor's report id 0x56 collection
+/// (`descriptor::PID_COLLECTION`: Effect Block Index u8, Block Load Status u8
+/// where 1 = Block Load Success, RAM Pool Available u16 LE).
+pub fn pid_block_load_reply(block: u8) -> [u8; 5] {
+    let ram = PID_POOL_RAM_SIZE.to_le_bytes();
+    [0x56, block, 1, ram[0], ram[1]]
 }
 
 /// RAM Pool Size / RAM Pool Available reported to the host: the maximum the
@@ -109,13 +108,15 @@ pub const PID_POOL_RAM_SIZE: u16 = 0xFFFF;
 /// effect count against it.
 pub const PID_POOL_SIMULTANEOUS_MAX: u8 = 40;
 
-/// Reply body for a `Get_Report(Feature, 0x57)` (PID Pool) request, built
-/// from the field layout the descriptor declares for report id 0x57
-/// (`descriptor::PID_COLLECTION`): RAM Pool Size (u16 LE), Simultaneous
-/// Effects Max (u8), then one flags byte packing Device Managed Pool (bit 0,
-/// Usage 0xA9) and Shared Parameter Blocks (bit 1, Usage 0xAA), with the
-/// remaining 6 bits padding (the descriptor declares them `Const,Var,Abs`,
-/// i.e. always read as 0).
+/// Reply report for a `Get_Report(Feature, 0x57)` (PID Pool) request.
+///
+/// Byte 0 is the report id (0x57), for the same reason as
+/// [`pid_block_load_reply`]. The remaining bytes follow the field layout the
+/// descriptor declares for report id 0x57 (`descriptor::PID_COLLECTION`): RAM
+/// Pool Size (u16 LE), Simultaneous Effects Max (u8), then one flags byte
+/// packing Device Managed Pool (bit 0, Usage 0xA9) and Shared Parameter Blocks
+/// (bit 1, Usage 0xAA), with the remaining 6 bits padding (the descriptor
+/// declares them `Const,Var,Abs`, i.e. always read as 0).
 ///
 /// Device Managed Pool is set: this proxy assigns block indices itself (see
 /// the `0x54` handling in `Proxy::run`) rather than requiring the host to
@@ -125,13 +126,10 @@ pub const PID_POOL_SIMULTANEOUS_MAX: u8 = 40;
 /// descriptor's intent, not something confirmed against a real game's
 /// request yet; flagged for confirmation during hardware validation (Task
 /// 8) if a game's behavior after this reply looks off.
-pub fn pid_pool_reply() -> [u8; 4] {
-    const FLAG_DEVICE_MANAGED_POOL: u8 = 0x01;
-    let mut body = [0u8; 4];
-    body[0..2].copy_from_slice(&PID_POOL_RAM_SIZE.to_le_bytes());
-    body[2] = PID_POOL_SIMULTANEOUS_MAX;
-    body[3] = FLAG_DEVICE_MANAGED_POOL; // Shared Parameter Blocks (bit 1) left clear.
-    body
+pub fn pid_pool_reply() -> [u8; 5] {
+    const FLAG_DEVICE_MANAGED_POOL: u8 = 0x01; // Shared Parameter Blocks (bit 1) left clear.
+    let ram = PID_POOL_RAM_SIZE.to_le_bytes();
+    [0x57, ram[0], ram[1], PID_POOL_SIMULTANEOUS_MAX, FLAG_DEVICE_MANAGED_POOL]
 }
 
 /// A single decoded PID output report, one variant per report id.
@@ -312,19 +310,21 @@ mod tests {
     }
 
     #[test]
-    fn block_load_reply_carries_block_success_and_pool_size() {
-        let body = pid_block_load_reply(3);
-        assert_eq!(body[0], 3);
-        assert_eq!(body[1], 1);
-        assert_eq!(u16::from_le_bytes([body[2], body[3]]), PID_POOL_RAM_SIZE);
+    fn block_load_reply_carries_report_id_block_success_and_pool_size() {
+        let rep = pid_block_load_reply(3);
+        assert_eq!(rep[0], 0x56, "report id must lead a numbered feature report");
+        assert_eq!(rep[1], 3);
+        assert_eq!(rep[2], 1);
+        assert_eq!(u16::from_le_bytes([rep[3], rep[4]]), PID_POOL_RAM_SIZE);
     }
 
     #[test]
-    fn pool_reply_carries_ram_size_and_max_effects() {
-        let body = pid_pool_reply();
-        assert_eq!(u16::from_le_bytes([body[0], body[1]]), PID_POOL_RAM_SIZE);
-        assert_eq!(body[2], PID_POOL_SIMULTANEOUS_MAX);
-        assert_eq!(body[3] & 0x01, 0x01, "device managed pool bit should be set");
+    fn pool_reply_carries_report_id_ram_size_and_max_effects() {
+        let rep = pid_pool_reply();
+        assert_eq!(rep[0], 0x57, "report id must lead a numbered feature report");
+        assert_eq!(u16::from_le_bytes([rep[1], rep[2]]), PID_POOL_RAM_SIZE);
+        assert_eq!(rep[3], PID_POOL_SIMULTANEOUS_MAX);
+        assert_eq!(rep[4] & 0x01, 0x01, "device managed pool bit should be set");
     }
 
     #[test]
