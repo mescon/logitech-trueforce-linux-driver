@@ -6,7 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "logi-dd-tui"
+name = "logi-dd"
 path = "src/main.rs"
 
 [dependencies]

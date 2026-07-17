@@ -24,7 +24,7 @@ Description: DKMS kernel driver for Logitech TrueForce direct-drive wheels
  needed.
  .
  Also installs two userspace companions built from the repo's Rust
- workspace: logi-ffb, a DirectInput force-feedback proxy, and logi-dd-tui,
+ workspace: logi-ffb, a DirectInput force-feedback proxy, and logi-dd,
  a terminal settings UI.
  .
  TrueForce in Proton sims additionally needs Logitech's proprietary signed

@@ -17,7 +17,7 @@ elsewhere), so the same package builds on Fedora targets too.
 - `_service` - pulls the tagged source tarball from GitHub. Bump `revision`
   and `version` together on each release.
 
-The userspace binaries (`logi-ffb`, `logi-dd-tui`) are built with `cargo`,
+The userspace binaries (`logi-ffb`, `logi-dd`) are built with `cargo`,
 which needs build-time network access to fetch crate dependencies (nothing
 is vendored), so the OBS project must have build networking enabled.
 

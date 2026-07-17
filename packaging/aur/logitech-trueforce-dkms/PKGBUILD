@@ -16,14 +16,15 @@ provides=("$_dkmsname")
 conflicts=("$_dkmsname")
 install="$pkgname.install"
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-# Regenerate against the v0.15.0 release tarball once the tag exists:
-#   updpkgsums   (then: makepkg --printsrcinfo > .SRCINFO)
-sha256sums=('SKIP')
+# PLACEHOLDER (fails the integrity check on purpose): regenerate against the
+# v0.15.0 release tarball once the tag exists, then refresh .SRCINFO:
+#   updpkgsums && makepkg --printsrcinfo > .SRCINFO
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
 
 build() {
 	local _src="$srcdir/logitech-trueforce-linux-driver-$pkgver"
 
-	# logi-ffb (DirectInput FFB proxy) and logi-dd-tui (settings TUI), the
+	# logi-ffb (DirectInput FFB proxy) and logi-dd (settings TUI), the
 	# userspace companions to the kernel module.
 	cargo build --release --manifest-path "$_src/userspace/logi-dd/Cargo.toml"
 }
@@ -60,8 +61,8 @@ package() {
 		"$_src/userspace/logi-dd/target/release/logi-ffb" \
 		"$pkgdir/usr/bin/logi-ffb"
 	install -Dm755 \
-		"$_src/userspace/logi-dd/target/release/logi-dd-tui" \
-		"$pkgdir/usr/bin/logi-dd-tui"
+		"$_src/userspace/logi-dd/target/release/logi-dd" \
+		"$pkgdir/usr/bin/logi-dd"
 
 	# TrueForce-in-Proton helper (resolves the SDK DLL dir via --sdk-dir /
 	# $LOGITECH_TRUEFORCE_SDK_DIR / ~/.local/share/logitech-trueforce/sdk).

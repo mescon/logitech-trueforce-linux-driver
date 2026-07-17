@@ -17,7 +17,7 @@ and it loads and registers the `logitech-dd` driver.
   needed at build time.
 - The same spec also builds a `logitech-trueforce-tools` subpackage with the
   userspace companions, `logi-ffb` (a DirectInput force-feedback proxy) and
-  `logi-dd-tui` (a terminal settings UI), from the `userspace/logi-dd` Rust
+  `logi-dd` (a terminal settings UI), from the `userspace/logi-dd` Rust
   workspace. This pulls `cargo`/`rust` into the build dependencies alongside
   `gcc`/`make`/`kernel-rpm-macros`.
 - The userspace binaries are built with `cargo`, which needs build-time
@@ -71,5 +71,5 @@ sudo dnf install akmod-logitech-trueforce logitech-trueforce-tools
 
 The first `akmods` run builds the module for the running kernel (and every
 kernel installed afterwards). `logitech-trueforce-tools` installs `logi-ffb`
-and `logi-dd-tui` to `/usr/bin`, built from the same repo checkout. See
+and `logi-dd` to `/usr/bin`, built from the same repo checkout. See
 `docs/GETTING_STARTED.md` for the full flow.

@@ -634,7 +634,7 @@ hand. Build and run it with a Rust toolchain:
 
 ```bash
 cd userspace/logi-dd && cargo build --release
-./target/release/logi-dd-tui        # needs your user in the `input` group
+./target/release/logi-dd            # needs your user in the `input` group
 ```
 
 See [`userspace/logi-dd/README.md`](userspace/logi-dd/README.md) for features,

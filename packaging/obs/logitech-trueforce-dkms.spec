@@ -2,7 +2,7 @@
 # Main package is noarch: it ships only the module source; DKMS compiles on
 # the user's machine and rebuilds on kernel updates. The same source,
 # dkms.conf, and udev rule as every other channel; the module builds as
-# hid-logitech-dd. The userspace companions (logi-ffb, logi-dd-tui) are
+# hid-logitech-dd. The userspace companions (logi-ffb, logi-dd) are
 # ordinary compiled binaries, so they ship in an arch-specific -tools
 # subpackage instead of joining the noarch main package.
 %global module   logitech-trueforce
@@ -49,7 +49,7 @@ guide.
 Summary:        Userspace tools for the Logitech direct-drive wheel driver
 
 %description -n logitech-trueforce-tools
-logi-ffb, a DirectInput force-feedback proxy, and logi-dd-tui, a terminal
+logi-ffb, a DirectInput force-feedback proxy, and logi-dd, a terminal
 settings UI, for the Logitech direct-drive wheel driver. Includes the udev
 rule granting the "input" group access to /dev/uhid, which logi-ffb needs
 to create its virtual force-feedback device.
@@ -83,8 +83,8 @@ install -D -m 0755 tools/install-tf-shim.sh \
 # Userspace binaries + their udev rule ship in the -tools subpackage.
 install -D -m 0755 userspace/logi-dd/target/release/logi-ffb \
     %{buildroot}%{_bindir}/logi-ffb
-install -D -m 0755 userspace/logi-dd/target/release/logi-dd-tui \
-    %{buildroot}%{_bindir}/logi-dd-tui
+install -D -m 0755 userspace/logi-dd/target/release/logi-dd \
+    %{buildroot}%{_bindir}/logi-dd
 install -D -m 0644 udev/71-logi-ffb-uhid.rules \
     %{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
 
@@ -97,7 +97,7 @@ install -D -m 0644 udev/71-logi-ffb-uhid.rules \
 
 %files -n logitech-trueforce-tools
 %{_bindir}/logi-ffb
-%{_bindir}/logi-dd-tui
+%{_bindir}/logi-dd
 %{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
 
 %post
@@ -114,5 +114,5 @@ dkms remove -m %{module} -v %{modver} --all --rpm_safe_upgrade >/dev/null 2>&1 |
 %changelog
 * Sat Jul 18 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.15.0-1
 - Add a logitech-trueforce-tools subpackage with logi-ffb (DirectInput
-  force-feedback proxy) and logi-dd-tui (settings TUI), built from the
+  force-feedback proxy) and logi-dd (settings TUI), built from the
   userspace/logi-dd Rust workspace, plus the udev rule for /dev/uhid access.
