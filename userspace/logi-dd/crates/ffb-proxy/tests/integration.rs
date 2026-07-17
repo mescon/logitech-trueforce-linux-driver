@@ -173,10 +173,13 @@ fn pid_reports_apply_to_the_real_wheel_ff_sink() {
     let paths = ffb_proxy::proxy::discover_wheel().expect("real wheel with FF capability");
     let mut sink = ffb_proxy::sink::Sink::open(&paths.evdev).expect("open real wheel evdev FF node");
 
-    // CREATE_NEW_EFFECT: block 1, Constant.
-    let create = [0x54, 0x01, ffb_proxy::pidff::EFFECT_TYPE_CONSTANT];
-    let op = ffb_proxy::pidff::decode(&create).expect("decode CREATE_NEW_EFFECT");
-    sink.apply(op).expect("create effect block");
+    // CREATE: block 1, Constant. Create New Effect is a Feature report, so it
+    // no longer round-trips through the interrupt `decode`; build the op the
+    // way Proxy::run's Set_Report(0x54) handler does (effect type -> kind, and
+    // the device assigns the block).
+    let kind = ffb_proxy::pidff::effect_kind_from_type_byte(ffb_proxy::pidff::EFFECT_TYPE_CONSTANT)
+        .expect("constant is a known effect type");
+    sink.apply(ffb_proxy::pidff::EffectOp::Create { block: 1, kind }).expect("create effect block");
 
     // SET_CONSTANT: block 1, magnitude 5000 (a deliberately mild level for a
     // hardware-in-the-loop test, well under the wheel's max).
