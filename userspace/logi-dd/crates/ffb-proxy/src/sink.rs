@@ -294,10 +294,18 @@ pub struct Sink {
 
 impl Sink {
     /// Open the real wheel's evdev FF node read-write.
+    ///
+    /// Device gain scales every uploaded effect, and it powers up unset (and is
+    /// left at 0 by a prior [`Sink::shutdown`]). A DirectInput host that never
+    /// sends a Device Gain report assumes the device defaults to full gain, so
+    /// without this an effect uploads successfully but renders as zero force.
+    /// Set it to full on open; a later `Gain` op from the host overrides it.
     pub fn open(evdev_path: &str) -> Result<Sink> {
         let fd = open(evdev_path, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())
             .map_err(|e| Error::Io(format!("open {evdev_path}"), std::io::Error::from(e)))?;
-        Ok(Sink { fd, effects: HashMap::new(), kinds: HashMap::new(), params: HashMap::new() })
+        let mut sink = Sink { fd, effects: HashMap::new(), kinds: HashMap::new(), params: HashMap::new() };
+        sink.write_ff_event(FF_GAIN, 0xFFFF)?;
+        Ok(sink)
     }
 
     /// Writes one `EV_FF` event (`code`/`value`) followed implicitly by the
