@@ -90,8 +90,10 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     {
         let worker = worker.clone();
+        let current_category = current_category.clone();
         app.on_retry_discover(move || {
             worker.request(Request::Discover);
+            worker.request(Request::LoadCategory(get(&current_category)));
         });
     }
     {

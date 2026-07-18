@@ -110,14 +110,14 @@ fn discover_outcome<S: SysfsIo>(result: Result<Device<S>, Error>) -> (Option<Vie
     match result {
         Ok(device) => {
             let vm = ViewModel::new(device);
-            let resp = match vm.info() {
-                Ok(info) => Response::Info(info),
+            match vm.info() {
+                Ok(info) => (Some(vm), Response::Info(info)),
                 // Discovery itself succeeded but the info read failed
                 // (e.g. serial unreadable); treat it the same as no wheel
-                // rather than show a header with blank fields.
-                Err(e) => Response::NoWheel(e.to_string()),
-            };
-            (Some(vm), resp)
+                // rather than show a header with blank fields. Discard the vm
+                // so a subsequent Retry re-discovers cleanly.
+                Err(e) => (None, Response::NoWheel(e.to_string())),
+            }
         }
         Err(e) => (None, Response::NoWheel(e.to_string())),
     }
@@ -195,6 +195,24 @@ mod tests {
             Response::NoWheel(msg) => panic!("expected Info, got NoWheel({msg})"),
             Response::Rows { .. } => panic!("expected Info, got Rows"),
         }
+    }
+
+    #[test]
+    fn discover_success_but_info_fails_yields_no_wheel_and_no_view_model() {
+        let fs = FakeSysfs::new();
+        // Don't set required fields; info() will fail when trying to read them.
+        let device = Device::with_io(fs);
+
+        let responses = responses(|on_response| {
+            let (vm, resp) = discover_outcome(Ok(device));
+            assert!(vm.is_none(), "vm should be discarded when info() fails");
+            on_response(resp);
+        });
+        assert_eq!(responses.len(), 1);
+        assert!(
+            matches!(&responses[0], Response::NoWheel(_)),
+            "should return NoWheel when info() fails"
+        );
     }
 
     #[test]
