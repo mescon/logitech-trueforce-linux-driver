@@ -500,13 +500,30 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     {
         let curve_editor = curve_editor.clone();
-        app.on_curve_grab_point(move |x, y| {
+        app.on_curve_grab_point(move |x, y, aspect| {
             let guard = curve_editor.lock().unwrap();
             let Some(state) = guard.as_ref() else { return -1 };
+            let fracs = bridge::control_point_fracs(&state.curve);
+            let last = fracs.len().saturating_sub(1);
+            // Distances are measured in height-fraction units, with the x
+            // component scaled by the plot's aspect ratio, so the grab
+            // radius covers the same number of pixels in both directions
+            // (in plain fraction space a wide plot made the horizontal
+            // reach several times the vertical one). 0.065 of the plot
+            // height is ~14px on the default 220px-tall plot, matching the
+            // drawn handle size.
+            let aspect = if aspect > 0.0 { aspect } else { 1.0 };
             let mut best = -1_i32;
-            let mut best_d = 0.06_f32; // ~6% of the plot; generous grab radius
-            for (i, (px, py)) in bridge::control_point_fracs(&state.curve).into_iter().enumerate() {
-                let d = ((px - x).powi(2) + (py - y).powi(2)).sqrt();
+            let mut best_d = 0.065_f32;
+            for (i, (px, py)) in fracs.into_iter().enumerate() {
+                // The endpoints are pinned (Curve::move_point never moves
+                // them), so grabbing one could only swallow the click;
+                // skipping them lets clicks near the plot's ends fall
+                // through to add-point instead.
+                if i == 0 || i == last {
+                    continue;
+                }
+                let d = (((px - x) * aspect).powi(2) + (py - y).powi(2)).sqrt();
                 if d < best_d {
                     best_d = d;
                     best = i as i32;

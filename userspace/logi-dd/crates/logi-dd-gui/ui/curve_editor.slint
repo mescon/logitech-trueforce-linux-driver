@@ -45,7 +45,9 @@ export component CurveEditor inherits Rectangle {
     callback move-point(int, float, float);
     callback add-point(float);
     callback remove-point(int);
-    callback grab-point(float, float) -> int;
+    // (x-frac, y-frac, aspect): `aspect` is the plot's width/height ratio so
+    // the Rust-side hit-test can use the same pixel radius in both axes.
+    callback grab-point(float, float, float) -> int;
     callback set-lower-deadzone(int);
     callback set-upper-deadzone(int);
     callback commit();
@@ -93,6 +95,11 @@ export component CurveEditor inherits Rectangle {
                 Path {
                     viewbox-width: 1;
                     viewbox-height: 1;
+                    // `fill`, not the default `contain`: the viewbox must map
+                    // linearly onto the plot's full width and height (the
+                    // same mapping the control-point handles below use), not
+                    // be scaled uniformly into a square corner of it.
+                    fit: fill;
                     stroke: Palette.accent-background;
                     stroke-width: 2px;
                     commands: root.plot-commands;
@@ -124,7 +131,11 @@ export component CurveEditor inherits Rectangle {
                         if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
                             root.press-x = self.mouse-x;
                             root.press-y = self.mouse-y;
-                            root.grabbed = root.grab-point(self.mouse-x / plot-area.width, self.mouse-y / plot-area.height);
+                            root.grabbed = root.grab-point(
+                                self.mouse-x / plot-area.width,
+                                self.mouse-y / plot-area.height,
+                                plot-area.width / plot-area.height,
+                            );
                             if (root.grabbed >= 0) {
                                 root.selected = root.grabbed;
                             }
@@ -147,8 +158,20 @@ export component CurveEditor inherits Rectangle {
                 }
             }
 
-            if root.selected >= 0 && root.selected < root.control-points.length: HorizontalLayout {
+            if root.selected >= 0 && root.selected < root.control-points.length: point-editor := HorizontalLayout {
                 spacing: 12px;
+
+                // The selected point's coordinates as the SpinBoxes should
+                // show them. A SpinBox severs its own `value` binding the
+                // first time the user edits it, so pushed model changes stop
+                // reaching the widget on their own; these stay bound here
+                // (never assigned) and the change callbacks push them back
+                // into the widgets whenever the selection or the selected
+                // point's coordinates change.
+                property <int> sel-input: round(root.control-points[root.selected].x * 100);
+                property <int> sel-output: round((1 - root.control-points[root.selected].y) * 100);
+                changed sel-input => { input-sb.value = self.sel-input; }
+                changed sel-output => { output-sb.value = self.sel-output; }
 
                 VerticalLayout {
                     spacing: 2px;
@@ -159,13 +182,18 @@ export component CurveEditor inherits Rectangle {
                     }
                     HorizontalLayout {
                         spacing: 6px;
-                        SpinBox {
+                        input-sb := SpinBox {
                             width: 90px;
                             minimum: 0;
                             maximum: 100;
-                            value: round(root.control-points[root.selected].x * 100);
+                            value: point-editor.sel-input;
                             edited(v) => {
                                 root.move-point(root.selected, v / 100, root.control-points[root.selected].y);
+                                // move-point clamps against the neighbours;
+                                // the callback round-trips synchronously, so
+                                // re-reading the model here snaps a clamped
+                                // edit back to what the curve actually kept.
+                                self.value = point-editor.sel-input;
                             }
                         }
                         Text {
@@ -185,13 +213,16 @@ export component CurveEditor inherits Rectangle {
                     }
                     HorizontalLayout {
                         spacing: 6px;
-                        SpinBox {
+                        output-sb := SpinBox {
                             width: 90px;
                             minimum: 0;
                             maximum: 100;
-                            value: round((1 - root.control-points[root.selected].y) * 100);
+                            value: point-editor.sel-output;
                             edited(v) => {
                                 root.move-point(root.selected, root.control-points[root.selected].x, 1 - v / 100);
+                                // Same synchronous snap-back as the input
+                                // SpinBox above.
+                                self.value = point-editor.sel-output;
                             }
                         }
                         Text {
@@ -221,7 +252,13 @@ export component CurveEditor inherits Rectangle {
                     minimum: 0;
                     maximum: 99;
                     value: root.lower-deadzone;
-                    released(v) => { root.set-lower-deadzone(round(v)); }
+                    released(v) => {
+                        root.set-lower-deadzone(round(v));
+                        // The curve clamps lower+upper to at most 99 and the
+                        // callback round-trips synchronously; snap the knob
+                        // to whatever value the curve actually kept.
+                        self.value = root.lower-deadzone;
+                    }
                 }
                 Text { text: "\{root.lower-deadzone}%"; vertical-alignment: center; color: Theme.text-color; }
             }
@@ -234,7 +271,11 @@ export component CurveEditor inherits Rectangle {
                     minimum: 0;
                     maximum: 99;
                     value: root.upper-deadzone;
-                    released(v) => { root.set-upper-deadzone(round(v)); }
+                    released(v) => {
+                        root.set-upper-deadzone(round(v));
+                        // Same clamp snap-back as the lower slider above.
+                        self.value = root.upper-deadzone;
+                    }
                 }
                 Text { text: "\{root.upper-deadzone}%"; vertical-alignment: center; color: Theme.text-color; }
             }
