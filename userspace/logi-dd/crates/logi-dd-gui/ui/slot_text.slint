@@ -33,6 +33,12 @@ export component SlotTextEditor inherits Rectangle {
     // doc comment for why a backdrop dimmer is not a themed "surface".
     background: Theme.scrim;
 
+    // Modal input barrier; see the curve editor's scrim TouchArea for why
+    // a plain scrim Rectangle is not enough.
+    TouchArea {
+        scroll-event(event) => { EventResult.accept }
+    }
+
     Rectangle {
         width: 380px;
         height: 320px;

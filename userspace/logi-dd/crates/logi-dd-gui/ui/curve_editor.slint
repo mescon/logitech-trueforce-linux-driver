@@ -58,9 +58,22 @@ export component CurveEditor inherits Rectangle {
     // doc comment for why a backdrop dimmer is not a themed "surface".
     background: Theme.scrim;
 
+    // Modal input barrier: a plain Rectangle never hit-tests, so without
+    // this TouchArea every click or scroll outside the panel would land on
+    // the shell underneath the scrim (switching categories, firing edits,
+    // opening a second overlay). Declared before the panel so the panel's
+    // own controls still win; deliberately does not close the overlay, so
+    // a stray click cannot discard an edit in progress.
+    TouchArea {
+        scroll-event(event) => { EventResult.accept }
+    }
+
     Rectangle {
         width: 460px;
-        height: 500px;
+        // Clamped so the panel's border never leaves the window at the
+        // app's minimum height; the internal stretch spacer absorbs the
+        // difference.
+        height: min(500px, root.height - 16px);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.panel-background;

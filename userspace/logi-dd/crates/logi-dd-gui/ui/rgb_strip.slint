@@ -61,9 +61,18 @@ export component RgbStrip inherits Rectangle {
     // doc comment for why a backdrop dimmer is not a themed "surface".
     background: Theme.scrim;
 
+    // Modal input barrier; see the curve editor's scrim TouchArea for why
+    // a plain scrim Rectangle is not enough.
+    TouchArea {
+        scroll-event(event) => { EventResult.accept }
+    }
+
     Rectangle {
         width: 440px;
-        height: 520px;
+        // Clamped so the panel's border never leaves the window at the
+        // app's minimum height; the internal stretch spacer absorbs the
+        // difference.
+        height: min(520px, root.height - 16px);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.panel-background;
