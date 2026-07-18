@@ -131,8 +131,8 @@ impl<S: SysfsIo> ViewModel<S> {
 /// per the spec's own union of widget-shape and kind.
 fn to_value(kind: Kind, input: WidgetInput) -> Result<Value, Error> {
     match (kind, input) {
-        (Kind::Percent, WidgetInput::Slider(n)) => Ok(Value::Percent(n as u8)),
-        (Kind::IntRange { .. }, WidgetInput::Slider(n)) => Ok(Value::Int(n as i32)),
+        (Kind::Percent, WidgetInput::Slider(n)) => Ok(Value::Percent(u8::try_from(n).map_err(|_| Error::Invalid)?)),
+        (Kind::IntRange { .. }, WidgetInput::Slider(n)) => Ok(Value::Int(i32::try_from(n).map_err(|_| Error::Invalid)?)),
         (Kind::Enum(_), WidgetInput::Choice(i)) => Ok(Value::Enum(i as u8)),
         (Kind::Toggle { .. }, WidgetInput::Switch(b)) => Ok(Value::Bool(b)),
         (Kind::TextField { .. }, WidgetInput::Text(s)) => Ok(Value::Text(s)),
@@ -286,5 +286,22 @@ mod tests {
         vm.edit("wheel_led_apply", WidgetInput::Trigger).unwrap();
         // Action attrs read back as a synthetic trigger, not the raw sysfs value.
         assert_eq!(vm.device_read("wheel_led_apply").unwrap(), Value::Trigger);
+    }
+
+    #[test]
+    fn slider_out_of_range_errors_instead_of_wrapping() {
+        let vm = vm();
+        let result = vm.edit("wheel_strength", WidgetInput::Slider(300));
+        assert!(result.is_err(), "expected Err for out-of-range slider input");
+    }
+
+    #[test]
+    fn mismatched_widget_for_kind_errors() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_texture_route", "kf");
+        let vm = ViewModel::with_io(fs);
+        let result = vm.edit("wheel_texture_route", WidgetInput::Slider(1));
+        assert!(result.is_err(), "expected Err for mismatched widget type");
     }
 }
