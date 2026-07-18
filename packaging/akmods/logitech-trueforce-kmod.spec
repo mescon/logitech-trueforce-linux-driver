@@ -35,6 +35,11 @@ BuildRequires:  kmodtool
 BuildRequires:  gcc, make, kernel-rpm-macros
 # Userspace companions (logi-ffb, logi-dd) built alongside the module.
 BuildRequires:  cargo, rust
+# logi-dd-gui's yeslogic-fontconfig-sys dependency links fontconfig/freetype
+# at build time (build.rs calls pkg_config::find_library, no dlopen), so the
+# devel package and pkg-config must be present or `cargo build` panics and
+# aborts the whole %build. pkgconfig(fontconfig) pulls both on Fedora.
+BuildRequires:  pkgconfig(fontconfig)
 
 # Two build modes from one spec, selected by whether `kernels` is defined:
 #   * kernels defined      -> compile per-kernel kmod-%%{kmod_name}-<kver>

@@ -29,7 +29,7 @@ override_dh_auto_build:
 	# actually produced it.
 	cargo build --release --manifest-path userspace/logi-dd/Cargo.toml \
 		-p logi-dd-gui \
-	|| echo "logi-dd-gui: skipped (rustc $$(rustc --version) is older than Slint's MSRV, need >= 1.92)"
+	|| echo "logi-dd-gui: not built (needs Rust >= 1.92 and fontconfig/pkg-config); skipping"
 
 override_dh_install:
 	# Module source DKMS compiles in /usr/src (the .c keeps its historical

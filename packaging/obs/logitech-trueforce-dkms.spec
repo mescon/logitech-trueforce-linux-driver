@@ -17,6 +17,12 @@ URL:            https://github.com/mescon/logitech-trueforce-linux-driver
 Source0:        logitech-trueforce-linux-driver-%{version}.tar.gz
 BuildArch:      noarch
 BuildRequires:  cargo, rust
+# logi-dd-gui's yeslogic-fontconfig-sys dependency links fontconfig/freetype
+# at build time (build.rs calls pkg_config::find_library, no dlopen), so the
+# devel package and pkg-config must be present or `cargo build` panics and
+# aborts the whole %build. pkgconfig(fontconfig) pulls both on openSUSE and
+# Fedora, no %if split needed.
+BuildRequires:  pkgconfig(fontconfig)
 Requires:       dkms >= 2.1.0.0
 Requires:       logitech-trueforce-tools
 Requires(post): dkms
