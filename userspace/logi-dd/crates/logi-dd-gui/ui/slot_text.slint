@@ -1,0 +1,84 @@
+import { Button, LineEdit } from "std-widgets.slint";
+
+// One onboard slot's editable name: 1-based `slot` alongside its current
+// `name`, the same "index paired with value" shape `LedColor` uses for the
+// RGB strip editor.
+export struct SlotNameRow {
+    slot: int,
+    name: string,
+}
+
+// A modal overlay that edits one `Kind::SlotText` row: one line per onboard
+// slot, each showing its slot number and an editable name field. Unlike the
+// curve/RGB editors there is no local "whole value" to stage and commit as a
+// unit: `Kind::SlotText` writes one slot at a time (`Value::SlotName`), so
+// each field applies immediately when the user presses enter, the same way a
+// plain `TextField` row's `LineEdit` does (see `edit-text` in
+// `widgets.slint`). `slot-names` is pushed by the Rust side after every apply
+// (`push_slot_text_editor` in `main.rs`) so the fields stay in sync with
+// whatever the device actually holds once the write's reply comes back.
+// `close` just dismisses the overlay; there is nothing staged left to
+// discard.
+export component SlotTextEditor inherits Rectangle {
+    in property <string> slot-text-label: "Profile names";
+    in property <[SlotNameRow]> slot-names: [];
+    in property <int> max-len: 9;
+
+    callback set-slot-name(int, string);
+    callback close();
+
+    // Dim the rest of the window so the overlay reads as modal.
+    background: #000000aa;
+
+    Rectangle {
+        width: 380px;
+        height: 320px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: #202020;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: #444444;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: root.slot-text-label;
+                font-size: 16px;
+                font-weight: 700;
+                color: white;
+            }
+
+            Text {
+                text: "Rename a slot (max \{root.max-len} chars, uppercased on the wheel).";
+                font-size: 11px;
+                color: #cccccc;
+                wrap: word-wrap;
+            }
+
+            for row in root.slot-names: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: row.slot;
+                    color: white;
+                    vertical-alignment: center;
+                    width: 20px;
+                }
+                LineEdit {
+                    width: 220px;
+                    text: row.name;
+                    accepted(t) => { root.set-slot-name(row.slot, t); }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                alignment: end;
+                Button { text: "Close"; clicked => { root.close(); } }
+            }
+        }
+    }
+}

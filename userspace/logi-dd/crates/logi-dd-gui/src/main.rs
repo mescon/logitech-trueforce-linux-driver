@@ -32,6 +32,20 @@ struct RgbEditorState {
     colors: Vec<Color>,
 }
 
+/// The slot-text editor's in-flight state: which attribute it is editing
+/// (so a write knows what to send and which category to refresh) and the
+/// slot names currently shown. Unlike `CurveEditorState`/`RgbEditorState`,
+/// nothing here is staged for a final commit: `Kind::SlotText` writes one
+/// slot at a time, so each `set-slot-name` call sends its own
+/// `WidgetInput::SlotText` immediately. `names` is only kept so the overlay
+/// can be redrawn (optimistically) after each apply; lives on the UI thread
+/// only, same rules as the other two editor states.
+struct SlotTextEditorState {
+    attr: String,
+    category: Category,
+    names: Vec<String>,
+}
+
 /// Push `curve`'s current shape to the Slint side: the composed plot line,
 /// the draggable control points, and the two deadzone slider values. Called
 /// after every curve-editor edit so the overlay's preview stays live.
@@ -46,6 +60,13 @@ fn push_curve_editor(app: &App, curve: &Curve) {
 /// after every RGB-editor edit so the row of swatches stays live.
 fn push_rgb_editor(app: &App, colors: &[Color]) {
     app.set_rgb_leds(bridge::rgb_leds_model(colors));
+}
+
+/// Push `names`' current shape to the Slint side: the slot-name row list.
+/// Called after every slot-text edit so the fields stay in sync with what
+/// was just sent to the worker.
+fn push_slot_text_editor(app: &App, names: &[String]) {
+    app.set_slot_text_names(bridge::slot_names_model(names));
 }
 
 /// Read the `Category`/`Mode` out of one of the `Arc<Mutex<_>>` cells below.
@@ -86,6 +107,10 @@ fn main() -> Result<(), slint::PlatformError> {
     // The RGB strip editor's in-flight state, same lifetime/thread rules as
     // `curve_editor` (see `RgbEditorState`'s own doc comment).
     let rgb_editor: Arc<Mutex<Option<RgbEditorState>>> = Arc::new(Mutex::new(None));
+    // The slot-text editor's in-flight state, same lifetime/thread rules as
+    // `curve_editor` and `rgb_editor` (see `SlotTextEditorState`'s own doc
+    // comment).
+    let slot_text_editor: Arc<Mutex<Option<SlotTextEditorState>>> = Arc::new(Mutex::new(None));
 
     let worker = {
         let app_weak = app.as_weak();
@@ -437,6 +462,61 @@ fn main() -> Result<(), slint::PlatformError> {
             *rgb_editor.lock().unwrap() = None;
             if let Some(app) = app_weak.upgrade() {
                 app.set_rgb_editor_open(false);
+            }
+        });
+    }
+
+    {
+        let known_values = known_values.clone();
+        let slot_text_editor = slot_text_editor.clone();
+        let current_category = current_category.clone();
+        let app_weak = app.as_weak();
+        app.on_edit_slot_text(move |attr| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let attr = attr.to_string();
+            let names = match known_values.lock().unwrap().get(&attr) {
+                Some(Value::SlotNames(ns)) => ns.clone(),
+                _ => bridge::default_slot_names(&attr),
+            };
+            push_slot_text_editor(&app, &names);
+            app.set_slot_text_max_len(bridge::slot_text_max_len(&attr));
+            let label = REGISTRY.iter().find(|s| s.attr == attr).map(|s| s.label).unwrap_or(attr.as_str());
+            app.set_slot_text_label(label.into());
+            app.set_slot_text_editor_open(true);
+            *slot_text_editor.lock().unwrap() =
+                Some(SlotTextEditorState { attr, category: get(&current_category), names });
+        });
+    }
+    {
+        let worker = worker.clone();
+        let slot_text_editor = slot_text_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_slot_text_set_name(move |slot, name| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = slot_text_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            let slot = slot.max(0) as u8;
+            bridge::apply_set_slot_name(&mut state.names, slot, &name);
+            push_slot_text_editor(&app, &state.names);
+            // Kind::SlotText writes one slot at a time and reads back the
+            // whole list, so this is the same "send an Edit, let the
+            // category's next Rows response refresh everything" pattern the
+            // other immediate-apply widgets (slider/choice/switch/text/
+            // trigger) use, not the curve/RGB overlays' staged commit.
+            worker.request(Request::Edit {
+                category: state.category,
+                attr: state.attr.clone(),
+                input: WidgetInput::SlotText { slot, text: name.to_string() },
+            });
+        });
+    }
+    {
+        let slot_text_editor = slot_text_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_slot_text_close(move || {
+            *slot_text_editor.lock().unwrap() = None;
+            if let Some(app) = app_weak.upgrade() {
+                app.set_slot_text_editor_open(false);
             }
         });
     }

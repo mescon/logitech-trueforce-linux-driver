@@ -2,9 +2,11 @@ import { Button } from "std-widgets.slint";
 import { SettingRow, SettingsList } from "widgets.slint";
 import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
+import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
 export { SettingRow } from "widgets.slint";
 export { CurvePoint } from "curve_editor.slint";
 export { LedColor } from "rgb_strip.slint";
+export { SlotNameRow } from "slot_text.slint";
 
 export component App inherits Window {
     title: "logi-dd";
@@ -79,6 +81,19 @@ export component App inherits Window {
     callback rgb-apply-to-all(int, int, int);
     callback rgb-commit();
     callback rgb-cancel();
+
+    // Slot-text editor overlay: opened by a `SlotText`-kind row's "Edit slot
+    // names" button (onboard profile renaming). Unlike the curve/RGB
+    // overlays, each field applies immediately when the user presses enter
+    // (`Kind::SlotText` writes one slot at a time), so there is no separate
+    // commit; `slot-text-close` just dismisses the overlay.
+    in property <bool> slot-text-editor-open: false;
+    in property <string> slot-text-label: "";
+    in property <[SlotNameRow]> slot-text-names: [];
+    in property <int> slot-text-max-len: 9;
+    callback edit-slot-text(string);
+    callback slot-text-set-name(int, string);
+    callback slot-text-close();
 
     if root.no-wheel: VerticalLayout {
         alignment: center;
@@ -182,6 +197,7 @@ export component App inherits Window {
                     trigger(attr) => { root.trigger(attr); }
                     edit-curve(attr) => { root.edit-curve(attr); }
                     edit-rgb(attr) => { root.edit-rgb(attr); }
+                    edit-slot-text(attr) => { root.edit-slot-text(attr); }
                     switch-mode() => { root.toggle-mode(); }
                 }
             }
@@ -221,5 +237,18 @@ export component App inherits Window {
         apply-to-all(r, g, b) => { root.rgb-apply-to-all(r, g, b); }
         commit() => { root.rgb-commit(); }
         cancel() => { root.rgb-cancel(); }
+    }
+
+    // Painted last of all: none of the overlays above open at the same time
+    // as this one in practice, but if they somehow did, the most-recently-
+    // opened overlay should win.
+    if root.slot-text-editor-open: SlotTextEditor {
+        width: root.width;
+        height: root.height;
+        slot-text-label: root.slot-text-label;
+        slot-names: root.slot-text-names;
+        max-len: root.slot-text-max-len;
+        set-slot-name(slot, name) => { root.slot-text-set-name(slot, name); }
+        close() => { root.slot-text-close(); }
     }
 }

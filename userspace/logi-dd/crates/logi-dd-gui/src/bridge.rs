@@ -8,7 +8,7 @@ use logi_dd_core::curve::{Curve, FULL};
 use logi_dd_core::{Access, Category, Color, DeviceInfo, Error, Kind, Mode, Value, REGISTRY};
 
 use crate::viewmodel::Row;
-use crate::{CurvePoint, LedColor, SettingRow};
+use crate::{CurvePoint, LedColor, SettingRow, SlotNameRow};
 
 // Stable `SettingRow.kind` tag numbering; keep in sync with the doc comment
 // on `SettingRow` and the per-kind branches in `ui/widgets.slint`.
@@ -18,7 +18,7 @@ pub const KIND_ENUM: i32 = 2;
 pub const KIND_TOGGLE: i32 = 3;
 pub const KIND_TEXT: i32 = 4;
 pub const KIND_ACTION: i32 = 5;
-/// Everything without a live editor yet (deadzone pair, slot text) and any
+/// Everything without a live editor yet (the deadzone pair) and any
 /// read-only attribute: rendered as a plain value.
 pub const KIND_READONLY: i32 = 6;
 /// A curve row: rendered as a button that opens the curve editor overlay.
@@ -26,6 +26,9 @@ pub const KIND_CURVE: i32 = 7;
 /// An RGB strip row: rendered as a button that opens the RGB strip editor
 /// overlay.
 pub const KIND_RGB: i32 = 8;
+/// A slot-text row (onboard profile renaming): rendered as a button that
+/// opens the slot-text editor overlay.
+pub const KIND_SLOTTEXT: i32 = 9;
 
 fn is_read_only(attr: &str) -> bool {
     REGISTRY.iter().any(|s| s.attr == attr && s.access == Access::ReadOnly)
@@ -44,7 +47,8 @@ fn kind_tag(attr: &str, kind: &Kind) -> i32 {
         Kind::Action => KIND_ACTION,
         Kind::Curve => KIND_CURVE,
         Kind::RgbStrip { .. } => KIND_RGB,
-        Kind::Pair { .. } | Kind::SlotText { .. } => KIND_READONLY,
+        Kind::SlotText { .. } => KIND_SLOTTEXT,
+        Kind::Pair { .. } => KIND_READONLY,
     }
 }
 
@@ -300,6 +304,56 @@ pub fn apply_to_all(colors: &mut [Color], r: i32, g: i32, b: i32) {
     let c = Color { r: clamp_channel(r), g: clamp_channel(g), b: clamp_channel(b) };
     for slot in colors.iter_mut() {
         *slot = c;
+    }
+}
+
+// --- slot-text editor <-> Vec<String> conversions ---
+//
+// `ui/slot_text.slint` never touches `logi_dd_core::Value`: it renders one
+// `SlotNameRow` (1-based slot number plus that slot's name) per entry in the
+// `Value::SlotNames` list a `SlotText` row reads back. These helpers are the
+// only place that conversion happens, same pattern as `rgb_leds_model` and
+// `default_rgb` above.
+
+/// Convert `names` (one entry per onboard slot, index 0 = slot 1) into the
+/// slot-name row list the editor renders.
+pub fn slot_names_model(names: &[String]) -> slint::ModelRc<SlotNameRow> {
+    let items: Vec<SlotNameRow> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| SlotNameRow { slot: i as i32 + 1, name: name.clone().into() })
+        .collect();
+    slint::ModelRc::new(slint::VecModel::from(items))
+}
+
+/// `attr`'s default slot-name list: `slots` empty strings, at that setting's
+/// own `Kind::SlotText::slots` count. Seeds the editor when no live value has
+/// been read yet, same fallback role as `default_rgb`. Any other attr
+/// (should not happen; only a `SlotText`-kind row's "Edit slot names" button
+/// opens this editor) yields an empty list.
+pub fn default_slot_names(attr: &str) -> Vec<String> {
+    match REGISTRY.iter().find(|s| s.attr == attr).map(|s| s.kind) {
+        Some(Kind::SlotText { slots, .. }) => vec![String::new(); slots as usize],
+        _ => Vec::new(),
+    }
+}
+
+/// `attr`'s per-slot name length limit (`Kind::SlotText::max_len`), for the
+/// editor's hint text. Any other attr yields 0.
+pub fn slot_text_max_len(attr: &str) -> i32 {
+    match REGISTRY.iter().find(|s| s.attr == attr).map(|s| s.kind) {
+        Some(Kind::SlotText { max_len, .. }) => max_len as i32,
+        _ => 0,
+    }
+}
+
+/// Apply the editor's `set-slot-name(slot, name)` callback (1-based `slot`)
+/// to `names`. An out-of-range slot (should not happen; the editor only ever
+/// hands back a slot number it rendered from `names` itself) is a no-op
+/// rather than a panic, same convention as `apply_set_color`.
+pub fn apply_set_slot_name(names: &mut [String], slot: u8, name: &str) {
+    if let Some(n) = names.get_mut(slot.saturating_sub(1) as usize) {
+        *n = name.to_string();
     }
 }
 
@@ -724,5 +778,96 @@ mod tests {
         let mut colors = vec![Color { r: 1, g: 1, b: 1 }; 4];
         apply_to_all(&mut colors, 5, 6, 7);
         assert!(colors.iter().all(|c| *c == Color { r: 5, g: 6, b: 7 }));
+    }
+
+    // --- slot-text editor <-> Vec<String> conversions ---
+
+    #[test]
+    fn slot_text_row_maps_to_slot_text_tag() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_profile_names", "1: A\n2: B\n3: C\n4: D\n5: E");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm
+            .rows_for(Category::Profiles)
+            .into_iter()
+            .find(|r| r.attr == "wheel_profile_names")
+            .expect("no row for wheel_profile_names");
+
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.kind, KIND_SLOTTEXT);
+        assert_eq!(sr.display, "1: A  2: B  3: C  4: D  5: E");
+    }
+
+    #[test]
+    fn slot_names_model_round_trips_names_in_order() {
+        let names = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        let model = slot_names_model(&names);
+        let items: Vec<SlotNameRow> = model.iter().collect();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].slot, 1);
+        assert_eq!(items[0].name, "A");
+        assert_eq!(items[1].slot, 2);
+        assert_eq!(items[1].name, "B");
+        assert_eq!(items[2].slot, 3);
+        assert_eq!(items[2].name, "C");
+    }
+
+    #[test]
+    fn default_slot_names_is_all_empty_at_the_registry_slot_count() {
+        let names = default_slot_names("wheel_profile_names");
+        assert_eq!(names.len(), 5);
+        assert!(names.iter().all(String::is_empty));
+    }
+
+    #[test]
+    fn default_slot_names_for_an_unknown_attr_is_empty() {
+        assert!(default_slot_names("not_a_real_attr").is_empty());
+    }
+
+    #[test]
+    fn slot_text_max_len_reads_the_registrys_kind() {
+        assert_eq!(slot_text_max_len("wheel_profile_names"), 9);
+        assert_eq!(slot_text_max_len("not_a_real_attr"), 0);
+    }
+
+    #[test]
+    fn apply_set_slot_name_updates_only_the_indexed_slot() {
+        let mut names = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        apply_set_slot_name(&mut names, 2, "GT7");
+        assert_eq!(names, vec!["A".to_string(), "GT7".to_string(), "C".to_string()]);
+    }
+
+    #[test]
+    fn apply_set_slot_name_out_of_range_slot_is_a_no_op() {
+        let mut names = vec!["A".to_string()];
+        apply_set_slot_name(&mut names, 9, "X");
+        assert_eq!(names, vec!["A".to_string()]);
+    }
+
+    #[test]
+    fn set_slot_name_round_trips_through_widget_input_to_a_device_write() {
+        // The overlay's `set-slot-name(slot, name)` callback: apply locally
+        // (what `push_slot_text_editor` does optimistically in main.rs)...
+        let mut names = default_slot_names("wheel_profile_names");
+        apply_set_slot_name(&mut names, 2, "GT7");
+        assert_eq!(names[1], "GT7");
+
+        // ...then the same (slot, name) becomes the `WidgetInput::SlotText`
+        // the callback sends to the worker; `ViewModel::edit` converts it to
+        // `Value::SlotName` and writes only that one slot.
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_profile_names", "1: A\n2: B\n3: C\n4: D\n5: E");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        vm.edit(
+            "wheel_profile_names",
+            crate::viewmodel::WidgetInput::SlotText { slot: 2, text: "GT7".into() },
+        )
+        .unwrap();
+        match vm.device_read("wheel_profile_names").unwrap() {
+            Value::SlotNames(names) => assert_eq!(names[1], "GT7"),
+            other => panic!("expected SlotNames, got {other:?}"),
+        }
     }
 }

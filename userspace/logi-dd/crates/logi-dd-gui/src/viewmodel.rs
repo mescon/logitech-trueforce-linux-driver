@@ -4,12 +4,13 @@
 //! `FakeSysfs` and no display.
 //!
 //! The window (`worker`/`main`) wires up `rows_for`/`edit`/`info`/`set_mode`
-//! for every category now, plus the curve editor's `WidgetInput::Curve` and
-//! the RGB strip editor's `WidgetInput::Rgb`. `mode`/`refresh`/`device_read`
-//! and two `WidgetInput` variants (pair / slot text for the deadzone and
-//! profile-name pickers) are still ahead of any live widget: those are a
-//! later task's job. They are marked `#[allow(dead_code)]` individually
-//! rather than blanket-silencing the whole module.
+//! for every category now, plus the curve editor's `WidgetInput::Curve`, the
+//! RGB strip editor's `WidgetInput::Rgb`, and the slot-text editor's
+//! `WidgetInput::SlotText`. `mode`/`refresh`/`device_read` and one
+//! `WidgetInput` variant (`Pair`, for the pedal/handbrake deadzone picker)
+//! are still ahead of any live widget: that is a later task's job. They are
+//! marked `#[allow(dead_code)]` individually rather than blanket-silencing
+//! the whole module.
 
 use logi_dd_core::curve::Curve;
 use logi_dd_core::sysfs::SysfsIo;
@@ -23,10 +24,8 @@ pub enum WidgetInput {
     Choice(usize),
     Switch(bool),
     Text(String),
-    // Not built by any widget until the profile-rename, pedal-deadzone,
-    // curve-editor and LED-picker widgets land (Task 4 only wires the
-    // Force feedback category's percent/int/enum/toggle rows).
-    #[allow(dead_code)]
+    /// A single onboard slot's new name (1-based `slot`); `Kind::SlotText`
+    /// converts this to a single-slot `Value::SlotName` write.
     SlotText { slot: u8, text: String },
     /// A pedal/handbrake deadzone's `(lower, upper)` percent pair.
     #[allow(dead_code)]
