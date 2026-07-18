@@ -148,6 +148,8 @@ More cases, with commands, are in
 - [**GETTING_STARTED.md**](docs/GETTING_STARTED.md) - install, TrueForce SDK
   setup, per-distro notes, troubleshooting.
 - [**SYSFS_API.md**](docs/SYSFS_API.md) - every `wheel_*` sysfs attribute.
+- [**BUTTON_MAPPING.md**](docs/BUTTON_MAPPING.md) - which button index is which
+  physical control, for binding in games (with a layout diagram).
 - [**PROTOCOL_SPECIFICATION.md**](docs/PROTOCOL_SPECIFICATION.md) - the full USB /
   HID++ / force-feedback / LED protocol.
 - [**TRUEFORCE_PROTOCOL.md**](docs/TRUEFORCE_PROTOCOL.md) - the TrueForce haptic
