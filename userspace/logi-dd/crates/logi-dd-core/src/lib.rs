@@ -13,6 +13,7 @@ pub mod setting;
 pub use setting::{Access, Category, ModeReq, SettingSpec};
 pub mod registry;
 pub use registry::REGISTRY;
+pub mod shaping;
 pub mod device;
 pub use device::{Device, DeviceInfo};
 
