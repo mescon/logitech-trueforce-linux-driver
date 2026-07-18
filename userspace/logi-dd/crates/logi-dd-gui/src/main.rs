@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use logi_dd_core::curve::Curve;
-use logi_dd_core::lightsync;
+use logi_dd_core::{lightsync, shaping};
 use logi_dd_core::{Category, Color, Mode, Value, REGISTRY};
 use slint::Model as _;
 use viewmodel::WidgetInput;
@@ -147,7 +147,13 @@ fn cache_led_slot_name(cache: &Arc<Mutex<Vec<String>>>, slot: i32, name: &str) {
 /// switch) falls back to replacing the whole content in one go: every row
 /// is for a different setting there anyway, so there is nothing to
 /// preserve.
-fn load_rows(app: &App, rows: &[viewmodel::Row], profile_names: &[String], led_names: &[String]) {
+fn load_rows(
+    app: &App,
+    rows: &[viewmodel::Row],
+    profile_names: &[String],
+    led_names: &[String],
+    advanced_shaping: bool,
+) {
     let mut items = bridge::setting_rows(rows);
     for item in items.iter_mut() {
         if item.attr == "wheel_profile" {
@@ -158,6 +164,11 @@ fn load_rows(app: &App, rows: &[viewmodel::Row], profile_names: &[String], led_n
     // the LIGHTSYNC page renders three composed rows plus the Edit slot
     // button instead of the registry's raw row-per-attr list.
     let items = bridge::compose_lightsync(items, led_names);
+    // A no-op for every category without shaping generators (see
+    // `compose_shaping`'s doc): Steering and Pedals get the Advanced
+    // shaping toggle row on top and show either the sensitivity rows or
+    // the curve rows, never both.
+    let items = bridge::compose_shaping(items, advanced_shaping);
     let model = app.get_rows();
     if model.row_count() == items.len() {
         for (i, mut item) in items.into_iter().enumerate() {
@@ -418,6 +429,16 @@ fn main() -> Result<(), slint::PlatformError> {
     // the plain "CUSTOM N" fallback.
     let led_slot_names: Arc<Mutex<Vec<String>>> =
         Arc::new(Mutex::new(vec![String::new(); lightsync::CUSTOM_SLOTS]));
+    // The Advanced shaping view toggle: pure per-session view state (never
+    // persisted, never a sysfs write). Read when composing rows; flipped by
+    // the synthetic `shaping::TOGGLE_ATTR` row's Switch, which `edit-switch`
+    // intercepts below.
+    let advanced_shaping = Arc::new(Mutex::new(false));
+    // The current category's last full (unfiltered) row list, kept so the
+    // shaping toggle can re-compose the page locally, without a worker
+    // round trip: the visible model only holds the filtered rows, so
+    // flipping the filter needs the originals back.
+    let last_rows: Arc<Mutex<Vec<viewmodel::Row>>> = Arc::new(Mutex::new(Vec::new()));
     // The curve editor's in-flight state, `None` while the overlay is
     // closed. UI-thread only (see `CurveEditorState`'s own doc comment).
     let curve_editor: Arc<Mutex<Option<CurveEditorState>>> = Arc::new(Mutex::new(None));
@@ -436,6 +457,8 @@ fn main() -> Result<(), slint::PlatformError> {
         let known_values = known_values.clone();
         let led_slot_names = led_slot_names.clone();
         let slot_text_editor = slot_text_editor.clone();
+        let advanced_shaping = advanced_shaping.clone();
+        let last_rows = last_rows.clone();
         Worker::spawn(move |response| {
             let app_weak = app_weak.clone();
             let current_category = current_category.clone();
@@ -443,6 +466,8 @@ fn main() -> Result<(), slint::PlatformError> {
             let known_values = known_values.clone();
             let led_slot_names = led_slot_names.clone();
             let slot_text_editor = slot_text_editor.clone();
+            let advanced_shaping = advanced_shaping.clone();
+            let last_rows = last_rows.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(app) = app_weak.upgrade() else { return };
                 match response {
@@ -480,7 +505,18 @@ fn main() -> Result<(), slint::PlatformError> {
                             cache_led_slot_name(&led_slot_names, slot, &name);
                         }
                         let led_names = led_slot_names.lock().unwrap().clone();
-                        load_rows(&app, &rows, &profile_names(&known_values), &led_names);
+                        // Remember the full list before it is filtered so
+                        // the shaping toggle can re-compose locally (see
+                        // `last_rows`'s doc comment above).
+                        *last_rows.lock().unwrap() = rows;
+                        let rows = last_rows.lock().unwrap();
+                        load_rows(
+                            &app,
+                            &rows,
+                            &profile_names(&known_values),
+                            &led_names,
+                            get(&advanced_shaping),
+                        );
                     }
                     Response::RowUpdated { category, row, error } => {
                         // Same staleness guard as `Rows`: a reply for a
@@ -545,6 +581,15 @@ fn main() -> Result<(), slint::PlatformError> {
                                 push_slot_text_editor(&app, &state.names);
                                 app.set_slot_text_error(error.as_deref().unwrap_or("").into());
                             }
+                        }
+                        drop(guard);
+                        // Keep the unfiltered cache fresh too, so a shaping
+                        // toggle right after an edit re-composes from this
+                        // row's new value, not the last whole-category read.
+                        if let Some(entry) =
+                            last_rows.lock().unwrap().iter_mut().find(|r| r.attr == row.attr)
+                        {
+                            *entry = row;
                         }
                     }
                     Response::Info(info) => {
@@ -640,7 +685,23 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let worker = worker.clone();
         let current_category = current_category.clone();
+        let advanced_shaping = advanced_shaping.clone();
+        let last_rows = last_rows.clone();
+        let known_values = known_values.clone();
+        let led_slot_names = led_slot_names.clone();
+        let app_weak = app.as_weak();
         app.on_edit_switch(move |attr, value| {
+            // The Advanced shaping row is view state, not a device
+            // attribute: flip the flag and re-compose the current rows
+            // from the unfiltered cache, without a worker round trip.
+            if attr == shaping::TOGGLE_ATTR {
+                set(&advanced_shaping, value);
+                let Some(app) = app_weak.upgrade() else { return };
+                let led_names = led_slot_names.lock().unwrap().clone();
+                let rows = last_rows.lock().unwrap();
+                load_rows(&app, &rows, &profile_names(&known_values), &led_names, value);
+                return;
+            }
             worker.request(Request::Edit {
                 category: get(&current_category),
                 attr: attr.to_string(),

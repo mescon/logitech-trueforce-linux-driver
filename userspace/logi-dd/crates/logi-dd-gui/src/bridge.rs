@@ -5,8 +5,8 @@
 //! is the only place that knows about both worlds.
 
 use logi_dd_core::curve::{Curve, FULL};
-use logi_dd_core::lightsync;
-use logi_dd_core::{Access, Category, Color, Error, Kind, Value, REGISTRY};
+use logi_dd_core::shaping::{self, ShapingRole};
+use logi_dd_core::{lightsync, Access, Category, Color, Error, Kind, Value, REGISTRY};
 
 use crate::viewmodel::Row;
 use crate::{CurvePoint, LedColor, SettingRow, SlotNameRow};
@@ -273,6 +273,52 @@ pub fn compose_lightsync(items: Vec<SettingRow>, slot_names: &[String]) -> Vec<S
     if let Some(rev) = rev_row {
         out.push(rev);
     }
+    out
+}
+
+/// Build the synthetic "Advanced shaping" toggle row `compose_shaping`
+/// prepends. A plain `KIND_TOGGLE` row wearing the reserved
+/// `shaping::TOGGLE_ATTR` attr: the Switch commits through the same
+/// `edit-switch` callback every real toggle uses, and `main.rs` intercepts
+/// that attr there to flip its local view state instead of sending a
+/// worker request (the toggle is pure view state, never a device write).
+fn shaping_toggle_row(advanced: bool) -> SettingRow {
+    SettingRow {
+        attr: shaping::TOGGLE_ATTR.into(),
+        label: shaping::TOGGLE_LABEL.into(),
+        help: shaping::TOGGLE_HELP.into(),
+        kind: KIND_TOGGLE,
+        int_value: 0,
+        int_value2: 0,
+        bool_value: advanced,
+        text_value: slint::SharedString::new(),
+        display: slint::SharedString::new(),
+        choices: slint::ModelRc::new(slint::VecModel::<slint::SharedString>::default()),
+        min: 0,
+        max: 0,
+        step: 0,
+        unit: slint::SharedString::new(),
+        available: true,
+        mode_ok: true,
+        error: slint::SharedString::new(),
+        revision: 0,
+    }
+}
+
+/// Compose a category's rows for the advanced-shaping toggle: when any row
+/// is a shaping generator (a sensitivity or a curve; see `shaping::role`),
+/// prepend the toggle row and keep only the rows `shaping::visible` allows
+/// in the current state (simple hides curves, advanced hides sensitivities,
+/// deadzones and everything else stay). Rows for a category with no shaping
+/// generators pass through untouched, so `load_rows` can call this
+/// unconditionally, same convention as `compose_lightsync`.
+pub fn compose_shaping(items: Vec<SettingRow>, advanced: bool) -> Vec<SettingRow> {
+    if !items.iter().any(|r| shaping::role(r.attr.as_str()) != ShapingRole::Neutral) {
+        return items;
+    }
+    let mut out = Vec::with_capacity(items.len() + 1);
+    out.push(shaping_toggle_row(advanced));
+    out.extend(items.into_iter().filter(|r| shaping::visible(r.attr.as_str(), advanced)));
     out
 }
 
@@ -1198,6 +1244,114 @@ mod tests {
         apply_lightsync_effect(sr, 4, &[]);
         assert_eq!(sr.kind, KIND_LIGHT_EFFECT);
         assert_eq!(sr.int_value, 8, "effect 5 + slot 4 = CUSTOM 5 = index 8");
+    }
+
+    // --- advanced-shaping composition ---
+
+    fn category_setting_rows(cat: Category) -> Vec<SettingRow> {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        setting_rows(&vm.rows_for(cat))
+    }
+
+    fn attrs_of(rows: &[SettingRow]) -> Vec<String> {
+        rows.iter().map(|r| r.attr.to_string()).collect()
+    }
+
+    #[test]
+    fn compose_shaping_simple_steering_shows_sensitivity_not_the_curve() {
+        let out = compose_shaping(category_setting_rows(Category::Steering), false);
+        let attrs = attrs_of(&out);
+        assert_eq!(
+            attrs,
+            vec![
+                shaping::TOGGLE_ATTR,
+                "wheel_range",
+                "wheel_sensitivity",
+                "wheel_range_restore",
+                "wheel_calibrate_here",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_shaping_advanced_steering_shows_the_curve_not_sensitivity() {
+        let out = compose_shaping(category_setting_rows(Category::Steering), true);
+        let attrs = attrs_of(&out);
+        assert_eq!(
+            attrs,
+            vec![
+                shaping::TOGGLE_ATTR,
+                "wheel_range",
+                "wheel_range_restore",
+                "wheel_response_curve",
+                "wheel_calibrate_here",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_shaping_simple_pedals_keeps_deadzones_and_hides_curves() {
+        let out = compose_shaping(category_setting_rows(Category::Pedals), false);
+        let attrs = attrs_of(&out);
+        for kept in [
+            "wheel_throttle_sensitivity",
+            "wheel_throttle_deadzone",
+            "wheel_brake_sensitivity",
+            "wheel_brake_deadzone",
+            "wheel_clutch_sensitivity",
+            "wheel_clutch_deadzone",
+            "wheel_handbrake_sensitivity",
+        ] {
+            assert!(attrs.contains(&kept.to_string()), "missing {kept}");
+        }
+        assert!(!attrs.iter().any(|a| a.ends_with("_curve")), "curves hidden in simple mode: {attrs:?}");
+    }
+
+    #[test]
+    fn compose_shaping_advanced_pedals_keeps_deadzones_and_hides_sensitivities() {
+        let out = compose_shaping(category_setting_rows(Category::Pedals), true);
+        let attrs = attrs_of(&out);
+        for kept in [
+            "wheel_throttle_deadzone",
+            "wheel_throttle_curve",
+            "wheel_brake_deadzone",
+            "wheel_brake_curve",
+            "wheel_clutch_deadzone",
+            "wheel_clutch_curve",
+            "wheel_handbrake_curve",
+        ] {
+            assert!(attrs.contains(&kept.to_string()), "missing {kept}");
+        }
+        assert!(
+            !attrs.iter().any(|a| a.ends_with("_sensitivity")),
+            "sensitivities hidden in advanced mode: {attrs:?}"
+        );
+    }
+
+    #[test]
+    fn compose_shaping_toggle_row_is_a_switch_carrying_the_flag_and_help() {
+        for advanced in [false, true] {
+            let out = compose_shaping(category_setting_rows(Category::Steering), advanced);
+            let toggle = &out[0];
+            assert_eq!(toggle.attr, shaping::TOGGLE_ATTR);
+            assert_eq!(toggle.kind, KIND_TOGGLE);
+            assert_eq!(toggle.bool_value, advanced);
+            assert_eq!(toggle.label, shaping::TOGGLE_LABEL);
+            assert_eq!(toggle.help, shaping::TOGGLE_HELP);
+            assert!(toggle.available && toggle.mode_ok);
+        }
+    }
+
+    #[test]
+    fn compose_shaping_leaves_other_categories_untouched() {
+        for cat in [Category::Ffb, Category::Leds, Category::Profiles, Category::Info] {
+            let items = category_setting_rows(cat);
+            let before = attrs_of(&items);
+            let after = attrs_of(&compose_shaping(items, true));
+            assert_eq!(before, after, "{cat:?} must pass through");
+        }
     }
 
     #[test]
