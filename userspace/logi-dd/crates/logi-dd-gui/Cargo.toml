@@ -1,0 +1,13 @@
+[package]
+name = "logi-dd-gui"
+edition = "2021"
+version.workspace = true
+license = "GPL-3.0-or-later"
+rust-version = "1.92"
+
+[dependencies]
+slint = "1.17"
+logi-dd-core = { path = "../logi-dd-core" }
+
+[build-dependencies]
+slint-build = "1.17"
