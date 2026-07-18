@@ -1,0 +1,40 @@
+import { Palette, StyleMetrics } from "std-widgets.slint";
+
+// Shared layout rhythm and modal chrome so the main shell and the three
+// editor overlays (curve/RGB/slot-text) read as one consistent design
+// instead of each screen hardcoding its own spacing and colors.
+//
+// Every color below comes from `Palette` (never a literal hex), so the
+// same values look right under whatever widget style the app was built
+// with (material/fluent/cosmic/...) and in both light and dark color
+// schemes. The two exceptions are `scrim` and `error-color`: a modal
+// backdrop dimmer is not a themed "surface", so it stays a fixed
+// translucent black regardless of theme; and there is no semantic
+// "error" brush in `Palette` common to every style, so a fixed, readable
+// red is used instead of picking one style's accent color arbitrarily.
+export global Theme {
+    // Settings-row column layout (`ui/widgets.slint`): every row uses the
+    // same three column widths, so a control never shifts position
+    // between rows no matter which widget kind it renders.
+    out property <length> label-column-width: 260px;
+    out property <length> control-column-width: 320px;
+    out property <length> row-height: 64px;
+    out property <length> gutter: StyleMetrics.layout-spacing;
+    out property <length> padding: StyleMetrics.layout-padding;
+
+    // Modal overlay chrome shared by the curve/RGB/slot-text editors.
+    out property <brush> scrim: #00000099;
+    out property <brush> panel-background: Palette.alternate-background;
+    out property <brush> panel-border: Palette.border;
+    out property <length> panel-radius: 10px;
+
+    // Typography roles used throughout the main shell and the overlays.
+    out property <brush> text-color: Palette.foreground;
+    out property <brush> muted-text-color: Palette.foreground.with-alpha(0.65);
+    out property <brush> faint-text-color: Palette.foreground.with-alpha(0.5);
+    out property <brush> error-color: #e0524a;
+
+    // Sidebar selection highlight.
+    out property <brush> selected-background: Palette.accent-background;
+    out property <brush> selected-foreground: Palette.accent-foreground;
+}

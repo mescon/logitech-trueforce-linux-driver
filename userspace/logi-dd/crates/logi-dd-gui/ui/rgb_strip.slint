@@ -1,4 +1,5 @@
-import { Button, Slider, LineEdit } from "std-widgets.slint";
+import { Button, Slider, LineEdit, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 
 // One LED swatch color, as plain 0..255 channel ints so this file can build
 // its background with Slint's builtin `rgb()` function without ever
@@ -36,18 +37,20 @@ export component RgbStrip inherits Rectangle {
     callback commit();
     callback cancel();
 
-    // Dim the rest of the window so the overlay reads as modal.
-    background: #000000aa;
+    // Dim the rest of the window so the overlay reads as modal. Kept a
+    // fixed translucent black regardless of style/theme: see `Theme`'s own
+    // doc comment for why a backdrop dimmer is not a themed "surface".
+    background: Theme.scrim;
 
     Rectangle {
         width: 440px;
         height: 340px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        background: #202020;
-        border-radius: 8px;
+        background: Theme.panel-background;
+        border-radius: Theme.panel-radius;
         border-width: 1px;
-        border-color: #444444;
+        border-color: Theme.panel-border;
 
         VerticalLayout {
             padding: 16px;
@@ -57,13 +60,13 @@ export component RgbStrip inherits Rectangle {
                 text: root.strip-label;
                 font-size: 16px;
                 font-weight: 700;
-                color: white;
+                color: Theme.text-color;
             }
 
             Text {
                 text: "Click a swatch to edit its color.";
                 font-size: 11px;
-                color: #cccccc;
+                color: Theme.muted-text-color;
             }
 
             HorizontalLayout {
@@ -73,7 +76,7 @@ export component RgbStrip inherits Rectangle {
                     height: 28px;
                     border-radius: 4px;
                     border-width: i == root.current-index ? 2px : 1px;
-                    border-color: i == root.current-index ? white : #444444;
+                    border-color: i == root.current-index ? Palette.accent-background : Theme.panel-border;
                     background: rgb(led.r, led.g, led.b);
 
                     TouchArea {
@@ -90,7 +93,7 @@ export component RgbStrip inherits Rectangle {
 
                 HorizontalLayout {
                     spacing: 8px;
-                    Text { text: "R"; color: white; vertical-alignment: center; width: 16px; }
+                    Text { text: "R"; color: Theme.text-color; vertical-alignment: center; width: 16px; }
                     Slider {
                         width: 200px;
                         minimum: 0;
@@ -100,11 +103,11 @@ export component RgbStrip inherits Rectangle {
                             root.set-color(root.current-index, round(v), root.leds[root.current-index].g, root.leds[root.current-index].b);
                         }
                     }
-                    Text { text: root.leds[root.current-index].r; color: white; vertical-alignment: center; width: 32px; }
+                    Text { text: root.leds[root.current-index].r; color: Theme.text-color; vertical-alignment: center; width: 32px; }
                 }
                 HorizontalLayout {
                     spacing: 8px;
-                    Text { text: "G"; color: white; vertical-alignment: center; width: 16px; }
+                    Text { text: "G"; color: Theme.text-color; vertical-alignment: center; width: 16px; }
                     Slider {
                         width: 200px;
                         minimum: 0;
@@ -114,11 +117,11 @@ export component RgbStrip inherits Rectangle {
                             root.set-color(root.current-index, root.leds[root.current-index].r, round(v), root.leds[root.current-index].b);
                         }
                     }
-                    Text { text: root.leds[root.current-index].g; color: white; vertical-alignment: center; width: 32px; }
+                    Text { text: root.leds[root.current-index].g; color: Theme.text-color; vertical-alignment: center; width: 32px; }
                 }
                 HorizontalLayout {
                     spacing: 8px;
-                    Text { text: "B"; color: white; vertical-alignment: center; width: 16px; }
+                    Text { text: "B"; color: Theme.text-color; vertical-alignment: center; width: 16px; }
                     Slider {
                         width: 200px;
                         minimum: 0;
@@ -128,12 +131,12 @@ export component RgbStrip inherits Rectangle {
                             root.set-color(root.current-index, root.leds[root.current-index].r, root.leds[root.current-index].g, round(v));
                         }
                     }
-                    Text { text: root.leds[root.current-index].b; color: white; vertical-alignment: center; width: 32px; }
+                    Text { text: root.leds[root.current-index].b; color: Theme.text-color; vertical-alignment: center; width: 32px; }
                 }
 
                 HorizontalLayout {
                     spacing: 8px;
-                    Text { text: "Hex"; color: white; vertical-alignment: center; }
+                    Text { text: "Hex"; color: Theme.text-color; vertical-alignment: center; }
                     LineEdit {
                         width: 90px;
                         text: root.selected-hex;
@@ -144,7 +147,7 @@ export component RgbStrip inherits Rectangle {
                         height: 24px;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: #444444;
+                        border-color: Theme.panel-border;
                         background: rgb(root.leds[root.current-index].r, root.leds[root.current-index].g, root.leds[root.current-index].b);
                     }
                     Button {

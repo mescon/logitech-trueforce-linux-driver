@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use logi_dd_core::curve::Curve;
 use logi_dd_core::{Category, Color, Mode, Value, REGISTRY};
+use slint::Model as _;
 use viewmodel::WidgetInput;
 use worker::{Request, Response, Worker};
 
@@ -69,6 +70,55 @@ fn push_slot_text_editor(app: &App, names: &[String]) {
     app.set_slot_text_names(bridge::slot_names_model(names));
 }
 
+/// Replace the persistent rows model's contents with a whole category's
+/// worth of fresh rows (`LoadCategory`, `Refresh`, the no-wheel screen's
+/// Retry, or a mode switch's follow-up refresh). `app.set_rows` is only
+/// ever called once, at startup (`main`), installing a `VecModel` this
+/// function and `update_row` mutate in place from then on; that way the
+/// `SettingsList`'s repeater never sees the model itself change identity,
+/// only its contents, which is what keeps a widget that is not part of
+/// this reload (e.g. an open `ComboBox` popup) from being torn down for no
+/// reason.
+///
+/// When the new content is the same length as what is already shown (the
+/// common case: the same category re-read after an unrelated refresh),
+/// each row is replaced in place via `set_row_data`, which only re-renders
+/// rows whose value actually differs. A different length (a category
+/// switch) falls back to replacing the whole content in one go: every row
+/// is for a different setting there anyway, so there is nothing to
+/// preserve.
+fn load_rows(app: &App, rows: &[viewmodel::Row]) {
+    let items = bridge::setting_rows(rows);
+    let model = app.get_rows();
+    if model.row_count() == items.len() {
+        for (i, item) in items.into_iter().enumerate() {
+            model.set_row_data(i, item);
+        }
+        return;
+    }
+    match model.as_any().downcast_ref::<slint::VecModel<SettingRow>>() {
+        Some(vec_model) => vec_model.set_vec(items),
+        // Should not happen: `main` installs a `VecModel` before the first
+        // response can arrive. Fall back to installing a fresh one rather
+        // than silently dropping the reload.
+        None => app.set_rows(slint::ModelRc::new(slint::VecModel::from(items))),
+    }
+}
+
+/// Update just the row named by `row.attr` in place (a successful or
+/// failed single-field edit), without touching any other row's widget.
+/// `error` is the edit's failure message, or `None` on success; either way
+/// `row` itself already reflects a fresh read (see `Response::RowUpdated`'s
+/// doc comment), so this never has to guess at what reverting looks like.
+fn update_row(app: &App, row: &viewmodel::Row, error: Option<&str>) {
+    let model = app.get_rows();
+    let Some(index) = (0..model.row_count()).find(|&i| model.row_data(i).is_some_and(|r| r.attr == row.attr))
+    else {
+        return;
+    };
+    model.set_row_data(index, bridge::to_setting_row_with_error(row, error));
+}
+
 /// Read the `Category`/`Mode` out of one of the `Arc<Mutex<_>>` cells below.
 /// Both are `Copy`, so the lock never needs to outlive this call.
 fn get<T: Copy>(cell: &Arc<Mutex<T>>) -> T {
@@ -82,6 +132,10 @@ fn set<T>(cell: &Arc<Mutex<T>>, value: T) {
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
     app.set_category_labels(bridge::category_labels_model());
+    // Installed once, here, and never replaced: `load_rows`/`update_row`
+    // mutate this same `VecModel`'s contents for the rest of the app's
+    // life (see `load_rows`'s doc comment for why that matters).
+    app.set_rows(slint::ModelRc::new(slint::VecModel::<SettingRow>::default()));
 
     // UI-side state the worker's responses need to be checked against, or
     // the mode toggle needs to compute its target: which category is on
@@ -125,7 +179,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(app) = app_weak.upgrade() else { return };
                 match response {
-                    Response::Rows { category, rows, edit_error } => {
+                    Response::Rows { category, rows } => {
                         // A category switch (or a slow edit reply racing a
                         // later switch) can make this response stale;
                         // only the category currently on screen matters.
@@ -140,8 +194,19 @@ fn main() -> Result<(), slint::PlatformError> {
                                 }
                             }
                         }
-                        let err = edit_error.as_ref().map(|(a, m)| (a.as_str(), m.as_str()));
-                        app.set_rows(bridge::rows_model(&rows, err));
+                        load_rows(&app, &rows);
+                    }
+                    Response::RowUpdated { category, row, error } => {
+                        // Same staleness guard as `Rows`: a reply for a
+                        // category the user has since navigated away from
+                        // should not touch what is on screen now.
+                        if category != get(&current_category) {
+                            return;
+                        }
+                        if let Some(v) = &row.value {
+                            known_values.lock().unwrap().insert(row.attr.to_string(), v.clone());
+                        }
+                        update_row(&app, &row, error.as_deref());
                     }
                     Response::Info(info) => {
                         set(&current_mode, info.mode);

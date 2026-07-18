@@ -1,4 +1,5 @@
-import { Button } from "std-widgets.slint";
+import { Button, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 import { SettingRow, SettingsList } from "widgets.slint";
 import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
@@ -10,8 +11,11 @@ export { SlotNameRow } from "slot_text.slint";
 
 export component App inherits Window {
     title: "logi-dd";
-    preferred-width: 900px;
-    preferred-height: 600px;
+    preferred-width: 960px;
+    preferred-height: 640px;
+    min-width: 720px;
+    min-height: 480px;
+    background: Palette.background;
 
     // No-wheel screen: shown instead of the shell whenever the worker
     // reports it cannot reach the device (nothing bound, unplugged mid
@@ -103,12 +107,13 @@ export component App inherits Window {
             text: "No wheel found";
             font-size: 22px;
             font-weight: 700;
+            color: Theme.text-color;
             horizontal-alignment: center;
         }
         Text {
             text: root.no-wheel-message;
+            color: Theme.muted-text-color;
             horizontal-alignment: center;
-            opacity: 0.8;
             wrap: word-wrap;
         }
         HorizontalLayout {
@@ -122,70 +127,101 @@ export component App inherits Window {
     }
 
     if !root.no-wheel: VerticalLayout {
-        HorizontalLayout {
-            padding: 10px;
-            spacing: 12px;
-            height: 44px;
+        // Header: device identity plus the mode toggle. A thin bottom
+        // divider (rather than a background-color band) so it reads
+        // correctly against every widget style's own background brush.
+        Rectangle {
+            height: 52px;
 
-            Text {
-                text: "logi-dd";
-                font-size: 16px;
-                font-weight: 700;
-                vertical-alignment: center;
-            }
-            Text {
-                text: root.device-serial == "" ? "" : "serial " + root.device-serial;
-                vertical-alignment: center;
-                opacity: 0.7;
-            }
-            Text {
-                text: root.device-firmware == "" ? "" : "fw " + root.device-firmware;
-                vertical-alignment: center;
-                opacity: 0.7;
+            HorizontalLayout {
+                padding: Theme.padding;
+                spacing: Theme.gutter;
+
+                Text {
+                    text: "logi-dd";
+                    font-size: 17px;
+                    font-weight: 700;
+                    color: Theme.text-color;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.device-serial == "" ? "" : "serial " + root.device-serial;
+                    vertical-alignment: center;
+                    color: Theme.muted-text-color;
+                }
+                Text {
+                    text: root.device-firmware == "" ? "" : "fw " + root.device-firmware;
+                    vertical-alignment: center;
+                    color: Theme.muted-text-color;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                Button {
+                    text: root.mode-onboard ? "Mode: onboard" : "Mode: desktop";
+                    clicked => { root.toggle-mode(); }
+                }
+                Button {
+                    text: "Refresh";
+                    clicked => { root.refresh(); }
+                }
             }
 
-            Rectangle { horizontal-stretch: 1; }
-
-            Button {
-                text: root.mode-onboard ? "Mode: onboard" : "Mode: desktop";
-                clicked => { root.toggle-mode(); }
-            }
-            Button {
-                text: "Refresh";
-                clicked => { root.refresh(); }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Palette.border;
             }
         }
 
         HorizontalLayout {
-            VerticalLayout {
-                width: 180px;
-                padding: 8px;
-                spacing: 2px;
+            // Sidebar: one row per `Category::ALL`, with a clear
+            // accent-colored highlight on the selected entry.
+            Rectangle {
+                width: 200px;
+                background: Palette.alternate-background;
 
-                for label[i] in root.category-labels: Rectangle {
-                    height: 36px;
-                    background: i == root.selected-category ? #2d5a8c : transparent;
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 2px;
 
-                    TouchArea {
-                        clicked => { root.select-category(i); }
+                    for label[i] in root.category-labels: Rectangle {
+                        height: 36px;
+                        border-radius: 6px;
+                        background: i == root.selected-category ? Theme.selected-background : transparent;
+
+                        TouchArea {
+                            clicked => { root.select-category(i); }
+                        }
+                        Text {
+                            x: 10px;
+                            width: parent.width - 2 * self.x;
+                            height: 100%;
+                            text: label;
+                            vertical-alignment: center;
+                            horizontal-alignment: left;
+                            font-weight: i == root.selected-category ? 700 : 400;
+                            color: i == root.selected-category ? Theme.selected-foreground : Theme.text-color;
+                        }
                     }
-                    Text {
-                        text: label;
-                        vertical-alignment: center;
-                        horizontal-alignment: left;
-                        font-weight: i == root.selected-category ? 700 : 400;
-                    }
+                }
+
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    background: Palette.border;
                 }
             }
 
             VerticalLayout {
-                padding: 12px;
-                spacing: 8px;
+                padding: Theme.padding;
+                spacing: Theme.gutter;
 
                 Text {
                     text: root.category-label;
                     font-size: 20px;
                     font-weight: 700;
+                    color: Theme.text-color;
                 }
 
                 SettingsList {

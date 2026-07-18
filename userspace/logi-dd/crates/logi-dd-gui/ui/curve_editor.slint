@@ -1,4 +1,5 @@
-import { Button, Slider } from "std-widgets.slint";
+import { Button, Slider, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 
 // One draggable curve control point, in screen-fraction space: `x` is the
 // input fraction (0 = min input, 1 = max input); `y` is the output fraction
@@ -35,18 +36,20 @@ export component CurveEditor inherits Rectangle {
     callback commit();
     callback cancel();
 
-    // Dim the rest of the window so the overlay reads as modal.
-    background: #000000aa;
+    // Dim the rest of the window so the overlay reads as modal. Kept a
+    // fixed translucent black regardless of style/theme: see `Theme`'s own
+    // doc comment for why a backdrop dimmer is not a themed "surface".
+    background: Theme.scrim;
 
     Rectangle {
         width: 460px;
         height: 420px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        background: #202020;
-        border-radius: 8px;
+        background: Theme.panel-background;
+        border-radius: Theme.panel-radius;
         border-width: 1px;
-        border-color: #444444;
+        border-color: Theme.panel-border;
 
         VerticalLayout {
             padding: 16px;
@@ -56,21 +59,21 @@ export component CurveEditor inherits Rectangle {
                 text: root.curve-label;
                 font-size: 16px;
                 font-weight: 700;
-                color: white;
+                color: Theme.text-color;
             }
 
             Text {
                 text: "Click empty space to add a point, drag a point to shape the curve, double-click a point to remove it.";
                 font-size: 11px;
-                color: #cccccc;
+                color: Theme.muted-text-color;
                 wrap: word-wrap;
             }
 
             plot-area := Rectangle {
                 height: 220px;
-                background: #101010;
+                background: Palette.background;
                 border-width: 1px;
-                border-color: #333333;
+                border-color: Theme.panel-border;
 
                 // Bottom of the z-order: catches clicks that land on empty
                 // plot space (the point handles below are on top and take
@@ -84,7 +87,7 @@ export component CurveEditor inherits Rectangle {
                 Path {
                     viewbox-width: 1;
                     viewbox-height: 1;
-                    stroke: #4a90d9;
+                    stroke: Palette.accent-background;
                     stroke-width: 2px;
                     commands: root.plot-commands;
                 }
@@ -93,9 +96,9 @@ export component CurveEditor inherits Rectangle {
                     width: 10px;
                     height: 10px;
                     border-radius: 5px;
-                    background: white;
+                    background: Palette.control-background;
                     border-width: 1px;
-                    border-color: #4a90d9;
+                    border-color: Palette.accent-background;
                     x: p.x * plot-area.width - self.width / 2;
                     y: p.y * plot-area.height - self.height / 2;
 
@@ -132,7 +135,7 @@ export component CurveEditor inherits Rectangle {
 
             HorizontalLayout {
                 spacing: 8px;
-                Text { text: "Lower deadzone"; vertical-alignment: center; color: white; }
+                Text { text: "Lower deadzone"; vertical-alignment: center; color: Theme.text-color; }
                 Slider {
                     width: 160px;
                     minimum: 0;
@@ -140,12 +143,12 @@ export component CurveEditor inherits Rectangle {
                     value: root.lower-deadzone;
                     changed(v) => { root.set-lower-deadzone(round(v)); }
                 }
-                Text { text: "\{root.lower-deadzone}%"; vertical-alignment: center; color: white; }
+                Text { text: "\{root.lower-deadzone}%"; vertical-alignment: center; color: Theme.text-color; }
             }
 
             HorizontalLayout {
                 spacing: 8px;
-                Text { text: "Upper deadzone"; vertical-alignment: center; color: white; }
+                Text { text: "Upper deadzone"; vertical-alignment: center; color: Theme.text-color; }
                 Slider {
                     width: 160px;
                     minimum: 0;
@@ -153,7 +156,7 @@ export component CurveEditor inherits Rectangle {
                     value: root.upper-deadzone;
                     changed(v) => { root.set-upper-deadzone(round(v)); }
                 }
-                Text { text: "\{root.upper-deadzone}%"; vertical-alignment: center; color: white; }
+                Text { text: "\{root.upper-deadzone}%"; vertical-alignment: center; color: Theme.text-color; }
             }
 
             Rectangle { vertical-stretch: 1; }

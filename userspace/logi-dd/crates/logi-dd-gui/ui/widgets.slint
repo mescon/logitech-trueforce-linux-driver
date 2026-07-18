@@ -1,4 +1,5 @@
-import { ListView, Slider, ComboBox, Switch, LineEdit, Button } from "std-widgets.slint";
+import { ListView, Slider, ComboBox, Switch, LineEdit, Button, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 
 // One rendered setting. `kind` is a stable numeric tag the Rust side and this
 // file agree on (see `bridge::KIND_*` in `src/bridge.rs`):
@@ -61,59 +62,81 @@ export component SettingsList inherits ListView {
     // header's mode toggle).
     callback switch-mode();
 
+    // Every row uses the same fixed three-column layout (label, control,
+    // status), regardless of `kind`: column widths come from `Theme` so no
+    // control's x position ever depends on what the row next to it is
+    // showing (fixes controls jumping around between rows).
     for row in rows: Rectangle {
-        height: 72px;
+        min-height: Theme.row-height;
 
-        VerticalLayout {
-            padding: 10px;
-            spacing: 4px;
+        HorizontalLayout {
+            padding: Theme.gutter;
+            spacing: Theme.gutter;
 
-            HorizontalLayout {
-                spacing: 8px;
+            // Column 1: label (bold) plus a smaller muted help line.
+            VerticalLayout {
+                width: Theme.label-column-width;
+                alignment: center;
+                spacing: 2px;
+
                 Text {
                     text: row.label;
                     font-weight: 600;
+                    color: Theme.text-color;
+                    wrap: word-wrap;
                 }
-                if !row.available: Text {
-                    text: "(unavailable on this wheel)";
-                    opacity: 0.6;
-                }
-                if row.available && !row.mode-ok: Text {
-                    text: "(wrong mode)";
-                    opacity: 0.6;
-                }
-                if row.error != "": Text {
-                    text: row.error;
-                    color: red;
+                Text {
+                    text: row.help;
+                    font-size: 11px;
+                    color: Theme.muted-text-color;
+                    wrap: word-wrap;
                 }
             }
 
-            Text {
-                text: row.help;
-                font-size: 11px;
-                opacity: 0.7;
-                wrap: word-wrap;
-            }
-
+            // Column 2: the control itself. Exactly one branch is active
+            // per row (see the `kind` doc comment above); every branch is
+            // left-aligned within this fixed-width column, so the control
+            // always starts at the same x no matter which kind it is.
             HorizontalLayout {
-                spacing: 8px;
+                width: Theme.control-column-width;
                 alignment: start;
 
-                if row.kind == 0 || row.kind == 1: Slider {
-                    width: 260px;
-                    minimum: row.min;
-                    maximum: row.max;
-                    value: row.int-value;
-                    enabled: row.available && row.mode-ok;
-                    changed(v) => { edit-slider(row.attr, round(v)); }
-                }
-                if row.kind == 0 || row.kind == 1: Text {
-                    text: row.display;
-                    vertical-alignment: center;
+                if row.kind == 0 || row.kind == 1: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    // Committed on `released`, not `changed`: writing on
+                    // every drag pixel used to trigger a full-category
+                    // reload that replaced this very model, destroying and
+                    // recreating the slider mid-drag (it would visually
+                    // snap back and stop tracking the pointer). `released`
+                    // fires once, when the drag/interaction ends.
+                    slider := Slider {
+                        width: 190px;
+                        minimum: row.min;
+                        maximum: row.max;
+                        value: row.int-value;
+                        enabled: row.available && row.mode-ok;
+                        released(v) => { edit-slider(row.attr, round(v)); }
+                    }
+                    // Bound to the slider's own live `value`, not to
+                    // `row.display`, so the number keeps up with the drag
+                    // without a round trip through the worker. Mirrors
+                    // `Kind::display`'s own formatting for `Percent`
+                    // ("80%", no space) and `IntRange` ("5 deg", one
+                    // space) exactly, since nothing here goes through that
+                    // function any more mid-drag.
+                    Text {
+                        text: row.kind == 0
+                            ? "\{round(slider.value)}\{row.unit}"
+                            : "\{round(slider.value)} \{row.unit}";
+                        vertical-alignment: center;
+                        color: Theme.text-color;
+                    }
                 }
 
                 if row.kind == 2: ComboBox {
-                    width: 200px;
+                    width: 220px;
                     model: row.choices;
                     current-index: row.int-value;
                     enabled: row.available && row.mode-ok;
@@ -127,7 +150,7 @@ export component SettingsList inherits ListView {
                 }
 
                 if row.kind == 4: LineEdit {
-                    width: 200px;
+                    width: 220px;
                     text: row.text-value;
                     enabled: row.available && row.mode-ok;
                     accepted(t) => { edit-text(row.attr, t); }
@@ -142,6 +165,7 @@ export component SettingsList inherits ListView {
                 if row.kind == 6: Text {
                     text: row.display;
                     vertical-alignment: center;
+                    color: Theme.text-color;
                 }
 
                 if row.kind == 7: Button {
@@ -161,12 +185,43 @@ export component SettingsList inherits ListView {
                     enabled: row.available && row.mode-ok;
                     clicked => { edit-slot-text(row.attr); }
                 }
+            }
 
+            // Column 3: a fixed-position status slot (error / unavailable /
+            // wrong-mode plus the "Switch mode" button). Always
+            // instantiated, even when showing nothing, so its own
+            // appearance or disappearance never shifts column 2.
+            HorizontalLayout {
+                alignment: start;
+                spacing: 8px;
+
+                if row.error != "": Text {
+                    text: row.error;
+                    color: Theme.error-color;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+                if row.error == "" && !row.available: Text {
+                    text: "Unavailable on this wheel";
+                    color: Theme.faint-text-color;
+                    vertical-alignment: center;
+                }
+                if row.error == "" && row.available && !row.mode-ok: Text {
+                    text: "Wrong mode";
+                    color: Theme.faint-text-color;
+                    vertical-alignment: center;
+                }
                 if row.available && !row.mode-ok: Button {
                     text: "Switch mode";
                     clicked => { switch-mode(); }
                 }
             }
+        }
+
+        Rectangle {
+            y: parent.height - 1px;
+            height: 1px;
+            background: Palette.border;
         }
     }
 }

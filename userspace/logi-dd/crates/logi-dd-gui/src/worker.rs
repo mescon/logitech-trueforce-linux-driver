@@ -43,11 +43,21 @@ pub enum Request {
 
 /// What the worker sends back.
 pub enum Response {
-    /// Fresh rows for `category`. `edit_error` is set when this follows a
-    /// failed `Request::Edit`: `(attr, message)` for the row that failed, so
-    /// the UI can show an inline error while every row's value reverts to
-    /// what the device actually holds (from the same read).
-    Rows { category: Category, rows: Vec<Row>, edit_error: Option<(String, String)> },
+    /// Fresh rows for a whole `category` (`LoadCategory`, `Refresh`, the
+    /// no-wheel screen's Retry, or the follow-up a mode switch sends). The
+    /// UI rebuilds every row's widget from this, which is fine here since
+    /// every row genuinely is fresh: a category switch, or a refresh that
+    /// legitimately wants the device's current state reflected everywhere.
+    Rows { category: Category, rows: Vec<Row> },
+    /// The one row a `Request::Edit` touched, success or failure. `error`
+    /// carries the edit's error message on failure (`None` on success); the
+    /// row's own value always reflects the fresh read that follows the
+    /// write attempt, so a failed edit's row shows the device's actual
+    /// (reverted) value alongside `error`, not a stale local guess. Kept
+    /// separate from `Rows` so the UI only ever updates that one row's
+    /// widget in place instead of rebuilding the whole list on every edit,
+    /// which used to destroy and recreate every control mid-interaction.
+    RowUpdated { category: Category, row: Row, error: Option<String> },
     /// The device's identity/mode, for the header. Sent whenever discovery
     /// succeeds and after every `SetMode`/`Refresh`, so the mode shown in
     /// the header never drifts from what is actually on the wheel.
@@ -126,17 +136,27 @@ fn discover_outcome<S: SysfsIo>(result: Result<Device<S>, Error>) -> (Option<Vie
 fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Response)) {
     match req {
         Request::LoadCategory(category) => {
-            on_response(Response::Rows { category, rows: vm.rows_for(category), edit_error: None });
+            on_response(Response::Rows { category, rows: vm.rows_for(category) });
         }
         Request::Refresh(category) => {
-            on_response(Response::Rows { category, rows: vm.rows_for(category), edit_error: None });
+            on_response(Response::Rows { category, rows: vm.rows_for(category) });
             if let Ok(info) = vm.info() {
                 on_response(Response::Info(info));
             }
         }
         Request::Edit { category, attr, input } => {
-            let edit_error = vm.edit(&attr, input).err().map(|e| (attr, e.to_string()));
-            on_response(Response::Rows { category, rows: vm.rows_for(category), edit_error });
+            // `vm.edit` either writes the new value or leaves the device
+            // untouched; either way, re-reading `attr`'s own row afterwards
+            // reports what the device actually holds now (the write, or the
+            // unchanged prior value on failure), so `row` is never a stale
+            // local guess. Only that one row goes back to the UI: the rest
+            // of the category did not change, and resending the whole list
+            // would make the UI rebuild every row's widget for a one-field
+            // edit (see `Response::RowUpdated`'s doc comment).
+            let error = vm.edit(&attr, input).err().map(|e| e.to_string());
+            if let Some(row) = vm.rows_for(category).into_iter().find(|r| r.attr == attr) {
+                on_response(Response::RowUpdated { category, row, error });
+            }
         }
         Request::SetMode(mode) => {
             let _ = vm.set_mode(mode);
@@ -154,6 +174,7 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
 mod tests {
     use super::*;
     use logi_dd_core::sysfs::FakeSysfs;
+    use logi_dd_core::Value;
     use std::cell::RefCell;
 
     fn responses(f: impl FnOnce(&dyn Fn(Response))) -> Vec<Response> {
@@ -194,6 +215,7 @@ mod tests {
             }
             Response::NoWheel(msg) => panic!("expected Info, got NoWheel({msg})"),
             Response::Rows { .. } => panic!("expected Info, got Rows"),
+            Response::RowUpdated { .. } => panic!("expected Info, got RowUpdated"),
         }
     }
 
@@ -225,10 +247,9 @@ mod tests {
         let responses = responses(|on_response| handle(&vm, Request::LoadCategory(Category::Ffb), on_response));
         assert_eq!(responses.len(), 1);
         match &responses[0] {
-            Response::Rows { category, rows, edit_error } => {
+            Response::Rows { category, rows } => {
                 assert_eq!(*category, Category::Ffb);
                 assert!(rows.iter().any(|r| r.attr == "wheel_strength"));
-                assert!(edit_error.is_none());
             }
             _ => panic!("expected Rows"),
         }
@@ -264,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_failure_still_reports_rows_with_the_error_attached() {
+    fn edit_failure_reports_a_row_update_with_the_error_attached() {
         let fs = FakeSysfs::new();
         fs.set("wheel_mode", "desktop");
         fs.set("wheel_strength", "80");
@@ -278,11 +299,41 @@ mod tests {
         let responses = responses(|on_response| handle(&vm, req, on_response));
         assert_eq!(responses.len(), 1);
         match &responses[0] {
-            Response::Rows { edit_error, .. } => {
-                let (attr, _msg) = edit_error.as_ref().expect("edit should have failed");
-                assert_eq!(attr, "wheel_strength");
+            Response::RowUpdated { category, row, error } => {
+                assert_eq!(*category, Category::Ffb);
+                assert_eq!(row.attr, "wheel_strength");
+                assert!(error.is_some(), "expected the out-of-range edit to fail");
+                // The rejected write never landed, so the row still shows
+                // the device's actual (unchanged) value, not the invalid
+                // input.
+                assert_eq!(row.value, Some(Value::Percent(80)));
             }
-            _ => panic!("expected Rows"),
+            _ => panic!("expected RowUpdated"),
+        }
+    }
+
+    #[test]
+    fn edit_success_reports_a_row_update_with_no_error() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_strength", "80");
+        let vm = ViewModel::with_io(fs);
+
+        let req = Request::Edit {
+            category: Category::Ffb,
+            attr: "wheel_strength".to_string(),
+            input: WidgetInput::Slider(55),
+        };
+        let responses = responses(|on_response| handle(&vm, req, on_response));
+        assert_eq!(responses.len(), 1);
+        match &responses[0] {
+            Response::RowUpdated { category, row, error } => {
+                assert_eq!(*category, Category::Ffb);
+                assert_eq!(row.attr, "wheel_strength");
+                assert!(error.is_none());
+                assert_eq!(row.value, Some(Value::Percent(55)));
+            }
+            _ => panic!("expected RowUpdated"),
         }
     }
 }

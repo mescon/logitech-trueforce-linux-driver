@@ -119,6 +119,13 @@ pub fn to_setting_row(row: &Row) -> SettingRow {
 /// is `(attr, message)` for a failed edit: it is attached to the one row
 /// that failed so the list shows an inline error next to the offending
 /// control, while every other row reverts to its freshly re-read value.
+///
+/// Not called from `main.rs` any more: a whole-category reload now mutates
+/// the persistent rows model in place via `setting_rows`, and a single
+/// edit's result via `to_setting_row_with_error`, neither of which needs a
+/// fresh `ModelRc`. Kept (and still tested) as the one place this exact
+/// "rows plus one attached error" conversion is documented and verified.
+#[allow(dead_code)]
 pub fn rows_model(rows: &[Row], edit_error: Option<(&str, &str)>) -> slint::ModelRc<SettingRow> {
     let items: Vec<SettingRow> = rows
         .iter()
@@ -133,6 +140,29 @@ pub fn rows_model(rows: &[Row], edit_error: Option<(&str, &str)>) -> slint::Mode
         })
         .collect();
     slint::ModelRc::new(slint::VecModel::from(items))
+}
+
+/// Convert `rows` into a plain `Vec<SettingRow>` (the same mapping
+/// `rows_model` does, minus the `ModelRc`/`VecModel` wrapping). Used for a
+/// whole-category reload against the persistent rows model `main.rs` keeps
+/// alive for the life of the app: that model's contents are mutated in
+/// place (`set_row_data`/`set_vec`) rather than the model itself being
+/// replaced, so nothing here needs to allocate a fresh `ModelRc`.
+pub fn setting_rows(rows: &[Row]) -> Vec<SettingRow> {
+    rows.iter().map(to_setting_row).collect()
+}
+
+/// Convert one `Row` into the `SettingRow` a single-row model update pushes
+/// (`Response::RowUpdated`), with `error` (the edit's failure message, if
+/// any) attached directly. Same conversion `to_setting_row` does; there is
+/// only the one row here, so there is no attr to match against the way
+/// `rows_model`'s `edit_error` does.
+pub fn to_setting_row_with_error(row: &Row, error: Option<&str>) -> SettingRow {
+    let mut sr = to_setting_row(row);
+    if let Some(message) = error {
+        sr.error = message.into();
+    }
+    sr
 }
 
 /// Sidebar labels for `Category::ALL`, in the same order the index the
@@ -468,6 +498,38 @@ mod tests {
         let model = rows_model(&rows, None);
         let items: Vec<SettingRow> = model.iter().collect();
         assert!(items.iter().all(|r| r.error.is_empty()));
+    }
+
+    #[test]
+    fn setting_rows_matches_rows_model_contents() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_strength", "80");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let rows = vm.rows_for(Category::Ffb);
+
+        let plain = setting_rows(&rows);
+        let modeled: Vec<SettingRow> = rows_model(&rows, None).iter().collect();
+        assert_eq!(plain.len(), modeled.len());
+        for (p, m) in plain.iter().zip(modeled.iter()) {
+            assert_eq!(p.attr, m.attr);
+            assert_eq!(p.display, m.display);
+            assert_eq!(p.error, m.error);
+        }
+    }
+
+    #[test]
+    fn to_setting_row_with_error_attaches_the_message() {
+        let row = row_for("wheel_strength");
+        let sr = to_setting_row_with_error(&row, Some("value out of range"));
+        assert_eq!(sr.error, "value out of range");
+    }
+
+    #[test]
+    fn to_setting_row_with_error_of_none_leaves_it_empty() {
+        let row = row_for("wheel_strength");
+        let sr = to_setting_row_with_error(&row, None);
+        assert_eq!(sr.error, "");
     }
 
     #[test]
