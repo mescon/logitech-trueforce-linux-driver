@@ -4,11 +4,33 @@ mod bridge;
 mod viewmodel;
 mod worker;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use logi_dd_core::{Category, Mode};
+use logi_dd_core::curve::Curve;
+use logi_dd_core::{Category, Mode, Value, REGISTRY};
 use viewmodel::WidgetInput;
 use worker::{Request, Response, Worker};
+
+/// The curve editor's in-flight state: which attribute it is editing (so
+/// `commit` knows what to write and which category to refresh) and the
+/// `Curve` being shaped. Lives on the UI thread only; the worker never sees
+/// it until `commit` sends the finished `Curve` as a `WidgetInput::Curve`.
+struct CurveEditorState {
+    attr: String,
+    category: Category,
+    curve: Curve,
+}
+
+/// Push `curve`'s current shape to the Slint side: the composed plot line,
+/// the draggable control points, and the two deadzone slider values. Called
+/// after every curve-editor edit so the overlay's preview stays live.
+fn push_curve_editor(app: &App, curve: &Curve) {
+    app.set_curve_plot_commands(bridge::curve_plot_commands(curve).into());
+    app.set_curve_control_points(bridge::curve_control_points(curve));
+    app.set_curve_lower_deadzone(i32::from(curve.lower_deadzone()));
+    app.set_curve_upper_deadzone(i32::from(curve.upper_deadzone()));
+}
 
 /// Read the `Category`/`Mode` out of one of the `Arc<Mutex<_>>` cells below.
 /// Both are `Copy`, so the lock never needs to outlive this call.
@@ -35,14 +57,27 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_category_label(get(&current_category).label().into());
     app.set_selected_category(bridge::index_of(get(&current_category)));
 
+    // The current category's row values, keyed by attr, refreshed on every
+    // `Response::Rows`. The curve editor needs this to seed a `Curve` from
+    // the attribute's live value when a row is activated: the worker only
+    // hands back `Vec<Row>` inside that one response, so nothing else in
+    // this file holds onto it once `bridge::rows_model` has built the
+    // Slint-facing rows.
+    let known_values: Arc<Mutex<HashMap<String, Value>>> = Arc::new(Mutex::new(HashMap::new()));
+    // The curve editor's in-flight state, `None` while the overlay is
+    // closed. UI-thread only (see `CurveEditorState`'s own doc comment).
+    let curve_editor: Arc<Mutex<Option<CurveEditorState>>> = Arc::new(Mutex::new(None));
+
     let worker = {
         let app_weak = app.as_weak();
         let current_category = current_category.clone();
         let current_mode = current_mode.clone();
+        let known_values = known_values.clone();
         Worker::spawn(move |response| {
             let app_weak = app_weak.clone();
             let current_category = current_category.clone();
             let current_mode = current_mode.clone();
+            let known_values = known_values.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(app) = app_weak.upgrade() else { return };
                 match response {
@@ -52,6 +87,14 @@ fn main() -> Result<(), slint::PlatformError> {
                         // only the category currently on screen matters.
                         if category != get(&current_category) {
                             return;
+                        }
+                        {
+                            let mut kv = known_values.lock().unwrap();
+                            for row in &rows {
+                                if let Some(v) = &row.value {
+                                    kv.insert(row.attr.to_string(), v.clone());
+                                }
+                            }
                         }
                         let err = edit_error.as_ref().map(|(a, m)| (a.as_str(), m.as_str()));
                         app.set_rows(bridge::rows_model(&rows, err));
@@ -169,6 +212,106 @@ fn main() -> Result<(), slint::PlatformError> {
                 attr: attr.to_string(),
                 input: WidgetInput::Trigger,
             });
+        });
+    }
+
+    {
+        let known_values = known_values.clone();
+        let curve_editor = curve_editor.clone();
+        let current_category = current_category.clone();
+        let app_weak = app.as_weak();
+        app.on_edit_curve(move |attr| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let attr = attr.to_string();
+            let value = known_values.lock().unwrap().get(&attr).cloned().unwrap_or(Value::Curve(vec![]));
+            let curve = Curve::from_value(&attr, &value);
+            push_curve_editor(&app, &curve);
+            let label = REGISTRY.iter().find(|s| s.attr == attr).map(|s| s.label).unwrap_or(attr.as_str());
+            app.set_curve_label(label.into());
+            app.set_curve_editor_open(true);
+            *curve_editor.lock().unwrap() = Some(CurveEditorState { attr, category: get(&current_category), curve });
+        });
+    }
+    {
+        let curve_editor = curve_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_curve_move_point(move |index, x, y| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = curve_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            bridge::apply_move_point(&mut state.curve, index.max(0) as usize, x, y);
+            push_curve_editor(&app, &state.curve);
+        });
+    }
+    {
+        let curve_editor = curve_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_curve_add_point(move |x| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = curve_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            bridge::apply_add_point(&mut state.curve, x);
+            push_curve_editor(&app, &state.curve);
+        });
+    }
+    {
+        let curve_editor = curve_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_curve_remove_point(move |index| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = curve_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            state.curve.remove_point(index.max(0) as usize);
+            push_curve_editor(&app, &state.curve);
+        });
+    }
+    {
+        let curve_editor = curve_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_curve_set_lower_deadzone(move |v| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = curve_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            bridge::apply_lower_deadzone(&mut state.curve, v);
+            push_curve_editor(&app, &state.curve);
+        });
+    }
+    {
+        let curve_editor = curve_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_curve_set_upper_deadzone(move |v| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = curve_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            bridge::apply_upper_deadzone(&mut state.curve, v);
+            push_curve_editor(&app, &state.curve);
+        });
+    }
+    {
+        let worker = worker.clone();
+        let curve_editor = curve_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_curve_commit(move || {
+            if let Some(state) = curve_editor.lock().unwrap().take() {
+                worker.request(Request::Edit {
+                    category: state.category,
+                    attr: state.attr,
+                    input: WidgetInput::Curve(state.curve),
+                });
+            }
+            if let Some(app) = app_weak.upgrade() {
+                app.set_curve_editor_open(false);
+            }
+        });
+    }
+    {
+        let curve_editor = curve_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_curve_cancel(move || {
+            *curve_editor.lock().unwrap() = None;
+            if let Some(app) = app_weak.upgrade() {
+                app.set_curve_editor_open(false);
+            }
         });
     }
 

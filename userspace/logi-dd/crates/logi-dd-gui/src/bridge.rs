@@ -4,10 +4,11 @@
 //! Kept separate from `viewmodel` so that module stays Slint-free; this one
 //! is the only place that knows about both worlds.
 
+use logi_dd_core::curve::{Curve, FULL};
 use logi_dd_core::{Access, Category, DeviceInfo, Kind, Mode, Value, REGISTRY};
 
 use crate::viewmodel::Row;
-use crate::SettingRow;
+use crate::{CurvePoint, SettingRow};
 
 // Stable `SettingRow.kind` tag numbering; keep in sync with the doc comment
 // on `SettingRow` and the per-kind branches in `ui/widgets.slint`.
@@ -17,9 +18,11 @@ pub const KIND_ENUM: i32 = 2;
 pub const KIND_TOGGLE: i32 = 3;
 pub const KIND_TEXT: i32 = 4;
 pub const KIND_ACTION: i32 = 5;
-/// Everything without a live editor yet (curve, deadzone pair, RGB strip,
-/// slot text) and any read-only attribute: rendered as a plain value.
+/// Everything without a live editor yet (deadzone pair, RGB strip, slot
+/// text) and any read-only attribute: rendered as a plain value.
 pub const KIND_READONLY: i32 = 6;
+/// A curve row: rendered as a button that opens the curve editor overlay.
+pub const KIND_CURVE: i32 = 7;
 
 fn is_read_only(attr: &str) -> bool {
     REGISTRY.iter().any(|s| s.attr == attr && s.access == Access::ReadOnly)
@@ -36,9 +39,8 @@ fn kind_tag(attr: &str, kind: &Kind) -> i32 {
         Kind::Toggle { .. } => KIND_TOGGLE,
         Kind::TextField { .. } => KIND_TEXT,
         Kind::Action => KIND_ACTION,
-        Kind::Curve | Kind::Pair { .. } | Kind::RgbStrip { .. } | Kind::SlotText { .. } => {
-            KIND_READONLY
-        }
+        Kind::Curve => KIND_CURVE,
+        Kind::Pair { .. } | Kind::RgbStrip { .. } | Kind::SlotText { .. } => KIND_READONLY,
     }
 }
 
@@ -153,6 +155,87 @@ pub fn index_of(category: Category) -> i32 {
 /// `mode-onboard` property).
 pub fn header_fields(info: &DeviceInfo) -> (String, String, bool) {
     (info.serial.clone(), info.firmware.clone(), matches!(info.mode, Mode::Onboard))
+}
+
+// --- curve editor <-> Curve conversions ---
+//
+// The curve editor (`ui/curve_editor.slint`) never touches a raw `(u16,
+// u16)` curve point: it only ever draws and drags plain 0..1 screen
+// fractions. `x` is always the input fraction (0 = min input, 1 = max
+// input); `y` is the *screen* fraction (0 = top/full output, 1 =
+// bottom/zero output), so a higher output value plots nearer the top. These
+// helpers are the only place that conversion happens, in both directions.
+
+/// Convert one `(input, output)` curve sample (each 0..=FULL) into the
+/// editor's screen-fraction space.
+fn to_screen_frac(input: u16, output: u16) -> (f32, f32) {
+    let x = f32::from(input) / f32::from(FULL);
+    let y = 1.0 - f32::from(output) / f32::from(FULL);
+    (x, y)
+}
+
+/// Convert one screen fraction back to a `0..=FULL` curve value, clamping
+/// anything a drag pushed outside `0.0..=1.0`.
+fn from_frac(f: f32) -> u16 {
+    (f.clamp(0.0, 1.0) * f32::from(FULL)).round() as u16
+}
+
+/// Build the SVG-style path-commands string `curve_editor.slint`'s `Path`
+/// draws: one `M`/`L` command per `curve.compose()` sample, in screen-
+/// fraction space (the `Path` itself uses a `1x1` viewbox, so these
+/// fractions are exactly its coordinate system).
+pub fn curve_plot_commands(curve: &Curve) -> String {
+    let mut out = String::new();
+    for (i, &(input, output)) in curve.compose().iter().enumerate() {
+        let (x, y) = to_screen_frac(input, output);
+        let op = if i == 0 { 'M' } else { 'L' };
+        out.push_str(&format!("{op} {x:.6} {y:.6} "));
+    }
+    out.trim_end().to_string()
+}
+
+/// Convert `curve.points()` (the draggable control points, not the composed
+/// plot) into the editor's `CurvePoint` list, same screen-fraction space as
+/// `curve_plot_commands`.
+pub fn curve_control_points(curve: &Curve) -> slint::ModelRc<CurvePoint> {
+    let points: Vec<CurvePoint> = curve
+        .points()
+        .iter()
+        .map(|&(input, output)| {
+            let (x, y) = to_screen_frac(input, output);
+            CurvePoint { x, y }
+        })
+        .collect();
+    slint::ModelRc::new(slint::VecModel::from(points))
+}
+
+/// Apply the editor's `move-point` callback (a control point index plus its
+/// new screen-fraction position) to `curve`. `Curve::move_point` itself
+/// clamps the input/output against the point's neighbours and leaves the
+/// endpoints untouched, so this only needs to undo the screen-fraction
+/// conversion before delegating.
+pub fn apply_move_point(curve: &mut Curve, index: usize, x_frac: f32, y_frac: f32) {
+    let input = from_frac(x_frac);
+    let output = from_frac(1.0 - y_frac.clamp(0.0, 1.0));
+    curve.move_point(index, input, output);
+}
+
+/// Apply the editor's `add-point` callback (an input screen-fraction) to
+/// `curve`.
+pub fn apply_add_point(curve: &mut Curve, x_frac: f32) {
+    curve.add_point(from_frac(x_frac));
+}
+
+/// Apply the lower-deadzone slider's raw `int` (the Slint `Slider` reports a
+/// `float` rounded to a plain `int` in `curve_editor.slint`) to `curve`,
+/// clamping into the `u8` range `Curve::set_lower_deadzone` itself expects.
+pub fn apply_lower_deadzone(curve: &mut Curve, v: i32) {
+    curve.set_lower_deadzone(v.clamp(0, 99) as u8);
+}
+
+/// The upper-deadzone counterpart of `apply_lower_deadzone`.
+pub fn apply_upper_deadzone(curve: &mut Curve, v: i32) {
+    curve.set_upper_deadzone(v.clamp(0, 99) as u8);
 }
 
 #[cfg(test)]
@@ -355,5 +438,134 @@ mod tests {
 
         let (_, _, onboard) = header_fields(&info);
         assert!(!onboard);
+    }
+
+    #[test]
+    fn curve_row_maps_to_curve_tag() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_response_curve", "reset");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm
+            .rows_for(Category::Steering)
+            .into_iter()
+            .find(|r| r.attr == "wheel_response_curve")
+            .expect("no row for wheel_response_curve");
+
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.kind, KIND_CURVE);
+        assert_eq!(sr.display, "built-in");
+    }
+
+    // --- curve editor <-> Curve conversions ---
+
+    fn linear_curve() -> Curve {
+        Curve::from_value("wheel_response_curve", &Value::Curve(vec![]))
+    }
+
+    #[test]
+    fn plot_commands_trace_the_composed_curve_in_screen_fractions() {
+        let c = linear_curve();
+        // A plain linear curve composes to exactly its two endpoints:
+        // (0, 0) plots at the bottom-left (y=1, full output at the top);
+        // (FULL, FULL) plots at the top-right (y=0).
+        let commands = curve_plot_commands(&c);
+        assert_eq!(commands, "M 0.000000 1.000000 L 1.000000 0.000000");
+    }
+
+    #[test]
+    fn plot_commands_reflect_a_bent_curve() {
+        let mut c = linear_curve();
+        c.add_point(FULL / 2); // (32767, 32767) by linear interpolation
+        c.move_point(1, FULL / 2, FULL); // bend the midpoint to full output
+        let commands = curve_plot_commands(&c);
+        // Three samples now: (0,0), (~32767, FULL), (FULL, FULL). The bent
+        // midpoint's output is full, so it plots at the top (y=0).
+        assert!(commands.starts_with("M 0.000000 1.000000 L "));
+        assert!(commands.contains(" 0.000000 L 1.000000 0.000000"));
+    }
+
+    #[test]
+    fn control_points_mirror_curve_points_in_screen_fractions() {
+        let mut c = linear_curve();
+        c.add_point(FULL / 2);
+        let points: Vec<CurvePoint> = {
+            use slint::Model as _;
+            curve_control_points(&c).iter().collect()
+        };
+        assert_eq!(points.len(), 3);
+        assert_eq!((points[0].x, points[0].y), (0.0, 1.0));
+        assert_eq!((points[2].x, points[2].y), (1.0, 0.0));
+        // The midpoint sits at (~0.5, ~0.5) in screen fractions too, since
+        // its output is half of full scale.
+        assert!((points[1].x - 0.5).abs() < 0.01);
+        assert!((points[1].y - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn apply_move_point_undoes_the_screen_fraction_flip() {
+        let mut c = linear_curve();
+        c.add_point(FULL / 2); // index 1, the only movable point
+        // Drag to 25% input, 25% *screen* fraction (near the top => a high
+        // output), matching what a `moved` callback with those fractions
+        // would report.
+        apply_move_point(&mut c, 1, 0.25, 0.25);
+
+        // The same edit performed directly against `Curve`'s own API (no
+        // screen-fraction conversion) is the ground truth: 25% input, and a
+        // screen y of 0.25 means 75% output.
+        let mut expected = linear_curve();
+        expected.add_point(FULL / 2);
+        expected.move_point(1, from_frac(0.25), from_frac(0.75));
+
+        assert_eq!(c.points(), expected.points());
+    }
+
+    #[test]
+    fn apply_add_point_inserts_at_the_input_fraction() {
+        let mut c = linear_curve();
+        apply_add_point(&mut c, 0.5);
+
+        let mut expected = linear_curve();
+        expected.add_point(from_frac(0.5));
+
+        assert_eq!(c.points(), expected.points());
+    }
+
+    #[test]
+    fn apply_deadzones_clamp_and_forward_to_curve() {
+        let mut c = linear_curve();
+        apply_lower_deadzone(&mut c, 20);
+        apply_upper_deadzone(&mut c, 15);
+        assert_eq!(c.lower_deadzone(), 20);
+        assert_eq!(c.upper_deadzone(), 15);
+
+        // Out-of-range slider input (should not happen from the `0..99`
+        // Slint `Slider`, but a defensive clamp costs nothing) never panics
+        // and never exceeds the u8 range `Curve` itself expects. `Curve`
+        // also keeps the pair summing to at most 99, so with upper still at
+        // 15 the lower deadzone tops out at 84, not 99.
+        apply_lower_deadzone(&mut c, 500);
+        assert_eq!(c.lower_deadzone(), 84);
+    }
+
+    #[test]
+    fn commit_produces_the_curves_own_value_via_to_value() {
+        let mut c = linear_curve();
+        apply_add_point(&mut c, 0.5);
+        apply_move_point(&mut c, 1, 0.5, 0.2); // screen y=0.2 => 80% output
+        apply_lower_deadzone(&mut c, 10);
+        apply_upper_deadzone(&mut c, 5);
+
+        // Committing writes `curve.to_value()`; confirm it is exactly the
+        // composed curve `Curve::to_value` documents, not some other shape.
+        assert_eq!(c.to_value(), Value::Curve(c.compose()));
+        match c.to_value() {
+            Value::Curve(pts) => {
+                assert_eq!(pts.first(), Some(&(0, 0)));
+                assert_eq!(pts.last(), Some(&(FULL, FULL)));
+            }
+            other => panic!("expected Value::Curve, got {other:?}"),
+        }
     }
 }

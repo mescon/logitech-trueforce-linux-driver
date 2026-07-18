@@ -1,0 +1,169 @@
+import { Button, Slider } from "std-widgets.slint";
+
+// One draggable curve control point, in screen-fraction space: `x` is the
+// input fraction (0 = min input, 1 = max input); `y` is the output fraction
+// *as drawn on screen* (0 = top / full output, 1 = bottom / zero output),
+// the same space `plot-commands` uses. The Rust side
+// (`bridge::curve_plot_commands` / `bridge::curve_control_points`) does the
+// input/output <-> screen-fraction conversion, so this component only ever
+// deals in plain 0..1 coordinates and never touches a raw curve value.
+export struct CurvePoint {
+    x: float,
+    y: float,
+}
+
+// A modal overlay that edits one `logi_dd_core::curve::Curve`: a plot of the
+// composed output-vs-input curve, draggable control points (add by clicking
+// empty plot space, remove by double-clicking a point), and lower/upper
+// deadzone sliders. Every edit fires a callback; the Rust side owns the
+// `Curve`, applies the edit, recomputes `compose()`, and pushes fresh
+// `plot-commands`/`control-points` back so the plot redraws (the live
+// preview). Commit writes the curve; Cancel discards it. Either closes the
+// overlay from the Rust side (`curve-editor-open` in app.slint).
+export component CurveEditor inherits Rectangle {
+    in property <string> curve-label: "Curve";
+    in property <string> plot-commands: "";
+    in property <[CurvePoint]> control-points: [];
+    in property <int> lower-deadzone: 0;
+    in property <int> upper-deadzone: 0;
+
+    callback move-point(int, float, float);
+    callback add-point(float);
+    callback remove-point(int);
+    callback set-lower-deadzone(int);
+    callback set-upper-deadzone(int);
+    callback commit();
+    callback cancel();
+
+    // Dim the rest of the window so the overlay reads as modal.
+    background: #000000aa;
+
+    Rectangle {
+        width: 460px;
+        height: 420px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: #202020;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: #444444;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: root.curve-label;
+                font-size: 16px;
+                font-weight: 700;
+                color: white;
+            }
+
+            Text {
+                text: "Click empty space to add a point, drag a point to shape the curve, double-click a point to remove it.";
+                font-size: 11px;
+                color: #cccccc;
+                wrap: word-wrap;
+            }
+
+            plot-area := Rectangle {
+                height: 220px;
+                background: #101010;
+                border-width: 1px;
+                border-color: #333333;
+
+                // Bottom of the z-order: catches clicks that land on empty
+                // plot space (the point handles below are on top and take
+                // the click first when it lands on one of them).
+                TouchArea {
+                    clicked => {
+                        root.add-point(self.mouse-x / plot-area.width);
+                    }
+                }
+
+                Path {
+                    viewbox-width: 1;
+                    viewbox-height: 1;
+                    stroke: #4a90d9;
+                    stroke-width: 2px;
+                    commands: root.plot-commands;
+                }
+
+                for p[i] in root.control-points: Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 5px;
+                    background: white;
+                    border-width: 1px;
+                    border-color: #4a90d9;
+                    x: p.x * plot-area.width - self.width / 2;
+                    y: p.y * plot-area.height - self.height / 2;
+
+                    TouchArea {
+                        // The fraction this point sat at when the drag
+                        // started; `moved` reports that plus the pointer's
+                        // delta since then, rather than an absolute position
+                        // recomputed from a handle that only actually moves
+                        // once the Rust side pushes a new `control-points`.
+                        property <float> pressed-frac-x;
+                        property <float> pressed-frac-y;
+
+                        pointer-event(event) => {
+                            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                self.pressed-frac-x = p.x;
+                                self.pressed-frac-y = p.y;
+                            }
+                        }
+                        moved => {
+                            if (self.pressed) {
+                                root.move-point(
+                                    i,
+                                    self.pressed-frac-x + (self.mouse-x - self.pressed-x) / plot-area.width,
+                                    self.pressed-frac-y + (self.mouse-y - self.pressed-y) / plot-area.height,
+                                );
+                            }
+                        }
+                        double-clicked => {
+                            root.remove-point(i);
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: "Lower deadzone"; vertical-alignment: center; color: white; }
+                Slider {
+                    width: 160px;
+                    minimum: 0;
+                    maximum: 99;
+                    value: root.lower-deadzone;
+                    changed(v) => { root.set-lower-deadzone(round(v)); }
+                }
+                Text { text: "\{root.lower-deadzone}%"; vertical-alignment: center; color: white; }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: "Upper deadzone"; vertical-alignment: center; color: white; }
+                Slider {
+                    width: 160px;
+                    minimum: 0;
+                    maximum: 99;
+                    value: root.upper-deadzone;
+                    changed(v) => { root.set-upper-deadzone(round(v)); }
+                }
+                Text { text: "\{root.upper-deadzone}%"; vertical-alignment: center; color: white; }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button { text: "Cancel"; clicked => { root.cancel(); } }
+                Button { text: "Commit"; clicked => { root.commit(); } }
+            }
+        }
+    }
+}
