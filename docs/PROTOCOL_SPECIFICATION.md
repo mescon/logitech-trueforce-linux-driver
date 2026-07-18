@@ -1268,10 +1268,14 @@ Byte    Field           Description
 ##### 9.4.1 Direction Values
 
 Byte 5 carries a **1-based wire value (1-4)**, NOT the driver's 0-3
-`HIDPP_DD_LIGHTSYNC_DIR_*` enum. Verified from
-`dev/captures/2026-07-19_lightsync_direction.pcapng` (G Hub cycling a custom
-slot's direction), cross-checked against a slot whose G Hub direction was
-known:
+`HIDPP_DD_LIGHTSYNC_DIR_*` enum.
+`dev/captures/2026-07-19_lightsync_direction.pcapng` contains only
+device-to-host GET (fn1) echoes of the state G Hub had already applied for
+each direction - no host-to-device 0x0C SET frames were captured. The wire
+values below were derived from those GET echoes (GET/SET symmetry: a Get
+Zone Config response carries the same byte 5 a Set would have sent),
+corroborated by the old driver's `direction + 2` encoding being accepted by
+the firmware for 2/3/4 and NAKed for the out-of-range 5:
 
 | Wire (byte 5) | Effect | G Hub Swedish | G Hub English | Driver enum |
 |---------------|--------|---------------|---------------|-------------|
@@ -1279,6 +1283,15 @@ known:
 | `0x02` | Outside to Inside (contract) | FRÅN UTSIDAN IN     | From Outside In | 3 |
 | `0x03` | Left to Right sweep          | VÄNSTER TILL HÖGER  | Left to Right   | 0 |
 | `0x04` | Right to Left sweep          | HÖGER TILL VÄNSTER  | Right to Left   | 1 |
+
+The older 0x807A quick-effect table (section 9, ~line 600-608) agrees on
+`0x01`=Inside-Out and `0x02`=Outside-In but is swapped on 3/4 relative to
+this table (it lists `0x03`=Right-to-Left, `0x04`=Left-to-Right). The two
+commands are different (0x807A effect select vs 0x807B slot config), so
+both tables could be correct as written. A 5-second hardware check (write
+direction 0 to a slot and watch which way the sweep runs) settles the
+slot-config labels above; if reversed, swap the two sweep entries in
+`hidpp_dd_lightsync_dir_to_wire()` / `hidpp_dd_lightsync_wire_to_dir()`.
 
 > **Historical bug:** an earlier driver encoded byte 5 as `enum + 2`
 > (L->R=2, R->L=3, IO=4, **OI=5**). That both mislabelled the sweeps (its

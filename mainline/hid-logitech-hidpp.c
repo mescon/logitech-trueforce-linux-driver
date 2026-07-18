@@ -9143,8 +9143,11 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 	 * From capture: 12 FF 0C 2C [slot] [dir] [30 bytes RGB]
 	 *   - byte 0: slot index (0-4)
 	 *   - byte 1: animation-direction wire value, device range 1..4. The
-	 *             2026-07-19_lightsync_direction capture shows G Hub using
-	 *             1=Inside-Out, 2=Outside-In, 3=Left->Right, 4=Right->Left.
+	 *             2026-07-19_lightsync_direction capture holds only the
+	 *             device's GET echoes of each state after G Hub applied
+	 *             it (no SET frames were captured); by GET/SET symmetry
+	 *             those echoes give 1=Inside-Out, 2=Outside-In,
+	 *             3=Left->Right, 4=Right->Left.
 	 *             The old "direction + 2" both mislabelled the sweeps and
 	 *             sent 5 for Outside-In, which the firmware rejects with a
 	 *             HID++ error (surfaced as -EIO). Map the driver's
