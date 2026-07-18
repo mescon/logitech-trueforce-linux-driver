@@ -38,6 +38,12 @@ export component SettingsList inherits ListView {
     callback edit-switch(string, bool);
     callback edit-text(string, string);
     callback trigger(string);
+    // Fired by the per-row "Switch mode" button, shown on a row whose
+    // `mode-ok` is false. It does not say which mode: with exactly two
+    // modes, whichever one the wheel is not currently in is the one this
+    // row needs, so this just asks the app to flip it (same action as the
+    // header's mode toggle).
+    callback switch-mode();
 
     for row in rows: Rectangle {
         height: 72px;
@@ -120,6 +126,11 @@ export component SettingsList inherits ListView {
                 if row.kind == 6: Text {
                     text: row.display;
                     vertical-alignment: center;
+                }
+
+                if row.available && !row.mode-ok: Button {
+                    text: "Switch mode";
+                    clicked => { switch-mode(); }
                 }
             }
         }

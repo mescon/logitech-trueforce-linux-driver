@@ -4,7 +4,7 @@
 //! Kept separate from `viewmodel` so that module stays Slint-free; this one
 //! is the only place that knows about both worlds.
 
-use logi_dd_core::{Access, Kind, Value, REGISTRY};
+use logi_dd_core::{Access, Category, DeviceInfo, Kind, Mode, Value, REGISTRY};
 
 use crate::viewmodel::Row;
 use crate::SettingRow;
@@ -123,6 +123,36 @@ pub fn rows_model(rows: &[Row], edit_error: Option<(&str, &str)>) -> slint::Mode
         })
         .collect();
     slint::ModelRc::new(slint::VecModel::from(items))
+}
+
+/// Sidebar labels for `Category::ALL`, in the same order the index the
+/// sidebar reports (`select-category(index)`) is resolved against.
+pub fn category_labels_model() -> slint::ModelRc<slint::SharedString> {
+    let labels: Vec<slint::SharedString> =
+        Category::ALL.iter().map(|c| slint::SharedString::from(c.label())).collect();
+    slint::ModelRc::new(slint::VecModel::from(labels))
+}
+
+/// Resolve a sidebar row index (as the Slint `select-category` callback
+/// hands it back) to the `Category` it represents. Slint only ever reports
+/// an index the `for` loop actually produced, but a negative or
+/// past-the-end value is clamped rather than indexed into a panic.
+pub fn category_at(index: i32) -> Category {
+    let last = Category::ALL.len() as i32 - 1;
+    Category::ALL[index.clamp(0, last) as usize]
+}
+
+/// The inverse of `category_at`: which sidebar row index highlights
+/// `category`.
+pub fn index_of(category: Category) -> i32 {
+    Category::ALL.iter().position(|c| *c == category).unwrap_or(0) as i32
+}
+
+/// Pull the header's fields out of a `DeviceInfo`: serial, firmware, and
+/// whether the wheel is currently in onboard mode (the mode toggle's
+/// `mode-onboard` property).
+pub fn header_fields(info: &DeviceInfo) -> (String, String, bool) {
+    (info.serial.clone(), info.firmware.clone(), matches!(info.mode, Mode::Onboard))
 }
 
 #[cfg(test)]
@@ -275,5 +305,55 @@ mod tests {
         let sr = to_setting_row(&row);
         assert_eq!(sr.kind, KIND_ACTION);
         assert_eq!(sr.display, "[trigger]");
+    }
+
+    #[test]
+    fn category_labels_model_has_one_label_per_category_in_order() {
+        let model = category_labels_model();
+        let labels: Vec<String> = model.iter().map(|s| s.to_string()).collect();
+        let expected: Vec<String> = Category::ALL.iter().map(|c| c.label().to_string()).collect();
+        assert_eq!(labels, expected);
+    }
+
+    #[test]
+    fn category_at_and_index_of_round_trip_for_every_category() {
+        for cat in Category::ALL {
+            let idx = index_of(*cat);
+            assert_eq!(category_at(idx), *cat);
+        }
+    }
+
+    #[test]
+    fn category_at_clamps_out_of_range_indices() {
+        assert_eq!(category_at(-1), Category::ALL[0]);
+        assert_eq!(category_at(9999), *Category::ALL.last().unwrap());
+    }
+
+    #[test]
+    fn header_fields_reads_serial_firmware_and_onboard_flag() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "onboard");
+        fs.set("wheel_serial", "ABC123");
+        fs.set("wheel_firmware", "1.2.3");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let info = vm.info().unwrap();
+
+        let (serial, firmware, onboard) = header_fields(&info);
+        assert_eq!(serial, "ABC123");
+        assert_eq!(firmware, "1.2.3");
+        assert!(onboard);
+    }
+
+    #[test]
+    fn header_fields_reports_desktop_as_not_onboard() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_serial", "X");
+        fs.set("wheel_firmware", "1.0");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let info = vm.info().unwrap();
+
+        let (_, _, onboard) = header_fields(&info);
+        assert!(!onboard);
     }
 }

@@ -1,3 +1,4 @@
+import { Button } from "std-widgets.slint";
 import { SettingRow, SettingsList } from "widgets.slint";
 export { SettingRow } from "widgets.slint";
 
@@ -6,6 +7,30 @@ export component App inherits Window {
     preferred-width: 900px;
     preferred-height: 600px;
 
+    // No-wheel screen: shown instead of the shell whenever the worker
+    // reports it cannot reach the device (nothing bound, unplugged mid
+    // session, ...). `retry-discover` re-attempts `Device::discover()`.
+    // Defaults to shown: the worker's first response (Info or NoWheel)
+    // settles which screen is right, and that reply arrives well before
+    // anyone could act on a flash of the wrong one.
+    in property <bool> no-wheel: true;
+    in property <string> no-wheel-message: "Looking for your wheel...";
+    callback retry-discover();
+
+    // Header: device identity plus the desktop/onboard mode toggle.
+    in property <string> device-serial: "";
+    in property <string> device-firmware: "";
+    in property <bool> mode-onboard: false;
+    callback toggle-mode();
+    callback refresh();
+
+    // Sidebar: one label per `Category::ALL`; `selected-category` is that
+    // list's index, resolved to a `Category` on the Rust side.
+    in property <[string]> category-labels: [];
+    in property <int> selected-category: 0;
+    callback select-category(int);
+
+    // Content: the selected category's rows, same as Task 4.
     in property <string> category-label: "Force feedback";
     in property <[SettingRow]> rows: [];
 
@@ -15,23 +40,109 @@ export component App inherits Window {
     callback edit-text(string, string);
     callback trigger(string);
 
-    VerticalLayout {
-        padding: 12px;
-        spacing: 8px;
+    if root.no-wheel: VerticalLayout {
+        alignment: center;
+        spacing: 12px;
 
         Text {
-            text: root.category-label;
-            font-size: 20px;
+            text: "No wheel found";
+            font-size: 22px;
             font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.no-wheel-message;
+            horizontal-alignment: center;
+            opacity: 0.8;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Button {
+                text: "Retry";
+                width: 120px;
+                clicked => { root.retry-discover(); }
+            }
+        }
+    }
+
+    if !root.no-wheel: VerticalLayout {
+        HorizontalLayout {
+            padding: 10px;
+            spacing: 12px;
+            height: 44px;
+
+            Text {
+                text: "logi-dd";
+                font-size: 16px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.device-serial == "" ? "" : "serial " + root.device-serial;
+                vertical-alignment: center;
+                opacity: 0.7;
+            }
+            Text {
+                text: root.device-firmware == "" ? "" : "fw " + root.device-firmware;
+                vertical-alignment: center;
+                opacity: 0.7;
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            Button {
+                text: root.mode-onboard ? "Mode: onboard" : "Mode: desktop";
+                clicked => { root.toggle-mode(); }
+            }
+            Button {
+                text: "Refresh";
+                clicked => { root.refresh(); }
+            }
         }
 
-        SettingsList {
-            rows: root.rows;
-            edit-slider(attr, v) => { root.edit-slider(attr, v); }
-            edit-choice(attr, v) => { root.edit-choice(attr, v); }
-            edit-switch(attr, v) => { root.edit-switch(attr, v); }
-            edit-text(attr, v) => { root.edit-text(attr, v); }
-            trigger(attr) => { root.trigger(attr); }
+        HorizontalLayout {
+            VerticalLayout {
+                width: 180px;
+                padding: 8px;
+                spacing: 2px;
+
+                for label[i] in root.category-labels: Rectangle {
+                    height: 36px;
+                    background: i == root.selected-category ? #2d5a8c : transparent;
+
+                    TouchArea {
+                        clicked => { root.select-category(i); }
+                    }
+                    Text {
+                        text: label;
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                        font-weight: i == root.selected-category ? 700 : 400;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                Text {
+                    text: root.category-label;
+                    font-size: 20px;
+                    font-weight: 700;
+                }
+
+                SettingsList {
+                    rows: root.rows;
+                    edit-slider(attr, v) => { root.edit-slider(attr, v); }
+                    edit-choice(attr, v) => { root.edit-choice(attr, v); }
+                    edit-switch(attr, v) => { root.edit-switch(attr, v); }
+                    edit-text(attr, v) => { root.edit-text(attr, v); }
+                    trigger(attr) => { root.trigger(attr); }
+                    switch-mode() => { root.toggle-mode(); }
+                }
+            }
         }
     }
 }

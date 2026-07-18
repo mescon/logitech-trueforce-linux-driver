@@ -3,12 +3,12 @@
 //! device. No Slint dependency here, so this is fully unit-testable with
 //! `FakeSysfs` and no display.
 //!
-//! The window (`worker`/`main`) only wires up `rows_for`/`edit` so far, for
-//! the one category Task 4 covers live. `info`/`mode`/`refresh`/`device_read`
-//! and a few `WidgetInput` variants are for the device-info panel, the
-//! curve editor and the LED picker a later task adds; they are marked
-//! `#[allow(dead_code)]` individually rather than blanket-silencing the
-//! whole module.
+//! The window (`worker`/`main`) wires up `rows_for`/`edit`/`info`/`set_mode`
+//! for every category now. `mode`/`refresh`/`device_read` and a few
+//! `WidgetInput` variants (curve, pair, RGB strip, slot text) are still
+//! ahead of any live widget: the curve editor and the LED/profile-name
+//! pickers are a later task's job. They are marked `#[allow(dead_code)]`
+//! individually rather than blanket-silencing the whole module.
 
 use logi_dd_core::curve::Curve;
 use logi_dd_core::sysfs::SysfsIo;
@@ -115,9 +115,7 @@ impl<S: SysfsIo> ViewModel<S> {
         self.device.write(attr, &value)
     }
 
-    // Not called yet: the Info category's device-identity panel is a later
-    // task's job.
-    #[allow(dead_code)]
+    /// The header's device-identity panel: serial, firmware, current mode.
     pub fn info(&self) -> Result<DeviceInfo, Error> {
         self.device.info()
     }
