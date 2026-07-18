@@ -9,10 +9,12 @@ import { ListView, Slider, ComboBox, Switch, LineEdit, Button } from "std-widget
 //   4 = text      (LineEdit, `text-value`)
 //   5 = action    (Button, no value, fires `trigger`)
 //   6 = readonly  (plain Text showing `display`; also used for kinds that do
-//                  not have a dedicated live editor yet: pair, RGB strip,
+//                  not have a dedicated live editor yet: deadzone pair,
 //                  slot text)
 //   7 = curve     (Button that opens the curve editor overlay, fires
 //                  `edit-curve`)
+//   8 = rgb strip (Button that opens the RGB strip editor overlay, fires
+//                  `edit-rgb`)
 export struct SettingRow {
     attr: string,
     label: string,
@@ -43,6 +45,10 @@ export component SettingsList inherits ListView {
     // Fired by a curve row's "Edit curve" button (kind 7); the app opens the
     // curve editor overlay for `attr`, seeded from that row's current value.
     callback edit-curve(string);
+    // Fired by an RGB strip row's "Edit colors" button (kind 8); the app
+    // opens the RGB strip editor overlay for `attr`, seeded from that row's
+    // current value.
+    callback edit-rgb(string);
     // Fired by the per-row "Switch mode" button, shown on a row whose
     // `mode-ok` is false. It does not say which mode: with exactly two
     // modes, whichever one the wheel is not currently in is the one this
@@ -137,6 +143,12 @@ export component SettingsList inherits ListView {
                     text: "Edit curve (" + row.display + ")";
                     enabled: row.available && row.mode-ok;
                     clicked => { edit-curve(row.attr); }
+                }
+
+                if row.kind == 8: Button {
+                    text: "Edit colors (" + row.display + ")";
+                    enabled: row.available && row.mode-ok;
+                    clicked => { edit-rgb(row.attr); }
                 }
 
                 if row.available && !row.mode-ok: Button {

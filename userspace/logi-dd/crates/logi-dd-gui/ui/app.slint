@@ -1,8 +1,10 @@
 import { Button } from "std-widgets.slint";
 import { SettingRow, SettingsList } from "widgets.slint";
 import { CurveEditor, CurvePoint } from "curve_editor.slint";
+import { RgbStrip, LedColor } from "rgb_strip.slint";
 export { SettingRow } from "widgets.slint";
 export { CurvePoint } from "curve_editor.slint";
+export { LedColor } from "rgb_strip.slint";
 
 export component App inherits Window {
     title: "logi-dd";
@@ -60,6 +62,23 @@ export component App inherits Window {
     callback curve-set-upper-deadzone(int);
     callback curve-commit();
     callback curve-cancel();
+
+    // RGB strip editor overlay: opened by an `RgbStrip`-kind row's "Edit
+    // colors" button. The Rust side owns the in-flight `Vec<Color>` and
+    // pushes the swatch list (and the selected swatch's hex text) here for
+    // the live preview; every edit callback below round-trips through Rust
+    // before the overlay redraws.
+    in property <bool> rgb-editor-open: false;
+    in property <string> rgb-label: "";
+    in property <[LedColor]> rgb-leds: [];
+    in property <string> rgb-selected-hex: "";
+    callback edit-rgb(string);
+    callback rgb-select-led(int);
+    callback rgb-set-color(int, int, int, int);
+    callback rgb-set-hex(int, string);
+    callback rgb-apply-to-all(int, int, int);
+    callback rgb-commit();
+    callback rgb-cancel();
 
     if root.no-wheel: VerticalLayout {
         alignment: center;
@@ -162,6 +181,7 @@ export component App inherits Window {
                     edit-text(attr, v) => { root.edit-text(attr, v); }
                     trigger(attr) => { root.trigger(attr); }
                     edit-curve(attr) => { root.edit-curve(attr); }
+                    edit-rgb(attr) => { root.edit-rgb(attr); }
                     switch-mode() => { root.toggle-mode(); }
                 }
             }
@@ -184,5 +204,22 @@ export component App inherits Window {
         set-upper-deadzone(v) => { root.curve-set-upper-deadzone(v); }
         commit() => { root.curve-commit(); }
         cancel() => { root.curve-cancel(); }
+    }
+
+    // Painted last so it sits on top of everything else, including the
+    // curve editor (the two never open at once, but if they somehow did,
+    // this one should win since it was opened more recently).
+    if root.rgb-editor-open: RgbStrip {
+        width: root.width;
+        height: root.height;
+        strip-label: root.rgb-label;
+        leds: root.rgb-leds;
+        selected-hex: root.rgb-selected-hex;
+        select-led(i) => { root.rgb-select-led(i); }
+        set-color(i, r, g, b) => { root.rgb-set-color(i, r, g, b); }
+        set-hex(i, h) => { root.rgb-set-hex(i, h); }
+        apply-to-all(r, g, b) => { root.rgb-apply-to-all(r, g, b); }
+        commit() => { root.rgb-commit(); }
+        cancel() => { root.rgb-cancel(); }
     }
 }

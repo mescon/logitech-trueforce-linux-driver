@@ -1,0 +1,169 @@
+import { Button, Slider, LineEdit } from "std-widgets.slint";
+
+// One LED swatch color, as plain 0..255 channel ints so this file can build
+// its background with Slint's builtin `rgb()` function without ever
+// touching `logi_dd_core::Color` itself (that conversion lives in
+// `bridge.rs`, the same pattern `CurvePoint` uses for the curve editor).
+export struct LedColor {
+    r: int,
+    g: int,
+    b: int,
+}
+
+// A modal overlay that edits one `Kind::RgbStrip` row: a row of clickable
+// swatches (one per LED) and a picker (r/g/b sliders, a hex field, a live
+// preview swatch, an "apply to all" button) for whichever swatch is
+// selected. The Rust side owns the in-flight `Vec<Color>`; every edit fires
+// a callback, Rust applies it and pushes the updated swatches (plus the
+// selected swatch's hex text) back so both the row and the picker redraw
+// from the same state the eventual `commit` writes. Cancel discards it.
+// Either closes the overlay from the Rust side (`rgb-editor-open` in
+// app.slint).
+export component RgbStrip inherits Rectangle {
+    in property <string> strip-label: "LED colors";
+    in property <[LedColor]> leds: [];
+    in property <string> selected-hex: "";
+
+    // Which swatch the picker below is showing; -1 = none selected yet.
+    // Purely a display concern (which slider values/preview to draw), so it
+    // stays local rather than round-tripping through Rust like `leds` does.
+    property <int> current-index: -1;
+
+    callback select-led(int);
+    callback set-color(int, int, int, int);
+    callback set-hex(int, string);
+    callback apply-to-all(int, int, int);
+    callback commit();
+    callback cancel();
+
+    // Dim the rest of the window so the overlay reads as modal.
+    background: #000000aa;
+
+    Rectangle {
+        width: 440px;
+        height: 340px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: #202020;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: #444444;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: root.strip-label;
+                font-size: 16px;
+                font-weight: 700;
+                color: white;
+            }
+
+            Text {
+                text: "Click a swatch to edit its color.";
+                font-size: 11px;
+                color: #cccccc;
+            }
+
+            HorizontalLayout {
+                spacing: 4px;
+                for led[i] in root.leds: Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 4px;
+                    border-width: i == root.current-index ? 2px : 1px;
+                    border-color: i == root.current-index ? white : #444444;
+                    background: rgb(led.r, led.g, led.b);
+
+                    TouchArea {
+                        clicked => {
+                            root.current-index = i;
+                            root.select-led(i);
+                        }
+                    }
+                }
+            }
+
+            if root.current-index >= 0: VerticalLayout {
+                spacing: 6px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "R"; color: white; vertical-alignment: center; width: 16px; }
+                    Slider {
+                        width: 200px;
+                        minimum: 0;
+                        maximum: 255;
+                        value: root.leds[root.current-index].r;
+                        changed(v) => {
+                            root.set-color(root.current-index, round(v), root.leds[root.current-index].g, root.leds[root.current-index].b);
+                        }
+                    }
+                    Text { text: root.leds[root.current-index].r; color: white; vertical-alignment: center; width: 32px; }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "G"; color: white; vertical-alignment: center; width: 16px; }
+                    Slider {
+                        width: 200px;
+                        minimum: 0;
+                        maximum: 255;
+                        value: root.leds[root.current-index].g;
+                        changed(v) => {
+                            root.set-color(root.current-index, root.leds[root.current-index].r, round(v), root.leds[root.current-index].b);
+                        }
+                    }
+                    Text { text: root.leds[root.current-index].g; color: white; vertical-alignment: center; width: 32px; }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "B"; color: white; vertical-alignment: center; width: 16px; }
+                    Slider {
+                        width: 200px;
+                        minimum: 0;
+                        maximum: 255;
+                        value: root.leds[root.current-index].b;
+                        changed(v) => {
+                            root.set-color(root.current-index, root.leds[root.current-index].r, root.leds[root.current-index].g, round(v));
+                        }
+                    }
+                    Text { text: root.leds[root.current-index].b; color: white; vertical-alignment: center; width: 32px; }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Hex"; color: white; vertical-alignment: center; }
+                    LineEdit {
+                        width: 90px;
+                        text: root.selected-hex;
+                        accepted(t) => { root.set-hex(root.current-index, t); }
+                    }
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #444444;
+                        background: rgb(root.leds[root.current-index].r, root.leds[root.current-index].g, root.leds[root.current-index].b);
+                    }
+                    Button {
+                        text: "Apply to all";
+                        clicked => {
+                            root.apply-to-all(root.leds[root.current-index].r, root.leds[root.current-index].g, root.leds[root.current-index].b);
+                        }
+                    }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button { text: "Cancel"; clicked => { root.cancel(); } }
+                Button { text: "Commit"; clicked => { root.commit(); } }
+            }
+        }
+    }
+}

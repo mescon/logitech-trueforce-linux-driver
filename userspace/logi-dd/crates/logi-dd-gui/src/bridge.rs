@@ -5,10 +5,10 @@
 //! is the only place that knows about both worlds.
 
 use logi_dd_core::curve::{Curve, FULL};
-use logi_dd_core::{Access, Category, DeviceInfo, Kind, Mode, Value, REGISTRY};
+use logi_dd_core::{Access, Category, Color, DeviceInfo, Error, Kind, Mode, Value, REGISTRY};
 
 use crate::viewmodel::Row;
-use crate::{CurvePoint, SettingRow};
+use crate::{CurvePoint, LedColor, SettingRow};
 
 // Stable `SettingRow.kind` tag numbering; keep in sync with the doc comment
 // on `SettingRow` and the per-kind branches in `ui/widgets.slint`.
@@ -18,11 +18,14 @@ pub const KIND_ENUM: i32 = 2;
 pub const KIND_TOGGLE: i32 = 3;
 pub const KIND_TEXT: i32 = 4;
 pub const KIND_ACTION: i32 = 5;
-/// Everything without a live editor yet (deadzone pair, RGB strip, slot
-/// text) and any read-only attribute: rendered as a plain value.
+/// Everything without a live editor yet (deadzone pair, slot text) and any
+/// read-only attribute: rendered as a plain value.
 pub const KIND_READONLY: i32 = 6;
 /// A curve row: rendered as a button that opens the curve editor overlay.
 pub const KIND_CURVE: i32 = 7;
+/// An RGB strip row: rendered as a button that opens the RGB strip editor
+/// overlay.
+pub const KIND_RGB: i32 = 8;
 
 fn is_read_only(attr: &str) -> bool {
     REGISTRY.iter().any(|s| s.attr == attr && s.access == Access::ReadOnly)
@@ -40,7 +43,8 @@ fn kind_tag(attr: &str, kind: &Kind) -> i32 {
         Kind::TextField { .. } => KIND_TEXT,
         Kind::Action => KIND_ACTION,
         Kind::Curve => KIND_CURVE,
-        Kind::Pair { .. } | Kind::RgbStrip { .. } | Kind::SlotText { .. } => KIND_READONLY,
+        Kind::RgbStrip { .. } => KIND_RGB,
+        Kind::Pair { .. } | Kind::SlotText { .. } => KIND_READONLY,
     }
 }
 
@@ -236,6 +240,67 @@ pub fn apply_lower_deadzone(curve: &mut Curve, v: i32) {
 /// The upper-deadzone counterpart of `apply_lower_deadzone`.
 pub fn apply_upper_deadzone(curve: &mut Curve, v: i32) {
     curve.set_upper_deadzone(v.clamp(0, 99) as u8);
+}
+
+// --- RGB strip editor <-> Vec<Color> conversions ---
+//
+// `ui/rgb_strip.slint` never touches `logi_dd_core::Color`: each swatch is
+// plain 0..255 channel ints (`LedColor`) so the component can paint its
+// background with Slint's builtin `rgb()` function. These helpers are the
+// only place that conversion happens, in both directions, same pattern as
+// the curve editor's screen-fraction helpers above.
+
+fn clamp_channel(v: i32) -> u8 {
+    v.clamp(0, 255) as u8
+}
+
+/// Convert `colors` into the swatch list `rgb_strip.slint` renders.
+pub fn rgb_leds_model(colors: &[Color]) -> slint::ModelRc<LedColor> {
+    let items: Vec<LedColor> =
+        colors.iter().map(|c| LedColor { r: i32::from(c.r), g: i32::from(c.g), b: i32::from(c.b) }).collect();
+    slint::ModelRc::new(slint::VecModel::from(items))
+}
+
+/// `attr`'s default color list: every LED black, at that setting's own
+/// `Kind::RgbStrip::leds` count. Seeds the editor when no live value has
+/// been read yet (row unavailable on this wheel, or not seen since the app
+/// started). Any other attr (should not happen; only an `RgbStrip`-kind
+/// row's "Edit colors" button opens this editor) yields an empty list.
+pub fn default_rgb(attr: &str) -> Vec<Color> {
+    match REGISTRY.iter().find(|s| s.attr == attr).map(|s| s.kind) {
+        Some(Kind::RgbStrip { leds }) => vec![Color { r: 0, g: 0, b: 0 }; leds],
+        _ => Vec::new(),
+    }
+}
+
+/// Apply the picker's per-channel sliders (`set-color(index, r, g, b)`) to
+/// `colors`, clamping each channel into `u8` (the sliders are already
+/// `0..255`, but a defensive clamp costs nothing). An out-of-range `index`
+/// (should not happen; every caller derives it from `colors`' own length,
+/// same as the curve editor's control-point indices) is a no-op rather than
+/// a panic.
+pub fn apply_set_color(colors: &mut [Color], index: usize, r: i32, g: i32, b: i32) {
+    if let Some(c) = colors.get_mut(index) {
+        *c = Color { r: clamp_channel(r), g: clamp_channel(g), b: clamp_channel(b) };
+    }
+}
+
+/// Apply the hex field (`set-hex(index, text)`) to `colors`. A bad hex
+/// string leaves `colors` untouched rather than partially applying it.
+pub fn apply_set_hex(colors: &mut [Color], index: usize, hex: &str) -> Result<(), Error> {
+    let c = Color::from_hex(hex)?;
+    if let Some(slot) = colors.get_mut(index) {
+        *slot = c;
+    }
+    Ok(())
+}
+
+/// Apply "apply to all": every LED becomes `(r, g, b)`.
+pub fn apply_to_all(colors: &mut [Color], r: i32, g: i32, b: i32) {
+    let c = Color { r: clamp_channel(r), g: clamp_channel(g), b: clamp_channel(b) };
+    for slot in colors.iter_mut() {
+        *slot = c;
+    }
 }
 
 #[cfg(test)]
@@ -567,5 +632,97 @@ mod tests {
             }
             other => panic!("expected Value::Curve, got {other:?}"),
         }
+    }
+
+    // --- RGB strip editor <-> Vec<Color> conversions ---
+
+    #[test]
+    fn rgb_row_maps_to_rgb_tag() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        let ten = "ff0000 00ff00 0000ff 000000 000000 000000 000000 000000 000000 000000";
+        fs.set("wheel_led_colors", ten);
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm
+            .rows_for(Category::Leds)
+            .into_iter()
+            .find(|r| r.attr == "wheel_led_colors")
+            .expect("no row for wheel_led_colors");
+
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.kind, KIND_RGB);
+        assert_eq!(sr.display, "10 LEDs");
+    }
+
+    #[test]
+    fn rgb_leds_model_round_trips_colors() {
+        let colors = vec![
+            Color { r: 0xff, g: 0x00, b: 0x80 },
+            Color { r: 0x01, g: 0x02, b: 0x03 },
+        ];
+        let model = rgb_leds_model(&colors);
+        let items: Vec<LedColor> = model.iter().collect();
+        assert_eq!(items.len(), colors.len());
+        let back: Vec<Color> =
+            items.iter().map(|l| Color { r: l.r as u8, g: l.g as u8, b: l.b as u8 }).collect();
+        assert_eq!(back, colors);
+    }
+
+    #[test]
+    fn default_rgb_is_all_black_at_the_registry_led_count() {
+        let colors = default_rgb("wheel_led_colors");
+        assert_eq!(colors.len(), 10);
+        assert!(colors.iter().all(|c| *c == Color { r: 0, g: 0, b: 0 }));
+    }
+
+    #[test]
+    fn default_rgb_for_an_unknown_attr_is_empty() {
+        assert!(default_rgb("not_a_real_attr").is_empty());
+    }
+
+    #[test]
+    fn apply_set_color_updates_only_the_indexed_led() {
+        let mut colors = vec![Color { r: 0, g: 0, b: 0 }; 3];
+        apply_set_color(&mut colors, 1, 10, 20, 30);
+        assert_eq!(colors[1], Color { r: 10, g: 20, b: 30 });
+        assert_eq!(colors[0], Color { r: 0, g: 0, b: 0 });
+        assert_eq!(colors[2], Color { r: 0, g: 0, b: 0 });
+    }
+
+    #[test]
+    fn apply_set_color_clamps_out_of_range_channels() {
+        let mut colors = vec![Color { r: 0, g: 0, b: 0 }];
+        apply_set_color(&mut colors, 0, 300, -5, 999);
+        assert_eq!(colors[0], Color { r: 255, g: 0, b: 255 });
+    }
+
+    #[test]
+    fn apply_set_color_out_of_range_index_is_a_no_op() {
+        let mut colors = vec![Color { r: 1, g: 2, b: 3 }];
+        apply_set_color(&mut colors, 5, 9, 9, 9);
+        assert_eq!(colors[0], Color { r: 1, g: 2, b: 3 });
+    }
+
+    #[test]
+    fn apply_set_hex_parses_and_replaces_the_indexed_led() {
+        let mut colors = vec![Color { r: 0, g: 0, b: 0 }; 2];
+        apply_set_hex(&mut colors, 1, "ff8000").unwrap();
+        assert_eq!(colors[0], Color { r: 0, g: 0, b: 0 });
+        assert_eq!(colors[1], Color { r: 0xff, g: 0x80, b: 0x00 });
+    }
+
+    #[test]
+    fn apply_set_hex_rejects_bad_hex_and_leaves_colors_untouched() {
+        let mut colors = vec![Color { r: 1, g: 2, b: 3 }];
+        let result = apply_set_hex(&mut colors, 0, "zzzzzz");
+        assert!(result.is_err());
+        assert_eq!(colors[0], Color { r: 1, g: 2, b: 3 });
+    }
+
+    #[test]
+    fn apply_to_all_sets_every_led_to_the_same_color() {
+        let mut colors = vec![Color { r: 1, g: 1, b: 1 }; 4];
+        apply_to_all(&mut colors, 5, 6, 7);
+        assert!(colors.iter().all(|c| *c == Color { r: 5, g: 6, b: 7 }));
     }
 }

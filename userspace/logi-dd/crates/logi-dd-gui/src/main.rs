@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use logi_dd_core::curve::Curve;
-use logi_dd_core::{Category, Mode, Value, REGISTRY};
+use logi_dd_core::{Category, Color, Mode, Value, REGISTRY};
 use viewmodel::WidgetInput;
 use worker::{Request, Response, Worker};
 
@@ -22,6 +22,16 @@ struct CurveEditorState {
     curve: Curve,
 }
 
+/// The RGB strip editor's in-flight state: same shape as `CurveEditorState`,
+/// but the shaped value is the strip's `Vec<Color>` (one per LED). Lives on
+/// the UI thread only; the worker never sees it until `commit` sends the
+/// finished list as a `WidgetInput::Rgb`.
+struct RgbEditorState {
+    attr: String,
+    category: Category,
+    colors: Vec<Color>,
+}
+
 /// Push `curve`'s current shape to the Slint side: the composed plot line,
 /// the draggable control points, and the two deadzone slider values. Called
 /// after every curve-editor edit so the overlay's preview stays live.
@@ -30,6 +40,12 @@ fn push_curve_editor(app: &App, curve: &Curve) {
     app.set_curve_control_points(bridge::curve_control_points(curve));
     app.set_curve_lower_deadzone(i32::from(curve.lower_deadzone()));
     app.set_curve_upper_deadzone(i32::from(curve.upper_deadzone()));
+}
+
+/// Push `colors`' current shape to the Slint side: the swatch list. Called
+/// after every RGB-editor edit so the row of swatches stays live.
+fn push_rgb_editor(app: &App, colors: &[Color]) {
+    app.set_rgb_leds(bridge::rgb_leds_model(colors));
 }
 
 /// Read the `Category`/`Mode` out of one of the `Arc<Mutex<_>>` cells below.
@@ -67,6 +83,9 @@ fn main() -> Result<(), slint::PlatformError> {
     // The curve editor's in-flight state, `None` while the overlay is
     // closed. UI-thread only (see `CurveEditorState`'s own doc comment).
     let curve_editor: Arc<Mutex<Option<CurveEditorState>>> = Arc::new(Mutex::new(None));
+    // The RGB strip editor's in-flight state, same lifetime/thread rules as
+    // `curve_editor` (see `RgbEditorState`'s own doc comment).
+    let rgb_editor: Arc<Mutex<Option<RgbEditorState>>> = Arc::new(Mutex::new(None));
 
     let worker = {
         let app_weak = app.as_weak();
@@ -311,6 +330,113 @@ fn main() -> Result<(), slint::PlatformError> {
             *curve_editor.lock().unwrap() = None;
             if let Some(app) = app_weak.upgrade() {
                 app.set_curve_editor_open(false);
+            }
+        });
+    }
+
+    {
+        let known_values = known_values.clone();
+        let rgb_editor = rgb_editor.clone();
+        let current_category = current_category.clone();
+        let app_weak = app.as_weak();
+        app.on_edit_rgb(move |attr| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let attr = attr.to_string();
+            let colors = match known_values.lock().unwrap().get(&attr) {
+                Some(Value::Rgb(cs)) => cs.clone(),
+                _ => bridge::default_rgb(&attr),
+            };
+            push_rgb_editor(&app, &colors);
+            app.set_rgb_selected_hex("".into());
+            let label = REGISTRY.iter().find(|s| s.attr == attr).map(|s| s.label).unwrap_or(attr.as_str());
+            app.set_rgb_label(label.into());
+            app.set_rgb_editor_open(true);
+            *rgb_editor.lock().unwrap() = Some(RgbEditorState { attr, category: get(&current_category), colors });
+        });
+    }
+    {
+        let rgb_editor = rgb_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_rgb_select_led(move |i| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let guard = rgb_editor.lock().unwrap();
+            let Some(state) = guard.as_ref() else { return };
+            if let Some(c) = state.colors.get(i.max(0) as usize) {
+                app.set_rgb_selected_hex(c.to_hex().into());
+            }
+        });
+    }
+    {
+        let rgb_editor = rgb_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_rgb_set_color(move |i, r, g, b| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = rgb_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            let index = i.max(0) as usize;
+            bridge::apply_set_color(&mut state.colors, index, r, g, b);
+            push_rgb_editor(&app, &state.colors);
+            if let Some(c) = state.colors.get(index) {
+                app.set_rgb_selected_hex(c.to_hex().into());
+            }
+        });
+    }
+    {
+        let rgb_editor = rgb_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_rgb_set_hex(move |i, hex| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = rgb_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            let index = i.max(0) as usize;
+            if bridge::apply_set_hex(&mut state.colors, index, &hex).is_ok() {
+                push_rgb_editor(&app, &state.colors);
+                if let Some(c) = state.colors.get(index) {
+                    app.set_rgb_selected_hex(c.to_hex().into());
+                }
+            }
+        });
+    }
+    {
+        let rgb_editor = rgb_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_rgb_apply_to_all(move |r, g, b| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = rgb_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            bridge::apply_to_all(&mut state.colors, r, g, b);
+            push_rgb_editor(&app, &state.colors);
+            app.set_rgb_selected_hex(
+                Color { r: r.clamp(0, 255) as u8, g: g.clamp(0, 255) as u8, b: b.clamp(0, 255) as u8 }
+                    .to_hex()
+                    .into(),
+            );
+        });
+    }
+    {
+        let worker = worker.clone();
+        let rgb_editor = rgb_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_rgb_commit(move || {
+            if let Some(state) = rgb_editor.lock().unwrap().take() {
+                worker.request(Request::Edit {
+                    category: state.category,
+                    attr: state.attr,
+                    input: WidgetInput::Rgb(state.colors),
+                });
+            }
+            if let Some(app) = app_weak.upgrade() {
+                app.set_rgb_editor_open(false);
+            }
+        });
+    }
+    {
+        let rgb_editor = rgb_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_rgb_cancel(move || {
+            *rgb_editor.lock().unwrap() = None;
+            if let Some(app) = app_weak.upgrade() {
+                app.set_rgb_editor_open(false);
             }
         });
     }

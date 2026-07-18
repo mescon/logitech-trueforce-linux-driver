@@ -4,12 +4,12 @@
 //! `FakeSysfs` and no display.
 //!
 //! The window (`worker`/`main`) wires up `rows_for`/`edit`/`info`/`set_mode`
-//! for every category now, plus the curve editor's `WidgetInput::Curve`.
-//! `mode`/`refresh`/`device_read` and two `WidgetInput` variants (pair, RGB
-//! strip / slot text for the LED and profile-name pickers) are still ahead
-//! of any live widget: those are a later task's job. They are marked
-//! `#[allow(dead_code)]` individually rather than blanket-silencing the
-//! whole module.
+//! for every category now, plus the curve editor's `WidgetInput::Curve` and
+//! the RGB strip editor's `WidgetInput::Rgb`. `mode`/`refresh`/`device_read`
+//! and two `WidgetInput` variants (pair / slot text for the deadzone and
+//! profile-name pickers) are still ahead of any live widget: those are a
+//! later task's job. They are marked `#[allow(dead_code)]` individually
+//! rather than blanket-silencing the whole module.
 
 use logi_dd_core::curve::Curve;
 use logi_dd_core::sysfs::SysfsIo;
@@ -32,7 +32,6 @@ pub enum WidgetInput {
     #[allow(dead_code)]
     Pair(u8, u8),
     Curve(Curve),
-    #[allow(dead_code)]
     Rgb(Vec<Color>),
     Trigger,
 }
