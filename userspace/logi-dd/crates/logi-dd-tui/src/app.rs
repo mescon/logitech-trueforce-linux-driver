@@ -1,7 +1,8 @@
 use crate::curve_editor::CurveEditor;
 use crate::edit;
-use logi_dd_core::lightsync;
 use logi_dd_core::setting::Access;
+use logi_dd_core::shaping::{self, ShapingRole};
+use logi_dd_core::lightsync;
 use logi_dd_core::sysfs::SysfsIo;
 use logi_dd_core::{Category, Device, Error, Kind, Mode, Value, REGISTRY};
 use std::collections::BTreeMap;
@@ -67,6 +68,13 @@ pub struct App<S: SysfsIo> {
     /// The TrueForce SDK shim installer's resolved binary name, or `None` if
     /// neither candidate name was found on `PATH` at startup.
     pub shim_binary: Option<&'static str>,
+    /// The Advanced shaping view toggle: pure per-session view state (never
+    /// persisted, never a sysfs write). While off (simple, the default) the
+    /// Steering/Pedals pages show the sensitivity rows and hide the curve
+    /// rows; while on, the other way around. Deadzones show either way.
+    /// Rendered as a synthetic first row (`shaping::TOGGLE_ATTR`) on those
+    /// pages; Enter on that row or 'a' anywhere on the page flips it.
+    pub advanced_shaping: bool,
     /// A shim run queued by `on_key` for the main loop to execute:
     /// `(installer arg, verb for the status line)`. The run blocks (an
     /// `--all-steam` Proton-prefix scan can take a while), so instead of
@@ -88,6 +96,7 @@ impl<S: SysfsIo> App<S> {
             curve_edit: None,
             effect_edit: None,
             quit: false,
+            advanced_shaping: false,
             ffb_found: found_on_path("logi-ffb"),
             shim_binary: resolve_shim_binary(),
             pending_shim: None,
@@ -114,7 +123,7 @@ impl<S: SysfsIo> App<S> {
         self.rows = if cat == Category::Leds {
             self.lightsync_rows()
         } else {
-            REGISTRY
+            let rows = REGISTRY
                 .iter()
                 .filter(|s| s.category == cat)
                 .map(|s| Row {
@@ -123,11 +132,53 @@ impl<S: SysfsIo> App<S> {
                     available: self.device.available(s.attr),
                     value: self.device.read(s.attr),
                 })
-                .collect()
+                .collect();
+            self.shaping_rows(rows)
         };
         if self.row_idx >= self.rows.len() {
             self.row_idx = self.rows.len().saturating_sub(1);
         }
+    }
+
+    /// Compose a category's rows for the advanced-shaping toggle: when any
+    /// row is a shaping generator (a sensitivity or a curve; see
+    /// `shaping::role`), prepend the synthetic toggle row and keep only the
+    /// rows `shaping::visible` allows in the current state (simple hides
+    /// curves, advanced hides sensitivities, deadzones and everything else
+    /// stay). Rows for a category with no shaping generators pass through
+    /// untouched, so `reload` can call this unconditionally, matching the
+    /// GUI's `compose_shaping`.
+    fn shaping_rows(&self, mut rows: Vec<Row>) -> Vec<Row> {
+        if !rows.iter().any(|r| shaping::role(r.attr) != ShapingRole::Neutral) {
+            return rows;
+        }
+        let mut out = Vec::with_capacity(rows.len() + 1);
+        out.push(Row {
+            attr: shaping::TOGGLE_ATTR,
+            label: shaping::TOGGLE_LABEL,
+            available: true,
+            value: Ok(Value::Bool(self.advanced_shaping)),
+        });
+        out.extend(rows.drain(..).filter(|r| shaping::visible(r.attr, self.advanced_shaping)));
+        out
+    }
+
+    /// Whether the on-screen category carries the advanced-shaping toggle
+    /// row (Steering and Pedals do).
+    pub fn has_shaping_toggle(&self) -> bool {
+        self.rows.iter().any(|r| r.attr == shaping::TOGGLE_ATTR)
+    }
+
+    /// Flip the advanced-shaping view toggle and re-compose the page. Pure
+    /// view state: nothing is written to the device.
+    pub fn toggle_shaping(&mut self) {
+        self.advanced_shaping = !self.advanced_shaping;
+        self.status = if self.advanced_shaping {
+            "Advanced shaping: on (curve editors replace sensitivity)".to_string()
+        } else {
+            "Advanced shaping: off (simple sensitivity controls)".to_string()
+        };
+        self.reload();
     }
 
     fn led_row(&self, attr: &'static str, label: &'static str) -> Row {
@@ -254,6 +305,12 @@ impl<S: SysfsIo> App<S> {
             Some(row) => (row.attr, row.label),
             None => return,
         };
+        // The Advanced shaping row is view state, not a device attribute:
+        // Enter flips it in place (same as the 'a' shortcut), no editor.
+        if attr == shaping::TOGGLE_ATTR {
+            self.toggle_shaping();
+            return;
+        }
         let Some(spec) = Device::<S>::spec(attr) else { return };
         if spec.access == Access::ReadOnly {
             return;
@@ -472,6 +529,9 @@ impl<S: SysfsIo> App<S> {
             Char('q') => self.quit = true,
             Char('r') => self.reload(),
             Char('d') => self.toggle_mode(),
+            // Only meaningful on a page that carries the toggle row
+            // (Steering/Pedals); a plain typo elsewhere does nothing.
+            Char('a') if self.has_shaping_toggle() => self.toggle_shaping(),
             Up => self.move_row(-1),
             Down => self.move_row(1),
             Left => self.move_cat(-1),
@@ -564,6 +624,9 @@ mod tests {
         fs.set("wheel_throttle_curve", "0/64 points loaded (0 = built-in curve)");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
+        // Curve rows only show in advanced shaping mode (the default is the
+        // simple sensitivity view).
+        a.advanced_shaping = true;
         a.reload();
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_throttle_curve").unwrap();
         a
@@ -844,6 +907,107 @@ mod tests {
         assert_eq!(a.lightsync_effect_label(), "CUSTOM 1: RACE");
         let b = leds_app("4", "0");
         assert_eq!(b.lightsync_effect_label(), "Left to right");
+    }
+
+    // --- advanced shaping toggle ---
+
+    fn steering_app() -> App<FakeSysfs> {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_range", "900");
+        fs.set("wheel_sensitivity", "50");
+        fs.set("wheel_response_curve", "reset");
+        let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Steering).unwrap();
+        a.reload();
+        a
+    }
+
+    #[test]
+    fn shaping_toggle_is_the_first_row_of_steering_and_pedals_only() {
+        let a = steering_app();
+        assert_eq!(a.rows[0].attr, shaping::TOGGLE_ATTR);
+        let mut p = steering_app();
+        p.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
+        p.reload();
+        assert_eq!(p.rows[0].attr, shaping::TOGGLE_ATTR);
+        let ffb = app(); // first category, Ffb
+        assert!(!ffb.has_shaping_toggle(), "Ffb has no shaping generators");
+    }
+
+    #[test]
+    fn simple_mode_shows_sensitivity_and_hides_curves() {
+        let a = steering_app();
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert!(attrs.contains(&"wheel_sensitivity"));
+        assert!(!attrs.contains(&"wheel_response_curve"));
+    }
+
+    #[test]
+    fn enter_on_the_toggle_row_switches_to_advanced_without_a_device_write() {
+        use crossterm::event::KeyCode;
+        let mut a = steering_app();
+        a.row_idx = 0;
+        a.on_key(KeyCode::Enter);
+        assert!(a.advanced_shaping);
+        assert!(a.edit.is_none(), "no inline editor opens");
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert!(attrs.contains(&"wheel_response_curve"));
+        assert!(!attrs.contains(&"wheel_sensitivity"));
+        // Pure view state: the reserved attr never reaches the device.
+        assert!(a.device.read(shaping::TOGGLE_ATTR).is_err());
+    }
+
+    #[test]
+    fn a_key_toggles_from_anywhere_on_a_shaping_page_and_back() {
+        use crossterm::event::KeyCode;
+        let mut a = steering_app();
+        a.row_idx = a.rows.len() - 1; // not on the toggle row
+        a.on_key(KeyCode::Char('a'));
+        assert!(a.advanced_shaping);
+        a.on_key(KeyCode::Char('a'));
+        assert!(!a.advanced_shaping);
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert!(attrs.contains(&"wheel_sensitivity"), "back to simple mode");
+    }
+
+    #[test]
+    fn a_key_does_nothing_on_a_page_without_the_toggle() {
+        use crossterm::event::KeyCode;
+        let mut a = app(); // Ffb
+        let before: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        a.on_key(KeyCode::Char('a'));
+        assert!(!a.advanced_shaping);
+        let after: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn advanced_mode_pedals_keeps_deadzones_both_ways() {
+        let mut a = steering_app();
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
+        a.reload();
+        let simple: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert!(simple.contains(&"wheel_throttle_deadzone"));
+        assert!(simple.contains(&"wheel_throttle_sensitivity"));
+        assert!(!simple.contains(&"wheel_throttle_curve"));
+        a.toggle_shaping();
+        let advanced: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert!(advanced.contains(&"wheel_throttle_deadzone"));
+        assert!(advanced.contains(&"wheel_throttle_curve"));
+        assert!(advanced.contains(&"wheel_handbrake_curve"));
+        assert!(!advanced.iter().any(|a| a.ends_with("_sensitivity")));
+    }
+
+    #[test]
+    fn shaping_state_survives_a_category_round_trip() {
+        let mut a = steering_app();
+        a.toggle_shaping();
+        assert!(a.advanced_shaping);
+        a.move_cat(-1); // away to Ffb
+        a.move_cat(1); // and back to Steering
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert!(attrs.contains(&"wheel_response_curve"), "still advanced after navigation");
     }
 
     #[test]

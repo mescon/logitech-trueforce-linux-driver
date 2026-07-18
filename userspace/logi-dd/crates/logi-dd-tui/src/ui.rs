@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::curve_editor::CurveEditor;
 use logi_dd_core::sysfs::SysfsIo;
-use logi_dd_core::{Category, Device, Mode, Value};
+use logi_dd_core::{shaping, Category, Device, Mode, Value};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -97,6 +97,14 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
 
                 let (val, mut val_style) = if !row.available {
                     ("(not on this wheel)".to_string(), Style::default().fg(Color::DarkGray))
+                } else if row.attr == shaping::TOGGLE_ATTR {
+                    // The synthetic view toggle (no registry spec): show
+                    // which shaping controls the page currently offers.
+                    let advanced = matches!(row.value, Ok(Value::Bool(true)));
+                    (
+                        (if advanced { "on (curves)" } else { "off (sensitivity)" }).to_string(),
+                        value_style(false, false),
+                    )
                 } else if row.attr == "wheel_profile" {
                     // show the profile number with its onboard name
                     let n = match (editing.map(|e| &e.draft), &row.value) {
@@ -180,6 +188,12 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         "editing:  <-/->  adjust    type  text    Enter  commit    Esc  cancel"
     } else if app.is_setup() {
         "<-/-> category   i install shim (all Steam)   u uninstall shim   q quit"
+    } else if app.selected().map(|r| r.attr) == Some(shaping::TOGGLE_ATTR) {
+        // The toggle row's help explains why the page shows only one of
+        // the two shaping controls, same text the GUI row carries.
+        shaping::TOGGLE_HELP
+    } else if app.has_shaping_toggle() {
+        "up/down select   <-/-> category   Enter edit   a advanced shaping   d desktop/onboard   r refresh   q quit"
     } else {
         "up/down select   <-/-> category   Enter edit   d toggle desktop/onboard   r refresh   q quit"
     };
