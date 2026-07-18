@@ -1,5 +1,6 @@
 use crate::curve_editor::CurveEditor;
 use crate::edit;
+use logi_dd_core::lightsync;
 use logi_dd_core::setting::Access;
 use logi_dd_core::sysfs::SysfsIo;
 use logi_dd_core::{Category, Device, Error, Kind, Mode, Value, REGISTRY};
@@ -10,6 +11,17 @@ pub struct Row {
     pub label: &'static str,
     pub value: Result<Value, Error>,
     pub available: bool,
+}
+
+/// The LIGHTSYNC effect selector's modal state: left/right cycles `index`
+/// through `labels` (the 13 entries `lightsync::dropdown_labels` builds),
+/// Enter commits it (one or two device writes; see `commit_effect_edit`),
+/// Esc discards. A separate little state from `edit::EditState` because
+/// the selector's index is a position in a dynamic label list, not a value
+/// any registry `Kind` can bump.
+pub struct EffectEdit {
+    pub index: usize,
+    pub labels: Vec<String>,
 }
 
 /// The index of the synthetic "Setup" sidebar entry, one past the last real
@@ -46,6 +58,9 @@ pub struct App<S: SysfsIo> {
     pub edit: Option<edit::EditState>,
     /// The modal curve editor, active while shaping a `Kind::Curve` attribute.
     pub curve_edit: Option<CurveEditor>,
+    /// The LIGHTSYNC effect selector, active while the Effect row is being
+    /// cycled.
+    pub effect_edit: Option<EffectEdit>,
     pub quit: bool,
     /// Whether `logi-ffb` was found on `PATH` at startup (Setup body status).
     pub ffb_found: bool,
@@ -71,6 +86,7 @@ impl<S: SysfsIo> App<S> {
             status: String::new(),
             edit: None,
             curve_edit: None,
+            effect_edit: None,
             quit: false,
             ffb_found: found_on_path("logi-ffb"),
             shim_binary: resolve_shim_binary(),
@@ -95,19 +111,83 @@ impl<S: SysfsIo> App<S> {
             return;
         }
         let cat = self.category();
-        self.rows = REGISTRY
-            .iter()
-            .filter(|s| s.category == cat)
-            .map(|s| Row {
-                attr: s.attr,
-                label: s.label,
-                available: self.device.available(s.attr),
-                value: self.device.read(s.attr),
-            })
-            .collect();
+        self.rows = if cat == Category::Leds {
+            self.lightsync_rows()
+        } else {
+            REGISTRY
+                .iter()
+                .filter(|s| s.category == cat)
+                .map(|s| Row {
+                    attr: s.attr,
+                    label: s.label,
+                    available: self.device.available(s.attr),
+                    value: self.device.read(s.attr),
+                })
+                .collect()
+        };
         if self.row_idx >= self.rows.len() {
             self.row_idx = self.rows.len().saturating_sub(1);
         }
+    }
+
+    fn led_row(&self, attr: &'static str, label: &'static str) -> Row {
+        Row { attr, label, available: self.device.available(attr), value: self.device.read(attr) }
+    }
+
+    /// The composed LIGHTSYNC page: Effect (the 13-entry selector), the
+    /// global Brightness, then, only while the custom effect (5) is
+    /// active, the active slot's fields as an indented group, and the
+    /// G PRO rev lights last. The slot-scoped registry rows stop being
+    /// top-level rows; `wheel_led_slot` itself has no row at all (the
+    /// selector's CUSTOM entries pick the slot).
+    fn lightsync_rows(&self) -> Vec<Row> {
+        let mut rows = vec![
+            self.led_row("wheel_led_effect", "Effect"),
+            self.led_row("wheel_led_brightness", "Brightness"),
+        ];
+        if matches!(self.device.read("wheel_led_effect"), Ok(Value::Int(5))) {
+            rows.push(self.led_row("wheel_led_slot_name", "  Slot name"));
+            rows.push(self.led_row("wheel_led_slot_brightness", "  Slot brightness"));
+            rows.push(self.led_row("wheel_led_direction", "  Direction"));
+            rows.push(self.led_row("wheel_led_colors", "  Colors"));
+            rows.push(self.led_row("wheel_led_apply", "  Apply slot"));
+        }
+        rows.push(self.led_row("wheel_rev_level", "Rev lights (G PRO)"));
+        rows
+    }
+
+    /// The per-slot names the effect selector's CUSTOM labels show. Only
+    /// the ACTIVE slot's name is readable (`wheel_led_slot_name` reads the
+    /// slot `wheel_led_slot` points at), so every other entry stays empty
+    /// and falls back to the plain "CUSTOM N" label.
+    fn led_slot_names(&self) -> Vec<String> {
+        let mut names = vec![String::new(); lightsync::CUSTOM_SLOTS];
+        if let (Ok(Value::Int(slot)), Ok(Value::Text(name))) =
+            (self.device.read("wheel_led_slot"), self.device.read("wheel_led_slot_name"))
+        {
+            if let Some(entry) = usize::try_from(slot).ok().and_then(|i| names.get_mut(i)) {
+                *entry = name;
+            }
+        }
+        names
+    }
+
+    /// The selector label for the device's current effect (+ slot when the
+    /// custom effect is active); what the Effect row shows at rest.
+    pub fn lightsync_effect_label(&self) -> String {
+        let effect = match self.device.read("wheel_led_effect") {
+            Ok(Value::Int(n)) => n.clamp(0, u8::MAX as i32) as u8,
+            _ => return "?".to_string(),
+        };
+        let slot = match self.device.read("wheel_led_slot") {
+            Ok(Value::Int(n)) => n.clamp(0, lightsync::CUSTOM_SLOTS as i32 - 1) as u8,
+            _ => 0,
+        };
+        let labels = lightsync::dropdown_labels(&self.led_slot_names());
+        labels
+            .into_iter()
+            .nth(lightsync::selection_index(effect, slot))
+            .unwrap_or_else(|| "?".to_string())
     }
 
     pub fn move_cat(&mut self, d: i32) {
@@ -178,6 +258,26 @@ impl<S: SysfsIo> App<S> {
         if spec.access == Access::ReadOnly {
             return;
         }
+        // The LIGHTSYNC Effect row cycles the 13 selector entries, not the
+        // raw 1-9 value; it gets its own little modal (see `EffectEdit`).
+        if attr == "wheel_led_effect" {
+            let effect = match self.device.read(attr) {
+                Ok(Value::Int(n)) => n.clamp(0, u8::MAX as i32) as u8,
+                _ => {
+                    self.status = "cannot edit (value unreadable)".into();
+                    return;
+                }
+            };
+            let slot = match self.device.read("wheel_led_slot") {
+                Ok(Value::Int(n)) => n.clamp(0, lightsync::CUSTOM_SLOTS as i32 - 1) as u8,
+                _ => 0,
+            };
+            self.effect_edit = Some(EffectEdit {
+                index: lightsync::selection_index(effect, slot),
+                labels: lightsync::dropdown_labels(&self.led_slot_names()),
+            });
+            return;
+        }
         if spec.access == Access::Action {
             self.status = match self.device.write(attr, &Value::Trigger) {
                 Ok(()) => format!("{label}: done"),
@@ -200,6 +300,32 @@ impl<S: SysfsIo> App<S> {
             return;
         }
         self.edit = Some(edit::EditState::start(spec.attr, spec.kind, &cur));
+    }
+
+    /// Commit the effect selector: a sweep/numbered entry writes
+    /// `wheel_led_effect` directly; a CUSTOM entry writes `wheel_led_slot`
+    /// first and then `wheel_led_effect = 5` (the driver re-applies the
+    /// slot's stored config on that transition), the same two-write order
+    /// the GUI uses.
+    pub fn commit_effect_edit(&mut self) {
+        let Some(fe) = self.effect_edit.take() else { return };
+        let result = match lightsync::index_selection(fe.index) {
+            lightsync::Selection::Effect(e) => {
+                self.device.write("wheel_led_effect", &Value::Int(i32::from(e)))
+            }
+            lightsync::Selection::Custom(slot) => self
+                .device
+                .write("wheel_led_slot", &Value::Int(i32::from(slot)))
+                .and_then(|()| self.device.write("wheel_led_effect", &Value::Int(5))),
+        };
+        self.status = match result {
+            Ok(()) => {
+                let label = fe.labels.get(fe.index).map(String::as_str).unwrap_or("?");
+                format!("Effect set: {label}")
+            }
+            Err(e) => format!("Effect: {e}"),
+        };
+        self.reload();
     }
 
     pub fn commit_curve_edit(&mut self) {
@@ -245,11 +371,37 @@ impl<S: SysfsIo> App<S> {
         m
     }
 
+    /// Make a `wheel_led_colors` write match a mirrored direction: when
+    /// the slot's direction is inside-out/outside-in the wheel plays the
+    /// 10 LEDs as 5 pairs, so the left half is mirrored onto the right
+    /// (left wins) before the write. Any other value, attr or direction
+    /// passes through untouched.
+    fn mirror_colors_if_needed(&self, attr: &str, v: Value) -> Value {
+        if attr != "wheel_led_colors" {
+            return v;
+        }
+        let direction = match self.device.read("wheel_led_direction") {
+            Ok(Value::Enum(d)) => d,
+            _ => return v,
+        };
+        match v {
+            Value::Rgb(mut colors) if lightsync::mirrored(direction) => {
+                lightsync::mirror_left_half(&mut colors);
+                Value::Rgb(colors)
+            }
+            v => v,
+        }
+    }
+
     pub fn commit_edit(&mut self) {
         let Some(e) = self.edit.take() else { return };
         let attr = e.attr;
         let label = Device::<S>::spec(attr).map(|s| s.label).unwrap_or(attr);
-        match e.commit_value().and_then(|v| self.device.write(attr, &v)) {
+        match e
+            .commit_value()
+            .map(|v| self.mirror_colors_if_needed(attr, v))
+            .and_then(|v| self.device.write(attr, &v))
+        {
             Ok(()) => {
                 self.status = format!("{label} set");
             }
@@ -276,6 +428,17 @@ impl<S: SysfsIo> App<S> {
                 Right => ce.adjust(1),
                 Char('+') => ce.add_point(),
                 Char('-') => ce.delete_point(),
+                _ => {}
+            }
+            return;
+        }
+        if let Some(fe) = self.effect_edit.as_mut() {
+            let n = fe.labels.len().max(1);
+            match key {
+                Enter => self.commit_effect_edit(),
+                Esc => self.effect_edit = None,
+                Left => fe.index = (fe.index + n - 1) % n,
+                Right => fe.index = (fe.index + 1) % n,
                 _ => {}
             }
             return;
@@ -530,6 +693,157 @@ mod tests {
         a.shim_binary = Some("this-binary-does-not-exist-anywhere");
         a.run_shim("--all-steam", "install");
         assert!(a.status.contains("failed to run"), "status: {}", a.status);
+    }
+
+    // --- LIGHTSYNC page ---
+
+    const TEN_COLORS: &str =
+        "ff0000 00ff00 0000ff 111111 222222 000000 000000 000000 000000 000000";
+
+    fn leds_app(effect: &str, direction: &str) -> App<FakeSysfs> {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_effect", effect);
+        fs.set("wheel_led_slot", "0");
+        fs.set("wheel_led_brightness", "80");
+        fs.set("wheel_led_slot_name", "RACE");
+        fs.set("wheel_led_slot_brightness", "70");
+        fs.set("wheel_led_direction", direction);
+        fs.set("wheel_led_colors", TEN_COLORS);
+        fs.set("wheel_rev_level", "0");
+        let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Leds).unwrap();
+        a.reload();
+        a
+    }
+
+    #[test]
+    fn lightsync_page_hides_the_slot_group_for_builtin_effects() {
+        let a = leds_app("3", "0");
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert_eq!(attrs, vec!["wheel_led_effect", "wheel_led_brightness", "wheel_rev_level"]);
+    }
+
+    #[test]
+    fn lightsync_page_shows_the_indented_slot_group_for_the_custom_effect() {
+        let a = leds_app("5", "0");
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert_eq!(
+            attrs,
+            vec![
+                "wheel_led_effect",
+                "wheel_led_brightness",
+                "wheel_led_slot_name",
+                "wheel_led_slot_brightness",
+                "wheel_led_direction",
+                "wheel_led_colors",
+                "wheel_led_apply",
+                "wheel_rev_level",
+            ]
+        );
+        let name_row = a.rows.iter().find(|r| r.attr == "wheel_led_slot_name").unwrap();
+        assert!(name_row.label.starts_with("  "), "slot rows are indented: {:?}", name_row.label);
+    }
+
+    #[test]
+    fn effect_row_opens_the_selector_with_the_current_entry() {
+        use crossterm::event::KeyCode;
+        let mut a = leds_app("5", "0");
+        a.row_idx = 0;
+        a.on_key(KeyCode::Enter);
+        let fe = a.effect_edit.as_ref().expect("Enter opens the effect selector");
+        assert_eq!(fe.labels.len(), 13);
+        assert_eq!(fe.index, 4, "effect 5 + slot 0 = CUSTOM 1");
+        assert_eq!(fe.labels[4], "CUSTOM 1: RACE", "the active slot's name is shown");
+        assert!(a.edit.is_none(), "not the inline field editor");
+    }
+
+    #[test]
+    fn effect_selector_cycles_and_wraps_both_ways() {
+        use crossterm::event::KeyCode;
+        let mut a = leds_app("1", "0");
+        a.row_idx = 0;
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.effect_edit.as_ref().unwrap().index, 0);
+        a.on_key(KeyCode::Left);
+        assert_eq!(a.effect_edit.as_ref().unwrap().index, 12, "left from the first entry wraps");
+        a.on_key(KeyCode::Right);
+        assert_eq!(a.effect_edit.as_ref().unwrap().index, 0);
+        a.on_key(KeyCode::Esc);
+        assert!(a.effect_edit.is_none(), "Esc discards without writing");
+        assert_eq!(a.device.read("wheel_led_effect").unwrap(), Value::Int(1));
+    }
+
+    #[test]
+    fn effect_selector_custom_commit_writes_slot_then_effect() {
+        use crossterm::event::KeyCode;
+        let mut a = leds_app("1", "0");
+        a.row_idx = 0;
+        a.on_key(KeyCode::Enter);
+        for _ in 0..6 {
+            a.on_key(KeyCode::Right); // index 6 = CUSTOM 3
+        }
+        a.on_key(KeyCode::Enter);
+        assert!(a.effect_edit.is_none());
+        assert_eq!(a.device.read("wheel_led_slot").unwrap(), Value::Int(2));
+        assert_eq!(a.device.read("wheel_led_effect").unwrap(), Value::Int(5));
+        // the slot group appears after the reload the commit triggers
+        assert!(a.rows.iter().any(|r| r.attr == "wheel_led_colors"));
+    }
+
+    #[test]
+    fn effect_selector_sweep_commit_writes_only_the_effect() {
+        use crossterm::event::KeyCode;
+        let mut a = leds_app("1", "0");
+        a.row_idx = 0;
+        a.on_key(KeyCode::Enter);
+        a.on_key(KeyCode::Right); // index 1 = Outside in = effect 2
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.device.read("wheel_led_effect").unwrap(), Value::Int(2));
+        assert_eq!(a.device.read("wheel_led_slot").unwrap(), Value::Int(0), "slot untouched");
+    }
+
+    #[test]
+    fn colors_commit_mirrors_the_left_half_when_the_direction_mirrors() {
+        use crossterm::event::KeyCode;
+        let mut a = leds_app("5", "2"); // inside-out
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_led_colors").unwrap();
+        a.on_key(KeyCode::Enter); // open the raw color entry
+        a.on_key(KeyCode::Enter); // commit unchanged
+        match a.device.read("wheel_led_colors").unwrap() {
+            Value::Rgb(cs) => {
+                for i in 0..5 {
+                    assert_eq!(cs[9 - i], cs[i], "LED {} mirrors LED {}", 10 - i, i + 1);
+                }
+                assert_eq!(cs[0].to_hex(), "ff0000", "the left half is untouched");
+                assert_eq!(cs[4].to_hex(), "222222");
+            }
+            v => panic!("expected colors, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn colors_commit_stays_untouched_for_a_sweep_direction() {
+        use crossterm::event::KeyCode;
+        let mut a = leds_app("5", "0"); // left to right
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_led_colors").unwrap();
+        a.on_key(KeyCode::Enter);
+        a.on_key(KeyCode::Enter);
+        match a.device.read("wheel_led_colors").unwrap() {
+            Value::Rgb(cs) => {
+                assert_eq!(cs[9].to_hex(), "000000", "no mirroring for a sweep");
+                assert_eq!(cs[0].to_hex(), "ff0000");
+            }
+            v => panic!("expected colors, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn effect_label_names_the_active_custom_slot() {
+        let a = leds_app("5", "0");
+        assert_eq!(a.lightsync_effect_label(), "CUSTOM 1: RACE");
+        let b = leds_app("4", "0");
+        assert_eq!(b.lightsync_effect_label(), "Left to right");
     }
 
     #[test]

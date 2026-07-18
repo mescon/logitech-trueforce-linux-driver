@@ -105,6 +105,22 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
                         _ => -1,
                     };
                     (profile_label(n, &names), value_style(editing.is_some(), false))
+                } else if row.attr == "wheel_led_effect" {
+                    // The LIGHTSYNC effect selector: show the current (or
+                    // the cycled, while its modal is active) entry's label
+                    // instead of the raw 1-9 number.
+                    let cycling = app.effect_edit.as_ref().filter(|_| i == app.row_idx);
+                    let text = match cycling {
+                        Some(fe) => {
+                            fe.labels.get(fe.index).cloned().unwrap_or_else(|| "?".to_string())
+                        }
+                        None => app.lightsync_effect_label(),
+                    };
+                    let mut style = value_style(cycling.is_some(), false);
+                    if cycling.is_some() {
+                        style = style.add_modifier(Modifier::BOLD);
+                    }
+                    (text, style)
                 } else {
                     match (&row.value, spec) {
                         (Ok(v), Some(s)) => {
@@ -158,6 +174,8 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
     // status line (green on success, red on trouble) + a dim help line
     let help = if app.curve_edit.is_some() {
         "curve:  up/down field   <-/-> adjust   + add point   - delete   Enter save   Esc cancel"
+    } else if app.effect_edit.is_some() {
+        "effect:  <-/->  choose    Enter  apply    Esc  cancel"
     } else if app.edit.is_some() {
         "editing:  <-/->  adjust    type  text    Enter  commit    Esc  cancel"
     } else if app.is_setup() {
