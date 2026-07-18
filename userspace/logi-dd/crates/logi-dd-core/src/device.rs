@@ -17,7 +17,20 @@ pub struct Device<S: SysfsIo> {
 
 impl Device<RealSysfs> {
     /// Find the wheel by the sysfs attribute only this driver creates.
+    ///
+    /// `LOGI_DD_SYSFS_DIR`, when set, overrides discovery with a directory of
+    /// `wheel_*` attribute files (development aid: run the frontends against a
+    /// plain-file copy of a device's sysfs dir, no wheel or driver needed).
+    /// The directory must contain `wheel_range` to count as a wheel, same as
+    /// the real probe.
     pub fn discover() -> Result<Device<RealSysfs>, Error> {
+        if let Ok(dir) = std::env::var("LOGI_DD_SYSFS_DIR") {
+            let dir = std::path::PathBuf::from(dir);
+            if dir.join("wheel_range").exists() {
+                return Ok(Device { io: RealSysfs::new(dir) });
+            }
+            return Err(Error::NoWheel);
+        }
         let mut entries = std::fs::read_dir("/sys/class/hidraw")
             .map_err(|_| Error::NoWheel)?;
         while let Some(Ok(e)) = entries.next() {
