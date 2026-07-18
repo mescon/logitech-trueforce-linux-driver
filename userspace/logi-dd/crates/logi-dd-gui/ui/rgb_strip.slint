@@ -30,12 +30,31 @@ export component RgbStrip inherits Rectangle {
     // stays local rather than round-tripping through Rust like `leds` does.
     property <int> current-index: -1;
 
+    // Hue/saturation/value backing the visual picker below. Local (not
+    // round-tripped through Rust) for the same reason `current-index` is:
+    // they only drive where the picker draws its cursors and what color it
+    // emits through the existing `set-color` callback. Seeded from the
+    // selected swatch's rgb whenever that swatch changes or one of the
+    // other controls (sliders, hex) edits it, so every control stays in
+    // sync with a single source of truth (`leds`, owned by Rust).
+    property <float> hue;
+    property <float> sat;
+    property <float> val;
+
     callback select-led(int);
     callback set-color(int, int, int, int);
     callback set-hex(int, string);
     callback apply-to-all(int, int, int);
     callback commit();
     callback cancel();
+
+    // Recompute hue/sat/val from the current hsv fields and push the
+    // resulting rgb through the same `set-color` path the sliders and hex
+    // field use, so Rust ownership/preview/commit keep working unchanged.
+    function emit-hsv-color() {
+        let c = hsv(root.hue, root.sat, root.val);
+        root.set-color(root.current-index, c.red, c.green, c.blue);
+    }
 
     // Dim the rest of the window so the overlay reads as modal. Kept a
     // fixed translucent black regardless of style/theme: see `Theme`'s own
@@ -44,7 +63,7 @@ export component RgbStrip inherits Rectangle {
 
     Rectangle {
         width: 440px;
-        height: 340px;
+        height: 520px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.panel-background;
@@ -82,6 +101,10 @@ export component RgbStrip inherits Rectangle {
                     TouchArea {
                         clicked => {
                             root.current-index = i;
+                            let hsv-of = rgb(led.r, led.g, led.b).to-hsv();
+                            root.hue = hsv-of.hue;
+                            root.sat = hsv-of.saturation;
+                            root.val = hsv-of.value;
                             root.select-led(i);
                         }
                     }
@@ -90,6 +113,91 @@ export component RgbStrip inherits Rectangle {
 
             if root.current-index >= 0: VerticalLayout {
                 spacing: 6px;
+
+                // Saturation/value square: the base fill is the selected hue
+                // at full saturation/value, with a white->transparent
+                // gradient (left = desaturated, right = saturated) and a
+                // black->transparent gradient (bottom = dark, top = bright)
+                // layered on top. Click or drag to set sat/val from the
+                // cursor position.
+                sv-square := Rectangle {
+                    width: 200px;
+                    height: 140px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.panel-border;
+                    background: hsv(root.hue, 1, 1);
+
+                    Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        background: @linear-gradient(90deg, white 0%, transparent 100%);
+                    }
+                    Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        background: @linear-gradient(0deg, black 0%, transparent 100%);
+                    }
+
+                    Rectangle {
+                        width: 12px;
+                        height: 12px;
+                        x: root.sat * sv-square.width - self.width / 2;
+                        y: (1 - root.val) * sv-square.height - self.height / 2;
+                        border-radius: self.width / 2;
+                        border-width: 2px;
+                        border-color: white;
+                        background: transparent;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.sat = clamp(self.mouse-x / sv-square.width, 0, 1);
+                            root.val = clamp(1 - self.mouse-y / sv-square.height, 0, 1);
+                            root.emit-hsv-color();
+                        }
+                        moved => {
+                            if (self.pressed) {
+                                root.sat = clamp(self.mouse-x / sv-square.width, 0, 1);
+                                root.val = clamp(1 - self.mouse-y / sv-square.height, 0, 1);
+                                root.emit-hsv-color();
+                            }
+                        }
+                    }
+                }
+
+                // Hue bar: the full hue wheel with a thin cursor indicator.
+                // The square above always renders at this hue, full
+                // saturation/value.
+                hue-bar := Rectangle {
+                    height: 16px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.panel-border;
+                    background: @linear-gradient(90deg, #ff0000 0%, #ffff00 17%, #00ff00 33%, #00ffff 50%, #0000ff 67%, #ff00ff 83%, #ff0000 100%);
+
+                    Rectangle {
+                        width: 3px;
+                        height: parent.height;
+                        x: root.hue / 360 * hue-bar.width - self.width / 2;
+                        background: white;
+                        border-width: 1px;
+                        border-color: Theme.panel-border;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.hue = clamp(self.mouse-x / hue-bar.width, 0, 1) * 360;
+                            root.emit-hsv-color();
+                        }
+                        moved => {
+                            if (self.pressed) {
+                                root.hue = clamp(self.mouse-x / hue-bar.width, 0, 1) * 360;
+                                root.emit-hsv-color();
+                            }
+                        }
+                    }
+                }
 
                 HorizontalLayout {
                     spacing: 8px;
@@ -101,6 +209,10 @@ export component RgbStrip inherits Rectangle {
                         value: root.leds[root.current-index].r;
                         changed(v) => {
                             root.set-color(root.current-index, round(v), root.leds[root.current-index].g, root.leds[root.current-index].b);
+                            let hsv-of = rgb(round(v), root.leds[root.current-index].g, root.leds[root.current-index].b).to-hsv();
+                            root.hue = hsv-of.hue;
+                            root.sat = hsv-of.saturation;
+                            root.val = hsv-of.value;
                         }
                     }
                     Text { text: root.leds[root.current-index].r; color: Theme.text-color; vertical-alignment: center; width: 32px; }
@@ -115,6 +227,10 @@ export component RgbStrip inherits Rectangle {
                         value: root.leds[root.current-index].g;
                         changed(v) => {
                             root.set-color(root.current-index, root.leds[root.current-index].r, round(v), root.leds[root.current-index].b);
+                            let hsv-of = rgb(root.leds[root.current-index].r, round(v), root.leds[root.current-index].b).to-hsv();
+                            root.hue = hsv-of.hue;
+                            root.sat = hsv-of.saturation;
+                            root.val = hsv-of.value;
                         }
                     }
                     Text { text: root.leds[root.current-index].g; color: Theme.text-color; vertical-alignment: center; width: 32px; }
@@ -129,6 +245,10 @@ export component RgbStrip inherits Rectangle {
                         value: root.leds[root.current-index].b;
                         changed(v) => {
                             root.set-color(root.current-index, root.leds[root.current-index].r, root.leds[root.current-index].g, round(v));
+                            let hsv-of = rgb(root.leds[root.current-index].r, root.leds[root.current-index].g, round(v)).to-hsv();
+                            root.hue = hsv-of.hue;
+                            root.sat = hsv-of.saturation;
+                            root.val = hsv-of.value;
                         }
                     }
                     Text { text: root.leds[root.current-index].b; color: Theme.text-color; vertical-alignment: center; width: 32px; }
@@ -140,7 +260,13 @@ export component RgbStrip inherits Rectangle {
                     LineEdit {
                         width: 90px;
                         text: root.selected-hex;
-                        accepted(t) => { root.set-hex(root.current-index, t); }
+                        accepted(t) => {
+                            root.set-hex(root.current-index, t);
+                            let hsv-of = rgb(root.leds[root.current-index].r, root.leds[root.current-index].g, root.leds[root.current-index].b).to-hsv();
+                            root.hue = hsv-of.hue;
+                            root.sat = hsv-of.saturation;
+                            root.val = hsv-of.value;
+                        }
                     }
                     Rectangle {
                         width: 24px;
