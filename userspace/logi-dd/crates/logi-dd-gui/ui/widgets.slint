@@ -19,6 +19,12 @@ import { Theme } from "theme.slint";
 //   10 = pair (two SpinBoxes, lower/upper, e.g. a deadzone)
 //   11 = profile (ComboBox of profile names; commits the chosen index via
 //                 edit-slider)
+//   12 = LIGHTSYNC effect (ComboBox over the 13 selector labels; commits
+//                 the chosen index via edit-light-effect, which resolves
+//                 it to one or two attr writes on the Rust side)
+//   13 = LIGHTSYNC edit-slot button (opens the slot editor overlay via
+//                 edit-rgb; enabled only while `bool-value` says a CUSTOM
+//                 effect is active)
 export struct SettingRow {
     attr: string,
     label: string,
@@ -70,6 +76,11 @@ export component SettingsList inherits ListView {
     // opens the slot-text editor overlay for `attr`, seeded from that row's
     // current value.
     callback edit-slot-text(string);
+    // Fired by the LIGHTSYNC effect selector (kind 12) with the chosen
+    // selector index (0-12). The Rust side resolves it: a sweep/numbered
+    // entry writes wheel_led_effect; a CUSTOM entry writes wheel_led_slot
+    // then wheel_led_effect=5.
+    callback edit-light-effect(int);
     // Fired by a pair row's (kind 10, a pedal deadzone) SpinBoxes: `attr`,
     // whether the lower half was the one edited, and its new value. Only
     // the touched side is reported; the Rust side reads the other half
@@ -228,6 +239,21 @@ export component SettingsList inherits ListView {
                         selected(v) => { edit-slider(row.attr, self.current-index); }
                     }
 
+                    // The LIGHTSYNC effect selector: the chosen index is a
+                    // selector position, not a value, so it commits through
+                    // its own callback (see `edit-light-effect`'s doc).
+                    if row.kind == 12: ComboBox {
+                        width: 220px;
+                        model: row.choices;
+                        current-index: row.int-value;
+                        enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.current-index = row.int-value; }
+                        selected(v) => { edit-light-effect(self.current-index); }
+                    }
+
                     if row.kind == 3: Switch {
                         checked: row.bool-value;
                         enabled: row.available && row.mode-ok;
@@ -277,6 +303,18 @@ export component SettingsList inherits ListView {
                         text: "Edit slot names";
                         enabled: row.available && row.mode-ok;
                         clicked => { edit-slot-text(row.attr); }
+                    }
+
+                    // The LIGHTSYNC "Edit slot" button: opens the slot
+                    // editor overlay (same edit-rgb path a kind-8 row
+                    // uses; the Rust side ignores the attr and seeds the
+                    // editor from the LIGHTSYNC attrs). `bool-value` is
+                    // "a CUSTOM effect is active": disabled otherwise,
+                    // since the editor writes the ACTIVE slot only.
+                    if row.kind == 13: Button {
+                        text: "Edit slot...";
+                        enabled: row.available && row.mode-ok && row.bool-value;
+                        clicked => { edit-rgb(row.attr); }
                     }
 
                     // Two SpinBoxes, same styling as the slider rows' exact-

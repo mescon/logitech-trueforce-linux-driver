@@ -1,4 +1,4 @@
-import { Button, Slider, LineEdit, Palette } from "std-widgets.slint";
+import { Button, Slider, LineEdit, ComboBox, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // One LED swatch color, as plain 0..255 channel ints so this file can build
@@ -11,19 +11,36 @@ export struct LedColor {
     b: int,
 }
 
-// A modal overlay that edits one `Kind::RgbStrip` row: a row of clickable
-// swatches (one per LED) and a picker (r/g/b sliders, a hex field, a live
-// preview swatch, an "apply to all" button) for whichever swatch is
-// selected. The Rust side owns the in-flight `Vec<Color>`; every edit fires
-// a callback, Rust applies it and pushes the updated swatches (plus the
-// selected swatch's hex text) back so both the row and the picker redraw
-// from the same state the eventual `commit` writes. Cancel discards it.
-// Either closes the overlay from the Rust side (`rgb-editor-open` in
+// The LIGHTSYNC slot editor: a modal overlay editing the ACTIVE custom
+// slot. Top to bottom: the slot's name (committed to the device on
+// enter), its brightness (committed on slider release), its animation
+// direction (staged), and the 10-LED color strip with a picker (HSV
+// square, hue bar, r/g/b sliders, a hex field, "apply to all") for
+// whichever swatch is selected. The Rust side owns the in-flight
+// `Vec<Color>` and the staged direction; every color edit fires a
+// callback, Rust applies it (mirroring the pair swatch when the staged
+// direction is inside-out/outside-in) and pushes the updated swatches
+// (plus the selected swatch's hex text) back so the strip and picker
+// redraw from the same state `commit` writes (colors + direction, then
+// the slot apply trigger). Cancel discards the staged colors/direction;
+// either closes the overlay from the Rust side (`rgb-editor-open` in
 // app.slint).
 export component RgbStrip inherits Rectangle {
-    in property <string> strip-label: "LED colors";
+    in property <string> strip-label: "CUSTOM 1";
     in property <[LedColor]> leds: [];
     in property <string> selected-hex: "";
+    in property <string> slot-name: "";
+    in property <int> slot-brightness: 100;
+    // The staged `wheel_led_direction` enum value (0 = left to right,
+    // 1 = right to left, 2 = inside-out, 3 = outside-in), pushed by Rust
+    // on open and after every set-direction round-trip.
+    in property <int> direction: 0;
+
+    // Whether the staged direction collapses the strip into mirrored
+    // pairs (i with 9-i); drives the paired-swatch highlight below. The
+    // actual pair painting happens on the Rust side, which owns the
+    // colors.
+    property <bool> mirrored: root.direction == 2 || root.direction == 3;
 
     // Which swatch the picker below is showing; -1 = none selected yet.
     // Purely a display concern (which slider values/preview to draw), so it
@@ -45,6 +62,15 @@ export component RgbStrip inherits Rectangle {
     callback set-color(int, int, int, int);
     callback set-hex(int, string);
     callback apply-to-all(int, int, int);
+    // Commits the slot's new name to the device immediately (the name is
+    // not staged; a rejected rename is pushed back by the Rust side).
+    callback set-name(string);
+    // Commits the slot's brightness to the device immediately, on slider
+    // release.
+    callback set-slot-brightness(int);
+    // Stages the direction on the Rust side (written on commit); a switch
+    // into a mirrored direction also mirrors the staged colors.
+    callback set-direction(int);
     callback commit();
     callback cancel();
 
@@ -72,7 +98,7 @@ export component RgbStrip inherits Rectangle {
         // Clamped so the panel's border never leaves the window at the
         // app's minimum height; the internal stretch spacer absorbs the
         // difference.
-        height: min(520px, root.height - 16px);
+        height: min(640px, root.height - 16px);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.panel-background;
@@ -91,10 +117,92 @@ export component RgbStrip inherits Rectangle {
                 color: Theme.text-color;
             }
 
+            // Slot name: committed straight to the device on enter (the
+            // wheel stores it uppercased; the Rust side pushes the
+            // device's canonical form back through `slot-name`).
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Name";
+                    width: 76px;
+                    vertical-alignment: center;
+                    color: Theme.text-color;
+                }
+                LineEdit {
+                    width: 140px;
+                    text: root.slot-name;
+                    // Typing severs the `text:` binding above; re-seed
+                    // whenever the Rust side pushes the device's
+                    // authoritative name (open, rename round-trip).
+                    property <string> model-name: root.slot-name;
+                    changed model-name => { self.text = self.model-name; }
+                    accepted(t) => { root.set-name(t); }
+                }
+                Text {
+                    text: "max 8 chars, press enter";
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    color: Theme.muted-text-color;
+                }
+            }
+
+            // Slot brightness: committed on release, same rule as the
+            // settings sliders (a per-pixel commit would flood the worker).
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Brightness";
+                    width: 76px;
+                    vertical-alignment: center;
+                    color: Theme.text-color;
+                }
+                sb-slider := Slider {
+                    width: 200px;
+                    minimum: 0;
+                    maximum: 100;
+                    value: root.slot-brightness;
+                    // Re-seed after the device's round-trip; the `value:`
+                    // binding is severed by the first drag.
+                    property <int> model-sb: root.slot-brightness;
+                    changed model-sb => { self.value = self.model-sb; }
+                    released(v) => { root.set-slot-brightness(round(v)); }
+                }
+                Text {
+                    text: round(sb-slider.value) + "%";
+                    width: 40px;
+                    vertical-alignment: center;
+                    color: Theme.muted-text-color;
+                }
+            }
+
+            // Direction: staged on the Rust side, written on commit. The
+            // entries are the wheel_led_direction enum in value order.
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Direction";
+                    width: 76px;
+                    vertical-alignment: center;
+                    color: Theme.text-color;
+                }
+                ComboBox {
+                    width: 160px;
+                    model: ["Left to right", "Right to left", "Inside out", "Outside in"];
+                    current-index: root.direction;
+                    // Re-seed on every push; selecting severs the binding.
+                    property <int> model-dir: root.direction;
+                    changed model-dir => { self.current-index = self.model-dir; }
+                    selected(v) => { root.set-direction(self.current-index); }
+                }
+            }
+
             Text {
-                text: "Click a swatch to edit its color.";
+                text: root.mirrored
+                    ? "Mirrored direction: the LEDs pair up (1+10, 2+9, ...); painting a swatch paints its pair too."
+                    : "Click a swatch to edit its color.";
                 font-size: 11px;
                 color: Theme.muted-text-color;
+                wrap: word-wrap;
             }
 
             HorizontalLayout {
@@ -103,8 +211,12 @@ export component RgbStrip inherits Rectangle {
                     width: 28px;
                     height: 28px;
                     border-radius: 4px;
-                    border-width: i == root.current-index ? 2px : 1px;
-                    border-color: i == root.current-index ? Palette.accent-background : Theme.panel-border;
+                    // In a mirrored direction the selected swatch's pair
+                    // highlights with it: both get painted together.
+                    property <bool> selected: i == root.current-index
+                        || (root.mirrored && root.current-index >= 0 && i == root.leds.length - 1 - root.current-index);
+                    border-width: self.selected ? 2px : 1px;
+                    border-color: self.selected ? Palette.accent-background : Theme.panel-border;
                     background: rgb(led.r, led.g, led.b);
 
                     TouchArea {
@@ -336,7 +448,9 @@ export component RgbStrip inherits Rectangle {
                 alignment: end;
                 spacing: 8px;
                 Button { text: "Cancel"; clicked => { root.cancel(); } }
-                Button { text: "Commit"; clicked => { root.commit(); } }
+                // Writes the staged colors + direction, then triggers the
+                // slot apply so the wheel adopts the new config.
+                Button { text: "Apply to wheel"; clicked => { root.commit(); } }
             }
         }
     }

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use logi_dd_core::curve::Curve;
+use logi_dd_core::lightsync;
 use logi_dd_core::{Category, Color, Mode, Value, REGISTRY};
 use slint::Model as _;
 use viewmodel::WidgetInput;
@@ -23,14 +24,22 @@ struct CurveEditorState {
     curve: Curve,
 }
 
-/// The RGB strip editor's in-flight state: same shape as `CurveEditorState`,
-/// but the shaped value is the strip's `Vec<Color>` (one per LED). Lives on
-/// the UI thread only; the worker never sees it until `commit` sends the
-/// finished list as a `WidgetInput::Rgb`.
+/// The LIGHTSYNC slot editor's in-flight state: the staged strip colors
+/// and animation direction for the ACTIVE custom slot (`slot`, 0-based,
+/// only kept for the overlay title). Same UI-thread-only lifetime as
+/// `CurveEditorState`; the worker never sees the staged parts until
+/// `commit` sends them (colors, then direction, then the slot apply
+/// trigger). The slot's name and per-slot brightness are NOT staged here:
+/// both commit to the device immediately from their own callbacks, and
+/// their display state lives in the `rgb-slot-name`/`rgb-slot-brightness`
+/// Slint properties.
 struct RgbEditorState {
     attr: String,
     category: Category,
     colors: Vec<Color>,
+    /// Staged `wheel_led_direction` enum value (0-3); mirror-painting is
+    /// active while this is inside-out (2) or outside-in (3).
+    direction: u8,
 }
 
 /// The slot-text editor's in-flight state: which attribute it is editing
@@ -63,6 +72,21 @@ fn push_rgb_editor(app: &App, colors: &[Color]) {
     app.set_rgb_leds(bridge::rgb_leds_model(colors));
 }
 
+/// After swatch `index` was painted in the slot editor, copy it onto its
+/// mirror pair when the staged direction is inside-out/outside-in (the
+/// wheel plays those as 5 mirrored pairs; see `lightsync::mirrored`).
+/// A no-op for the left/right sweeps, and for an index off the 10-LED
+/// strip.
+fn mirror_staged_swatch(state: &mut RgbEditorState, index: usize) {
+    if !lightsync::mirrored(state.direction) || index >= 10 {
+        return;
+    }
+    let pair = lightsync::mirror_index(index);
+    if index < state.colors.len() && pair < state.colors.len() {
+        state.colors[pair] = state.colors[index];
+    }
+}
+
 /// Push `names`' current shape to the Slint side: the slot-name row list.
 /// Called after every slot-text edit so the fields stay in sync with what
 /// was just sent to the worker.
@@ -83,6 +107,29 @@ fn profile_names(known_values: &Arc<Mutex<HashMap<String, Value>>>) -> Vec<Strin
     }
 }
 
+/// Read `wheel_led_slot`'s last-known value out of `known_values` (0 when
+/// unread), for pairing with a `wheel_led_slot_name` value: the sysfs attr
+/// only ever reads the ACTIVE slot's name, so the slot number says which
+/// cache entry that name belongs to.
+fn led_slot(known_values: &Arc<Mutex<HashMap<String, Value>>>) -> i32 {
+    match known_values.lock().unwrap().get("wheel_led_slot") {
+        Some(Value::Int(n)) => *n,
+        _ => 0,
+    }
+}
+
+/// Record the active slot's name in the per-slot cache `main` keeps for
+/// the effect selector's CUSTOM labels. `slot`/`name` must come from the
+/// same read (a whole-category reload, or a rename's reply paired with the
+/// already-settled active slot); out-of-range slots are ignored.
+fn cache_led_slot_name(cache: &Arc<Mutex<Vec<String>>>, slot: i32, name: &str) {
+    if let Ok(idx) = usize::try_from(slot) {
+        if let Some(entry) = cache.lock().unwrap().get_mut(idx) {
+            *entry = name.to_string();
+        }
+    }
+}
+
 /// Replace the persistent rows model's contents with a whole category's
 /// worth of fresh rows (`LoadCategory`, `Refresh`, the no-wheel screen's
 /// Retry, or a mode switch's follow-up refresh). `app.set_rows` is only
@@ -100,13 +147,17 @@ fn profile_names(known_values: &Arc<Mutex<HashMap<String, Value>>>) -> Vec<Strin
 /// switch) falls back to replacing the whole content in one go: every row
 /// is for a different setting there anyway, so there is nothing to
 /// preserve.
-fn load_rows(app: &App, rows: &[viewmodel::Row], profile_names: &[String]) {
+fn load_rows(app: &App, rows: &[viewmodel::Row], profile_names: &[String], led_names: &[String]) {
     let mut items = bridge::setting_rows(rows);
     for item in items.iter_mut() {
         if item.attr == "wheel_profile" {
             bridge::apply_profile_choices(item, profile_names);
         }
     }
+    // A no-op for every category but Leds (see `compose_lightsync`'s doc):
+    // the LIGHTSYNC page renders three composed rows plus the Edit slot
+    // button instead of the registry's raw row-per-attr list.
+    let items = bridge::compose_lightsync(items, led_names);
     let model = app.get_rows();
     if model.row_count() == items.len() {
         for (i, mut item) in items.into_iter().enumerate() {
@@ -133,7 +184,21 @@ fn load_rows(app: &App, rows: &[viewmodel::Row], profile_names: &[String]) {
 /// `error` is the edit's failure message, or `None` on success; either way
 /// `row` itself already reflects a fresh read (see `Response::RowUpdated`'s
 /// doc comment), so this never has to guess at what reverting looks like.
-fn update_row(app: &App, row: &viewmodel::Row, error: Option<&str>, profile_names: &[String]) {
+///
+/// An attr with no row in the model (the LIGHTSYNC slot-scoped attrs the
+/// composed page hides) is a no-op: its value still lands in
+/// `known_values` via the response handler, which is all the composed
+/// page reads. `led_slot`/`led_names` feed the effect selector's rewrite
+/// when the updated row is `wheel_led_effect` on the composed page (where
+/// the model row carries the selector, not the raw 1-9 value).
+fn update_row(
+    app: &App,
+    row: &viewmodel::Row,
+    error: Option<&str>,
+    profile_names: &[String],
+    led_slot: i32,
+    led_names: &[String],
+) {
     let model = app.get_rows();
     let Some(index) = (0..model.row_count()).find(|&i| model.row_data(i).is_some_and(|r| r.attr == row.attr))
     else {
@@ -143,10 +208,46 @@ fn update_row(app: &App, row: &viewmodel::Row, error: Option<&str>, profile_name
     if row.attr == "wheel_profile" {
         bridge::apply_profile_choices(&mut sr, profile_names);
     }
+    if row.attr == "wheel_led_effect"
+        && model.row_data(index).is_some_and(|r| r.kind == bridge::KIND_LIGHT_EFFECT)
+    {
+        bridge::apply_lightsync_effect(&mut sr, led_slot, led_names);
+    }
     // Same per-push revision bump as `load_rows`; this is what makes an
     // error-revert (fresh read equal to the pre-edit value) still reach a
     // widget whose binding the user's own input severed.
     sr.revision = model.row_data(index).map_or(0, |r| r.revision.wrapping_add(1));
+    model.set_row_data(index, sr);
+    // A fresh effect value also decides whether the sibling Edit slot
+    // button is live (it only edits the ACTIVE custom slot).
+    if row.attr == "wheel_led_effect" {
+        if let Some(bidx) = (0..model.row_count())
+            .find(|&i| model.row_data(i).is_some_and(|r| r.attr == bridge::LIGHT_EDIT_SLOT_ATTR))
+        {
+            if let Some(mut button) = model.row_data(bidx) {
+                button.bool_value = matches!(row.value, Some(Value::Int(5)));
+                button.revision = button.revision.wrapping_add(1);
+                model.set_row_data(bidx, button);
+            }
+        }
+    }
+}
+
+/// Rebuild the composed effect selector's labels from the per-slot name
+/// cache. Called when a slot rename settles: the rename's `RowUpdated`
+/// only carries the (hidden) name row, but the selector renders that name
+/// in its CUSTOM entry, same pattern as `refresh_profile_row`. Selection
+/// and everything else on the row stay as they are.
+fn refresh_light_effect_row(app: &App, led_names: &[String]) {
+    let model = app.get_rows();
+    let Some(index) = (0..model.row_count()).find(|&i| {
+        model.row_data(i).is_some_and(|r| r.attr == "wheel_led_effect" && r.kind == bridge::KIND_LIGHT_EFFECT)
+    }) else {
+        return;
+    };
+    let Some(mut sr) = model.row_data(index) else { return };
+    sr.choices = slint::ModelRc::new(slint::VecModel::from(bridge::lightsync_choice_labels(led_names)));
+    sr.revision = sr.revision.wrapping_add(1);
     model.set_row_data(index, sr);
 }
 
@@ -309,6 +410,14 @@ fn main() -> Result<(), slint::PlatformError> {
     // this file holds onto it once `bridge::rows_model` has built the
     // Slint-facing rows.
     let known_values: Arc<Mutex<HashMap<String, Value>>> = Arc::new(Mutex::new(HashMap::new()));
+    // Per-slot LIGHTSYNC name cache for the effect selector's CUSTOM
+    // labels. `wheel_led_slot_name` only ever reads the ACTIVE slot's
+    // name, so the full set cannot be read in one go without slot-churning
+    // writes; instead every name that flows past (paired with the slot it
+    // belonged to at read time) is remembered here, and unseen slots show
+    // the plain "CUSTOM N" fallback.
+    let led_slot_names: Arc<Mutex<Vec<String>>> =
+        Arc::new(Mutex::new(vec![String::new(); lightsync::CUSTOM_SLOTS]));
     // The curve editor's in-flight state, `None` while the overlay is
     // closed. UI-thread only (see `CurveEditorState`'s own doc comment).
     let curve_editor: Arc<Mutex<Option<CurveEditorState>>> = Arc::new(Mutex::new(None));
@@ -325,12 +434,14 @@ fn main() -> Result<(), slint::PlatformError> {
         let current_category = current_category.clone();
         let current_mode = current_mode.clone();
         let known_values = known_values.clone();
+        let led_slot_names = led_slot_names.clone();
         let slot_text_editor = slot_text_editor.clone();
         Worker::spawn(move |response| {
             let app_weak = app_weak.clone();
             let current_category = current_category.clone();
             let current_mode = current_mode.clone();
             let known_values = known_values.clone();
+            let led_slot_names = led_slot_names.clone();
             let slot_text_editor = slot_text_editor.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(app) = app_weak.upgrade() else { return };
@@ -350,7 +461,26 @@ fn main() -> Result<(), slint::PlatformError> {
                                 }
                             }
                         }
-                        load_rows(&app, &rows, &profile_names(&known_values));
+                        // A Leds reload reads the active slot and its name
+                        // together, which is the only safe pairing for the
+                        // per-slot name cache (see `led_slot_names`).
+                        let slot = rows.iter().find(|r| r.attr == "wheel_led_slot").and_then(|r| {
+                            match &r.value {
+                                Some(Value::Int(n)) => Some(*n),
+                                _ => None,
+                            }
+                        });
+                        let name = rows.iter().find(|r| r.attr == "wheel_led_slot_name").and_then(|r| {
+                            match &r.value {
+                                Some(Value::Text(s)) => Some(s.clone()),
+                                _ => None,
+                            }
+                        });
+                        if let (Some(slot), Some(name)) = (slot, name) {
+                            cache_led_slot_name(&led_slot_names, slot, &name);
+                        }
+                        let led_names = led_slot_names.lock().unwrap().clone();
+                        load_rows(&app, &rows, &profile_names(&known_values), &led_names);
                     }
                     Response::RowUpdated { category, row, error } => {
                         // Same staleness guard as `Rows`: a reply for a
@@ -362,7 +492,38 @@ fn main() -> Result<(), slint::PlatformError> {
                         if let Some(v) = &row.value {
                             known_values.lock().unwrap().insert(row.attr.to_string(), v.clone());
                         }
-                        update_row(&app, &row, error.as_deref(), &profile_names(&known_values));
+                        // A LIGHTSYNC rename's reply carries the device's
+                        // authoritative (uppercased or reverted) name for
+                        // the active slot: remember it for the effect
+                        // selector's CUSTOM label and push it back into
+                        // the slot editor overlay's name field. The slot
+                        // itself settled before any rename could be typed,
+                        // so pairing with the last-known slot is safe.
+                        if row.attr == "wheel_led_slot_name" {
+                            if let Some(Value::Text(name)) = &row.value {
+                                cache_led_slot_name(&led_slot_names, led_slot(&known_values), name);
+                                app.set_rgb_slot_name(name.as_str().into());
+                            }
+                            let led_names = led_slot_names.lock().unwrap().clone();
+                            refresh_light_effect_row(&app, &led_names);
+                        }
+                        // Same push-back for the slot brightness slider in
+                        // the overlay (a rejected write must visibly
+                        // revert, same rule as the settings sliders).
+                        if row.attr == "wheel_led_slot_brightness" {
+                            if let Some(Value::Percent(p)) = &row.value {
+                                app.set_rgb_slot_brightness(i32::from(*p));
+                            }
+                        }
+                        let led_names = led_slot_names.lock().unwrap().clone();
+                        update_row(
+                            &app,
+                            &row,
+                            error.as_deref(),
+                            &profile_names(&known_values),
+                            led_slot(&known_values),
+                            &led_names,
+                        );
                         if row.attr == "wheel_profile_names" {
                             // A slot rename also changes the labels the
                             // sibling profile dropdown shows.
@@ -525,6 +686,46 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         });
     }
+    {
+        let worker = worker.clone();
+        let current_category = current_category.clone();
+        app.on_edit_light_effect(move |index| {
+            let category = get(&current_category);
+            match lightsync::index_selection(index.max(0) as usize) {
+                lightsync::Selection::Effect(e) => {
+                    worker.request(Request::Edit {
+                        category,
+                        attr: "wheel_led_effect".to_string(),
+                        input: WidgetInput::Slider(i64::from(e)),
+                    });
+                }
+                // A CUSTOM entry is two writes: point the wheel at the
+                // slot, then switch to the custom effect (the driver
+                // re-applies the slot's stored config on that
+                // transition). The worker runs queued edits in order,
+                // and each reply's RowUpdated re-syncs the selector via
+                // the revision mechanism.
+                lightsync::Selection::Custom(slot) => {
+                    worker.request(Request::Edit {
+                        category,
+                        attr: "wheel_led_slot".to_string(),
+                        input: WidgetInput::Slider(i64::from(slot)),
+                    });
+                    worker.request(Request::Edit {
+                        category,
+                        attr: "wheel_led_effect".to_string(),
+                        input: WidgetInput::Slider(5),
+                    });
+                    // The slot switch re-targets every slot-scoped attr
+                    // (name, colors, direction, brightness) at the new
+                    // slot; re-read the category so `known_values` (which
+                    // seeds the slot editor) and the name cache pick up
+                    // the new slot's state instead of the old slot's.
+                    worker.request(Request::Refresh(category));
+                }
+            }
+        });
+    }
 
     {
         let known_values = known_values.clone();
@@ -665,19 +866,53 @@ fn main() -> Result<(), slint::PlatformError> {
         let rgb_editor = rgb_editor.clone();
         let current_category = current_category.clone();
         let app_weak = app.as_weak();
-        app.on_edit_rgb(move |attr| {
+        // Opens the LIGHTSYNC slot editor. The `attr` the button reports is
+        // ignored (it is the synthetic Edit slot row's, or a legacy
+        // `Kind::RgbStrip` row's): the editor always targets the ACTIVE
+        // custom slot, seeded from the slot-scoped attrs' last-known
+        // values.
+        app.on_edit_rgb(move |_attr| {
             let Some(app) = app_weak.upgrade() else { return };
-            let attr = attr.to_string();
-            let colors = match known_values.lock().unwrap().get(&attr) {
-                Some(Value::Rgb(cs)) => cs.clone(),
-                _ => bridge::default_rgb(&attr),
+            let attr = "wheel_led_colors".to_string();
+            let (mut colors, direction, slot, name, slot_brightness) = {
+                let kv = known_values.lock().unwrap();
+                let colors = match kv.get(&attr) {
+                    Some(Value::Rgb(cs)) => cs.clone(),
+                    _ => bridge::default_rgb(&attr),
+                };
+                let direction = match kv.get("wheel_led_direction") {
+                    Some(Value::Enum(d)) => *d,
+                    _ => 0,
+                };
+                let slot = match kv.get("wheel_led_slot") {
+                    Some(Value::Int(n)) => (*n).clamp(0, lightsync::CUSTOM_SLOTS as i32 - 1),
+                    _ => 0,
+                };
+                let name = match kv.get("wheel_led_slot_name") {
+                    Some(Value::Text(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                let slot_brightness = match kv.get("wheel_led_slot_brightness") {
+                    Some(Value::Percent(p)) => i32::from(*p),
+                    _ => 100,
+                };
+                (colors, direction, slot, name, slot_brightness)
             };
+            // A mirrored direction shows (and will write) paired colors,
+            // left half winning, so the preview matches what the wheel
+            // plays; see `lightsync::mirror_left_half`.
+            if lightsync::mirrored(direction) {
+                lightsync::mirror_left_half(&mut colors);
+            }
             push_rgb_editor(&app, &colors);
             app.set_rgb_selected_hex("".into());
-            let label = REGISTRY.iter().find(|s| s.attr == attr).map(|s| s.label).unwrap_or(attr.as_str());
-            app.set_rgb_label(label.into());
+            app.set_rgb_label(format!("CUSTOM {}", slot + 1).into());
+            app.set_rgb_slot_name(name.into());
+            app.set_rgb_slot_brightness(slot_brightness);
+            app.set_rgb_direction(i32::from(direction));
             app.set_rgb_editor_open(true);
-            *rgb_editor.lock().unwrap() = Some(RgbEditorState { attr, category: get(&current_category), colors });
+            *rgb_editor.lock().unwrap() =
+                Some(RgbEditorState { attr, category: get(&current_category), colors, direction });
         });
     }
     {
@@ -701,6 +936,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(state) = guard.as_mut() else { return };
             let index = i.max(0) as usize;
             bridge::apply_set_color(&mut state.colors, index, r, g, b);
+            mirror_staged_swatch(state, index);
             push_rgb_editor(&app, &state.colors);
             if let Some(c) = state.colors.get(index) {
                 app.set_rgb_selected_hex(c.to_hex().into());
@@ -716,6 +952,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(state) = guard.as_mut() else { return };
             let index = i.max(0) as usize;
             if bridge::apply_set_hex(&mut state.colors, index, &hex).is_ok() {
+                mirror_staged_swatch(state, index);
                 push_rgb_editor(&app, &state.colors);
                 if let Some(c) = state.colors.get(index) {
                     app.set_rgb_selected_hex(c.to_hex().into());
@@ -740,15 +977,73 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
+        let rgb_editor = rgb_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_rgb_set_direction(move |d| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = rgb_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            state.direction = d.clamp(0, 3) as u8;
+            app.set_rgb_direction(i32::from(state.direction));
+            // Switching INTO a mirrored direction makes the pairs real
+            // immediately (left half wins), so the preview shows what the
+            // wheel will play rather than a half-truth until commit.
+            if lightsync::mirrored(state.direction) {
+                lightsync::mirror_left_half(&mut state.colors);
+                push_rgb_editor(&app, &state.colors);
+            }
+        });
+    }
+    {
+        let worker = worker.clone();
+        let current_category = current_category.clone();
+        app.on_rgb_set_name(move |name| {
+            // The wheel takes at most 8 chars; trim the excess here so the
+            // write cannot fail on length alone (the device's re-read
+            // pushes its canonical, uppercased form back into the field).
+            let name: String = name.chars().take(8).collect();
+            worker.request(Request::Edit {
+                category: get(&current_category),
+                attr: "wheel_led_slot_name".to_string(),
+                input: WidgetInput::Text(name),
+            });
+        });
+    }
+    {
+        let worker = worker.clone();
+        let current_category = current_category.clone();
+        app.on_rgb_set_slot_brightness(move |v| {
+            worker.request(Request::Edit {
+                category: get(&current_category),
+                attr: "wheel_led_slot_brightness".to_string(),
+                input: WidgetInput::Slider(i64::from(v)),
+            });
+        });
+    }
+    {
         let worker = worker.clone();
         let rgb_editor = rgb_editor.clone();
         let app_weak = app.as_weak();
         app.on_rgb_commit(move || {
+            // Colors, then direction, then the apply trigger: the driver
+            // commits the active slot's staged config to the wheel on the
+            // trigger, so it must run last. The name and slot brightness
+            // already committed individually from their own callbacks.
             if let Some(state) = rgb_editor.lock().unwrap().take() {
                 worker.request(Request::Edit {
                     category: state.category,
                     attr: state.attr,
                     input: WidgetInput::Rgb(state.colors),
+                });
+                worker.request(Request::Edit {
+                    category: state.category,
+                    attr: "wheel_led_direction".to_string(),
+                    input: WidgetInput::Choice(usize::from(state.direction)),
+                });
+                worker.request(Request::Edit {
+                    category: state.category,
+                    attr: "wheel_led_apply".to_string(),
+                    input: WidgetInput::Trigger,
                 });
             }
             if let Some(app) = app_weak.upgrade() {

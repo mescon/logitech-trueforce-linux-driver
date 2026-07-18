@@ -71,6 +71,9 @@ export component App inherits Window {
     // (attr, is-lower, value): only the touched half of a pair row; see
     // `SettingsList.edit-pair`.
     callback edit-pair(string, bool, int);
+    // The LIGHTSYNC effect selector's chosen index (0-12); see
+    // `SettingsList.edit-light-effect`.
+    callback edit-light-effect(int);
 
     // Curve editor overlay: opened by a `Curve`-kind row's "Edit curve"
     // button. The Rust side owns the in-flight `Curve` and pushes the
@@ -92,20 +95,28 @@ export component App inherits Window {
     callback curve-commit();
     callback curve-cancel();
 
-    // RGB strip editor overlay: opened by an `RgbStrip`-kind row's "Edit
-    // colors" button. The Rust side owns the in-flight `Vec<Color>` and
-    // pushes the swatch list (and the selected swatch's hex text) here for
-    // the live preview; every edit callback below round-trips through Rust
-    // before the overlay redraws.
+    // LIGHTSYNC slot editor overlay (the extended RGB strip editor):
+    // opened by the LIGHTSYNC page's "Edit slot" button. The Rust side
+    // owns the in-flight `Vec<Color>` and the staged direction, and
+    // pushes the swatch list (plus the selected swatch's hex text, the
+    // slot's name/brightness and the staged direction) here for the live
+    // preview; every edit callback below round-trips through Rust before
+    // the overlay redraws.
     in property <bool> rgb-editor-open: false;
     in property <string> rgb-label: "";
     in property <[LedColor]> rgb-leds: [];
     in property <string> rgb-selected-hex: "";
+    in property <string> rgb-slot-name: "";
+    in property <int> rgb-slot-brightness: 100;
+    in property <int> rgb-direction: 0;
     callback edit-rgb(string);
     callback rgb-select-led(int);
     callback rgb-set-color(int, int, int, int);
     callback rgb-set-hex(int, string);
     callback rgb-apply-to-all(int, int, int);
+    callback rgb-set-name(string);
+    callback rgb-set-slot-brightness(int);
+    callback rgb-set-direction(int);
     callback rgb-commit();
     callback rgb-cancel();
 
@@ -295,6 +306,7 @@ export component App inherits Window {
                     edit-text(attr, v) => { root.edit-text(attr, v); }
                     trigger(attr) => { root.trigger(attr); }
                     edit-pair(attr, is-lower, v) => { root.edit-pair(attr, is-lower, v); }
+                    edit-light-effect(idx) => { root.edit-light-effect(idx); }
                     edit-curve(attr) => { root.edit-curve(attr); }
                     edit-rgb(attr) => { root.edit-rgb(attr); }
                     edit-slot-text(attr) => { root.edit-slot-text(attr); }
@@ -357,10 +369,16 @@ export component App inherits Window {
         strip-label: root.rgb-label;
         leds: root.rgb-leds;
         selected-hex: root.rgb-selected-hex;
+        slot-name: root.rgb-slot-name;
+        slot-brightness: root.rgb-slot-brightness;
+        direction: root.rgb-direction;
         select-led(i) => { root.rgb-select-led(i); }
         set-color(i, r, g, b) => { root.rgb-set-color(i, r, g, b); }
         set-hex(i, h) => { root.rgb-set-hex(i, h); }
         apply-to-all(r, g, b) => { root.rgb-apply-to-all(r, g, b); }
+        set-name(t) => { root.rgb-set-name(t); }
+        set-slot-brightness(v) => { root.rgb-set-slot-brightness(v); }
+        set-direction(d) => { root.rgb-set-direction(d); }
         commit() => { root.rgb-commit(); }
         cancel() => { root.rgb-cancel(); }
     }

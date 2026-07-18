@@ -5,6 +5,7 @@
 //! is the only place that knows about both worlds.
 
 use logi_dd_core::curve::{Curve, FULL};
+use logi_dd_core::lightsync;
 use logi_dd_core::{Access, Category, Color, Error, Kind, Value, REGISTRY};
 
 use crate::viewmodel::Row;
@@ -38,6 +39,24 @@ pub const KIND_PAIR: i32 = 10;
 /// since the profile names live in a different row (`wheel_profile_names`)
 /// this stateless function cannot see.
 pub const KIND_PROFILE: i32 = 11;
+/// The LIGHTSYNC effect row (`wheel_led_effect`), rewritten from its
+/// generic `KIND_INT_RANGE` tag on the composed LIGHTSYNC page: rendered
+/// as a ComboBox over `lightsync::dropdown_labels` and committed through
+/// the dedicated `edit-light-effect` callback (a CUSTOM pick writes two
+/// attrs, so the plain index-commit paths do not fit). Only
+/// `apply_lightsync_effect` sets this tag, same convention as
+/// `KIND_PROFILE`.
+pub const KIND_LIGHT_EFFECT: i32 = 12;
+/// The synthetic "Edit slot" row `compose_lightsync` appends: a button
+/// (enabled only while a CUSTOM effect is active, via `bool_value`) that
+/// opens the slot editor overlay. Never produced by `kind_tag`; the row
+/// does not exist in the registry.
+pub const KIND_LIGHT_SLOT: i32 = 13;
+
+/// The synthetic "Edit slot" row's attr. Not a sysfs attribute: it only
+/// exists so the row can be found in the model (`update_row`'s
+/// find-by-attr) and so its button callback has something to report.
+pub const LIGHT_EDIT_SLOT_ATTR: &str = "lightsync_edit_slot";
 
 fn is_read_only(attr: &str) -> bool {
     REGISTRY.iter().any(|s| s.attr == attr && s.access == Access::ReadOnly)
@@ -165,6 +184,96 @@ pub fn profile_choice_labels(names: &[String]) -> Vec<slint::SharedString> {
 pub fn apply_profile_choices(sr: &mut SettingRow, names: &[String]) {
     sr.kind = KIND_PROFILE;
     sr.choices = slint::ModelRc::new(slint::VecModel::from(profile_choice_labels(names)));
+}
+
+/// The 13 effect-selector labels as Slint strings, in
+/// `lightsync::selection_index` order. `slot_names` is the per-slot name
+/// cache `main.rs` maintains (see its `led_slot_names` doc); missing or
+/// empty entries fall back to the plain "CUSTOM N" labels.
+pub fn lightsync_choice_labels(slot_names: &[String]) -> Vec<slint::SharedString> {
+    lightsync::dropdown_labels(slot_names).into_iter().map(slint::SharedString::from).collect()
+}
+
+/// Rewrite `sr` (already built by `to_setting_row` for the
+/// `wheel_led_effect` row, so `sr.int_value` is the raw effect value 1-9)
+/// into the composed effect selector: tags it `KIND_LIGHT_EFFECT`,
+/// installs the 13 labels, and replaces `int_value` with the selector
+/// index for the current effect + `slot` (`wheel_led_slot`'s value, which
+/// picks the CUSTOM entry when the effect is 5). Only meaningful for
+/// `wheel_led_effect`; callers guard on `attr` before calling this, same
+/// convention as `apply_profile_choices`.
+pub fn apply_lightsync_effect(sr: &mut SettingRow, slot: i32, slot_names: &[String]) {
+    let effect = sr.int_value.clamp(0, u8::MAX as i32) as u8;
+    let slot = slot.clamp(0, lightsync::CUSTOM_SLOTS as i32 - 1) as u8;
+    sr.kind = KIND_LIGHT_EFFECT;
+    sr.int_value = lightsync::selection_index(effect, slot) as i32;
+    sr.choices = slint::ModelRc::new(slint::VecModel::from(lightsync_choice_labels(slot_names)));
+}
+
+/// Build the synthetic "Edit slot" row `compose_lightsync` appends.
+/// `bool_value` carries the enabled condition (a CUSTOM effect is active);
+/// `available`/`mode_ok` are inherited from the effect row so the button
+/// greys out alongside it instead of promising an editor a wheel without
+/// LIGHTSYNC cannot honor.
+fn light_slot_row(effect: i32, available: bool, mode_ok: bool) -> SettingRow {
+    SettingRow {
+        attr: LIGHT_EDIT_SLOT_ATTR.into(),
+        label: "Custom slot".into(),
+        help: "Colors, direction, name and brightness of the active CUSTOM slot. Pick a CUSTOM effect above to edit it.".into(),
+        kind: KIND_LIGHT_SLOT,
+        int_value: 0,
+        int_value2: 0,
+        bool_value: effect == 5,
+        text_value: slint::SharedString::new(),
+        display: slint::SharedString::new(),
+        choices: slint::ModelRc::new(slint::VecModel::<slint::SharedString>::default()),
+        min: 0,
+        max: 0,
+        step: 0,
+        unit: slint::SharedString::new(),
+        available,
+        mode_ok,
+        error: slint::SharedString::new(),
+        revision: 0,
+    }
+}
+
+/// Compose the LIGHTSYNC page out of the generic Leds rows: keep Effect
+/// (rewritten into the 13-entry selector), Brightness and Rev lights,
+/// append the "Edit slot" button row, and drop the slot-scoped rows
+/// (slot, name, colors, direction, slot brightness, apply), which are all
+/// edited through the slot editor overlay instead. Rows for any other
+/// category (no `wheel_led_effect` present) pass through untouched, so
+/// `load_rows` can call this unconditionally. The registry itself is not
+/// consulted: everything needed (the raw effect and slot values) is read
+/// off the rows, which a whole-category reload always carries together.
+pub fn compose_lightsync(items: Vec<SettingRow>, slot_names: &[String]) -> Vec<SettingRow> {
+    let Some(effect_row) = items.iter().find(|r| r.attr == "wheel_led_effect") else {
+        return items;
+    };
+    let effect = effect_row.int_value;
+    let (available, mode_ok) = (effect_row.available, effect_row.mode_ok);
+    let slot = items.iter().find(|r| r.attr == "wheel_led_slot").map(|r| r.int_value).unwrap_or(0);
+    let mut out = Vec::with_capacity(4);
+    let mut rev_row = None;
+    for mut item in items {
+        match item.attr.as_str() {
+            "wheel_led_effect" => {
+                apply_lightsync_effect(&mut item, slot, slot_names);
+                out.push(item);
+            }
+            "wheel_led_brightness" => out.push(item),
+            // Kept aside so the Edit slot button lands between Brightness
+            // and Rev lights, matching the page's top-to-bottom flow.
+            "wheel_rev_level" => rev_row = Some(item),
+            _ => {}
+        }
+    }
+    out.push(light_slot_row(effect, available, mode_ok));
+    if let Some(rev) = rev_row {
+        out.push(rev);
+    }
+    out
 }
 
 /// Build the `ModelRc<SettingRow>` for a whole category's rows. `edit_error`
@@ -1003,6 +1112,92 @@ mod tests {
             choices,
             vec!["0: Desktop", "1: AC EVO", "2: GT7", "3: Profile 3", "4: Profile 4", "5: Profile 5"]
         );
+    }
+
+    // --- LIGHTSYNC page composition ---
+
+    fn leds_setting_rows(effect: &str, slot: &str) -> Vec<SettingRow> {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_effect", effect);
+        fs.set("wheel_led_slot", slot);
+        fs.set("wheel_led_brightness", "80");
+        fs.set("wheel_led_slot_name", "RACE");
+        fs.set("wheel_led_direction", "2");
+        fs.set("wheel_led_slot_brightness", "70");
+        let ten = "ff0000 00ff00 0000ff 000000 000000 000000 000000 000000 000000 000000";
+        fs.set("wheel_led_colors", ten);
+        fs.set("wheel_rev_level", "3");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        setting_rows(&vm.rows_for(Category::Leds))
+    }
+
+    #[test]
+    fn compose_lightsync_keeps_only_the_composed_rows_in_order() {
+        let out = compose_lightsync(leds_setting_rows("3", "0"), &[]);
+        let attrs: Vec<String> = out.iter().map(|r| r.attr.to_string()).collect();
+        assert_eq!(
+            attrs,
+            vec!["wheel_led_effect", "wheel_led_brightness", LIGHT_EDIT_SLOT_ATTR, "wheel_rev_level"]
+        );
+    }
+
+    #[test]
+    fn compose_lightsync_rewrites_the_effect_row_into_the_selector() {
+        let names = vec!["GT7".to_string()];
+        let out = compose_lightsync(leds_setting_rows("3", "0"), &names);
+        let effect = out.iter().find(|r| r.attr == "wheel_led_effect").unwrap();
+        assert_eq!(effect.kind, KIND_LIGHT_EFFECT);
+        // effect 3 = "Right to left" = selector index 2
+        assert_eq!(effect.int_value, 2);
+        let choices: Vec<String> = effect.choices.iter().map(|s| s.to_string()).collect();
+        assert_eq!(choices.len(), 13);
+        assert_eq!(choices[2], "Right to left");
+        assert_eq!(choices[4], "CUSTOM 1: GT7");
+        assert_eq!(choices[5], "CUSTOM 2");
+        assert_eq!(choices[12], "Effect 9");
+    }
+
+    #[test]
+    fn compose_lightsync_custom_effect_selects_the_slot_entry_and_enables_the_button() {
+        let out = compose_lightsync(leds_setting_rows("5", "2"), &[]);
+        let effect = out.iter().find(|r| r.attr == "wheel_led_effect").unwrap();
+        // effect 5 + slot 2 = "CUSTOM 3" = selector index 6
+        assert_eq!(effect.int_value, 6);
+        let button = out.iter().find(|r| r.attr == LIGHT_EDIT_SLOT_ATTR).unwrap();
+        assert_eq!(button.kind, KIND_LIGHT_SLOT);
+        assert!(button.bool_value, "a CUSTOM effect enables the Edit slot button");
+        assert!(button.available);
+    }
+
+    #[test]
+    fn compose_lightsync_non_custom_effect_disables_the_button() {
+        let out = compose_lightsync(leds_setting_rows("1", "0"), &[]);
+        let button = out.iter().find(|r| r.attr == LIGHT_EDIT_SLOT_ATTR).unwrap();
+        assert!(!button.bool_value);
+    }
+
+    #[test]
+    fn compose_lightsync_leaves_other_categories_untouched() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_strength", "80");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let items = setting_rows(&vm.rows_for(Category::Ffb));
+        let attrs_before: Vec<String> = items.iter().map(|r| r.attr.to_string()).collect();
+        let out = compose_lightsync(items, &[]);
+        let attrs_after: Vec<String> = out.iter().map(|r| r.attr.to_string()).collect();
+        assert_eq!(attrs_before, attrs_after);
+    }
+
+    #[test]
+    fn apply_lightsync_effect_maps_raw_effect_to_selector_index() {
+        let mut rows = leds_setting_rows("5", "0");
+        let sr = rows.iter_mut().find(|r| r.attr == "wheel_led_effect").unwrap();
+        assert_eq!(sr.int_value, 5, "precondition: raw effect value");
+        apply_lightsync_effect(sr, 4, &[]);
+        assert_eq!(sr.kind, KIND_LIGHT_EFFECT);
+        assert_eq!(sr.int_value, 8, "effect 5 + slot 4 = CUSTOM 5 = index 8");
     }
 
     #[test]
