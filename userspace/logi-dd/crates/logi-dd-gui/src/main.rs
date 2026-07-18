@@ -109,7 +109,12 @@ fn load_rows(app: &App, rows: &[viewmodel::Row], profile_names: &[String]) {
     }
     let model = app.get_rows();
     if model.row_count() == items.len() {
-        for (i, item) in items.into_iter().enumerate() {
+        for (i, mut item) in items.into_iter().enumerate() {
+            // A monotonic revision per push: widgets whose own binding was
+            // severed by user interaction watch this with a `changed`
+            // callback and re-assert their display from the row (see
+            // `SettingRow`'s doc in `ui/widgets.slint`).
+            item.revision = model.row_data(i).map_or(0, |r| r.revision.wrapping_add(1));
             model.set_row_data(i, item);
         }
         return;
@@ -138,6 +143,10 @@ fn update_row(app: &App, row: &viewmodel::Row, error: Option<&str>, profile_name
     if row.attr == "wheel_profile" {
         bridge::apply_profile_choices(&mut sr, profile_names);
     }
+    // Same per-push revision bump as `load_rows`; this is what makes an
+    // error-revert (fresh read equal to the pre-edit value) still reach a
+    // widget whose binding the user's own input severed.
+    sr.revision = model.row_data(index).map_or(0, |r| r.revision.wrapping_add(1));
     model.set_row_data(index, sr);
 }
 

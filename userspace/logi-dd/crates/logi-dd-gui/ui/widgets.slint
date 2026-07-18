@@ -37,6 +37,18 @@ export struct SettingRow {
     available: bool,
     mode-ok: bool,
     error: string,
+    // Bumped by the Rust side on every in-place push of this row
+    // (`update_row`, `load_rows`' same-length path). Slint severs a
+    // widget's own `value:`/`checked:`/`text:`/`current-index:` binding
+    // the first time the widget assigns that property internally (any
+    // user interaction), after which pushed model updates stop reaching
+    // it; each editable control below watches this counter with a
+    // `changed` callback and re-asserts its display property from the
+    // row. A plain `changed row.int-value` would miss the case where an
+    // edit is rejected and the fresh read equals the old value (the
+    // exact revert-on-error case), so the counter changes on every push
+    // unconditionally.
+    revision: int,
 }
 
 export component SettingsList inherits ListView {
@@ -134,6 +146,11 @@ export component SettingsList inherits ListView {
                     maximum: row.max;
                     value: row.int-value;
                     enabled: row.available && row.mode-ok;
+                    // Re-assert on every model push: the `value:` binding
+                    // above is severed after the first drag (see
+                    // `SettingRow.revision`).
+                    property <int> rev: row.revision;
+                    changed rev => { self.value = row.int-value; }
                     released(v) => { edit-slider(row.attr, round(v)); }
                 }
 
@@ -152,7 +169,9 @@ export component SettingsList inherits ListView {
                     // 62). `edited` fires for both the arrows and enter, and
                     // commits through the same `edit-slider` path the
                     // slider's `released` uses; the resulting `RowUpdated`
-                    // refreshes `value` to whatever the device accepted.
+                    // bumps `row.revision`, and the change callback below
+                    // refreshes `value` to whatever the device accepted
+                    // (the binding itself is severed by the first edit).
                     SpinBox {
                         horizontal-stretch: 1;
                         minimum: row.min;
@@ -160,6 +179,8 @@ export component SettingsList inherits ListView {
                         step-size: max(1, row.step);
                         value: row.int-value;
                         enabled: row.available && row.mode-ok;
+                        property <int> rev: row.revision;
+                        changed rev => { self.value = row.int-value; }
                         edited(v) => { edit-slider(row.attr, v); }
                     }
                     Text {
@@ -183,6 +204,10 @@ export component SettingsList inherits ListView {
                         model: row.choices;
                         current-index: row.int-value;
                         enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.current-index = row.int-value; }
                         selected(v) => { edit-choice(row.attr, self.current-index); }
                     }
 
@@ -194,12 +219,20 @@ export component SettingsList inherits ListView {
                         model: row.choices;
                         current-index: row.int-value;
                         enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.current-index = row.int-value; }
                         selected(v) => { edit-slider(row.attr, self.current-index); }
                     }
 
                     if row.kind == 3: Switch {
                         checked: row.bool-value;
                         enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.checked = row.bool-value; }
                         toggled => { edit-switch(row.attr, self.checked); }
                     }
 
@@ -207,6 +240,10 @@ export component SettingsList inherits ListView {
                         width: 220px;
                         text: row.text-value;
                         enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.text = row.text-value; }
                         accepted(t) => { edit-text(row.attr, t); }
                     }
 
@@ -263,6 +300,10 @@ export component SettingsList inherits ListView {
                                     maximum: row.max;
                                     value: row.int-value;
                                     enabled: row.available && row.mode-ok;
+                                    // Re-assert on every model push; see
+                                    // `SettingRow.revision`.
+                                    property <int> rev: row.revision;
+                                    changed rev => { self.value = row.int-value; }
                                     edited(v) => { edit-pair(row.attr, v, row.int-value2); }
                                 }
                                 Text {
@@ -288,6 +329,10 @@ export component SettingsList inherits ListView {
                                     maximum: row.max;
                                     value: row.int-value2;
                                     enabled: row.available && row.mode-ok;
+                                    // Re-assert on every model push; see
+                                    // `SettingRow.revision`.
+                                    property <int> rev: row.revision;
+                                    changed rev => { self.value = row.int-value2; }
                                     edited(v) => { edit-pair(row.attr, row.int-value, v); }
                                 }
                                 Text {

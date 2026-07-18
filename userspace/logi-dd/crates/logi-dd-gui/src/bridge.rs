@@ -129,6 +129,10 @@ pub fn to_setting_row(row: &Row) -> SettingRow {
         available: row.available,
         mode_ok: row.mode_ok,
         error: slint::SharedString::new(),
+        // Freshly built rows start at revision 0; `main.rs` bumps this on
+        // every in-place push so touched widgets re-assert their display
+        // (see `SettingRow`'s doc in `ui/widgets.slint`).
+        revision: 0,
     }
 }
 
