@@ -80,6 +80,10 @@ export component SettingsList inherits ListView {
     for row in rows: Rectangle {
         width: parent.width;
         height: Theme.row-height;
+        // Never let an unusually long (wrapped) help line paint over the row
+        // below it; at worst it is trimmed at the row boundary. ComboBox
+        // popups render in a separate overlay, so this does not clip them.
+        clip: true;
 
         HorizontalLayout {
             padding: Theme.gutter;
