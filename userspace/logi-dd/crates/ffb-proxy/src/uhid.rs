@@ -371,10 +371,10 @@ impl Device {
             .map_err(|e| Error::Io(format!("open {UHID_PATH}"), std::io::Error::from(e)))?;
 
         let event = encode_create2(
-            descriptor::NAME,
+            descriptor::VIRTUAL_NAME,
             BUS_USB,
             descriptor::VENDOR as u32,
-            descriptor::PRODUCT as u32,
+            descriptor::VIRTUAL_PRODUCT as u32,
             descriptor::report_descriptor(),
         );
 

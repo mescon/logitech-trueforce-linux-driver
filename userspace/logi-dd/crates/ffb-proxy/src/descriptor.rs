@@ -2,7 +2,17 @@
 
 pub const VENDOR: u16 = 0x046d;
 pub const PRODUCT: u16 = 0xc276;
-pub const NAME: &str = "Logitech RS50 Base for PlayStation/PC";
+
+/// The virtual proxy device deliberately advertises a product id and name
+/// DISTINCT from the real wheel it clones. Enumeration steering (see
+/// `steering.rs`) hides the real wheel from the game by vid/pid
+/// (`SDL_GAMECONTROLLER_IGNORE_DEVICES`) and by product name (Wine
+/// DirectInput). If the virtual device carried the real 0x046d/0xc276 and
+/// the real name, that same steering would hide the clone too and the game
+/// would find no wheel at all. Keeping the vendor as Logitech (0x046d) means
+/// games still treat it as a wheel; only the product and name must differ.
+pub const VIRTUAL_PRODUCT: u16 = 0xc2dd;
+pub const VIRTUAL_NAME: &str = "logi-ffb Virtual Wheel";
 pub const INPUT_REPORT_ID: u8 = 0x01;
 pub const INPUT_REPORT_LEN: usize = 14;
 
