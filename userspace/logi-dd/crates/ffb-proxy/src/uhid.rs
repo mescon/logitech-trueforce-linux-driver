@@ -365,7 +365,10 @@ pub struct Device {
 
 impl Device {
     /// Open `/dev/uhid` and register a `UHID_CREATE2` device using the
-    /// wheel's identity and report descriptor from [`descriptor`].
+    /// distinct virtual identity (`descriptor::VIRTUAL_PRODUCT` /
+    /// `descriptor::VIRTUAL_NAME`, not the real wheel's) and report
+    /// descriptor from [`descriptor`], so enumeration steering never hides
+    /// it behind the real wheel.
     pub fn create() -> Result<Device> {
         let fd = open(UHID_PATH, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())
             .map_err(|e| Error::Io(format!("open {UHID_PATH}"), std::io::Error::from(e)))?;

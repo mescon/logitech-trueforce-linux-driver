@@ -83,4 +83,10 @@ logi-ffb --daemon
 This brings the virtual wheel up and leaves it running until it receives
 `SIGINT`/`SIGTERM` (Ctrl-C), instead of wrapping a game command.
 
+The virtual device enumerates as "logi-ffb Virtual Wheel" (`0x046d:0xc2dd`),
+deliberately distinct from the real wheel's identity. Games that auto-detect
+wheels by name or PID may not recognize it and treat it as a generic
+joystick instead, so it can need manual binding once in the game's controller
+settings.
+
 `logi-ffb -h` / `logi-ffb --help` prints a short usage summary.
