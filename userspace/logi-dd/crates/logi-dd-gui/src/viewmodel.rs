@@ -3,10 +3,12 @@
 //! device. No Slint dependency here, so this is fully unit-testable with
 //! `FakeSysfs` and no display.
 //!
-//! The Slint window does not wire this up yet (that is a later task), so
-//! several public items have no caller inside this binary crate yet; allow
-//! dead_code here rather than trim the interface the window will need.
-#![allow(dead_code)]
+//! The window (`worker`/`main`) only wires up `rows_for`/`edit` so far, for
+//! the one category Task 4 covers live. `info`/`mode`/`refresh`/`device_read`
+//! and a few `WidgetInput` variants are for the device-info panel, the
+//! curve editor and the LED picker a later task adds; they are marked
+//! `#[allow(dead_code)]` individually rather than blanket-silencing the
+//! whole module.
 
 use logi_dd_core::curve::Curve;
 use logi_dd_core::sysfs::SysfsIo;
@@ -20,10 +22,17 @@ pub enum WidgetInput {
     Choice(usize),
     Switch(bool),
     Text(String),
+    // Not built by any widget until the profile-rename, pedal-deadzone,
+    // curve-editor and LED-picker widgets land (Task 4 only wires the
+    // Force feedback category's percent/int/enum/toggle rows).
+    #[allow(dead_code)]
     SlotText { slot: u8, text: String },
     /// A pedal/handbrake deadzone's `(lower, upper)` percent pair.
+    #[allow(dead_code)]
     Pair(u8, u8),
+    #[allow(dead_code)]
     Curve(Curve),
+    #[allow(dead_code)]
     Rgb(Vec<Color>),
     Trigger,
 }
@@ -57,6 +66,10 @@ pub struct ViewModel<S: SysfsIo> {
 }
 
 impl<S: SysfsIo> ViewModel<S> {
+    // The only production entry point is `new(Device::discover())`
+    // (`worker::Worker::spawn`); this constructor exists for tests, which
+    // hand it a `FakeSysfs`.
+    #[allow(dead_code)]
     pub fn with_io(io: S) -> ViewModel<S> {
         ViewModel { device: Device::with_io(io) }
     }
@@ -102,10 +115,16 @@ impl<S: SysfsIo> ViewModel<S> {
         self.device.write(attr, &value)
     }
 
+    // Not called yet: the Info category's device-identity panel is a later
+    // task's job.
+    #[allow(dead_code)]
     pub fn info(&self) -> Result<DeviceInfo, Error> {
         self.device.info()
     }
 
+    // Not called yet: nothing reads the mode outside of `rows_for`'s own
+    // per-row gating until the mode-switch control is wired.
+    #[allow(dead_code)]
     pub fn mode(&self) -> Result<Mode, Error> {
         self.device.current_mode()
     }
@@ -119,9 +138,11 @@ impl<S: SysfsIo> ViewModel<S> {
 
     /// Rows are read live from the device on every `rows_for` call, so there
     /// is no cache to invalidate; kept as a hook for callers that expect one.
+    #[allow(dead_code)]
     pub fn refresh(&self) {}
 
     /// Test/debug hook: read a raw attribute back through the wrapped device.
+    #[allow(dead_code)]
     pub fn device_read(&self, attr: &str) -> Result<Value, Error> {
         self.device.read(attr)
     }

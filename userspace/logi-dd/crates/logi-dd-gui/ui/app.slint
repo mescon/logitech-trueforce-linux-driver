@@ -1,6 +1,37 @@
+import { SettingRow, SettingsList } from "widgets.slint";
+export { SettingRow } from "widgets.slint";
+
 export component App inherits Window {
     title: "logi-dd";
     preferred-width: 900px;
     preferred-height: 600px;
-    Text { text: "logi-dd"; }
+
+    in property <string> category-label: "Force feedback";
+    in property <[SettingRow]> rows: [];
+
+    callback edit-slider(string, int);
+    callback edit-choice(string, int);
+    callback edit-switch(string, bool);
+    callback edit-text(string, string);
+    callback trigger(string);
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Text {
+            text: root.category-label;
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        SettingsList {
+            rows: root.rows;
+            edit-slider(attr, v) => { root.edit-slider(attr, v); }
+            edit-choice(attr, v) => { root.edit-choice(attr, v); }
+            edit-switch(attr, v) => { root.edit-switch(attr, v); }
+            edit-text(attr, v) => { root.edit-text(attr, v); }
+            trigger(attr) => { root.trigger(attr); }
+        }
+    }
 }
