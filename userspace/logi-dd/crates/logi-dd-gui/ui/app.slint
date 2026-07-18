@@ -4,6 +4,7 @@ import { SettingRow, SettingsList } from "widgets.slint";
 import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
+import { Setup } from "setup.slint";
 export { SettingRow } from "widgets.slint";
 export { CurvePoint } from "curve_editor.slint";
 export { LedColor } from "rgb_strip.slint";
@@ -38,11 +39,25 @@ export component App inherits Window {
     // Opens `url` in the user's browser (wired to xdg-open on the Rust side).
     callback open-url(string);
 
-    // Sidebar: one label per `Category::ALL`; `selected-category` is that
-    // list's index, resolved to a `Category` on the Rust side.
+    // Sidebar: one label per `Category::ALL`, plus a trailing "Setup" label
+    // `main.rs` appends; `selected-category` is that combined list's index,
+    // resolved to a `Category` on the Rust side (or, for the last row, left
+    // as `setup-index` to route to the `Setup` page below instead).
     in property <[string]> category-labels: [];
     in property <int> selected-category: 0;
     callback select-category(int);
+
+    // The sidebar index of the "Setup" row: `Category::ALL.len()`, set once
+    // from Rust. `-1` (never equal to any real `selected-category`) until
+    // then, so nothing routes to the Setup page before it is set.
+    in property <int> setup-index: -1;
+    in property <bool> setup-ffb-found: false;
+    in property <bool> setup-shim-found: false;
+    in property <bool> setup-shim-running: false;
+    in property <string> setup-shim-output: "";
+    callback setup-copy-launch();
+    callback setup-install-shim();
+    callback setup-uninstall-shim();
 
     // Content: the selected category's rows, same as Task 4.
     in property <string> category-label: "Force feedback";
@@ -236,14 +251,31 @@ export component App inherits Window {
                 padding: Theme.padding;
                 spacing: Theme.gutter;
 
-                Text {
+                // The Setup page replaces the whole category title + list +
+                // doc-link block below (it has its own title and its own
+                // doc link at the bottom); the two are mutually exclusive on
+                // `selected-category`.
+                if root.selected-category == root.setup-index: Setup {
+                    vertical-stretch: 1;
+                    project-url: root.project-url;
+                    ffb-found: root.setup-ffb-found;
+                    shim-found: root.setup-shim-found;
+                    shim-running: root.setup-shim-running;
+                    shim-output: root.setup-shim-output;
+                    copy-launch() => { root.setup-copy-launch(); }
+                    install-shim() => { root.setup-install-shim(); }
+                    uninstall-shim() => { root.setup-uninstall-shim(); }
+                    open-url(url) => { root.open-url(url); }
+                }
+
+                if root.selected-category != root.setup-index: Text {
                     text: root.category-label;
                     font-size: 20px;
                     font-weight: 700;
                     color: Theme.text-color;
                 }
 
-                SettingsList {
+                if root.selected-category != root.setup-index: SettingsList {
                     // Claim all the vertical space left under the category
                     // title so the list (and its background/scrollbar) reaches
                     // the bottom of the window. Without this the ListView only
@@ -266,7 +298,7 @@ export component App inherits Window {
                 // Documentation / source link, only on the Info category. A
                 // plain accent-colored, underlined label that opens the
                 // project page in the browser when clicked.
-                if root.category-label == "Info": HorizontalLayout {
+                if root.selected-category != root.setup-index && root.category-label == "Info": HorizontalLayout {
                     alignment: start;
                     spacing: 6px;
 

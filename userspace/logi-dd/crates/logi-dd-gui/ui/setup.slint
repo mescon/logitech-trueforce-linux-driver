@@ -1,0 +1,158 @@
+import { Button, LineEdit, TextEdit, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// The sidebar's "Setup" page: two helper sections (the DirectInput FFB proxy
+// and the TrueForce SDK shim installer) plus a documentation link, shown
+// instead of the settings list whenever `App.selected-category` equals
+// `App.setup-index` (see `app.slint`'s content area). Neither helper is a
+// device setting, so nothing here goes through `Category`/`SettingRow`; the
+// Rust side (`main.rs`) wires the callbacks directly to `std::process`
+// calls, off the UI thread for the shim installer.
+export component Setup inherits Rectangle {
+    in property <string> project-url: "";
+    in property <bool> ffb-found: false;
+    in property <bool> shim-found: false;
+    in property <bool> shim-running: false;
+    in property <string> shim-output: "";
+
+    // Copies "logi-ffb %command%" to the clipboard (best-effort, wl-copy
+    // then xclip; the field next to the button is selectable as a fallback).
+    callback copy-launch();
+    // Runs the shim installer with `--all-steam` / `--uninstall` off the UI
+    // thread; `shim-output` and `shim-running` are pushed back once it
+    // finishes (or immediately, if the installer was never found on PATH).
+    callback install-shim();
+    callback uninstall-shim();
+    // Opens `project-url` in the user's browser; wired to the same
+    // `open-url` callback the Info category's link uses.
+    callback open-url(string);
+
+    background: transparent;
+
+    VerticalLayout {
+        spacing: Theme.gutter;
+
+        Text {
+            text: "Setup";
+            font-size: 20px;
+            font-weight: 700;
+            color: Theme.text-color;
+        }
+
+        // Section: logi-ffb (DirectInput/Proton FFB proxy).
+        Rectangle {
+            background: Theme.panel-background;
+            border-radius: Theme.panel-radius;
+            border-width: 1px;
+            border-color: Theme.panel-border;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+
+                Text {
+                    text: "Force feedback in games (logi-ffb)";
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text-color;
+                }
+                Text {
+                    text: "DirectInput sims run through Proton (e.g. Le Mans Ultimate) do not get force feedback by default. Running the game through logi-ffb gives them FFB via a virtual wheel.";
+                    color: Theme.muted-text-color;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.ffb-found ? "logi-ffb: Installed" : "logi-ffb: Not found on PATH";
+                    color: root.ffb-found ? Theme.text-color : Theme.error-color;
+                }
+                Text {
+                    text: "Add this to the game's Steam launch options:";
+                    color: Theme.muted-text-color;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        horizontal-stretch: 1;
+                        text: "logi-ffb %command%";
+                        read-only: true;
+                    }
+                    Button {
+                        text: "Copy";
+                        clicked => { root.copy-launch(); }
+                    }
+                }
+            }
+        }
+
+        // Section: TrueForce SDK shim installer.
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.panel-background;
+            border-radius: Theme.panel-radius;
+            border-width: 1px;
+            border-color: Theme.panel-border;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+
+                Text {
+                    text: "TrueForce in SDK games (shim)";
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text-color;
+                }
+                Text {
+                    text: "Installs Logitech's signed TrueForce/Wheel SDK DLLs into your Steam Proton prefixes so SDK sims (ACC, AC EVO) get TrueForce. Uses the real DLLs, no injection.";
+                    color: Theme.muted-text-color;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.shim-found ? "Installer: found on PATH" : "Installer: not found on PATH";
+                    color: root.shim-found ? Theme.text-color : Theme.error-color;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: "Install into all Steam games";
+                        enabled: !root.shim-running;
+                        clicked => { root.install-shim(); }
+                    }
+                    Button {
+                        text: "Uninstall";
+                        enabled: !root.shim-running;
+                        clicked => { root.uninstall-shim(); }
+                    }
+                }
+
+                output-edit := TextEdit {
+                    vertical-stretch: 1;
+                    read-only: true;
+                    wrap: word-wrap;
+                    text: root.shim-output;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: start;
+            spacing: 6px;
+
+            Text {
+                text: "Documentation:";
+                vertical-alignment: center;
+                color: Theme.muted-text-color;
+            }
+            link := Text {
+                text: root.project-url;
+                vertical-alignment: center;
+                color: Palette.accent-background;
+                font-weight: 600;
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.open-url(root.project-url); }
+                }
+            }
+        }
+    }
+}
