@@ -470,11 +470,16 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let worker = worker.clone();
         let current_category = current_category.clone();
-        app.on_edit_pair(move |attr, lower, upper| {
+        app.on_edit_pair(move |attr, is_lower, value| {
+            // Only the touched half travels; the worker reads the other
+            // half fresh from the device at write time (see
+            // `ViewModel::edit`), so a quick lower-then-upper edit cannot
+            // clobber the first edit with a stale row snapshot.
+            let v = value.clamp(0, 255) as u8;
             worker.request(Request::Edit {
                 category: get(&current_category),
                 attr: attr.to_string(),
-                input: WidgetInput::Pair(lower.clamp(0, 255) as u8, upper.clamp(0, 255) as u8),
+                input: if is_lower { WidgetInput::PairLower(v) } else { WidgetInput::PairUpper(v) },
             });
         });
     }

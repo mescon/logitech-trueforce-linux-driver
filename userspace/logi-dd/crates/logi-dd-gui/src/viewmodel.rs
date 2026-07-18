@@ -7,7 +7,7 @@
 //! for every category now, plus the curve editor's `WidgetInput::Curve`, the
 //! RGB strip editor's `WidgetInput::Rgb`, the slot-text editor's
 //! `WidgetInput::SlotText`, and the pedal deadzone pair's
-//! `WidgetInput::Pair`. `mode`/`refresh`/`device_read` are still ahead of any
+//! `WidgetInput::PairLower`/`PairUpper`. `mode`/`refresh`/`device_read` are still ahead of any
 //! live widget: that is a later task's job. They are marked
 //! `#[allow(dead_code)]` individually rather than blanket-silencing the
 //! whole module.
@@ -27,8 +27,13 @@ pub enum WidgetInput {
     /// A single onboard slot's new name (1-based `slot`); `Kind::SlotText`
     /// converts this to a single-slot `Value::SlotName` write.
     SlotText { slot: u8, text: String },
-    /// A pedal/handbrake deadzone's `(lower, upper)` percent pair.
-    Pair(u8, u8),
+    /// A pedal/handbrake deadzone's new lower half, in percent. The upper
+    /// half is read fresh from the device at edit time (see
+    /// `ViewModel::edit`), so the widget only ever reports the side the
+    /// user actually touched.
+    PairLower(u8),
+    /// The upper-half counterpart of `PairLower`.
+    PairUpper(u8),
     Curve(Curve),
     Rgb(Vec<Color>),
     Trigger,
@@ -106,9 +111,26 @@ impl<S: SysfsIo> ViewModel<S> {
 
     /// Convert `input` to a `Value` per `attr`'s `Kind` and write it through
     /// `Device::write` (which validates and mode-gates it).
+    ///
+    /// Pair (deadzone) edits are a read-modify-write: the widget reports
+    /// only the half the user touched, and the untouched half comes from a
+    /// fresh device read here. Trusting the UI's row snapshot for the other
+    /// half instead would let two quick edits clobber each other: the
+    /// second edit's snapshot predates the first edit's round-trip, so it
+    /// would silently rewrite the first half back to its old value.
     pub fn edit(&self, attr: &str, input: WidgetInput) -> Result<(), Error> {
         let spec = Device::<S>::spec(attr).ok_or(Error::Invalid)?;
-        let value = to_value(spec.kind, input)?;
+        let value = match input {
+            WidgetInput::PairLower(lo) => match (spec.kind, self.device.read(attr)?) {
+                (Kind::Pair { .. }, Value::Pair(_, hi)) => Value::Pair(lo, hi),
+                _ => return Err(Error::Invalid),
+            },
+            WidgetInput::PairUpper(hi) => match (spec.kind, self.device.read(attr)?) {
+                (Kind::Pair { .. }, Value::Pair(lo, _)) => Value::Pair(lo, hi),
+                _ => return Err(Error::Invalid),
+            },
+            other => to_value(spec.kind, other)?,
+        };
         self.device.write(attr, &value)
     }
 
@@ -155,7 +177,6 @@ fn to_value(kind: Kind, input: WidgetInput) -> Result<Value, Error> {
         (Kind::SlotText { .. }, WidgetInput::SlotText { slot, text }) => {
             Ok(Value::SlotName { slot, name: text })
         }
-        (Kind::Pair { .. }, WidgetInput::Pair(lo, hi)) => Ok(Value::Pair(lo, hi)),
         (Kind::RgbStrip { .. }, WidgetInput::Rgb(cs)) => Ok(Value::Rgb(cs)),
         (Kind::Curve, WidgetInput::Curve(c)) => Ok(c.to_value()),
         (Kind::Action, WidgetInput::Trigger) => Ok(Value::Trigger),
@@ -261,13 +282,45 @@ mod tests {
     }
 
     #[test]
-    fn pair_edit_writes_both_values() {
+    fn pair_lower_edit_keeps_the_devices_upper_half() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_throttle_deadzone", "0 10");
+        let vm = ViewModel::with_io(fs);
+        vm.edit("wheel_throttle_deadzone", WidgetInput::PairLower(5)).unwrap();
+        assert_eq!(vm.device_read("wheel_throttle_deadzone").unwrap(), Value::Pair(5, 10));
+    }
+
+    #[test]
+    fn pair_upper_edit_keeps_the_devices_lower_half() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_throttle_deadzone", "8 0");
+        let vm = ViewModel::with_io(fs);
+        vm.edit("wheel_throttle_deadzone", WidgetInput::PairUpper(12)).unwrap();
+        assert_eq!(vm.device_read("wheel_throttle_deadzone").unwrap(), Value::Pair(8, 12));
+    }
+
+    #[test]
+    fn rapid_pair_edits_preserve_both_halves() {
+        // The race the old whole-pair widget contract lost: edit the lower
+        // half, then the upper half before any UI round-trip could refresh
+        // a row snapshot. Each edit only carries the touched side, and the
+        // untouched side is read fresh from the device, so both edits land.
         let fs = FakeSysfs::new();
         fs.set("wheel_mode", "desktop");
         fs.set("wheel_throttle_deadzone", "0 0");
         let vm = ViewModel::with_io(fs);
-        vm.edit("wheel_throttle_deadzone", WidgetInput::Pair(5, 10)).unwrap();
-        assert_eq!(vm.device_read("wheel_throttle_deadzone").unwrap(), Value::Pair(5, 10));
+        vm.edit("wheel_throttle_deadzone", WidgetInput::PairLower(10)).unwrap();
+        vm.edit("wheel_throttle_deadzone", WidgetInput::PairUpper(5)).unwrap();
+        assert_eq!(vm.device_read("wheel_throttle_deadzone").unwrap(), Value::Pair(10, 5));
+    }
+
+    #[test]
+    fn pair_input_on_a_non_pair_attr_errors() {
+        let vm = vm();
+        let result = vm.edit("wheel_strength", WidgetInput::PairLower(5));
+        assert!(result.is_err(), "expected Err for a pair input on a non-pair attr");
     }
 
     #[test]

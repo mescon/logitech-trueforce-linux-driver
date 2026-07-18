@@ -154,8 +154,23 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
             // would make the UI rebuild every row's widget for a one-field
             // edit (see `Response::RowUpdated`'s doc comment).
             let error = vm.edit(&attr, input).err().map(|e| e.to_string());
+            let mode_changed = attr == "wheel_mode" && error.is_none();
             if let Some(row) = vm.rows_for(category).into_iter().find(|r| r.attr == attr) {
                 on_response(Response::RowUpdated { category, row, error });
+            }
+            // A successful mode edit through the settings row changes more
+            // than its own row: every mode-gated row's state and the
+            // header's mode label. Follow up with the same fresh
+            // rows-plus-info a SetMode/Refresh pair would have produced, so
+            // the header toggle never computes its target from a stale
+            // mode. Only on success: a failed edit left the mode alone, and
+            // a Rows reload here would wipe the error message the
+            // RowUpdated above just attached.
+            if mode_changed {
+                on_response(Response::Rows { category, rows: vm.rows_for(category) });
+                if let Ok(info) = vm.info() {
+                    on_response(Response::Info(info));
+                }
             }
         }
         Request::SetMode(mode) => {
@@ -307,6 +322,58 @@ mod tests {
                 // the device's actual (unchanged) value, not the invalid
                 // input.
                 assert_eq!(row.value, Some(Value::Percent(80)));
+            }
+            _ => panic!("expected RowUpdated"),
+        }
+    }
+
+    #[test]
+    fn wheel_mode_edit_also_refreshes_rows_and_info() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        let vm = ViewModel::with_io(fs);
+
+        let req = Request::Edit {
+            category: Category::Profiles,
+            attr: "wheel_mode".to_string(),
+            input: WidgetInput::Choice(1), // -> onboard
+        };
+        let responses = responses(|on_response| handle(&vm, req, on_response));
+        assert_eq!(responses.len(), 3);
+        match &responses[0] {
+            Response::RowUpdated { row, error, .. } => {
+                assert_eq!(row.attr, "wheel_mode");
+                assert!(error.is_none());
+            }
+            _ => panic!("expected RowUpdated first"),
+        }
+        match &responses[1] {
+            Response::Rows { category, .. } => assert_eq!(*category, Category::Profiles),
+            _ => panic!("expected Rows second"),
+        }
+        match &responses[2] {
+            Response::Info(info) => assert_eq!(info.mode, Mode::Onboard),
+            _ => panic!("expected Info third"),
+        }
+    }
+
+    #[test]
+    fn failed_wheel_mode_edit_sends_only_the_row_update() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        let vm = ViewModel::with_io(fs);
+
+        let req = Request::Edit {
+            category: Category::Profiles,
+            attr: "wheel_mode".to_string(),
+            input: WidgetInput::Choice(9), // no such variant
+        };
+        let responses = responses(|on_response| handle(&vm, req, on_response));
+        assert_eq!(responses.len(), 1, "a failed mode edit must not follow up with Rows/Info");
+        match &responses[0] {
+            Response::RowUpdated { row, error, .. } => {
+                assert_eq!(row.attr, "wheel_mode");
+                assert!(error.is_some());
             }
             _ => panic!("expected RowUpdated"),
         }

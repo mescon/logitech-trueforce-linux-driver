@@ -70,10 +70,12 @@ export component SettingsList inherits ListView {
     // opens the slot-text editor overlay for `attr`, seeded from that row's
     // current value.
     callback edit-slot-text(string);
-    // Fired by a pair row's (kind 10, a pedal deadzone) SpinBoxes; `attr`
-    // plus the current lower/upper values (whichever one just changed, and
-    // the other read straight off the row it did not touch).
-    callback edit-pair(string, int, int);
+    // Fired by a pair row's (kind 10, a pedal deadzone) SpinBoxes: `attr`,
+    // whether the lower half was the one edited, and its new value. Only
+    // the touched side is reported; the Rust side reads the other half
+    // fresh from the device at write time, so an edit can never clobber
+    // the partner field's still-in-flight commit with a stale row value.
+    callback edit-pair(string, bool, int);
     // Fired by the per-row "Switch mode" button, shown on a row whose
     // `mode-ok` is false. It does not say which mode: with exactly two
     // modes, whichever one the wheel is not currently in is the one this
@@ -279,9 +281,9 @@ export component SettingsList inherits ListView {
 
                     // Two SpinBoxes, same styling as the slider rows' exact-
                     // entry SpinBox above: lower deadzone first, then upper.
-                    // Each fires `edit-pair` with both values (the one just
-                    // edited, plus the other read straight off the row) so
-                    // neither field ever clobbers the other's last commit.
+                    // Each fires `edit-pair` with only its own side; see the
+                    // callback's doc above for why the partner value is not
+                    // read off the row here.
                     if row.kind == 10: HorizontalLayout {
                         spacing: 12px;
 
@@ -304,7 +306,7 @@ export component SettingsList inherits ListView {
                                     // `SettingRow.revision`.
                                     property <int> rev: row.revision;
                                     changed rev => { self.value = row.int-value; }
-                                    edited(v) => { edit-pair(row.attr, v, row.int-value2); }
+                                    edited(v) => { edit-pair(row.attr, true, v); }
                                 }
                                 Text {
                                     text: "%";
@@ -333,7 +335,7 @@ export component SettingsList inherits ListView {
                                     // `SettingRow.revision`.
                                     property <int> rev: row.revision;
                                     changed rev => { self.value = row.int-value2; }
-                                    edited(v) => { edit-pair(row.attr, row.int-value, v); }
+                                    edited(v) => { edit-pair(row.attr, false, v); }
                                 }
                                 Text {
                                     text: "%";
