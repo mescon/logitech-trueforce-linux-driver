@@ -5,7 +5,7 @@
 //! is the only place that knows about both worlds.
 
 use logi_dd_core::curve::{Curve, FULL};
-use logi_dd_core::{Access, Category, Color, DeviceInfo, Error, Kind, Mode, Value, REGISTRY};
+use logi_dd_core::{Access, Category, Color, Error, Kind, Value, REGISTRY};
 
 use crate::viewmodel::Row;
 use crate::{CurvePoint, LedColor, SettingRow, SlotNameRow};
@@ -186,13 +186,6 @@ pub fn category_at(index: i32) -> Category {
 /// `category`.
 pub fn index_of(category: Category) -> i32 {
     Category::ALL.iter().position(|c| *c == category).unwrap_or(0) as i32
-}
-
-/// Pull the header's fields out of a `DeviceInfo`: serial, firmware, and
-/// whether the wheel is currently in onboard mode (the mode toggle's
-/// `mode-onboard` property).
-pub fn header_fields(info: &DeviceInfo) -> (String, String, bool) {
-    (info.serial.clone(), info.firmware.clone(), matches!(info.mode, Mode::Onboard))
 }
 
 // --- curve editor <-> Curve conversions ---
@@ -591,34 +584,6 @@ mod tests {
     fn category_at_clamps_out_of_range_indices() {
         assert_eq!(category_at(-1), Category::ALL[0]);
         assert_eq!(category_at(9999), *Category::ALL.last().unwrap());
-    }
-
-    #[test]
-    fn header_fields_reads_serial_firmware_and_onboard_flag() {
-        let fs = FakeSysfs::new();
-        fs.set("wheel_mode", "onboard");
-        fs.set("wheel_serial", "ABC123");
-        fs.set("wheel_firmware", "1.2.3");
-        let vm = crate::viewmodel::ViewModel::with_io(fs);
-        let info = vm.info().unwrap();
-
-        let (serial, firmware, onboard) = header_fields(&info);
-        assert_eq!(serial, "ABC123");
-        assert_eq!(firmware, "1.2.3");
-        assert!(onboard);
-    }
-
-    #[test]
-    fn header_fields_reports_desktop_as_not_onboard() {
-        let fs = FakeSysfs::new();
-        fs.set("wheel_mode", "desktop");
-        fs.set("wheel_serial", "X");
-        fs.set("wheel_firmware", "1.0");
-        let vm = crate::viewmodel::ViewModel::with_io(fs);
-        let info = vm.info().unwrap();
-
-        let (_, _, onboard) = header_fields(&info);
-        assert!(!onboard);
     }
 
     #[test]

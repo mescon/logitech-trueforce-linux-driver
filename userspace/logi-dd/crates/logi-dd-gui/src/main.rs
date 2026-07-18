@@ -129,9 +129,18 @@ fn set<T>(cell: &Arc<Mutex<T>>, value: T) {
     *cell.lock().unwrap() = value;
 }
 
+/// Open `url` in the user's default browser via `xdg-open`, detached. Best
+/// effort: a spawn failure (no `xdg-open` on a minimal system) is ignored
+/// rather than taking the app down, since this is a convenience link.
+fn open_in_browser(url: &str) {
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
     app.set_category_labels(bridge::category_labels_model());
+    app.set_project_url(logi_dd_core::PROJECT_URL.into());
+    app.on_open_url(|url| open_in_browser(&url));
     // Installed once, here, and never replaced: `load_rows`/`update_row`
     // mutate this same `VecModel`'s contents for the rest of the app's
     // life (see `load_rows`'s doc comment for why that matters).
@@ -212,10 +221,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         set(&current_mode, info.mode);
                         app.set_no_wheel(false);
                         app.set_no_wheel_message("".into());
-                        let (serial, firmware, onboard) = bridge::header_fields(&info);
-                        app.set_device_serial(serial.into());
-                        app.set_device_firmware(firmware.into());
-                        app.set_mode_onboard(onboard);
+                        app.set_mode_onboard(matches!(info.mode, Mode::Onboard));
                     }
                     Response::NoWheel(message) => {
                         app.set_no_wheel(true);

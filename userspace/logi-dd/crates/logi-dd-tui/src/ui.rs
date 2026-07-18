@@ -31,11 +31,9 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
                     " logi-dd",
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    format!("   serial {}   fw {}   ", i.serial, i.firmware),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::raw("mode: "),
+                // Serial and firmware live in the Info category, not the
+                // header. Keep the header to the app name and current mode.
+                Span::raw("   mode: "),
                 Span::styled(
                     mode_str,
                     Style::default().fg(mode_col).add_modifier(Modifier::BOLD),
@@ -77,7 +75,7 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
 
     // settings in the selected category
     let names = app.profile_names();
-    let rows: Vec<ListItem> = app
+    let mut rows: Vec<ListItem> = app
         .rows
         .iter()
         .enumerate()
@@ -125,6 +123,15 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
             item
         })
         .collect();
+    // On the Info category, append the project link so users know where to
+    // find docs and source (a terminal cannot open it, but it is copyable).
+    if Category::ALL[app.cat_idx] == Category::Info {
+        rows.push(ListItem::new(Line::from(vec![
+            Span::styled(format!("{:<24}", "Documentation"), Style::default().fg(Color::Gray)),
+            Span::raw(" "),
+            Span::styled(logi_dd_core::PROJECT_URL, Style::default().fg(Color::Cyan)),
+        ])));
+    }
     f.render_widget(
         List::new(rows).block(Block::default().borders(Borders::ALL).title("Settings")),
         body[1],

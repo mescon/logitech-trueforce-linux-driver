@@ -27,12 +27,16 @@ export component App inherits Window {
     in property <string> no-wheel-message: "Looking for your wheel...";
     callback retry-discover();
 
-    // Header: device identity plus the desktop/onboard mode toggle.
-    in property <string> device-serial: "";
-    in property <string> device-firmware: "";
+    // Header: app name plus the desktop/onboard mode toggle. Device identity
+    // (serial, firmware) lives in the Info category, not the header.
     in property <bool> mode-onboard: false;
     callback toggle-mode();
     callback refresh();
+
+    // Project home, shown as a link at the bottom of the Info category.
+    in property <string> project-url: "";
+    // Opens `url` in the user's browser (wired to xdg-open on the Rust side).
+    callback open-url(string);
 
     // Sidebar: one label per `Category::ALL`; `selected-category` is that
     // list's index, resolved to a `Category` on the Rust side.
@@ -135,9 +139,10 @@ export component App inherits Window {
     }
 
     if !root.no-wheel: VerticalLayout {
-        // Header: device identity plus the mode toggle. A thin bottom
-        // divider (rather than a background-color band) so it reads
-        // correctly against every widget style's own background brush.
+        // Header: app name plus the mode toggle. A thin bottom divider
+        // (rather than a background-color band) so it reads correctly against
+        // every widget style's own background brush. Device identity (serial,
+        // firmware) is shown in the Info category, not here.
         Rectangle {
             height: 52px;
 
@@ -151,16 +156,6 @@ export component App inherits Window {
                     font-weight: 700;
                     color: Theme.text-color;
                     vertical-alignment: center;
-                }
-                Text {
-                    text: root.device-serial == "" ? "" : "serial " + root.device-serial;
-                    vertical-alignment: center;
-                    color: Theme.muted-text-color;
-                }
-                Text {
-                    text: root.device-firmware == "" ? "" : "fw " + root.device-firmware;
-                    vertical-alignment: center;
-                    color: Theme.muted-text-color;
                 }
 
                 Rectangle { horizontal-stretch: 1; }
@@ -263,6 +258,30 @@ export component App inherits Window {
                     edit-rgb(attr) => { root.edit-rgb(attr); }
                     edit-slot-text(attr) => { root.edit-slot-text(attr); }
                     switch-mode() => { root.toggle-mode(); }
+                }
+
+                // Documentation / source link, only on the Info category. A
+                // plain accent-colored, underlined label that opens the
+                // project page in the browser when clicked.
+                if root.category-label == "Info": HorizontalLayout {
+                    alignment: start;
+                    spacing: 6px;
+
+                    Text {
+                        text: "Documentation and source:";
+                        vertical-alignment: center;
+                        color: Theme.muted-text-color;
+                    }
+                    link := Text {
+                        text: root.project-url;
+                        vertical-alignment: center;
+                        color: Palette.accent-background;
+                        font-weight: 600;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open-url(root.project-url); }
+                        }
+                    }
                 }
             }
         }
