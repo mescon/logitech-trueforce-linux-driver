@@ -69,6 +69,7 @@ export component App inherits Window {
     callback curve-move-point(int, float, float);
     callback curve-add-point(float);
     callback curve-remove-point(int);
+    callback curve-grab-point(float, float) -> int;
     callback curve-set-lower-deadzone(int);
     callback curve-set-upper-deadzone(int);
     callback curve-commit();
@@ -302,6 +303,7 @@ export component App inherits Window {
         move-point(i, x, y) => { root.curve-move-point(i, x, y); }
         add-point(x) => { root.curve-add-point(x); }
         remove-point(i) => { root.curve-remove-point(i); }
+        grab-point(x, y) => { return root.curve-grab-point(x, y); }
         set-lower-deadzone(v) => { root.curve-set-lower-deadzone(v); }
         set-upper-deadzone(v) => { root.curve-set-upper-deadzone(v); }
         commit() => { root.curve-commit(); }

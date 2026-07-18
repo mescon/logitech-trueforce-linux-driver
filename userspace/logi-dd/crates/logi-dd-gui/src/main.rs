@@ -393,6 +393,23 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     {
         let curve_editor = curve_editor.clone();
+        app.on_curve_grab_point(move |x, y| {
+            let guard = curve_editor.lock().unwrap();
+            let Some(state) = guard.as_ref() else { return -1 };
+            let mut best = -1_i32;
+            let mut best_d = 0.06_f32; // ~6% of the plot; generous grab radius
+            for (i, (px, py)) in bridge::control_point_fracs(&state.curve).into_iter().enumerate() {
+                let d = ((px - x).powi(2) + (py - y).powi(2)).sqrt();
+                if d < best_d {
+                    best_d = d;
+                    best = i as i32;
+                }
+            }
+            best
+        });
+    }
+    {
+        let curve_editor = curve_editor.clone();
         let app_weak = app.as_weak();
         app.on_curve_add_point(move |x| {
             let Some(app) = app_weak.upgrade() else { return };

@@ -274,18 +274,32 @@ pub fn curve_plot_commands(curve: &Curve) -> String {
 }
 
 /// Convert `curve.points()` (the draggable control points, not the composed
+/// plot) into `(x_frac, y_frac)` pairs, same screen-fraction space as
+/// `curve_plot_commands`. Shared by `curve_control_points` (the Slint-facing
+/// list) and `control_point_fracs` (the Rust-side hit-testing list), so both
+/// stay in exact agreement.
+fn control_point_frac_pairs(curve: &Curve) -> Vec<(f32, f32)> {
+    curve
+        .points()
+        .iter()
+        .map(|&(input, output)| to_screen_frac(input, output))
+        .collect()
+}
+
+/// Convert `curve.points()` (the draggable control points, not the composed
 /// plot) into the editor's `CurvePoint` list, same screen-fraction space as
 /// `curve_plot_commands`.
 pub fn curve_control_points(curve: &Curve) -> slint::ModelRc<CurvePoint> {
-    let points: Vec<CurvePoint> = curve
-        .points()
-        .iter()
-        .map(|&(input, output)| {
-            let (x, y) = to_screen_frac(input, output);
-            CurvePoint { x, y }
-        })
-        .collect();
+    let points: Vec<CurvePoint> =
+        control_point_frac_pairs(curve).into_iter().map(|(x, y)| CurvePoint { x, y }).collect();
     slint::ModelRc::new(slint::VecModel::from(points))
+}
+
+/// Same control points as `curve_control_points`, as plain `(x_frac, y_frac)`
+/// tuples for Rust-side hit-testing (`grab-point`'s nearest-point search),
+/// without going through the Slint model type.
+pub fn control_point_fracs(curve: &Curve) -> Vec<(f32, f32)> {
+    control_point_frac_pairs(curve)
 }
 
 /// Apply the editor's `move-point` callback (a control point index plus its
@@ -715,6 +729,23 @@ mod tests {
         // its output is half of full scale.
         assert!((points[1].x - 0.5).abs() < 0.01);
         assert!((points[1].y - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn control_point_fracs_matches_curve_control_points() {
+        let mut c = linear_curve();
+        c.add_point(FULL / 2);
+
+        let model: Vec<CurvePoint> = {
+            use slint::Model as _;
+            curve_control_points(&c).iter().collect()
+        };
+        let fracs = control_point_fracs(&c);
+
+        assert_eq!(model.len(), fracs.len());
+        for (point, &(x, y)) in model.iter().zip(fracs.iter()) {
+            assert_eq!((point.x, point.y), (x, y));
+        }
     }
 
     #[test]

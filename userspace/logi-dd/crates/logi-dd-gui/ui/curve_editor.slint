@@ -1,4 +1,4 @@
-import { Button, Slider, Palette } from "std-widgets.slint";
+import { Button, Slider, SpinBox, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // One draggable curve control point, in screen-fraction space: `x` is the
@@ -15,10 +15,11 @@ export struct CurvePoint {
 
 // A modal overlay that edits one `logi_dd_core::curve::Curve`: a plot of the
 // composed output-vs-input curve, draggable control points (add by clicking
-// empty plot space, remove by double-clicking a point), and lower/upper
-// deadzone sliders. Every edit fires a callback; the Rust side owns the
-// `Curve`, applies the edit, recomputes `compose()`, and pushes fresh
-// `plot-commands`/`control-points` back so the plot redraws (the live
+// empty plot space, remove via the selected point's "Remove point" button),
+// a numeric editor for the selected point's exact input/output, and
+// lower/upper deadzone sliders. Every edit fires a callback; the Rust side
+// owns the `Curve`, applies the edit, recomputes `compose()`, and pushes
+// fresh `plot-commands`/`control-points` back so the plot redraws (the live
 // preview). Commit writes the curve; Cancel discards it. Either closes the
 // overlay from the Rust side (`curve-editor-open` in app.slint).
 export component CurveEditor inherits Rectangle {
@@ -28,9 +29,23 @@ export component CurveEditor inherits Rectangle {
     in property <int> lower-deadzone: 0;
     in property <int> upper-deadzone: 0;
 
+    // Index of the control point currently under a drag, or -1 between
+    // drags. Set by `grab-point` on press and cleared on release.
+    property <int> grabbed: -1;
+    // Index of the control point last picked (by a press that grabbed one),
+    // kept after release so the numeric editor row below stays showing it.
+    // -1 means no point is selected.
+    property <int> selected: -1;
+    // Where the current press started, in plot-area-local pixels: lets
+    // pointer-up tell a click (add a point) apart from the end of a drag
+    // that grabbed nothing (neither adds nor moves anything).
+    property <length> press-x;
+    property <length> press-y;
+
     callback move-point(int, float, float);
     callback add-point(float);
     callback remove-point(int);
+    callback grab-point(float, float) -> int;
     callback set-lower-deadzone(int);
     callback set-upper-deadzone(int);
     callback commit();
@@ -43,7 +58,7 @@ export component CurveEditor inherits Rectangle {
 
     Rectangle {
         width: 460px;
-        height: 420px;
+        height: 500px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.panel-background;
@@ -63,7 +78,7 @@ export component CurveEditor inherits Rectangle {
             }
 
             Text {
-                text: "Click empty space to add a point, drag a point to shape the curve, double-click a point to remove it.";
+                text: "Click empty space to add a point. Drag a point to shape the curve. Select a point to set its exact values or remove it.";
                 font-size: 11px;
                 color: Theme.muted-text-color;
                 wrap: word-wrap;
@@ -75,15 +90,6 @@ export component CurveEditor inherits Rectangle {
                 border-width: 1px;
                 border-color: Theme.panel-border;
 
-                // Bottom of the z-order: catches clicks that land on empty
-                // plot space (the point handles below are on top and take
-                // the click first when it lands on one of them).
-                TouchArea {
-                    clicked => {
-                        root.add-point(self.mouse-x / plot-area.width);
-                    }
-                }
-
                 Path {
                     viewbox-width: 1;
                     viewbox-height: 1;
@@ -92,43 +98,117 @@ export component CurveEditor inherits Rectangle {
                     commands: root.plot-commands;
                 }
 
+                // Pure visuals: the single TouchArea below owns every
+                // pointer event, so these never carry their own TouchArea
+                // (a per-point TouchArea would move out from under the
+                // pointer mid-drag, since moving it is exactly what dragging
+                // does; see the module-level history for the bug this
+                // replaced).
                 for p[i] in root.control-points: Rectangle {
-                    width: 10px;
-                    height: 10px;
-                    border-radius: 5px;
-                    background: Palette.control-background;
+                    width: i == root.selected ? 14px : 10px;
+                    height: i == root.selected ? 14px : 10px;
+                    border-radius: self.width / 2;
+                    background: i == root.selected ? Palette.accent-background : Palette.control-background;
                     border-width: 1px;
                     border-color: Palette.accent-background;
                     x: p.x * plot-area.width - self.width / 2;
                     y: p.y * plot-area.height - self.height / 2;
+                }
 
-                    TouchArea {
-                        // The fraction this point sat at when the drag
-                        // started; `moved` reports that plus the pointer's
-                        // delta since then, rather than an absolute position
-                        // recomputed from a handle that only actually moves
-                        // once the Rust side pushes a new `control-points`.
-                        property <float> pressed-frac-x;
-                        property <float> pressed-frac-y;
+                // The one fixed-frame interaction layer for the whole plot.
+                // Because it never moves, it keeps tracking the pointer for
+                // the entire gesture, unlike a TouchArea riding on the point
+                // being dragged.
+                TouchArea {
+                    pointer-event(ev) => {
+                        if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
+                            root.press-x = self.mouse-x;
+                            root.press-y = self.mouse-y;
+                            root.grabbed = root.grab-point(self.mouse-x / plot-area.width, self.mouse-y / plot-area.height);
+                            if (root.grabbed >= 0) {
+                                root.selected = root.grabbed;
+                            }
+                        } else if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.up) {
+                            if (root.grabbed < 0 && abs(self.mouse-x - root.press-x) < 4px && abs(self.mouse-y - root.press-y) < 4px) {
+                                root.add-point(self.mouse-x / plot-area.width);
+                            }
+                            root.grabbed = -1;
+                        }
+                    }
+                    moved => {
+                        if (self.pressed && root.grabbed >= 0) {
+                            root.move-point(
+                                root.grabbed,
+                                clamp(self.mouse-x / plot-area.width, 0, 1),
+                                clamp(self.mouse-y / plot-area.height, 0, 1),
+                            );
+                        }
+                    }
+                }
+            }
 
-                        pointer-event(event) => {
-                            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
-                                self.pressed-frac-x = p.x;
-                                self.pressed-frac-y = p.y;
+            if root.selected >= 0 && root.selected < root.control-points.length: HorizontalLayout {
+                spacing: 12px;
+
+                VerticalLayout {
+                    spacing: 2px;
+                    Text {
+                        text: "Input";
+                        font-size: 11px;
+                        color: Theme.muted-text-color;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        SpinBox {
+                            width: 90px;
+                            minimum: 0;
+                            maximum: 100;
+                            value: round(root.control-points[root.selected].x * 100);
+                            edited(v) => {
+                                root.move-point(root.selected, v / 100, root.control-points[root.selected].y);
                             }
                         }
-                        moved => {
-                            if (self.pressed) {
-                                root.move-point(
-                                    i,
-                                    self.pressed-frac-x + (self.mouse-x - self.pressed-x) / plot-area.width,
-                                    self.pressed-frac-y + (self.mouse-y - self.pressed-y) / plot-area.height,
-                                );
+                        Text {
+                            text: "%";
+                            vertical-alignment: center;
+                            color: Theme.muted-text-color;
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 2px;
+                    Text {
+                        text: "Output";
+                        font-size: 11px;
+                        color: Theme.muted-text-color;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        SpinBox {
+                            width: 90px;
+                            minimum: 0;
+                            maximum: 100;
+                            value: round((1 - root.control-points[root.selected].y) * 100);
+                            edited(v) => {
+                                root.move-point(root.selected, root.control-points[root.selected].x, 1 - v / 100);
                             }
                         }
-                        double-clicked => {
-                            root.remove-point(i);
+                        Text {
+                            text: "%";
+                            vertical-alignment: center;
+                            color: Theme.muted-text-color;
                         }
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                Button {
+                    text: "Remove point";
+                    clicked => {
+                        root.remove-point(root.selected);
+                        root.selected = -1;
                     }
                 }
             }
@@ -141,7 +221,7 @@ export component CurveEditor inherits Rectangle {
                     minimum: 0;
                     maximum: 99;
                     value: root.lower-deadzone;
-                    changed(v) => { root.set-lower-deadzone(round(v)); }
+                    released(v) => { root.set-lower-deadzone(round(v)); }
                 }
                 Text { text: "\{root.lower-deadzone}%"; vertical-alignment: center; color: Theme.text-color; }
             }
@@ -154,7 +234,7 @@ export component CurveEditor inherits Rectangle {
                     minimum: 0;
                     maximum: 99;
                     value: root.upper-deadzone;
-                    changed(v) => { root.set-upper-deadzone(round(v)); }
+                    released(v) => { root.set-upper-deadzone(round(v)); }
                 }
                 Text { text: "\{root.upper-deadzone}%"; vertical-alignment: center; color: Theme.text-color; }
             }
