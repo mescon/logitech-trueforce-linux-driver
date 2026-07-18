@@ -1,4 +1,4 @@
-import { ListView, Slider, ComboBox, Switch, LineEdit, Button, Palette } from "std-widgets.slint";
+import { ListView, Slider, SpinBox, ComboBox, Switch, LineEdit, Button, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // One rendered setting. `kind` is a stable numeric tag the Rust side and this
@@ -129,36 +129,27 @@ export component SettingsList inherits ListView {
                 HorizontalLayout {
                     width: Theme.value-column-width;
                     spacing: 6px;
-                    alignment: start;
+                    alignment: end;
 
-                    // Bound to the slider's own live `value`, not to
-                    // `row.int-value`, so the field keeps up with the drag
-                    // without a round trip through the worker. Typing into
-                    // it breaks this binding the moment a key is pressed
-                    // (Slint treats user edits of an in-out property as an
-                    // imperative assignment), which is exactly what is
-                    // wanted: the field must hold whatever the user is
-                    // typing, not get overwritten mid-edit. A successful
-                    // `edit-slider` (here or from the slider itself) always
-                    // ends in a `RowUpdated` that replaces the whole `rows`
-                    // model, which recreates this row from scratch and
-                    // restores a fresh, live binding.
-                    valueField := LineEdit {
-                        width: 64px;
-                        text: "\{round(slider.value)}";
+                    // Exact numeric entry: type a value and press enter, or
+                    // nudge with the +/- arrows. The widget clamps to
+                    // `minimum`/`maximum` itself, so out-of-range typing can
+                    // never reach the device. Chosen over a LineEdit because
+                    // std-widgets' LineEdit paints a clear ("x") icon
+                    // whenever it holds text, which crowds out and clips a
+                    // short number in a narrow field (it rendered "6x" for
+                    // 62). `edited` fires for both the arrows and enter, and
+                    // commits through the same `edit-slider` path the
+                    // slider's `released` uses; the resulting `RowUpdated`
+                    // refreshes `value` to whatever the device accepted.
+                    SpinBox {
+                        horizontal-stretch: 1;
+                        minimum: row.min;
+                        maximum: row.max;
+                        step-size: max(1, row.step);
+                        value: row.int-value;
                         enabled: row.available && row.mode-ok;
-                        // Bare number only, no unit: parse and clamp to the
-                        // row's range, then commit through the same
-                        // `edit-slider` path the slider's `released` uses.
-                        // Unparseable input reverts to the current value
-                        // instead of committing.
-                        accepted(t) => {
-                            if (t.is-float()) {
-                                edit-slider(row.attr, round(clamp(t.to-float(), row.min, row.max)));
-                            } else {
-                                self.text = "\{round(slider.value)}";
-                            }
-                        }
+                        edited(v) => { edit-slider(row.attr, v); }
                     }
                     Text {
                         text: row.kind == 0 ? "%" : row.unit;

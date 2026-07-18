@@ -99,6 +99,14 @@ export component App inherits Window {
     callback slot-text-set-name(int, string);
     callback slot-text-close();
 
+    // One unconditional root layout wraps both screens so their `if` branches
+    // are laid out (and stretched to fill) by it. A conditional element placed
+    // directly under a `Window` is positioned manually and never fills the
+    // window, regardless of any width/height/alignment set on it; the same
+    // element nested inside a layout fills normally. The editor overlays stay
+    // separate `Window` children: they size themselves to the window and paint
+    // on top of this shell.
+    VerticalLayout {
     if root.no-wheel: VerticalLayout {
         alignment: center;
         spacing: 12px;
@@ -175,6 +183,11 @@ export component App inherits Window {
         }
 
         HorizontalLayout {
+            // Takes all the height left under the header so the sidebar panel
+            // and the settings list reach the bottom of the window instead of
+            // stopping at their content height.
+            vertical-stretch: 1;
+
             // Sidebar: one row per `Category::ALL`, with a clear
             // accent-colored highlight on the selected entry.
             Rectangle {
@@ -204,6 +217,15 @@ export component App inherits Window {
                             color: i == root.selected-category ? Theme.selected-foreground : Theme.text-color;
                         }
                     }
+
+                    // Stretchy spacer: without it this column of fixed-height
+                    // (36px) items has a finite max-height, and since a
+                    // HorizontalLayout's height is capped by its shortest
+                    // child's max-height, the whole content row could never
+                    // grow past the sidebar's items. The spacer gives the
+                    // column an unbounded max-height so the sidebar (and the
+                    // row) fills the window.
+                    Rectangle { vertical-stretch: 1; }
                 }
 
                 Rectangle {
@@ -225,6 +247,12 @@ export component App inherits Window {
                 }
 
                 SettingsList {
+                    // Claim all the vertical space left under the category
+                    // title so the list (and its background/scrollbar) reaches
+                    // the bottom of the window. Without this the ListView only
+                    // takes its content height and sits as a short box with an
+                    // empty void beneath it.
+                    vertical-stretch: 1;
                     rows: root.rows;
                     edit-slider(attr, v) => { root.edit-slider(attr, v); }
                     edit-choice(attr, v) => { root.edit-choice(attr, v); }
@@ -238,6 +266,7 @@ export component App inherits Window {
                 }
             }
         }
+    }
     }
 
     // Painted last so it sits on top of the shell above.
