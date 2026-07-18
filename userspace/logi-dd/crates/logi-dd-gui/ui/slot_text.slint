@@ -15,15 +15,20 @@ export struct SlotNameRow {
 // unit: `Kind::SlotText` writes one slot at a time (`Value::SlotName`), so
 // each field applies immediately when the user presses enter, the same way a
 // plain `TextField` row's `LineEdit` does (see `edit-text` in
-// `widgets.slint`). `slot-names` is pushed by the Rust side after every apply
-// (`push_slot_text_editor` in `main.rs`) so the fields stay in sync with
-// whatever the device actually holds once the write's reply comes back.
-// `close` just dismisses the overlay; there is nothing staged left to
-// discard.
+// `widgets.slint`). `slot-names` is pushed by the Rust side optimistically
+// at apply time and again from the write's `RowUpdated` reply (the
+// worker-response closure in `main.rs`), so the fields settle on whatever
+// the device actually holds: a rejected rename visibly reverts, an accepted
+// one shows the wheel's uppercased form, and `error` carries the last
+// write's failure message for display inside the overlay. `close` just
+// dismisses the overlay; there is nothing staged left to discard.
 export component SlotTextEditor inherits Rectangle {
     in property <string> slot-text-label: "Profile names";
     in property <[SlotNameRow]> slot-names: [];
     in property <int> max-len: 9;
+    // The last slot write's error message, or "" (cleared on open and on
+    // every new edit by the Rust side).
+    in property <string> error: "";
 
     callback set-slot-name(int, string);
     callback close();
@@ -64,6 +69,13 @@ export component SlotTextEditor inherits Rectangle {
                 text: "Rename a slot (max \{root.max-len} chars, uppercased on the wheel).";
                 font-size: 11px;
                 color: Theme.muted-text-color;
+                wrap: word-wrap;
+            }
+
+            if root.error != "": Text {
+                text: root.error;
+                font-size: 11px;
+                color: Theme.error-color;
                 wrap: word-wrap;
             }
 

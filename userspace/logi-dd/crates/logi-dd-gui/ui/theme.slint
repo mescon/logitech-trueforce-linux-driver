@@ -20,7 +20,11 @@ export global Theme {
     // entry on slider rows (a same-width empty placeholder on every other
     // row kind), so the status column after it never shifts position no
     // matter which widget kind a row renders.
-    out property <length> label-column-width: 240px;
+    // 220px (down from 240px) so that at the window's 720px minimum width
+    // the status column ("Wrong mode" + its "Switch mode" button) still
+    // fits inside the clipped row instead of overflowing off its right
+    // edge, unreachable.
+    out property <length> label-column-width: 220px;
     out property <length> value-column-width: 150px;
     out property <length> row-height: 72px;
     out property <length> gutter: StyleMetrics.layout-spacing;

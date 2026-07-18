@@ -150,6 +150,24 @@ fn update_row(app: &App, row: &viewmodel::Row, error: Option<&str>, profile_name
     model.set_row_data(index, sr);
 }
 
+/// Rebuild the `wheel_profile` row's dropdown labels from `names`
+/// (`wheel_profile_names`'s freshest value). Called when a slot rename's
+/// `RowUpdated` lands: that response only updates the names row itself, but
+/// the sibling profile dropdown renders those same names and would otherwise
+/// keep the old ones until the next whole-category reload.
+fn refresh_profile_row(app: &App, names: &[String]) {
+    let model = app.get_rows();
+    let Some(index) =
+        (0..model.row_count()).find(|&i| model.row_data(i).is_some_and(|r| r.attr == "wheel_profile"))
+    else {
+        return;
+    };
+    let Some(mut sr) = model.row_data(index) else { return };
+    bridge::apply_profile_choices(&mut sr, names);
+    sr.revision = sr.revision.wrapping_add(1);
+    model.set_row_data(index, sr);
+}
+
 /// Read the `Category`/`Mode` out of one of the `Arc<Mutex<_>>` cells below.
 /// Both are `Copy`, so the lock never needs to outlive this call.
 fn get<T: Copy>(cell: &Arc<Mutex<T>>) -> T {
@@ -307,11 +325,13 @@ fn main() -> Result<(), slint::PlatformError> {
         let current_category = current_category.clone();
         let current_mode = current_mode.clone();
         let known_values = known_values.clone();
+        let slot_text_editor = slot_text_editor.clone();
         Worker::spawn(move |response| {
             let app_weak = app_weak.clone();
             let current_category = current_category.clone();
             let current_mode = current_mode.clone();
             let known_values = known_values.clone();
+            let slot_text_editor = slot_text_editor.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(app) = app_weak.upgrade() else { return };
                 match response {
@@ -343,6 +363,28 @@ fn main() -> Result<(), slint::PlatformError> {
                             known_values.lock().unwrap().insert(row.attr.to_string(), v.clone());
                         }
                         update_row(&app, &row, error.as_deref(), &profile_names(&known_values));
+                        if row.attr == "wheel_profile_names" {
+                            // A slot rename also changes the labels the
+                            // sibling profile dropdown shows.
+                            refresh_profile_row(&app, &profile_names(&known_values));
+                        }
+                        // If the slot-text overlay is open on this attr,
+                        // push the device's authoritative names back into
+                        // it (a rejected rename must visibly revert; a
+                        // successful one shows the wheel's uppercased form)
+                        // and surface the write error inside the overlay
+                        // instead of only on the settings row hidden behind
+                        // it.
+                        let mut guard = slot_text_editor.lock().unwrap();
+                        if let Some(state) = guard.as_mut() {
+                            if state.attr == row.attr {
+                                if let Some(Value::SlotNames(names)) = &row.value {
+                                    state.names = names.clone();
+                                }
+                                push_slot_text_editor(&app, &state.names);
+                                app.set_slot_text_error(error.as_deref().unwrap_or("").into());
+                            }
+                        }
                     }
                     Response::Info(info) => {
                         set(&current_mode, info.mode);
@@ -738,6 +780,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 _ => bridge::default_slot_names(&attr),
             };
             push_slot_text_editor(&app, &names);
+            app.set_slot_text_error("".into());
             app.set_slot_text_max_len(bridge::slot_text_max_len(&attr));
             let label = REGISTRY.iter().find(|s| s.attr == attr).map(|s| s.label).unwrap_or(attr.as_str());
             app.set_slot_text_label(label.into());
@@ -757,11 +800,18 @@ fn main() -> Result<(), slint::PlatformError> {
             let slot = slot.max(0) as u8;
             bridge::apply_set_slot_name(&mut state.names, slot, &name);
             push_slot_text_editor(&app, &state.names);
+            // A fresh edit clears the previous attempt's error; the reply's
+            // RowUpdated re-sets it if this one fails too.
+            app.set_slot_text_error("".into());
             // Kind::SlotText writes one slot at a time and reads back the
             // whole list, so this is the same "send an Edit, let the
             // category's next Rows response refresh everything" pattern the
             // other immediate-apply widgets (slider/choice/switch/text/
-            // trigger) use, not the curve/RGB overlays' staged commit.
+            // trigger) use, not the curve/RGB overlays' staged commit. The
+            // reply's RowUpdated then pushes the device's re-read names
+            // back into this overlay (see the worker-response closure), so
+            // the optimistic push above is only a placeholder until the
+            // authoritative one lands.
             worker.request(Request::Edit {
                 category: state.category,
                 attr: state.attr.clone(),

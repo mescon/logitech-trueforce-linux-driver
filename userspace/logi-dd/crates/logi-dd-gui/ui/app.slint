@@ -118,6 +118,10 @@ export component App inherits Window {
     in property <string> slot-text-label: "";
     in property <[SlotNameRow]> slot-text-names: [];
     in property <int> slot-text-max-len: 9;
+    // The last slot write's error, surfaced inside the overlay (the row's
+    // own error slot is hidden behind the scrim while it is open). Cleared
+    // on open and on every new edit.
+    in property <string> slot-text-error: "";
     callback edit-slot-text(string);
     callback slot-text-set-name(int, string);
     callback slot-text-close();
@@ -370,6 +374,7 @@ export component App inherits Window {
         slot-text-label: root.slot-text-label;
         slot-names: root.slot-text-names;
         max-len: root.slot-text-max-len;
+        error: root.slot-text-error;
         set-slot-name(slot, name) => { root.slot-text-set-name(slot, name); }
         close() => { root.slot-text-close(); }
     }

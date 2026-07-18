@@ -52,6 +52,13 @@ pub struct App<S: SysfsIo> {
     /// The TrueForce SDK shim installer's resolved binary name, or `None` if
     /// neither candidate name was found on `PATH` at startup.
     pub shim_binary: Option<&'static str>,
+    /// A shim run queued by `on_key` for the main loop to execute:
+    /// `(installer arg, verb for the status line)`. The run blocks (an
+    /// `--all-steam` Proton-prefix scan can take a while), so instead of
+    /// running inside the key handler, where the "running..." status could
+    /// never be drawn first, the loop takes this via `take_pending_shim`,
+    /// draws once, then calls `run_shim`.
+    pending_shim: Option<(&'static str, &'static str)>,
 }
 
 impl<S: SysfsIo> App<S> {
@@ -67,6 +74,7 @@ impl<S: SysfsIo> App<S> {
             quit: false,
             ffb_found: found_on_path("logi-ffb"),
             shim_binary: resolve_shim_binary(),
+            pending_shim: None,
         };
         a.reload();
         a
@@ -110,9 +118,17 @@ impl<S: SysfsIo> App<S> {
         self.reload();
     }
 
+    /// Take the shim run the last key press queued, if any; see
+    /// `pending_shim`.
+    pub fn take_pending_shim(&mut self) -> Option<(&'static str, &'static str)> {
+        self.pending_shim.take()
+    }
+
     /// Run the TrueForce SDK shim installer with `arg` (`--all-steam` or
     /// `--uninstall`), blocking: the TUI's event loop is synchronous, so
-    /// there is no worker thread to hand this off to, and the run is brief.
+    /// there is no worker thread to hand this off to. The main loop calls
+    /// this via the `pending_shim` queue so a "running..." status gets
+    /// drawn first (an `--all-steam` Proton-prefix scan can take a while).
     /// Never sudo. A missing binary or a spawn failure lands in the status
     /// line instead of taking the TUI down.
     pub fn run_shim(&mut self, arg: &'static str, verb: &str) {
@@ -120,7 +136,6 @@ impl<S: SysfsIo> App<S> {
             self.status = "shim: installer not found on PATH".to_string();
             return;
         };
-        self.status = "installing...".to_string();
         match std::process::Command::new(bin).arg(arg).output() {
             Ok(out) if out.status.success() => {
                 self.status = format!("shim {verb}: ok");
@@ -282,8 +297,10 @@ impl<S: SysfsIo> App<S> {
                 Char('q') => self.quit = true,
                 Left => self.move_cat(-1),
                 Right => self.move_cat(1),
-                Char('i') => self.run_shim("--all-steam", "install"),
-                Char('u') => self.run_shim("--uninstall", "uninstall"),
+                // Queued, not run here: the main loop draws a "running..."
+                // status line before the blocking run (see `pending_shim`).
+                Char('i') => self.pending_shim = Some(("--all-steam", "install")),
+                Char('u') => self.pending_shim = Some(("--uninstall", "uninstall")),
                 _ => {}
             }
             return;
@@ -464,6 +481,22 @@ mod tests {
         a.on_key(KeyCode::Enter); // no rows to edit; must not open an editor
         assert!(a.edit.is_none());
         assert!(a.curve_edit.is_none());
+    }
+
+    #[test]
+    fn setup_keys_queue_the_shim_run_instead_of_running_it() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        for _ in 0..Category::ALL.len() {
+            a.move_cat(1);
+        }
+        assert!(a.is_setup());
+        a.on_key(KeyCode::Char('i'));
+        assert_eq!(a.take_pending_shim(), Some(("--all-steam", "install")));
+        // Taken once; a second take finds nothing queued.
+        assert_eq!(a.take_pending_shim(), None);
+        a.on_key(KeyCode::Char('u'));
+        assert_eq!(a.take_pending_shim(), Some(("--uninstall", "uninstall")));
     }
 
     #[test]
