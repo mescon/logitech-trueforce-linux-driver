@@ -4305,6 +4305,37 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_LIGHTSYNC_DIR_INSIDE_OUT	2	/* Center outward (expand) */
 #define HIDPP_DD_LIGHTSYNC_DIR_OUTSIDE_IN	3	/* Edges inward (contract) */
 
+/*
+ * The 0x807B slot-config command (byte 1) carries the animation direction as
+ * a 1..4 wire value, NOT the driver's 0..3 enum. From the
+ * 2026-07-19_lightsync_direction capture: 1=Inside-Out, 2=Outside-In,
+ * 3=Left->Right, 4=Right->Left. These two helpers convert between the enum
+ * and the wire value; an out-of-range input falls back to Left->Right.
+ */
+static inline u8 hidpp_dd_lightsync_dir_to_wire(u8 dir)
+{
+	static const u8 to_wire[4] = {
+		[HIDPP_DD_LIGHTSYNC_DIR_LEFT_RIGHT] = 3,
+		[HIDPP_DD_LIGHTSYNC_DIR_RIGHT_LEFT] = 4,
+		[HIDPP_DD_LIGHTSYNC_DIR_INSIDE_OUT] = 1,
+		[HIDPP_DD_LIGHTSYNC_DIR_OUTSIDE_IN] = 2,
+	};
+
+	return dir < 4 ? to_wire[dir] : 3;
+}
+
+static inline u8 hidpp_dd_lightsync_wire_to_dir(u8 wire)
+{
+	static const u8 to_dir[5] = {
+		[1] = HIDPP_DD_LIGHTSYNC_DIR_INSIDE_OUT,
+		[2] = HIDPP_DD_LIGHTSYNC_DIR_OUTSIDE_IN,
+		[3] = HIDPP_DD_LIGHTSYNC_DIR_LEFT_RIGHT,
+		[4] = HIDPP_DD_LIGHTSYNC_DIR_RIGHT_LEFT,
+	};
+
+	return (wire >= 1 && wire <= 4) ? to_dir[wire] : HIDPP_DD_LIGHTSYNC_DIR_LEFT_RIGHT;
+}
+
 /* LIGHTSYNC per-slot configuration */
 #define HIDPP_DD_SLOT_NAME_MAX_LEN	8	/* Max slot name length (from device info) */
 
@@ -8939,7 +8970,8 @@ static void hidpp_dd_lightsync_query_slot_names(struct hidpp_device *hidpp,
  * user-saved (or G Hub-programmed) colors. Response format is inferred
  * as the inverse of the SET wire format in hidpp_dd_lightsync_apply_slot:
  *   params[0]   = slot echo
- *   params[1]   = direction + 2
+ *   params[1]   = direction wire value 1..4 (1=Inside-Out, 2=Outside-In,
+ *                 3=L->R, 4=R->L); see hidpp_dd_lightsync_wire_to_dir
  *   params[2..] = 10 * RGB, LED10 first
  * If the response doesn't look like that (params[0] != slot, or the
  * call errors), leave the driver-default cache alone so the existing
@@ -8977,8 +9009,8 @@ static int hidpp_dd_lightsync_get_slot_config(struct hidpp_device *hidpp,
 		return -EPROTO;
 	}
 
-	ff->led_slots[slot].direction = response.fap.params[1] >= 2 ?
-		response.fap.params[1] - 2 : 0;
+	ff->led_slots[slot].direction =
+		hidpp_dd_lightsync_wire_to_dir(response.fap.params[1]);
 	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_LEDS; i++) {
 		int src = 2 + (HIDPP_DD_LIGHTSYNC_NUM_LEDS - 1 - i) * 3;
 		int dst = i * 3;
@@ -9108,15 +9140,19 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 
 	/*
 	 * Step 4: Send RGB config packet to feature 0x0C (0x807B).
-	 * From capture: 12 FF 0C 2C [slot] [type] [30 bytes RGB]
+	 * From capture: 12 FF 0C 2C [slot] [dir] [30 bytes RGB]
 	 *   - byte 0: slot index (0-4)
-	 *   - byte 1: type/direction byte - encodes LED animation direction
-	 *             Observed values: 0x02, 0x03 in captures
-	 *             Direction mapping: direction + 2 (0->2, 1->3, etc.)
+	 *   - byte 1: animation-direction wire value, device range 1..4. The
+	 *             2026-07-19_lightsync_direction capture shows G Hub using
+	 *             1=Inside-Out, 2=Outside-In, 3=Left->Right, 4=Right->Left.
+	 *             The old "direction + 2" both mislabelled the sweeps and
+	 *             sent 5 for Outside-In, which the firmware rejects with a
+	 *             HID++ error (surfaced as -EIO). Map the driver's
+	 *             direction enum to the wire values explicitly instead.
 	 *   - bytes 2-31: RGB colors (10 LEDs × 3 bytes, reversed order: LED10 first)
 	 */
 	params[0] = slot;
-	params[1] = ls->direction + 2;  /* Direction encoding: 0->0x02, 1->0x03, etc. */
+	params[1] = hidpp_dd_lightsync_dir_to_wire(ls->direction);
 
 	/* LED colors reversed (LED10 first in protocol) */
 	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_LEDS; i++) {
