@@ -70,6 +70,19 @@ fn push_slot_text_editor(app: &App, names: &[String]) {
     app.set_slot_text_names(bridge::slot_names_model(names));
 }
 
+/// Read `wheel_profile_names`'s last-known value out of `known_values`
+/// (populated from whichever `Response` last carried that attr; see the
+/// worker-response closure in `main`). Returns an empty `Vec` when it has
+/// not been read yet (app just started, or this wheel does not expose it):
+/// `bridge::apply_profile_choices` still produces a full, usable dropdown
+/// from an empty names list.
+fn profile_names(known_values: &Arc<Mutex<HashMap<String, Value>>>) -> Vec<String> {
+    match known_values.lock().unwrap().get("wheel_profile_names") {
+        Some(Value::SlotNames(names)) => names.clone(),
+        _ => Vec::new(),
+    }
+}
+
 /// Replace the persistent rows model's contents with a whole category's
 /// worth of fresh rows (`LoadCategory`, `Refresh`, the no-wheel screen's
 /// Retry, or a mode switch's follow-up refresh). `app.set_rows` is only
@@ -87,8 +100,13 @@ fn push_slot_text_editor(app: &App, names: &[String]) {
 /// switch) falls back to replacing the whole content in one go: every row
 /// is for a different setting there anyway, so there is nothing to
 /// preserve.
-fn load_rows(app: &App, rows: &[viewmodel::Row]) {
-    let items = bridge::setting_rows(rows);
+fn load_rows(app: &App, rows: &[viewmodel::Row], profile_names: &[String]) {
+    let mut items = bridge::setting_rows(rows);
+    for item in items.iter_mut() {
+        if item.attr == "wheel_profile" {
+            bridge::apply_profile_choices(item, profile_names);
+        }
+    }
     let model = app.get_rows();
     if model.row_count() == items.len() {
         for (i, item) in items.into_iter().enumerate() {
@@ -110,13 +128,17 @@ fn load_rows(app: &App, rows: &[viewmodel::Row]) {
 /// `error` is the edit's failure message, or `None` on success; either way
 /// `row` itself already reflects a fresh read (see `Response::RowUpdated`'s
 /// doc comment), so this never has to guess at what reverting looks like.
-fn update_row(app: &App, row: &viewmodel::Row, error: Option<&str>) {
+fn update_row(app: &App, row: &viewmodel::Row, error: Option<&str>, profile_names: &[String]) {
     let model = app.get_rows();
     let Some(index) = (0..model.row_count()).find(|&i| model.row_data(i).is_some_and(|r| r.attr == row.attr))
     else {
         return;
     };
-    model.set_row_data(index, bridge::to_setting_row_with_error(row, error));
+    let mut sr = bridge::to_setting_row_with_error(row, error);
+    if row.attr == "wheel_profile" {
+        bridge::apply_profile_choices(&mut sr, profile_names);
+    }
+    model.set_row_data(index, sr);
 }
 
 /// Read the `Category`/`Mode` out of one of the `Arc<Mutex<_>>` cells below.
@@ -203,7 +225,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                 }
                             }
                         }
-                        load_rows(&app, &rows);
+                        load_rows(&app, &rows, &profile_names(&known_values));
                     }
                     Response::RowUpdated { category, row, error } => {
                         // Same staleness guard as `Rows`: a reply for a
@@ -215,7 +237,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         if let Some(v) = &row.value {
                             known_values.lock().unwrap().insert(row.attr.to_string(), v.clone());
                         }
-                        update_row(&app, &row, error.as_deref());
+                        update_row(&app, &row, error.as_deref(), &profile_names(&known_values));
                     }
                     Response::Info(info) => {
                         set(&current_mode, info.mode);

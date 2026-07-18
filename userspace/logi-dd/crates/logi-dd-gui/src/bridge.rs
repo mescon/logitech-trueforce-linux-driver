@@ -31,6 +31,13 @@ pub const KIND_RGB: i32 = 8;
 pub const KIND_SLOTTEXT: i32 = 9;
 /// A pedal deadzone pair: rendered as two SpinBoxes (lower/upper).
 pub const KIND_PAIR: i32 = 10;
+/// The active-profile row (`wheel_profile`), rewritten from its generic
+/// `KIND_INT_RANGE` tag once the onboard profile names are known: rendered
+/// as a ComboBox of "N: name" labels instead of a number spinner. Only
+/// `apply_profile_choices` sets this tag; `kind_tag` never produces it,
+/// since the profile names live in a different row (`wheel_profile_names`)
+/// this stateless function cannot see.
+pub const KIND_PROFILE: i32 = 11;
 
 fn is_read_only(attr: &str) -> bool {
     REGISTRY.iter().any(|s| s.attr == attr && s.access == Access::ReadOnly)
@@ -123,6 +130,37 @@ pub fn to_setting_row(row: &Row) -> SettingRow {
         mode_ok: row.mode_ok,
         error: slint::SharedString::new(),
     }
+}
+
+/// Build the 6 dropdown labels for the `wheel_profile` row: index 0 is
+/// always "0: Desktop"; index `i` (1..=5) is "`i`: `name`" using
+/// `names[i - 1]` when present and non-empty, else a "Profile `i`"
+/// placeholder. `names` is `wheel_profile_names`'s live value (one entry per
+/// onboard slot); a short or empty list (unread yet, or no wheel attached)
+/// still yields all 6 labels via the placeholder.
+pub fn profile_choice_labels(names: &[String]) -> Vec<slint::SharedString> {
+    let mut labels = Vec::with_capacity(6);
+    labels.push(slint::SharedString::from("0: Desktop"));
+    for i in 1..=5usize {
+        let name = names.get(i - 1).filter(|n| !n.is_empty());
+        let label = match name {
+            Some(n) => format!("{i}: {n}"),
+            None => format!("{i}: Profile {i}"),
+        };
+        labels.push(slint::SharedString::from(label));
+    }
+    labels
+}
+
+/// Rewrite `sr` (already built by `to_setting_row` for the `wheel_profile`
+/// row) into the profile dropdown: tags it `KIND_PROFILE` and installs
+/// `profile_choice_labels(names)` as its choices. `sr.int_value` (the active
+/// profile number) is left untouched, so the ComboBox's `current-index`
+/// still lands on the right entry. Only meaningful for `wheel_profile`;
+/// callers guard on `attr` before calling this.
+pub fn apply_profile_choices(sr: &mut SettingRow, names: &[String]) {
+    sr.kind = KIND_PROFILE;
+    sr.choices = slint::ModelRc::new(slint::VecModel::from(profile_choice_labels(names)));
 }
 
 /// Build the `ModelRc<SettingRow>` for a whole category's rows. `edit_error`
@@ -901,6 +939,35 @@ mod tests {
         let mut names = vec!["A".to_string()];
         apply_set_slot_name(&mut names, 9, "X");
         assert_eq!(names, vec!["A".to_string()]);
+    }
+
+    // --- profile dropdown conversion ---
+
+    #[test]
+    fn apply_profile_choices_rewrites_kind_and_choices_but_keeps_int_value() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_profile", "2");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm
+            .rows_for(Category::Profiles)
+            .into_iter()
+            .find(|r| r.attr == "wheel_profile")
+            .expect("no row for wheel_profile");
+
+        let mut sr = to_setting_row(&row);
+        assert_eq!(sr.int_value, 2);
+
+        let names = vec!["AC EVO".to_string(), "GT7".to_string(), String::new(), String::new(), String::new()];
+        apply_profile_choices(&mut sr, &names);
+
+        assert_eq!(sr.kind, KIND_PROFILE);
+        assert_eq!(sr.int_value, 2);
+        let choices: Vec<String> = sr.choices.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            choices,
+            vec!["0: Desktop", "1: AC EVO", "2: GT7", "3: Profile 3", "4: Profile 4", "5: Profile 5"]
+        );
     }
 
     #[test]

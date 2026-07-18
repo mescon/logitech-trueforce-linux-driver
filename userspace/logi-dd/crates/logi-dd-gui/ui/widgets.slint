@@ -17,6 +17,8 @@ import { Theme } from "theme.slint";
 //   9 = slot text (Button that opens the slot-text editor overlay, fires
 //                  `edit-slot-text`)
 //   10 = pair (two SpinBoxes, lower/upper, e.g. a deadzone)
+//   11 = profile (ComboBox of profile names; commits the chosen index via
+//                 edit-slider)
 export struct SettingRow {
     attr: string,
     label: string,
@@ -178,6 +180,17 @@ export component SettingsList inherits ListView {
                         current-index: row.int-value;
                         enabled: row.available && row.mode-ok;
                         selected(v) => { edit-choice(row.attr, self.current-index); }
+                    }
+
+                    // `wheel_profile` is an IntRange in core (0=desktop,
+                    // 1-5 onboard), so the chosen index IS the profile
+                    // number: commits via `edit-slider`, not `edit-choice`.
+                    if row.kind == 11: ComboBox {
+                        width: 220px;
+                        model: row.choices;
+                        current-index: row.int-value;
+                        enabled: row.available && row.mode-ok;
+                        selected(v) => { edit-slider(row.attr, self.current-index); }
                     }
 
                     if row.kind == 3: Switch {
