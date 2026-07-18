@@ -13,11 +13,15 @@ import { Palette, StyleMetrics } from "std-widgets.slint";
 // "error" brush in `Palette` common to every style, so a fixed, readable
 // red is used instead of picking one style's accent color arbitrarily.
 export global Theme {
-    // Settings-row column layout (`ui/widgets.slint`): every row uses the
-    // same three column widths, so a control never shifts position
-    // between rows no matter which widget kind it renders.
-    out property <length> label-column-width: 260px;
-    out property <length> control-column-width: 320px;
+    // Settings-row column layout (`ui/widgets.slint`): the label column is a
+    // fixed width so labels/controls line up across rows, the control area
+    // between it and `value-column-width` stretches to fill the window, and
+    // `value-column-width` is the fixed slot for the numeric readout/manual
+    // entry on slider rows (a same-width empty placeholder on every other
+    // row kind), so the status column after it never shifts position no
+    // matter which widget kind a row renders.
+    out property <length> label-column-width: 240px;
+    out property <length> value-column-width: 108px;
     out property <length> row-height: 64px;
     out property <length> gutter: StyleMetrics.layout-spacing;
     out property <length> padding: StyleMetrics.layout-padding;

@@ -62,18 +62,24 @@ export component SettingsList inherits ListView {
     // header's mode toggle).
     callback switch-mode();
 
-    // Every row uses the same fixed three-column layout (label, control,
-    // status), regardless of `kind`: column widths come from `Theme` so no
-    // control's x position ever depends on what the row next to it is
-    // showing (fixes controls jumping around between rows).
+    // Every row uses the same layout skeleton regardless of `kind`: a fixed
+    // label column, a control area that stretches to fill the window, a
+    // fixed value/status column so a control's x position never depends on
+    // what the row next to it is showing (fixes controls jumping around
+    // between rows), all inside a row box sized to `Theme.row-height` so
+    // the drawn content and the row's own box always match (a plain
+    // `height`, not `min-height`, since inside a `ListView` a `min-height`
+    // let the allocated slot and the painted content disagree).
     for row in rows: Rectangle {
-        min-height: Theme.row-height;
+        width: parent.width;
+        height: Theme.row-height;
 
         HorizontalLayout {
             padding: Theme.gutter;
             spacing: Theme.gutter;
 
-            // Column 1: label (bold) plus a smaller muted help line.
+            // Column 1: label (bold) plus a smaller muted help line. Fixed
+            // width so labels/controls line up across rows.
             VerticalLayout {
                 width: Theme.label-column-width;
                 alignment: center;
@@ -93,104 +99,146 @@ export component SettingsList inherits ListView {
                 }
             }
 
-            // Column 2: the control itself. Exactly one branch is active
-            // per row (see the `kind` doc comment above); every branch is
-            // left-aligned within this fixed-width column, so the control
-            // always starts at the same x no matter which kind it is.
-            HorizontalLayout {
-                width: Theme.control-column-width;
-                alignment: start;
+            // Columns 2+3: control, then its value/manual-entry slot. Kinds
+            // 0/1 (sliders) and every other kind are mutually exclusive `if`
+            // branches so each one pairs its control with a value slot of
+            // the same `Theme.value-column-width` (empty for non-sliders);
+            // that keeps the status column below always starting at the
+            // same x, independent of which kind a row renders.
+            if row.kind == 0 || row.kind == 1: HorizontalLayout {
+                horizontal-stretch: 1;
+                spacing: 8px;
 
-                if row.kind == 0 || row.kind == 1: HorizontalLayout {
-                    spacing: 8px;
+                // Committed on `released`, not `changed`: writing on every
+                // drag pixel used to trigger a full-category reload that
+                // replaced this very model, destroying and recreating the
+                // slider mid-drag (it would visually snap back and stop
+                // tracking the pointer). `released` fires once, when the
+                // drag/interaction ends. `horizontal-stretch` makes it fill
+                // whatever width the row has to spare instead of a fixed
+                // 190px, so it grows and shrinks with the window.
+                slider := Slider {
+                    horizontal-stretch: 1;
+                    minimum: row.min;
+                    maximum: row.max;
+                    value: row.int-value;
+                    enabled: row.available && row.mode-ok;
+                    released(v) => { edit-slider(row.attr, round(v)); }
+                }
+
+                HorizontalLayout {
+                    width: Theme.value-column-width;
+                    spacing: 6px;
                     alignment: start;
 
-                    // Committed on `released`, not `changed`: writing on
-                    // every drag pixel used to trigger a full-category
-                    // reload that replaced this very model, destroying and
-                    // recreating the slider mid-drag (it would visually
-                    // snap back and stop tracking the pointer). `released`
-                    // fires once, when the drag/interaction ends.
-                    slider := Slider {
-                        width: 190px;
-                        minimum: row.min;
-                        maximum: row.max;
-                        value: row.int-value;
-                        enabled: row.available && row.mode-ok;
-                        released(v) => { edit-slider(row.attr, round(v)); }
-                    }
                     // Bound to the slider's own live `value`, not to
-                    // `row.display`, so the number keeps up with the drag
-                    // without a round trip through the worker. Mirrors
-                    // `Kind::display`'s own formatting for `Percent`
-                    // ("80%", no space) and `IntRange` ("5 deg", one
-                    // space) exactly, since nothing here goes through that
-                    // function any more mid-drag.
-                    Text {
-                        text: row.kind == 0
-                            ? "\{round(slider.value)}\{row.unit}"
-                            : "\{round(slider.value)} \{row.unit}";
-                        vertical-alignment: center;
-                        color: Theme.text-color;
+                    // `row.int-value`, so the field keeps up with the drag
+                    // without a round trip through the worker. Typing into
+                    // it breaks this binding the moment a key is pressed
+                    // (Slint treats user edits of an in-out property as an
+                    // imperative assignment), which is exactly what is
+                    // wanted: the field must hold whatever the user is
+                    // typing, not get overwritten mid-edit. A successful
+                    // `edit-slider` (here or from the slider itself) always
+                    // ends in a `RowUpdated` that replaces the whole `rows`
+                    // model, which recreates this row from scratch and
+                    // restores a fresh, live binding.
+                    valueField := LineEdit {
+                        width: 64px;
+                        text: "\{round(slider.value)}";
+                        enabled: row.available && row.mode-ok;
+                        // Bare number only, no unit: parse and clamp to the
+                        // row's range, then commit through the same
+                        // `edit-slider` path the slider's `released` uses.
+                        // Unparseable input reverts to the current value
+                        // instead of committing.
+                        accepted(t) => {
+                            if (t.is-float()) {
+                                edit-slider(row.attr, round(clamp(t.to-float(), row.min, row.max)));
+                            } else {
+                                self.text = "\{round(slider.value)}";
+                            }
+                        }
                     }
-                }
-
-                if row.kind == 2: ComboBox {
-                    width: 220px;
-                    model: row.choices;
-                    current-index: row.int-value;
-                    enabled: row.available && row.mode-ok;
-                    selected(v) => { edit-choice(row.attr, self.current-index); }
-                }
-
-                if row.kind == 3: Switch {
-                    checked: row.bool-value;
-                    enabled: row.available && row.mode-ok;
-                    toggled => { edit-switch(row.attr, self.checked); }
-                }
-
-                if row.kind == 4: LineEdit {
-                    width: 220px;
-                    text: row.text-value;
-                    enabled: row.available && row.mode-ok;
-                    accepted(t) => { edit-text(row.attr, t); }
-                }
-
-                if row.kind == 5: Button {
-                    text: row.label;
-                    enabled: row.available && row.mode-ok;
-                    clicked => { trigger(row.attr); }
-                }
-
-                if row.kind == 6: Text {
-                    text: row.display;
-                    vertical-alignment: center;
-                    color: Theme.text-color;
-                }
-
-                if row.kind == 7: Button {
-                    text: "Edit curve (" + row.display + ")";
-                    enabled: row.available && row.mode-ok;
-                    clicked => { edit-curve(row.attr); }
-                }
-
-                if row.kind == 8: Button {
-                    text: "Edit colors (" + row.display + ")";
-                    enabled: row.available && row.mode-ok;
-                    clicked => { edit-rgb(row.attr); }
-                }
-
-                if row.kind == 9: Button {
-                    text: "Edit slot names";
-                    enabled: row.available && row.mode-ok;
-                    clicked => { edit-slot-text(row.attr); }
+                    Text {
+                        text: row.kind == 0 ? "%" : row.unit;
+                        vertical-alignment: center;
+                        color: Theme.muted-text-color;
+                    }
                 }
             }
 
-            // Column 3: a fixed-position status slot (error / unavailable /
-            // wrong-mode plus the "Switch mode" button). Always
-            // instantiated, even when showing nothing, so its own
-            // appearance or disappearance never shifts column 2.
+            if row.kind != 0 && row.kind != 1: HorizontalLayout {
+                horizontal-stretch: 1;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    alignment: start;
+
+                    if row.kind == 2: ComboBox {
+                        width: 220px;
+                        model: row.choices;
+                        current-index: row.int-value;
+                        enabled: row.available && row.mode-ok;
+                        selected(v) => { edit-choice(row.attr, self.current-index); }
+                    }
+
+                    if row.kind == 3: Switch {
+                        checked: row.bool-value;
+                        enabled: row.available && row.mode-ok;
+                        toggled => { edit-switch(row.attr, self.checked); }
+                    }
+
+                    if row.kind == 4: LineEdit {
+                        width: 220px;
+                        text: row.text-value;
+                        enabled: row.available && row.mode-ok;
+                        accepted(t) => { edit-text(row.attr, t); }
+                    }
+
+                    if row.kind == 5: Button {
+                        text: row.label;
+                        enabled: row.available && row.mode-ok;
+                        clicked => { trigger(row.attr); }
+                    }
+
+                    if row.kind == 6: Text {
+                        text: row.display;
+                        vertical-alignment: center;
+                        color: Theme.text-color;
+                    }
+
+                    if row.kind == 7: Button {
+                        text: "Edit curve (" + row.display + ")";
+                        enabled: row.available && row.mode-ok;
+                        clicked => { edit-curve(row.attr); }
+                    }
+
+                    if row.kind == 8: Button {
+                        text: "Edit colors (" + row.display + ")";
+                        enabled: row.available && row.mode-ok;
+                        clicked => { edit-rgb(row.attr); }
+                    }
+
+                    if row.kind == 9: Button {
+                        text: "Edit slot names";
+                        enabled: row.available && row.mode-ok;
+                        clicked => { edit-slot-text(row.attr); }
+                    }
+                }
+
+                // Same-width empty placeholder as the slider rows' value
+                // slot, so the status column always starts at the same x.
+                Rectangle {
+                    width: Theme.value-column-width;
+                }
+            }
+
+            // Status slot (error / unavailable / wrong-mode plus the
+            // "Switch mode" button). Always instantiated, even when showing
+            // nothing, at a position now fixed by the value slot/placeholder
+            // before it rather than by its own width.
             HorizontalLayout {
                 alignment: start;
                 spacing: 8px;
@@ -220,6 +268,7 @@ export component SettingsList inherits ListView {
 
         Rectangle {
             y: parent.height - 1px;
+            width: parent.width;
             height: 1px;
             background: Palette.border;
         }
