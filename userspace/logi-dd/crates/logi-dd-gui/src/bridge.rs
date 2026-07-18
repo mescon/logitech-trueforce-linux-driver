@@ -244,4 +244,36 @@ mod tests {
         let spec = Device::<FakeSysfs>::spec("wheel_serial").unwrap();
         assert_eq!(spec.access, Access::ReadOnly);
     }
+
+    #[test]
+    fn text_row_maps_to_text_tag_with_text_value() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_slot_name", "MYSLOT");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm.rows_for(Category::Leds)
+            .into_iter()
+            .find(|r| r.attr == "wheel_led_slot_name")
+            .expect("no row for wheel_led_slot_name");
+
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.kind, KIND_TEXT);
+        assert_eq!(sr.text_value, "MYSLOT");
+    }
+
+    #[test]
+    fn action_row_maps_to_action_tag_with_trigger_display() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_apply", "1");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm.rows_for(Category::Leds)
+            .into_iter()
+            .find(|r| r.attr == "wheel_led_apply")
+            .expect("no row for wheel_led_apply");
+
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.kind, KIND_ACTION);
+        assert_eq!(sr.display, "[trigger]");
+    }
 }
