@@ -12,6 +12,31 @@ pub struct Row {
     pub available: bool,
 }
 
+/// The index of the synthetic "Setup" sidebar entry, one past the last real
+/// device category. It is not part of `logi_dd_core::Category`: Setup shows
+/// the game helpers (logi-ffb, the TrueForce SDK shim), not a device
+/// setting, so `cat_idx` reaching this value means "show the Setup body"
+/// rather than "look up `Category::ALL[cat_idx]`".
+pub const SETUP_INDEX: usize = Category::ALL.len();
+
+/// Whether `bin` resolves on `$PATH`: a plain directory scan rather than a
+/// subprocess spawn, so a missing binary costs nothing at startup. Good
+/// enough for a presence hint; the actual install/uninstall run still goes
+/// through `std::process::Command`, which does its own `$PATH` lookup.
+fn found_on_path(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
+        .unwrap_or(false)
+}
+
+/// Resolve the TrueForce SDK shim installer's binary name: prefer the
+/// packaged `logitech-trueforce-install-shim`, falling back to
+/// `install-tf-shim.sh` (a dev checkout's `tools/` script, also expected on
+/// `PATH` there). `None` means neither was found.
+fn resolve_shim_binary() -> Option<&'static str> {
+    ["logitech-trueforce-install-shim", "install-tf-shim.sh"].into_iter().find(|bin| found_on_path(bin))
+}
+
 pub struct App<S: SysfsIo> {
     pub device: Device<S>,
     pub cat_idx: usize,
@@ -22,6 +47,11 @@ pub struct App<S: SysfsIo> {
     /// The modal curve editor, active while shaping a `Kind::Curve` attribute.
     pub curve_edit: Option<CurveEditor>,
     pub quit: bool,
+    /// Whether `logi-ffb` was found on `PATH` at startup (Setup body status).
+    pub ffb_found: bool,
+    /// The TrueForce SDK shim installer's resolved binary name, or `None` if
+    /// neither candidate name was found on `PATH` at startup.
+    pub shim_binary: Option<&'static str>,
 }
 
 impl<S: SysfsIo> App<S> {
@@ -35,6 +65,8 @@ impl<S: SysfsIo> App<S> {
             edit: None,
             curve_edit: None,
             quit: false,
+            ffb_found: found_on_path("logi-ffb"),
+            shim_binary: resolve_shim_binary(),
         };
         a.reload();
         a
@@ -44,7 +76,16 @@ impl<S: SysfsIo> App<S> {
         Category::ALL[self.cat_idx]
     }
 
+    /// Whether the synthetic "Setup" sidebar entry is selected.
+    pub fn is_setup(&self) -> bool {
+        self.cat_idx == SETUP_INDEX
+    }
+
     pub fn reload(&mut self) {
+        if self.is_setup() {
+            self.rows.clear();
+            return;
+        }
         let cat = self.category();
         self.rows = REGISTRY
             .iter()
@@ -62,10 +103,43 @@ impl<S: SysfsIo> App<S> {
     }
 
     pub fn move_cat(&mut self, d: i32) {
-        let n = Category::ALL.len() as i32;
+        // +1 for the trailing Setup entry, one past the last real category.
+        let n = (Category::ALL.len() + 1) as i32;
         self.cat_idx = ((self.cat_idx as i32 + d).rem_euclid(n)) as usize;
         self.row_idx = 0;
         self.reload();
+    }
+
+    /// Run the TrueForce SDK shim installer with `arg` (`--all-steam` or
+    /// `--uninstall`), blocking: the TUI's event loop is synchronous, so
+    /// there is no worker thread to hand this off to, and the run is brief.
+    /// Never sudo. A missing binary or a spawn failure lands in the status
+    /// line instead of taking the TUI down.
+    pub fn run_shim(&mut self, arg: &'static str, verb: &str) {
+        let Some(bin) = self.shim_binary else {
+            self.status = "shim: installer not found on PATH".to_string();
+            return;
+        };
+        self.status = "installing...".to_string();
+        match std::process::Command::new(bin).arg(arg).output() {
+            Ok(out) if out.status.success() => {
+                self.status = format!("shim {verb}: ok");
+            }
+            Ok(out) => {
+                let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
+                combined.push_str(&String::from_utf8_lossy(&out.stderr));
+                let last = combined
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("failed")
+                    .to_string();
+                self.status = format!("shim {verb}: {last}");
+            }
+            Err(e) => {
+                self.status = format!("shim {verb}: failed to run {bin}: {e}");
+            }
+        }
     }
 
     pub fn move_row(&mut self, d: i32) {
@@ -199,6 +273,17 @@ impl<S: SysfsIo> App<S> {
                 Right => ed.bump(1),
                 Backspace => ed.backspace(),
                 Char(c) => ed.push_char(c),
+                _ => {}
+            }
+            return;
+        }
+        if self.is_setup() {
+            match key {
+                Char('q') => self.quit = true,
+                Left => self.move_cat(-1),
+                Right => self.move_cat(1),
+                Char('i') => self.run_shim("--all-steam", "install"),
+                Char('u') => self.run_shim("--uninstall", "uninstall"),
                 _ => {}
             }
             return;
@@ -347,6 +432,71 @@ mod tests {
             a.device.read("wheel_throttle_curve").unwrap(),
             Value::Curve(vec![])
         );
+    }
+
+    #[test]
+    fn move_cat_reaches_and_leaves_setup() {
+        let mut a = app();
+        // step through every real category, landing on Setup right after
+        // the last one.
+        for _ in 0..Category::ALL.len() {
+            a.move_cat(1);
+        }
+        assert!(a.is_setup(), "cat_idx {} should be the Setup entry", a.cat_idx);
+        assert!(a.rows.is_empty(), "Setup has no settings rows");
+        // one more step wraps back around to the first real category.
+        a.move_cat(1);
+        assert!(!a.is_setup());
+        assert_eq!(a.cat_idx, 0);
+        // stepping backward from the first category reaches Setup too.
+        a.move_cat(-1);
+        assert!(a.is_setup());
+    }
+
+    #[test]
+    fn setup_view_ignores_row_and_edit_keys() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        for _ in 0..Category::ALL.len() {
+            a.move_cat(1);
+        }
+        assert!(a.is_setup());
+        a.on_key(KeyCode::Enter); // no rows to edit; must not open an editor
+        assert!(a.edit.is_none());
+        assert!(a.curve_edit.is_none());
+    }
+
+    #[test]
+    fn run_shim_reports_missing_binary_without_spawning() {
+        let mut a = app();
+        a.shim_binary = None;
+        a.run_shim("--all-steam", "install");
+        assert!(a.status.contains("not found"), "status: {}", a.status);
+    }
+
+    #[test]
+    fn run_shim_reports_success() {
+        let mut a = app();
+        a.shim_binary = Some("true"); // exists on PATH, exits 0, ignores args
+        a.run_shim("--all-steam", "install");
+        assert_eq!(a.status, "shim install: ok");
+    }
+
+    #[test]
+    fn run_shim_reports_failure_without_crashing() {
+        let mut a = app();
+        a.shim_binary = Some("false"); // exists on PATH, exits non-zero
+        a.run_shim("--uninstall", "uninstall");
+        assert!(a.status.starts_with("shim uninstall:"), "status: {}", a.status);
+        assert_ne!(a.status, "shim uninstall: ok");
+    }
+
+    #[test]
+    fn run_shim_reports_spawn_failure_without_crashing() {
+        let mut a = app();
+        a.shim_binary = Some("this-binary-does-not-exist-anywhere");
+        a.run_shim("--all-steam", "install");
+        assert!(a.status.contains("failed to run"), "status: {}", a.status);
     }
 
     #[test]

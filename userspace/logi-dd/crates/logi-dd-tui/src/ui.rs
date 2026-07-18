@@ -5,7 +5,7 @@ use logi_dd_core::{Category, Device, Mode, Value};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::collections::BTreeMap;
 
@@ -55,8 +55,11 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         .constraints([Constraint::Length(20), Constraint::Min(1)])
         .split(root[1]);
 
-    // categories
-    let cats: Vec<ListItem> = Category::ALL
+    // categories, plus a trailing synthetic "Setup" entry (index
+    // `Category::ALL.len()`, i.e. `app::SETUP_INDEX`) that is not a real
+    // `Category`: it shows the game helpers (logi-ffb, the TrueForce SDK
+    // shim) instead of a settings list.
+    let mut cats: Vec<ListItem> = Category::ALL
         .iter()
         .enumerate()
         .map(|(i, c)| {
@@ -68,74 +71,84 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
             ListItem::new(c.label()).style(style)
         })
         .collect();
+    cats.push(ListItem::new("Setup").style(if app.is_setup() {
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    }));
     f.render_widget(
         List::new(cats).block(Block::default().borders(Borders::ALL).title("Category")),
         body[0],
     );
 
-    // settings in the selected category
-    let names = app.profile_names();
-    let mut rows: Vec<ListItem> = app
-        .rows
-        .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            let spec = Device::<S>::spec(row.attr);
-            // the edit state, only for the row being edited
-            let editing = app.edit.as_ref().filter(|_| i == app.row_idx);
+    if app.is_setup() {
+        draw_setup(f, app, body[1]);
+    } else {
+        // settings in the selected category
+        let names = app.profile_names();
+        let mut rows: Vec<ListItem> = app
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let spec = Device::<S>::spec(row.attr);
+                // the edit state, only for the row being edited
+                let editing = app.edit.as_ref().filter(|_| i == app.row_idx);
 
-            let (val, mut val_style) = if !row.available {
-                ("(not on this wheel)".to_string(), Style::default().fg(Color::DarkGray))
-            } else if row.attr == "wheel_profile" {
-                // show the profile number with its onboard name
-                let n = match (editing.map(|e| &e.draft), &row.value) {
-                    (Some(Value::Int(n)), _) => *n,
-                    (_, Ok(Value::Int(n))) => *n,
-                    _ => -1,
-                };
-                (profile_label(n, &names), value_style(editing.is_some(), false))
-            } else {
-                match (&row.value, spec) {
-                    (Ok(v), Some(s)) => {
-                        let text = match editing {
-                            Some(ed) => ed.display(),
-                            None => s.kind.display(v),
-                        };
-                        (text, value_style(editing.is_some(), false))
+                let (val, mut val_style) = if !row.available {
+                    ("(not on this wheel)".to_string(), Style::default().fg(Color::DarkGray))
+                } else if row.attr == "wheel_profile" {
+                    // show the profile number with its onboard name
+                    let n = match (editing.map(|e| &e.draft), &row.value) {
+                        (Some(Value::Int(n)), _) => *n,
+                        (_, Ok(Value::Int(n))) => *n,
+                        _ => -1,
+                    };
+                    (profile_label(n, &names), value_style(editing.is_some(), false))
+                } else {
+                    match (&row.value, spec) {
+                        (Ok(v), Some(s)) => {
+                            let text = match editing {
+                                Some(ed) => ed.display(),
+                                None => s.kind.display(v),
+                            };
+                            (text, value_style(editing.is_some(), false))
+                        }
+                        (Err(e), _) => (format!("<{e}>"), value_style(false, true)),
+                        _ => ("?".to_string(), Style::default()),
                     }
-                    (Err(e), _) => (format!("<{e}>"), value_style(false, true)),
-                    _ => ("?".to_string(), Style::default()),
+                };
+                if editing.is_some() {
+                    val_style = val_style.add_modifier(Modifier::BOLD);
                 }
-            };
-            if editing.is_some() {
-                val_style = val_style.add_modifier(Modifier::BOLD);
-            }
 
-            let line = Line::from(vec![
-                Span::styled(format!("{:<24}", row.label), Style::default().fg(Color::Gray)),
+                let line = Line::from(vec![
+                    Span::styled(format!("{:<24}", row.label), Style::default().fg(Color::Gray)),
+                    Span::raw(" "),
+                    Span::styled(val, val_style),
+                ]);
+                let mut item = ListItem::new(line);
+                if i == app.row_idx {
+                    item = item.style(Style::default().add_modifier(Modifier::REVERSED));
+                }
+                item
+            })
+            .collect();
+        // On the Info category, append the project link so users know where
+        // to find docs and source (a terminal cannot open it, but it is
+        // copyable).
+        if app.category() == Category::Info {
+            rows.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("{:<24}", "Documentation"), Style::default().fg(Color::Gray)),
                 Span::raw(" "),
-                Span::styled(val, val_style),
-            ]);
-            let mut item = ListItem::new(line);
-            if i == app.row_idx {
-                item = item.style(Style::default().add_modifier(Modifier::REVERSED));
-            }
-            item
-        })
-        .collect();
-    // On the Info category, append the project link so users know where to
-    // find docs and source (a terminal cannot open it, but it is copyable).
-    if Category::ALL[app.cat_idx] == Category::Info {
-        rows.push(ListItem::new(Line::from(vec![
-            Span::styled(format!("{:<24}", "Documentation"), Style::default().fg(Color::Gray)),
-            Span::raw(" "),
-            Span::styled(logi_dd_core::PROJECT_URL, Style::default().fg(Color::Cyan)),
-        ])));
+                Span::styled(logi_dd_core::PROJECT_URL, Style::default().fg(Color::Cyan)),
+            ])));
+        }
+        f.render_widget(
+            List::new(rows).block(Block::default().borders(Borders::ALL).title("Settings")),
+            body[1],
+        );
     }
-    f.render_widget(
-        List::new(rows).block(Block::default().borders(Borders::ALL).title("Settings")),
-        body[1],
-    );
 
     // The curve editor takes over the body area as a modal when active.
     if let Some(ce) = &app.curve_edit {
@@ -147,6 +160,8 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         "curve:  up/down field   <-/-> adjust   + add point   - delete   Enter save   Esc cancel"
     } else if app.edit.is_some() {
         "editing:  <-/->  adjust    type  text    Enter  commit    Esc  cancel"
+    } else if app.is_setup() {
+        "<-/-> category   i install shim (all Steam)   u uninstall shim   q quit"
     } else {
         "up/down select   <-/-> category   Enter edit   d toggle desktop/onboard   r refresh   q quit"
     };
@@ -161,6 +176,69 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         )),
     ];
     f.render_widget(Paragraph::new(lines), root[2]);
+}
+
+/// Render the Setup body: the two game helpers (logi-ffb, the TrueForce SDK
+/// shim), each with a status line and the action a user can take from here.
+/// Shown instead of the settings list whenever `app.is_setup()`, mirroring
+/// the GUI's Setup page in text form.
+fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+    let found_style = |found: bool| {
+        if found {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::Red)
+        }
+    };
+
+    let shim_found = app.shim_binary.is_some();
+    let lines = vec![
+        Line::from(Span::styled(
+            "Force feedback in games (logi-ffb)",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(
+            "DirectInput sims run through Proton (for example Le Mans Ultimate) get no \
+             force feedback by default. Running the game through logi-ffb gives them FFB \
+             via a virtual wheel.",
+        ),
+        Line::from(vec![
+            Span::raw("logi-ffb: "),
+            Span::styled(
+                if app.ffb_found { "found on PATH" } else { "not found on PATH" },
+                found_style(app.ffb_found),
+            ),
+        ]),
+        Line::from("Add to the game's Steam launch options:"),
+        Line::from(Span::styled(
+            "  logi-ffb %command%",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "TrueForce in SDK games (shim)",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(
+            "Installs Logitech's signed TrueForce/Wheel SDK DLLs into Steam Proton \
+             prefixes so SDK sims (ACC, AC EVO) get TrueForce. Uses the real DLLs, no \
+             injection.",
+        ),
+        Line::from(vec![
+            Span::raw("Installer: "),
+            Span::styled(
+                if shim_found { "found on PATH" } else { "not found on PATH" },
+                found_style(shim_found),
+            ),
+        ]),
+        Line::from("Press [i] to install into all Steam games, [u] to uninstall."),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title("Setup")),
+        area,
+    );
 }
 
 /// Render the modal curve editor over `area`: a left field panel and a right
