@@ -329,6 +329,17 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         });
     }
+    {
+        let worker = worker.clone();
+        let current_category = current_category.clone();
+        app.on_edit_pair(move |attr, lower, upper| {
+            worker.request(Request::Edit {
+                category: get(&current_category),
+                attr: attr.to_string(),
+                input: WidgetInput::Pair(lower.clamp(0, 255) as u8, upper.clamp(0, 255) as u8),
+            });
+        });
+    }
 
     {
         let known_values = known_values.clone();

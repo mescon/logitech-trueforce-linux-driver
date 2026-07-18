@@ -18,8 +18,8 @@ pub const KIND_ENUM: i32 = 2;
 pub const KIND_TOGGLE: i32 = 3;
 pub const KIND_TEXT: i32 = 4;
 pub const KIND_ACTION: i32 = 5;
-/// Everything without a live editor yet (the deadzone pair) and any
-/// read-only attribute: rendered as a plain value.
+/// Any read-only attribute, regardless of its `Kind`: rendered as a plain
+/// value.
 pub const KIND_READONLY: i32 = 6;
 /// A curve row: rendered as a button that opens the curve editor overlay.
 pub const KIND_CURVE: i32 = 7;
@@ -29,6 +29,8 @@ pub const KIND_RGB: i32 = 8;
 /// A slot-text row (onboard profile renaming): rendered as a button that
 /// opens the slot-text editor overlay.
 pub const KIND_SLOTTEXT: i32 = 9;
+/// A pedal deadzone pair: rendered as two SpinBoxes (lower/upper).
+pub const KIND_PAIR: i32 = 10;
 
 fn is_read_only(attr: &str) -> bool {
     REGISTRY.iter().any(|s| s.attr == attr && s.access == Access::ReadOnly)
@@ -48,7 +50,7 @@ fn kind_tag(attr: &str, kind: &Kind) -> i32 {
         Kind::Curve => KIND_CURVE,
         Kind::RgbStrip { .. } => KIND_RGB,
         Kind::SlotText { .. } => KIND_SLOTTEXT,
-        Kind::Pair { .. } => KIND_READONLY,
+        Kind::Pair { .. } => KIND_PAIR,
     }
 }
 
@@ -61,6 +63,7 @@ pub fn to_setting_row(row: &Row) -> SettingRow {
     let (min, max, step, unit) = match kind {
         Kind::Percent => (0, 100, 1, "%"),
         Kind::IntRange { min, max, step, unit } => (min, max, step, unit),
+        Kind::Pair { max } => (0, i32::from(max), 1, "%"),
         _ => (0, 0, 0, ""),
     };
 
@@ -73,6 +76,12 @@ pub fn to_setting_row(row: &Row) -> SettingRow {
         (Kind::Percent, Some(Value::Percent(n))) => i32::from(*n),
         (Kind::IntRange { .. }, Some(Value::Int(n))) => *n,
         (Kind::Enum(_), Some(Value::Enum(n))) => i32::from(*n),
+        (Kind::Pair { .. }, Some(Value::Pair(lo, _))) => i32::from(*lo),
+        _ => 0,
+    };
+
+    let int_value2 = match (&kind, &row.value) {
+        (Kind::Pair { .. }, Some(Value::Pair(_, hi))) => i32::from(*hi),
         _ => 0,
     };
 
@@ -101,6 +110,7 @@ pub fn to_setting_row(row: &Row) -> SettingRow {
         help: help.into(),
         kind: tag,
         int_value,
+        int_value2,
         bool_value,
         text_value: text_value.into(),
         display: display.into(),
@@ -438,6 +448,27 @@ mod tests {
         let sr = to_setting_row(&row_for("wheel_ffb_filter_auto"));
         assert_eq!(sr.kind, KIND_TOGGLE);
         assert!(sr.bool_value);
+    }
+
+    #[test]
+    fn pair_row_maps_to_pair_tag_with_both_values() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_throttle_deadzone", "8 5");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm
+            .rows_for(Category::Pedals)
+            .into_iter()
+            .find(|r| r.attr == "wheel_throttle_deadzone")
+            .expect("no row for wheel_throttle_deadzone");
+
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.kind, KIND_PAIR);
+        assert_eq!(sr.int_value, 8);
+        assert_eq!(sr.int_value2, 5);
+        assert_eq!(sr.min, 0);
+        assert_eq!(sr.max, 99);
+        assert_eq!(sr.unit, "%");
     }
 
     #[test]

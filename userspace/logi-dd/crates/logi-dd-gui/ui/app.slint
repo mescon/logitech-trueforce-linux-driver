@@ -53,6 +53,7 @@ export component App inherits Window {
     callback edit-switch(string, bool);
     callback edit-text(string, string);
     callback trigger(string);
+    callback edit-pair(string, int, int);
 
     // Curve editor overlay: opened by a `Curve`-kind row's "Edit curve"
     // button. The Rust side owns the in-flight `Curve` and pushes the
@@ -254,6 +255,7 @@ export component App inherits Window {
                     edit-switch(attr, v) => { root.edit-switch(attr, v); }
                     edit-text(attr, v) => { root.edit-text(attr, v); }
                     trigger(attr) => { root.trigger(attr); }
+                    edit-pair(attr, lo, hi) => { root.edit-pair(attr, lo, hi); }
                     edit-curve(attr) => { root.edit-curve(attr); }
                     edit-rgb(attr) => { root.edit-rgb(attr); }
                     edit-slot-text(attr) => { root.edit-slot-text(attr); }

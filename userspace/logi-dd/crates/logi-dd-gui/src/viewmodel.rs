@@ -5,12 +5,12 @@
 //!
 //! The window (`worker`/`main`) wires up `rows_for`/`edit`/`info`/`set_mode`
 //! for every category now, plus the curve editor's `WidgetInput::Curve`, the
-//! RGB strip editor's `WidgetInput::Rgb`, and the slot-text editor's
-//! `WidgetInput::SlotText`. `mode`/`refresh`/`device_read` and one
-//! `WidgetInput` variant (`Pair`, for the pedal/handbrake deadzone picker)
-//! are still ahead of any live widget: that is a later task's job. They are
-//! marked `#[allow(dead_code)]` individually rather than blanket-silencing
-//! the whole module.
+//! RGB strip editor's `WidgetInput::Rgb`, the slot-text editor's
+//! `WidgetInput::SlotText`, and the pedal deadzone pair's
+//! `WidgetInput::Pair`. `mode`/`refresh`/`device_read` are still ahead of any
+//! live widget: that is a later task's job. They are marked
+//! `#[allow(dead_code)]` individually rather than blanket-silencing the
+//! whole module.
 
 use logi_dd_core::curve::Curve;
 use logi_dd_core::sysfs::SysfsIo;
@@ -28,7 +28,6 @@ pub enum WidgetInput {
     /// converts this to a single-slot `Value::SlotName` write.
     SlotText { slot: u8, text: String },
     /// A pedal/handbrake deadzone's `(lower, upper)` percent pair.
-    #[allow(dead_code)]
     Pair(u8, u8),
     Curve(Curve),
     Rgb(Vec<Color>),

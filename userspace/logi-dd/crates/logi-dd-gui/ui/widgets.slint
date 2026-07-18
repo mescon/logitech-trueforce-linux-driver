@@ -9,20 +9,21 @@ import { Theme } from "theme.slint";
 //   3 = toggle    (Switch, `bool-value`)
 //   4 = text      (LineEdit, `text-value`)
 //   5 = action    (Button, no value, fires `trigger`)
-//   6 = readonly  (plain Text showing `display`; also used for kinds that do
-//                  not have a dedicated live editor yet: the deadzone pair)
+//   6 = readonly  (plain Text showing `display`)
 //   7 = curve     (Button that opens the curve editor overlay, fires
 //                  `edit-curve`)
 //   8 = rgb strip (Button that opens the RGB strip editor overlay, fires
 //                  `edit-rgb`)
 //   9 = slot text (Button that opens the slot-text editor overlay, fires
 //                  `edit-slot-text`)
+//   10 = pair (two SpinBoxes, lower/upper, e.g. a deadzone)
 export struct SettingRow {
     attr: string,
     label: string,
     help: string,
     kind: int,
     int-value: int,
+    int-value2: int,
     bool-value: bool,
     text-value: string,
     display: string,
@@ -55,6 +56,10 @@ export component SettingsList inherits ListView {
     // opens the slot-text editor overlay for `attr`, seeded from that row's
     // current value.
     callback edit-slot-text(string);
+    // Fired by a pair row's (kind 10, a pedal deadzone) SpinBoxes; `attr`
+    // plus the current lower/upper values (whichever one just changed, and
+    // the other read straight off the row it did not touch).
+    callback edit-pair(string, int, int);
     // Fired by the per-row "Switch mode" button, shown on a row whose
     // `mode-ok` is false. It does not say which mode: with exactly two
     // modes, whichever one the wheel is not currently in is the one this
@@ -216,6 +221,65 @@ export component SettingsList inherits ListView {
                         text: "Edit slot names";
                         enabled: row.available && row.mode-ok;
                         clicked => { edit-slot-text(row.attr); }
+                    }
+
+                    // Two SpinBoxes, same styling as the slider rows' exact-
+                    // entry SpinBox above: lower deadzone first, then upper.
+                    // Each fires `edit-pair` with both values (the one just
+                    // edited, plus the other read straight off the row) so
+                    // neither field ever clobbers the other's last commit.
+                    if row.kind == 10: HorizontalLayout {
+                        spacing: 12px;
+
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text {
+                                text: "Lower";
+                                font-size: 11px;
+                                color: Theme.muted-text-color;
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                SpinBox {
+                                    width: 90px;
+                                    minimum: 0;
+                                    maximum: row.max;
+                                    value: row.int-value;
+                                    enabled: row.available && row.mode-ok;
+                                    edited(v) => { edit-pair(row.attr, v, row.int-value2); }
+                                }
+                                Text {
+                                    text: "%";
+                                    vertical-alignment: center;
+                                    color: Theme.muted-text-color;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text {
+                                text: "Upper";
+                                font-size: 11px;
+                                color: Theme.muted-text-color;
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                SpinBox {
+                                    width: 90px;
+                                    minimum: 0;
+                                    maximum: row.max;
+                                    value: row.int-value2;
+                                    enabled: row.available && row.mode-ok;
+                                    edited(v) => { edit-pair(row.attr, row.int-value, v); }
+                                }
+                                Text {
+                                    text: "%";
+                                    vertical-alignment: center;
+                                    color: Theme.muted-text-color;
+                                }
+                            }
+                        }
                     }
                 }
 
