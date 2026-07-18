@@ -8,6 +8,7 @@ pub use value::{Color, Value};
 pub mod kind;
 pub use kind::Kind;
 pub mod curve;
+pub mod lightsync;
 pub mod setting;
 pub use setting::{Access, Category, ModeReq, SettingSpec};
 pub mod registry;
