@@ -9879,6 +9879,25 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 
 		if (slot < HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 			hidpp_dd_lightsync_apply_slot(hidpp, ff, slot, true);
+	} else {
+		/*
+		 * fn3 only STAGES the effect; the strip keeps showing its
+		 * previous image until a zero-parameter fn6 commit arrives
+		 * (G Hub sends the same fn3+fn6 pair; hardware-verified
+		 * 2026-07-19: a bare fn3 changed nothing visibly, a manual
+		 * fn6 probe was acked and repainted). Effect 5 skips this
+		 * because apply_slot's RGB upload already repaints; fn6
+		 * during a colour upload is what the wheel NAKs, not this
+		 * standalone commit.
+		 */
+		u8 commit[3] = { 0x00, 0x00, 0x00 };
+
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
+						  HIDPP_DD_LIGHTSYNC_FN_SET_CONFIG,
+						  commit, 3, &response);
+		ret = hidpp_errno(hid, ret, "commit LED effect");
+		if (ret)
+			return ret;
 	}
 
 	dd_info(hid, "LED effect set to %d (success)\n", effect);
