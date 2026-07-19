@@ -33,14 +33,9 @@ pub struct EffectEdit {
 /// device category. It is not part of `logi_dd_core::Category`: Setup shows
 /// the game helpers (logi-ffb, the TrueForce SDK shim), not a device
 /// setting, so `cat_idx` reaching this value means "show the Setup body"
-/// rather than "look up `Category::ALL[cat_idx]`".
+/// rather than "look up `Category::ALL[cat_idx]`". It is the only synthetic
+/// entry: the live input tester lives on the Info category's page.
 pub const SETUP_INDEX: usize = Category::ALL.len();
-
-/// The index of the synthetic "Test" sidebar entry, right after Setup.
-/// Also not a `Category`: it shows the live input tester (steering,
-/// buttons, pedals) and the guarded force simulations, reading the
-/// wheel's evdev node rather than sysfs.
-pub const TEST_INDEX: usize = Category::ALL.len() + 1;
 
 /// Resolve the SDK folder the Setup view starts with:
 /// `$LOGITECH_TRUEFORCE_SDK_DIR` when set, else
@@ -155,15 +150,16 @@ impl<S: SysfsIo> App<S> {
         self.cat_idx == SETUP_INDEX
     }
 
-    /// Whether the synthetic "Test" sidebar entry is selected.
-    pub fn is_test(&self) -> bool {
-        self.cat_idx == TEST_INDEX
+    /// Whether the Info category is selected (the page that carries the
+    /// live input monitor alongside the identity rows).
+    pub fn is_info(&self) -> bool {
+        !self.is_setup() && self.category() == Category::Info
     }
 
     /// Whether the main loop should poll with a short timeout and tick
     /// the evdev monitor instead of blocking on the next key.
     pub fn test_polling(&self) -> bool {
-        self.is_test() && self.test.monitoring()
+        self.is_info() && self.test.monitoring()
     }
 
     /// The wheel's configured rotation range for the Test view's degree
@@ -176,7 +172,7 @@ impl<S: SysfsIo> App<S> {
     }
 
     pub fn reload(&mut self) {
-        if self.is_setup() || self.is_test() {
+        if self.is_setup() {
             self.rows.clear();
             return;
         }
@@ -328,9 +324,8 @@ impl<S: SysfsIo> App<S> {
     }
 
     pub fn move_cat(&mut self, d: i32) {
-        // +2 for the trailing Setup and Test entries, past the last real
-        // category.
-        let n = (Category::ALL.len() + 2) as i32;
+        // +1 for the trailing Setup entry, past the last real category.
+        let n = (Category::ALL.len() + 1) as i32;
         self.cat_idx = ((self.cat_idx as i32 + d).rem_euclid(n)) as usize;
         self.row_idx = 0;
         // First visit to the Setup view scans the Steam libraries; later
@@ -338,16 +333,28 @@ impl<S: SysfsIo> App<S> {
         if self.is_setup() && !self.games_scanned {
             self.scan_games();
         }
-        // Every entry to the Test view re-runs the (cheap) evdev
-        // discovery; leaving it always stops the monitor loop so no fd
-        // stays open (and no polling keeps running) behind other views.
-        if self.is_test() {
-            let range = self.wheel_range();
-            self.test.rescan(range);
+        // Every entry to the Info view re-runs the (cheap) evdev discovery
+        // and auto-starts the live monitor when a wheel input is found;
+        // leaving it always stops the monitor loop so no fd stays open
+        // (and no polling keeps running) behind other views.
+        if self.is_info() {
+            self.rescan_input();
         } else {
             self.test.stop_monitor();
         }
         self.reload();
+    }
+
+    /// (Re-)discover the wheel's evdev node for the Info view's monitor
+    /// and start monitoring right away when one is found (the monitor is
+    /// not toggled by hand; it runs whenever the Info view is open and a
+    /// wheel input exists).
+    pub fn rescan_input(&mut self) {
+        let range = self.wheel_range();
+        self.test.rescan(range);
+        if self.test.dev.is_some() {
+            self.test.start_monitor();
+        }
     }
 
     /// Rescan the Steam libraries for installed Proton games (the Setup
@@ -601,24 +608,6 @@ impl<S: SysfsIo> App<S> {
         self.reload();
     }
 
-    /// Start or stop the Test view's live monitor (the Enter toggle).
-    fn toggle_test_monitor(&mut self) {
-        if self.test.monitoring() {
-            self.test.stop_monitor();
-            self.status = "test: monitoring stopped".to_string();
-            return;
-        }
-        if self.test.dev.is_none() {
-            self.status = "test: no wheel found (r to rescan)".to_string();
-            return;
-        }
-        self.status = if self.test.start_monitor() {
-            "test: monitoring live input (Enter stops)".to_string()
-        } else {
-            format!("test: {}", self.test.open_error.as_deref().unwrap_or("cannot open device"))
-        };
-    }
-
     /// Arm a simulation: everything is gated behind the y/n confirmation
     /// the status line shows; see `on_key`'s Test branch.
     fn request_sim(&mut self, kind: SimKind) {
@@ -676,7 +665,7 @@ impl<S: SysfsIo> App<S> {
             }
             return;
         }
-        if self.is_test() {
+        if self.is_info() {
             // A pending sim confirmation swallows the next key: only 'y'
             // fires the effect, anything else cancels. Nothing ever plays
             // without this explicit step.
@@ -692,13 +681,17 @@ impl<S: SysfsIo> App<S> {
                 Char('q') => self.quit = true,
                 Left => self.move_cat(-1),
                 Right => self.move_cat(1),
-                Enter => self.toggle_test_monitor(),
+                Up => self.move_row(-1),
+                Down => self.move_row(1),
+                Char('d') => self.toggle_mode(),
+                // The Info view's r rescans both sides: the identity rows
+                // (sysfs) and the monitor's input device (evdev).
                 Char('r') => {
-                    let range = self.wheel_range();
-                    self.test.rescan(range);
+                    self.rescan_input();
+                    self.reload();
                     self.status = match &self.test.dev {
-                        Some(d) => format!("test: found {} ({})", d.name, d.event_path),
-                        None => "test: no wheel found".to_string(),
+                        Some(d) => format!("input: found {} ({})", d.name, d.event_path),
+                        None => "input: no wheel found (r to rescan)".to_string(),
                     };
                 }
                 Char('f') => self.request_sim(SimKind::ConstantForce),
@@ -925,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn move_cat_reaches_and_leaves_setup_and_test() {
+    fn move_cat_reaches_and_leaves_setup() {
         let mut a = app();
         // step through every real category, landing on Setup right after
         // the last one.
@@ -934,35 +927,42 @@ mod tests {
         }
         assert!(a.is_setup(), "cat_idx {} should be the Setup entry", a.cat_idx);
         assert!(a.rows.is_empty(), "Setup has no settings rows");
-        // then the Test entry, then a wrap back to the first category.
-        a.move_cat(1);
-        assert!(a.is_test(), "cat_idx {} should be the Test entry", a.cat_idx);
-        assert!(a.rows.is_empty(), "Test has no settings rows");
-        assert!(a.test.scanned, "entering the Test view runs discovery");
+        // then a wrap back to the first category.
         a.move_cat(1);
         assert!(!a.is_setup());
-        assert!(!a.is_test());
         assert_eq!(a.cat_idx, 0);
-        // stepping backward from the first category reaches Test too.
+        // stepping backward from the first category reaches Setup too.
         a.move_cat(-1);
-        assert!(a.is_test());
+        assert!(a.is_setup());
     }
 
-    /// An app parked on the Test view (no real wheel is asserted on; the
-    /// discovery the entry runs is overwritten per test).
-    fn test_view_app() -> App<FakeSysfs> {
+    /// An app parked on the Info view (no real wheel input is asserted on;
+    /// the discovery the entry runs is overwritten per test).
+    fn info_view_app() -> App<FakeSysfs> {
         let mut a = app();
-        for _ in 0..Category::ALL.len() + 1 {
-            a.move_cat(1);
-        }
-        assert!(a.is_test());
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Info).unwrap();
+        a.reload();
+        assert!(a.is_info());
         a
     }
 
     #[test]
-    fn test_sim_keys_without_a_wheel_report_instead_of_arming() {
+    fn entering_the_info_view_runs_input_discovery() {
+        let mut a = app();
+        let info = Category::ALL.iter().position(|c| *c == Category::Info).unwrap();
+        for _ in 0..info {
+            a.move_cat(1);
+        }
+        assert!(a.is_info());
+        assert!(a.test.scanned, "entering the Info view runs discovery");
+        // The identity rows still load like any category's.
+        assert!(a.rows.iter().any(|r| r.attr == "wheel_serial"));
+    }
+
+    #[test]
+    fn info_sim_keys_without_a_wheel_report_instead_of_arming() {
         use crossterm::event::KeyCode;
-        let mut a = test_view_app();
+        let mut a = info_view_app();
         a.test.dev = None;
         a.on_key(KeyCode::Char('f'));
         assert!(a.test.confirm.is_none(), "nothing armed without a wheel");
@@ -972,10 +972,10 @@ mod tests {
     }
 
     #[test]
-    fn test_sim_keys_arm_a_confirm_and_anything_but_y_cancels() {
+    fn info_sim_keys_arm_a_confirm_and_anything_but_y_cancels() {
         use crate::wheel_test::SimKind;
         use crossterm::event::KeyCode;
-        let mut a = test_view_app();
+        let mut a = info_view_app();
         a.test.dev = Some(logi_dd_core::evtest::WheelInput {
             event_path: "/nonexistent/event99".to_string(),
             name: "Logitech RS50 Base".to_string(),
@@ -996,24 +996,10 @@ mod tests {
     }
 
     #[test]
-    fn test_enter_without_a_wheel_does_not_start_monitoring() {
-        use crossterm::event::KeyCode;
-        let mut a = test_view_app();
-        a.test.dev = None;
-        a.on_key(KeyCode::Enter);
-        assert!(!a.test.monitoring());
-        assert!(a.status.contains("no wheel"), "status: {}", a.status);
-        assert!(!a.test_polling());
-    }
-
-    #[test]
-    fn leaving_the_test_view_stops_the_monitor() {
-        let mut a = test_view_app();
-        // Simulate a live monitor without a device by checking the flag
-        // path only: start_monitor on a missing dev is a no-op, so drive
-        // the state through rescan + move_cat instead.
+    fn leaving_the_info_view_stops_the_monitor() {
+        let mut a = info_view_app();
         a.move_cat(1);
-        assert!(!a.is_test());
+        assert!(!a.is_info());
         assert!(!a.test.monitoring(), "monitor never survives leaving the view");
         assert!(!a.test_polling());
     }

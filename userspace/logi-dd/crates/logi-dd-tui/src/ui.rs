@@ -76,13 +76,6 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
     } else {
         Style::default().fg(Color::Cyan)
     }));
-    // The second synthetic entry: the live input tester + force sims
-    // (`app::TEST_INDEX`), also not a real `Category`.
-    cats.push(ListItem::new("Test").style(if app.is_test() {
-        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Cyan)
-    }));
     f.render_widget(
         List::new(cats).block(Block::default().borders(Borders::ALL).title("Category")),
         body[0],
@@ -90,12 +83,48 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
 
     if app.is_setup() {
         draw_setup(f, app, body[1]);
-    } else if app.is_test() {
-        draw_test(f, app, body[1]);
+    } else if app.is_info() {
+        // The Info page: the identity rows (plus the doc link) on top, the
+        // live input monitor below them.
+        let rows_height = settings_height(app);
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(rows_height), Constraint::Min(3)])
+            .split(body[1]);
+        draw_settings(f, app, split[0]);
+        draw_monitor(f, app, split[1]);
     } else {
-        // settings in the selected category
-        let names = app.profile_names();
-        let mut rows: Vec<ListItem> = app
+        draw_settings(f, app, body[1]);
+    }
+
+    // The curve editor takes over the body area as a modal when active.
+    if let Some(ce) = &app.curve_edit {
+        draw_curve_editor(f, ce, root[1]);
+    }
+
+    draw_status(f, app, root[2]);
+}
+
+/// The height the settings list wants: one line per row (plus the extra
+/// lines a multi-line value renders), the Info doc-link line, and the
+/// block's two border lines. Used to split the Info page between the
+/// identity rows and the live monitor.
+fn settings_height<S: SysfsIo>(app: &App<S>) -> u16 {
+    let mut lines = app.rows.len() + 1; // + doc link
+    for row in &app.rows {
+        if let Ok(Value::Text(s)) = &row.value {
+            lines += s.matches('\n').count();
+        }
+    }
+    (lines + 2).min(u16::MAX as usize) as u16
+}
+
+/// Render the selected category's settings rows (the main body of every
+/// device category; on the Info page this is the top block, above the
+/// live input monitor).
+fn draw_settings<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+    let names = app.profile_names();
+    let mut rows: Vec<ListItem> = app
             .rows
             .iter()
             .enumerate()
@@ -199,16 +228,13 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         }
         f.render_widget(
             List::new(rows).block(Block::default().borders(Borders::ALL).title("Settings")),
-            body[1],
+            area,
         );
-    }
+}
 
-    // The curve editor takes over the body area as a modal when active.
-    if let Some(ce) = &app.curve_edit {
-        draw_curve_editor(f, ce, root[1]);
-    }
-
-    // status line (green on success, red on trouble) + a dim help line
+/// Render the status line (green on success, red on trouble) + a dim
+/// context-sensitive help line.
+fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     let help = if app.curve_edit.is_some() {
         "curve:  up/down field   <-/-> adjust   + add point   - delete   Enter save   Esc cancel"
     } else if app.effect_edit.is_some() {
@@ -221,11 +247,11 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         } else {
             "up/down select game   i install shim   u remove shim   r rescan   s SDK folder   <-/-> category   q quit"
         }
-    } else if app.is_test() {
+    } else if app.is_info() {
         if app.test.confirm.is_some() {
             "confirm:  y continue   any other key cancels"
         } else {
-            "Enter start/stop monitor   f force feedback sim   t TrueForce texture sim   r rescan   <-/-> category   q quit"
+            "f force feedback sim   t TrueForce texture sim   r rescan   d desktop/onboard   <-/-> category   q quit"
         }
     } else if app.selected().is_some_and(|r| shaping::toggle_axis(r.attr).is_some()) {
         // A toggle row's help explains why each axis shows only one of
@@ -246,7 +272,7 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
             Style::default().fg(Color::DarkGray),
         )),
     ];
-    f.render_widget(Paragraph::new(lines), root[2]);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// Render the Setup body: the logi-ffb helper, the SDK folder line (edited
@@ -418,10 +444,10 @@ fn position_bar(value: i32, width: usize) -> String {
     (0..width).map(|i| if i == pos { '|' } else { '-' }).collect()
 }
 
-/// Render the Test view body: the live steering/pedal state read off the
-/// wheel's evdev node, the light-up button list, and the sim status.
-/// Mirrors the GUI's Test page in text form.
-fn draw_test<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+/// Render the Info page's live input monitor: the steering/pedal state
+/// read off the wheel's evdev node, the light-up button list, and the
+/// guarded force-sim status. Mirrors the GUI's Info page in text form.
+fn draw_monitor<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     use logi_dd_core::evtest;
 
     let t = &app.test;
@@ -429,20 +455,20 @@ fn draw_test<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
-                if t.scanned { "No wheel found" } else { "Scanning for the wheel..." },
+                if t.scanned { "No wheel input found" } else { "Scanning for the wheel..." },
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from("Connect the wheel to this machine, then press r to rescan."),
             Line::from(
-                "The tester reads the wheel's /dev/input event device, so your user \
+                "The monitor reads the wheel's /dev/input event device, so your user \
                  needs read access to it (the project's udev rule sets this up).",
             ),
         ];
         f.render_widget(
             Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title("Test")),
+                .block(Block::default().borders(Borders::ALL).title("Live input")),
             area,
         );
         return;
@@ -464,9 +490,9 @@ fn draw_test<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         Line::from(vec![
             Span::raw("Monitor: "),
             if t.monitoring() {
-                Span::styled("on", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                Span::styled("live", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
             } else {
-                Span::styled("off (press Enter to start)", Style::default().fg(Color::Yellow))
+                Span::styled("off (r to rescan)", Style::default().fg(Color::Yellow))
             },
         ]),
         Line::from(""),
@@ -514,7 +540,7 @@ fn draw_test<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     f.render_widget(
         Paragraph::new(top)
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title("Test")),
+            .block(Block::default().borders(Borders::ALL).title("Live input")),
         rows[0],
     );
 

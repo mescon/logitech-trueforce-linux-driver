@@ -1,7 +1,7 @@
 import { Button, ListView, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
-// One cell of the Test page's button tester grid: the wheel button's
+// One cell of the Info page's button tester grid: the wheel button's
 // evdev code (informational), its label from `evtest::WHEEL_BUTTONS`,
 // and whether it is currently held. The Rust reader thread pushes the
 // whole list at ~30 Hz while the page is open.
@@ -36,13 +36,24 @@ component AxisBar inherits Rectangle {
     }
 }
 
-// The sidebar's "Test" page: a live steering dial, the button tester
-// (layout image + light-up grid), pedal bars, and the two guarded
-// force-feedback simulations. Everything live is pushed from the Rust
-// reader thread; the two sim buttons round-trip through a confirm
-// dialog before their callbacks ever fire (the wheel physically moves).
-export component TestPage inherits Rectangle {
-    // Whether a wheel evdev node was found; gates the whole live body
+// The Info page: device identity (serial, firmware) on top, then the live
+// input monitor (steering dial, pedal bars, light-up button grid, hat
+// state), the two guarded force-feedback simulations, and the project
+// documentation link at the bottom. The monitor auto-starts whenever this
+// page is open and a wheel evdev node is found; everything live is pushed
+// from the Rust reader thread, and the two sim buttons round-trip through
+// a confirm dialog before their callbacks ever fire (the wheel physically
+// moves).
+export component InfoPage inherits Rectangle {
+    // Device identity, read through the driver's sysfs attrs (the registry
+    // Info rows); empty strings while no wheel is bound.
+    in property <string> serial: "";
+    in property <string> firmware: "";
+    // Project home, opened via `open-url` (xdg-open on the Rust side).
+    in property <string> project-url: "";
+    callback open-url(string);
+
+    // Whether a wheel evdev node was found; gates the live monitor body
     // and both sim buttons. `scanned` keeps the empty state from
     // flashing "no wheel" before the first discovery finishes.
     in property <bool> available: false;
@@ -74,11 +85,61 @@ export component TestPage inherits Rectangle {
     VerticalLayout {
         spacing: Theme.gutter;
 
-        Text {
-            text: "Test";
-            font-size: 20px;
-            font-weight: 700;
-            color: Theme.text-color;
+        // Device identity + the input-device rescan affordance.
+        Rectangle {
+            background: Theme.panel-background;
+            border-radius: Theme.panel-radius;
+            border-width: 1px;
+            border-color: Theme.panel-border;
+
+            HorizontalLayout {
+                padding: 14px;
+                spacing: Theme.gutter;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            width: 90px;
+                            text: "Serial";
+                            font-weight: 600;
+                            color: Theme.muted-text-color;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.serial == "" ? "-" : root.serial;
+                            color: Theme.text-color;
+                            overflow: elide;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            width: 90px;
+                            text: "Firmware";
+                            font-weight: 600;
+                            color: Theme.muted-text-color;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.firmware == "" ? "-" : root.firmware;
+                            color: Theme.text-color;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    Button {
+                        text: "Rescan";
+                        clicked => { root.rescan(); }
+                    }
+                }
+            }
         }
 
         if !root.available: VerticalLayout {
@@ -87,7 +148,7 @@ export component TestPage inherits Rectangle {
             spacing: 10px;
 
             Text {
-                text: root.scanned ? "No wheel found" : "Looking for the wheel...";
+                text: root.scanned ? "No wheel input found" : "Looking for the wheel...";
                 font-size: 17px;
                 font-weight: 700;
                 horizontal-alignment: center;
@@ -95,7 +156,7 @@ export component TestPage inherits Rectangle {
             }
             Text {
                 text: root.scanned
-                    ? "Connect the wheel to this machine, then press Rescan.\nThe tester reads the wheel's /dev/input event device, so your user needs read access to it (the project's udev rule sets this up)."
+                    ? "Connect the wheel to this machine, then press Rescan above.\nThe monitor reads the wheel's /dev/input event device, so your user needs read access to it (the project's udev rule sets this up)."
                     : "Scanning /dev/input for the wheel...";
                 horizontal-alignment: center;
                 color: Theme.muted-text-color;
@@ -108,14 +169,6 @@ export component TestPage inherits Rectangle {
                 horizontal-alignment: center;
                 color: Theme.error-color;
                 wrap: word-wrap;
-            }
-            HorizontalLayout {
-                alignment: center;
-                Button {
-                    text: "Rescan";
-                    width: 120px;
-                    clicked => { root.rescan(); }
-                }
             }
         }
 
@@ -374,6 +427,29 @@ export component TestPage inherits Rectangle {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Documentation / source link, same styling as the link the Setup
+        // page carries.
+        HorizontalLayout {
+            alignment: start;
+            spacing: 6px;
+
+            Text {
+                text: "Documentation and source:";
+                vertical-alignment: center;
+                color: Theme.muted-text-color;
+            }
+            link := Text {
+                text: root.project-url;
+                vertical-alignment: center;
+                color: Palette.accent-background;
+                font-weight: 600;
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.open-url(root.project-url); }
                 }
             }
         }

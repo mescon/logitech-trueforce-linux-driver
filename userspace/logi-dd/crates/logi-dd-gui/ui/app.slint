@@ -5,10 +5,10 @@ import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
 import { Setup, SetupGame } from "setup.slint";
-import { TestPage, TestButton, TestAxis } from "test_page.slint";
+import { InfoPage, TestButton, TestAxis } from "info_page.slint";
 export { SettingRow } from "widgets.slint";
 export { SetupGame } from "setup.slint";
-export { TestButton, TestAxis } from "test_page.slint";
+export { TestButton, TestAxis } from "info_page.slint";
 export { CurvePoint } from "curve_editor.slint";
 export { LedColor } from "rgb_strip.slint";
 export { SlotNameRow } from "slot_text.slint";
@@ -21,8 +21,9 @@ export component App inherits Window {
     min-height: 480px;
     background: Palette.background;
 
-    // No-wheel state: the shell always shows (Setup, Test and the docs are
-    // useful without a wheel); when the worker reports it cannot reach the
+    // No-wheel state: the shell always shows (Setup, the Info page's input
+    // monitor and the docs are useful without a wheel); when the worker
+    // reports it cannot reach the
     // device (nothing bound, unplugged mid-session, ...) a slim banner
     // appears under the header and the device categories show an empty
     // state instead of their rows. `retry-discover` re-attempts
@@ -81,11 +82,14 @@ export component App inherits Window {
     callback setup-remove-game(string);
     callback setup-rescan-games();
 
-    // The sidebar index of the "Test" row (`setup-index + 1`), set once
-    // from Rust; `-1` until then, same guard as `setup-index`. The live
-    // values below are pushed by the evdev reader thread `main.rs` runs
-    // while this page is open (throttled to ~30 Hz).
-    in property <int> test-index: -1;
+    // The sidebar index of the Info category (the page that carries the
+    // live input monitor), set once from Rust; `-1` until then, same guard
+    // as `setup-index`. The identity strings come from the registry Info
+    // rows; the live values below are pushed by the evdev reader thread
+    // `main.rs` runs while this page is open (throttled to ~30 Hz).
+    in property <int> info-index: -1;
+    in property <string> info-serial: "";
+    in property <string> info-firmware: "";
     in property <bool> test-available: false;
     in property <bool> test-scanned: false;
     in property <string> test-device-name: "";
@@ -98,8 +102,8 @@ export component App inherits Window {
     in property <bool> test-sim-running: false;
     in property <string> test-sim-error: "";
     callback test-rescan();
-    // Only ever fired by the Test page's confirm dialog (see
-    // `test_page.slint`); each plays a fixed 25%/2 s effect.
+    // Only ever fired by the Info page's confirm dialog (see
+    // `info_page.slint`); each plays a fixed 25%/2 s effect.
     callback test-sim-constant();
     callback test-sim-texture();
 
@@ -195,7 +199,7 @@ export component App inherits Window {
         // every widget style's own background brush. Device identity (serial,
         // firmware) is shown in the Info category, not here. The two device
         // buttons grey out while no wheel is reachable; the shell itself
-        // stays up (Setup/Test work without a wheel).
+        // stays up (Setup and the Info monitor work without a wheel).
         Rectangle {
             height: 52px;
 
@@ -345,12 +349,23 @@ export component App inherits Window {
                     open-url(url) => { root.open-url(url); }
                 }
 
-                // The Test page likewise replaces the whole block; it runs
-                // even with no wheel bound to the driver (it reads evdev,
-                // not sysfs), which is why it lives inside the shell rather
-                // than behind the no-wheel screen.
-                if root.selected-category == root.test-index: TestPage {
+                if root.selected-category != root.setup-index: Text {
+                    text: root.category-label;
+                    font-size: 20px;
+                    font-weight: 700;
+                    color: Theme.text-color;
+                }
+
+                // The Info page carries the identity rows plus the live
+                // input monitor; it replaces the settings list and runs
+                // even with no wheel bound to the driver (the monitor
+                // reads evdev, not sysfs), which is why it lives inside
+                // the shell rather than behind the no-wheel banner.
+                if root.selected-category == root.info-index: InfoPage {
                     vertical-stretch: 1;
+                    serial: root.info-serial;
+                    firmware: root.info-firmware;
+                    project-url: root.project-url;
                     available: root.test-available;
                     scanned: root.test-scanned;
                     device-name: root.test-device-name;
@@ -362,22 +377,16 @@ export component App inherits Window {
                     axes: root.test-axes;
                     sim-running: root.test-sim-running;
                     sim-error: root.test-sim-error;
+                    open-url(url) => { root.open-url(url); }
                     rescan() => { root.test-rescan(); }
                     sim-constant() => { root.test-sim-constant(); }
                     sim-texture() => { root.test-sim-texture(); }
                 }
 
-                if root.selected-category != root.setup-index && root.selected-category != root.test-index: Text {
-                    text: root.category-label;
-                    font-size: 20px;
-                    font-weight: 700;
-                    color: Theme.text-color;
-                }
-
                 // Without a wheel a device category shows a short empty
                 // state instead of its rows (the worker has nothing to
-                // read); Setup and Test above stay fully functional.
-                if root.selected-category != root.setup-index && root.selected-category != root.test-index && root.no-wheel: VerticalLayout {
+                // read); Setup and the Info monitor above stay functional.
+                if root.selected-category != root.setup-index && root.selected-category != root.info-index && root.no-wheel: VerticalLayout {
                     vertical-stretch: 1;
                     alignment: start;
                     spacing: 6px;
@@ -388,13 +397,13 @@ export component App inherits Window {
                         color: Theme.text-color;
                     }
                     Text {
-                        text: "These settings become available when a compatible wheel is found. Connect the wheel and press Retry in the banner above. Setup and Test work without a wheel.";
+                        text: "These settings become available when a compatible wheel is found. Connect the wheel and press Retry in the banner above. Setup and the Info page's input monitor work without a wheel.";
                         color: Theme.muted-text-color;
                         wrap: word-wrap;
                     }
                 }
 
-                if root.selected-category != root.setup-index && root.selected-category != root.test-index && !root.no-wheel: SettingsList {
+                if root.selected-category != root.setup-index && root.selected-category != root.info-index && !root.no-wheel: SettingsList {
                     // Claim all the vertical space left under the category
                     // title so the list (and its background/scrollbar) reaches
                     // the bottom of the window. Without this the ListView only
@@ -415,29 +424,6 @@ export component App inherits Window {
                     switch-mode() => { root.toggle-mode(); }
                 }
 
-                // Documentation / source link, only on the Info category. A
-                // plain accent-colored, underlined label that opens the
-                // project page in the browser when clicked.
-                if root.selected-category != root.setup-index && root.selected-category != root.test-index && root.category-label == "Info": HorizontalLayout {
-                    alignment: start;
-                    spacing: 6px;
-
-                    Text {
-                        text: "Documentation and source:";
-                        vertical-alignment: center;
-                        color: Theme.muted-text-color;
-                    }
-                    link := Text {
-                        text: root.project-url;
-                        vertical-alignment: center;
-                        color: Palette.accent-background;
-                        font-weight: 600;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.open-url(root.project-url); }
-                        }
-                    }
-                }
             }
         }
     }

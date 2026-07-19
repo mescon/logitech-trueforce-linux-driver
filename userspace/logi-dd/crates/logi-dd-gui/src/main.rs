@@ -588,12 +588,13 @@ fn main() -> Result<(), slint::PlatformError> {
     // device category.
     let mut labels: Vec<slint::SharedString> = bridge::category_labels_model().iter().collect();
     labels.push("Setup".into());
-    labels.push("Test".into());
     app.set_category_labels(slint::ModelRc::new(slint::VecModel::from(labels)));
     let setup_index = Category::ALL.len() as i32;
     app.set_setup_index(setup_index);
-    let test_index = setup_index + 1;
-    app.set_test_index(test_index);
+    // The Info category carries the live input monitor (the old Test page);
+    // selecting it starts the evdev reader, leaving it stops it.
+    let info_index = bridge::index_of(Category::Info);
+    app.set_info_index(info_index);
     app.set_project_url(logi_dd_core::PROJECT_URL.into());
     app.on_open_url(|url| open_in_browser(&url));
 
@@ -710,6 +711,23 @@ fn main() -> Result<(), slint::PlatformError> {
                                 }
                             }
                         }
+                        // The Info page renders the identity rows as its
+                        // own header (the rest of the page is the live
+                        // input monitor), so push them into their string
+                        // properties instead of a settings list.
+                        if category == Category::Info {
+                            let text = |attr: &str| {
+                                rows.iter()
+                                    .find(|r| r.attr == attr)
+                                    .and_then(|r| match &r.value {
+                                        Some(Value::Text(s)) => Some(s.clone()),
+                                        _ => None,
+                                    })
+                                    .unwrap_or_default()
+                            };
+                            app.set_info_serial(text("wheel_serial").into());
+                            app.set_info_firmware(text("wheel_firmware").into());
+                        }
                         // A Leds reload reads the active slot and its name
                         // together, which is the only safe pairing for the
                         // per-slot name cache (see `led_slot_names`).
@@ -825,6 +843,10 @@ fn main() -> Result<(), slint::PlatformError> {
                     Response::NoWheel(message) => {
                         app.set_no_wheel(true);
                         app.set_no_wheel_message(message.into());
+                        // No sysfs identity to show; the Info page falls
+                        // back to its "-" placeholders.
+                        app.set_info_serial("".into());
+                        app.set_info_firmware("".into());
                     }
                 }
             });
@@ -843,25 +865,28 @@ fn main() -> Result<(), slint::PlatformError> {
         let test_reader = test_reader.clone();
         let test_device = test_device.clone();
         app.on_select_category(move |index| {
-            // The trailing "Setup"/"Test" rows: show that page and stop,
-            // without asking the worker for a category (there is none).
-            // Switching back to a real category below still reloads it via
-            // the usual `LoadCategory` request, so nothing needs to force
-            // a refresh when leaving either page. Entering Test starts the
-            // evdev monitor; leaving it (to Setup or a category) stops it.
-            if index == setup_index || index == test_index {
-                if index == test_index {
-                    start_test_monitor(app_weak.clone(), test_reader.clone(), test_device.clone());
-                } else {
-                    stop_test_monitor(&test_reader);
-                }
+            // The trailing "Setup" row: show that page and stop, without
+            // asking the worker for a category (there is none). Switching
+            // back to a real category below still reloads it via the usual
+            // `LoadCategory` request, so nothing needs to force a refresh
+            // when leaving the page.
+            if index == setup_index {
+                stop_test_monitor(&test_reader);
                 if let Some(app) = app_weak.upgrade() {
                     app.set_selected_category(index);
                 }
                 return;
             }
-            stop_test_monitor(&test_reader);
             let cat = bridge::category_at(index);
+            // The Info category hosts the live input monitor: entering it
+            // starts the evdev reader (independent of the sysfs worker
+            // request below, which fetches the identity rows); leaving it
+            // stops the reader so no fd stays open behind other pages.
+            if cat == Category::Info {
+                start_test_monitor(app_weak.clone(), test_reader.clone(), test_device.clone());
+            } else {
+                stop_test_monitor(&test_reader);
+            }
             set(&current_category, cat);
             if let Some(app) = app_weak.upgrade() {
                 app.set_selected_category(bridge::index_of(cat));
