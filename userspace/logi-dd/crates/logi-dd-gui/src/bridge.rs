@@ -267,14 +267,14 @@ fn light_slot_row(effect: i32, available: bool, mode_ok: bool) -> SettingRow {
 }
 
 /// Compose the LIGHTSYNC page out of the generic Leds rows: keep Effect
-/// (rewritten into the 13-entry selector), Brightness and Rev lights,
-/// append the "Edit slot" button row, and drop the slot-scoped rows
-/// (slot, name, colors, direction, slot brightness, apply), which are all
-/// edited through the slot editor overlay instead. Rows for any other
-/// category (no `wheel_led_effect` present) pass through untouched, so
-/// `load_rows` can call this unconditionally. The registry itself is not
-/// consulted: everything needed (the raw effect and slot values) is read
-/// off the rows, which a whole-category reload always carries together.
+/// (rewritten into the composed selector) and Brightness, append the
+/// "Edit slot" button row, and drop the slot-scoped rows (slot, name,
+/// colors, direction, slot brightness, apply), which are all edited
+/// through the slot editor overlay instead. Rows for any other category
+/// (no `wheel_led_effect` present) pass through untouched, so `load_rows`
+/// can call this unconditionally. The registry itself is not consulted:
+/// everything needed (the raw effect and slot values) is read off the
+/// rows, which a whole-category reload always carries together.
 pub fn compose_lightsync(items: Vec<SettingRow>, slot_names: &[String]) -> Vec<SettingRow> {
     let Some(effect_row) = items.iter().find(|r| r.attr == "wheel_led_effect") else {
         return items;
@@ -282,8 +282,7 @@ pub fn compose_lightsync(items: Vec<SettingRow>, slot_names: &[String]) -> Vec<S
     let effect = effect_row.int_value;
     let (available, mode_ok) = (effect_row.available, effect_row.mode_ok);
     let slot = items.iter().find(|r| r.attr == "wheel_led_slot").map(|r| r.int_value).unwrap_or(0);
-    let mut out = Vec::with_capacity(4);
-    let mut rev_row = None;
+    let mut out = Vec::with_capacity(3);
     for mut item in items {
         match item.attr.as_str() {
             "wheel_led_effect" => {
@@ -291,16 +290,10 @@ pub fn compose_lightsync(items: Vec<SettingRow>, slot_names: &[String]) -> Vec<S
                 out.push(item);
             }
             "wheel_led_brightness" => out.push(item),
-            // Kept aside so the Edit slot button lands between Brightness
-            // and Rev lights, matching the page's top-to-bottom flow.
-            "wheel_rev_level" => rev_row = Some(item),
             _ => {}
         }
     }
     out.push(light_slot_row(effect, available, mode_ok));
-    if let Some(rev) = rev_row {
-        out.push(rev);
-    }
     out
 }
 
@@ -1237,10 +1230,7 @@ mod tests {
     fn compose_lightsync_keeps_only_the_composed_rows_in_order() {
         let out = compose_lightsync(leds_setting_rows("3", "0"), &[]);
         let attrs: Vec<String> = out.iter().map(|r| r.attr.to_string()).collect();
-        assert_eq!(
-            attrs,
-            vec!["wheel_led_effect", "wheel_led_brightness", LIGHT_EDIT_SLOT_ATTR, "wheel_rev_level"]
-        );
+        assert_eq!(attrs, vec!["wheel_led_effect", "wheel_led_brightness", LIGHT_EDIT_SLOT_ATTR]);
     }
 
     #[test]
@@ -1379,10 +1369,11 @@ mod tests {
             attrs,
             vec![
                 "wheel_range",
+                "wheel_range_restore",
                 shaping::toggle_attr(Axis::Steering),
                 "wheel_sensitivity",
-                "wheel_range_restore",
                 "wheel_calibrate_here",
+                "wheel_rev_level",
             ]
         );
     }
@@ -1395,10 +1386,11 @@ mod tests {
             attrs,
             vec![
                 "wheel_range",
-                shaping::toggle_attr(Axis::Steering),
                 "wheel_range_restore",
+                shaping::toggle_attr(Axis::Steering),
                 "wheel_response_curve",
                 "wheel_calibrate_here",
+                "wheel_rev_level",
             ]
         );
     }
@@ -1410,8 +1402,8 @@ mod tests {
         assert_eq!(
             attrs,
             vec![
-                "wheel_brake_force",
                 "wheel_combined_pedals",
+                "wheel_brake_force",
                 shaping::toggle_attr(Axis::Throttle),
                 "wheel_throttle_sensitivity",
                 "wheel_throttle_deadzone",
@@ -1423,6 +1415,30 @@ mod tests {
                 "wheel_clutch_deadzone",
                 shaping::toggle_attr(Axis::Handbrake),
                 "wheel_handbrake_sensitivity",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_shaping_curve_pedals_keep_the_deadzone_right_after_the_curve() {
+        let out = compose_shaping(category_setting_rows(Category::Pedals), all_curves());
+        let attrs = attrs_of(&out);
+        assert_eq!(
+            attrs,
+            vec![
+                "wheel_combined_pedals",
+                "wheel_brake_force",
+                shaping::toggle_attr(Axis::Throttle),
+                "wheel_throttle_curve",
+                "wheel_throttle_deadzone",
+                shaping::toggle_attr(Axis::Brake),
+                "wheel_brake_curve",
+                "wheel_brake_deadzone",
+                shaping::toggle_attr(Axis::Clutch),
+                "wheel_clutch_curve",
+                "wheel_clutch_deadzone",
+                shaping::toggle_attr(Axis::Handbrake),
+                "wheel_handbrake_curve",
             ]
         );
     }

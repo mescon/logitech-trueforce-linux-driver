@@ -271,12 +271,13 @@ impl<S: SysfsIo> App<S> {
         Row { attr, label, available: self.device.available(attr), value: self.device.read(attr) }
     }
 
-    /// The composed LIGHTSYNC page: Effect (the 13-entry selector), the
+    /// The composed LIGHTSYNC page: Effect (the composed selector), the
     /// global Brightness, then, only while the custom effect (5) is
-    /// active, the active slot's fields as an indented group, and the
-    /// G PRO rev lights last. The slot-scoped registry rows stop being
-    /// top-level rows; `wheel_led_slot` itself has no row at all (the
-    /// selector's CUSTOM entries pick the slot).
+    /// active, the active slot's fields as an indented group. The
+    /// slot-scoped registry rows stop being top-level rows;
+    /// `wheel_led_slot` itself has no row at all (the selector's CUSTOM
+    /// entries pick the slot). The G PRO rev lights live on the Steering
+    /// page (they sit on the steering rim), not here.
     fn lightsync_rows(&self) -> Vec<Row> {
         let mut rows = vec![
             self.led_row("wheel_led_effect", "Effect"),
@@ -289,7 +290,6 @@ impl<S: SysfsIo> App<S> {
             rows.push(self.led_row("wheel_led_colors", "  Colors"));
             rows.push(self.led_row("wheel_led_apply", "  Apply slot"));
         }
-        rows.push(self.led_row("wheel_rev_level", "Rev lights (G PRO)"));
         rows
     }
 
@@ -1197,7 +1197,7 @@ mod tests {
     fn lightsync_page_hides_the_slot_group_for_builtin_effects() {
         let a = leds_app("3", "0");
         let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
-        assert_eq!(attrs, vec!["wheel_led_effect", "wheel_led_brightness", "wheel_rev_level"]);
+        assert_eq!(attrs, vec!["wheel_led_effect", "wheel_led_brightness"]);
     }
 
     #[test]
@@ -1214,7 +1214,6 @@ mod tests {
                 "wheel_led_direction",
                 "wheel_led_colors",
                 "wheel_led_apply",
-                "wheel_rev_level",
             ]
         );
         let name_row = a.rows.iter().find(|r| r.attr == "wheel_led_slot_name").unwrap();
