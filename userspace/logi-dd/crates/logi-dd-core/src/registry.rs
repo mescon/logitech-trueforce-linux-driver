@@ -65,11 +65,11 @@ pub const REGISTRY: &[SettingSpec] = &[
     // Effect first (it decides whether the slot fields even apply), then the
     // global brightness, then the active-slot group in the order you'd set
     // them (pick slot, name it, colour it, shape it, dim it), then apply.
-    SettingSpec { attr: "wheel_led_effect", label: "Effect", help: "Built-in animation or a custom slot (1-9).", category: Leds, kind: Kind::IntRange { min: 1, max: 9, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_led_effect", label: "Effect", help: "Built-in effect or a custom slot (1-9). The strip is a rev-light display: it fills with engine RPM when a game or telemetry bridge feeds it, and shows a static idle pattern otherwise.", category: Leds, kind: Kind::IntRange { min: 1, max: 9, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_led_brightness", label: "Brightness", help: "Global LIGHTSYNC brightness (0-100%).", category: Leds, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_led_slot", label: "Active slot", help: "Active custom slot (0-4).", category: Leds, kind: Kind::IntRange { min: 0, max: 4, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_led_slot_name", label: "Slot name", help: "Name of the selected slot (max 8 chars).", category: Leds, kind: Kind::TextField { max_len: 8 }, access: ReadWrite, mode_req: Any },
-    SettingSpec { attr: "wheel_led_colors", label: "Colors", help: "10 strip colors, LED1 leftmost.", category: Leds, kind: Kind::RgbStrip { leds: 10 }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_led_colors", label: "Colors", help: "10 strip colors, LED1 leftmost. Acts as the rev gradient once RPM is fed (e.g. green edges to red centre).", category: Leds, kind: Kind::RgbStrip { leds: 10 }, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_led_direction", label: "Direction", help: "Animation direction: left-to-right, right-to-left, inside-out or outside-in.", category: Leds, kind: Kind::Enum(&["L to R", "R to L", "inside-out", "outside-in"]), access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_led_slot_brightness", label: "Slot brightness", help: "Per-slot brightness (0-100%).", category: Leds, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_led_apply", label: "Apply", help: "Commit the current slot config to the wheel.", category: Leds, kind: Kind::Action, access: Action, mode_req: Any },
