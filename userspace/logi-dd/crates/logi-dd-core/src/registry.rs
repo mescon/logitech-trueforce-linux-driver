@@ -46,7 +46,7 @@ pub const REGISTRY: &[SettingSpec] = &[
     // showing sensitivity OR curve keeps the deadzone right after whichever
     // generator is visible. The handbrake accessory comes last.
     SettingSpec { attr: "wheel_combined_pedals", label: "Combined pedals", help: "Merge throttle+brake into one axis for legacy games. Off for modern sims. Desktop mode only.", category: Pedals, kind: Kind::Toggle { off: "separate", on: "combined" }, access: ReadWrite, mode_req: DesktopOnly },
-    SettingSpec { attr: "wheel_brake_force", label: "Brake force", help: "Load-cell brake threshold (0-100%). Onboard mode only.", category: Pedals, kind: PCT, access: ReadWrite, mode_req: OnboardOnly },
+    SettingSpec { attr: "wheel_brake_force", label: "Brake force", help: "Load-cell brake threshold (0-100%). Stored in the wheel's onboard profile, so the wheel only accepts it in onboard mode (G Hub behaves the same); in desktop mode use Brake sensitivity or the brake curve instead.", category: Pedals, kind: PCT, access: ReadWrite, mode_req: OnboardOnly },
     SettingSpec { attr: "wheel_throttle_sensitivity", label: "Throttle sensitivity", help: "Throttle response (0-100, 50=linear).", category: Pedals, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_throttle_curve", label: "Throttle curve", help: "Full throttle response curve. 'reset' for built-in.", category: Pedals, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_throttle_deadzone", label: "Throttle deadzone", help: "Dead travel 'lower upper' percent (sum <= 99).", category: Pedals, kind: Kind::Pair { max: 99 }, access: ReadWrite, mode_req: Any },
