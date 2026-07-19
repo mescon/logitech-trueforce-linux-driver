@@ -98,6 +98,9 @@ pub const WHEEL_BUTTONS: &[(u16, &str)] = &[
     (0x129, "Menu"),
     (0x12a, "RSB"),
     (0x12b, "LSB"),
+    // Encoder twist directions hardware-verified 2026-07-19 (guided live
+    // capture, fixed twist order): L CW=0x2c8, L CCW=0x2c9, R CW=0x2c5,
+    // R CCW=0x2c6. CW = the dial's top edge moving right, facing the wheel.
     (0x2c5, "R Encoder CW"),
     (0x2c6, "R Encoder CCW"),
     (0x2c7, "R Encoder Push"),
