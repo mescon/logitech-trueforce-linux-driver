@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=logi-dd
+GenericName=Racing wheel control
+Comment=Settings, helpers and TrueForce for Logitech direct-drive racing wheels
+Exec=logi-dd-gui
+Icon=logi-dd-gui
+Terminal=false
+Categories=Settings;HardwareSettings;Game;
+Keywords=Logitech;TrueForce;wheel;force feedback;racing;RS50;G PRO;sim;
