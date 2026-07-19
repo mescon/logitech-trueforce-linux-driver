@@ -112,7 +112,7 @@ rotation range, force-feedback strength and filters, TrueForce level, LIGHTSYNC
 LEDs, profiles, and per-pedal / steering response curves through a G HUB-style
 curve editor.
 
-![logi-dd-gui Steering page](docs/images/logi-dd-curve-editor.png)
+![logi-dd-gui curve editor](docs/images/logi-dd-curve-editor.png)
 
 ```bash
 cd userspace/logi-dd && cargo build --release
