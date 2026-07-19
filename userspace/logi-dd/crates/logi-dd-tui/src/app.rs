@@ -230,6 +230,21 @@ pub struct App<S: SysfsIo> {
     /// only exists for the real sysfs type) and hands any find back via
     /// `adopt_device`.
     retry_requested: bool,
+    /// The Info/Testing view's viewport scroll offset, in lines: the two
+    /// composed views (Info/Testing and Setup) render more content than a
+    /// small terminal can show, so PgUp/PgDn (plus Up/Down on Info, which
+    /// has no list selection) move a per-view offset instead of clipping
+    /// silently. Clamped to the content height (see `scroll_view`), reset
+    /// on every view switch (`move_cat`).
+    pub info_scroll: u16,
+    /// The Setup view's viewport scroll offset; same lifecycle as
+    /// `info_scroll`, but only PgUp/PgDn move it (Up/Down keep selecting
+    /// games there).
+    pub setup_scroll: u16,
+    /// The body height of the last draw, recorded by `ui::draw` (a `Cell`:
+    /// the draw pass only holds `&App`), so the scroll keys can clamp the
+    /// offset to what actually fits and size a page step.
+    pub body_height: std::cell::Cell<u16>,
     /// The last `(wheel_profile, wheel_mode)` observation, for external-
     /// change detection: the wheel's physical profile button (or another
     /// tool writing sysfs) changes settings without any key passing through
@@ -286,6 +301,9 @@ impl<S: SysfsIo> App<S> {
             pending_led_try: false,
             no_wheel: false,
             retry_requested: false,
+            info_scroll: 0,
+            setup_scroll: 0,
+            body_height: std::cell::Cell::new(0),
             last_drift: None,
         };
         a.no_wheel = !wheel_present(&a.device);
@@ -732,6 +750,9 @@ impl<S: SysfsIo> App<S> {
         let n = (Category::ALL.len() + 1) as i32;
         self.cat_idx = ((self.cat_idx as i32 + d).rem_euclid(n)) as usize;
         self.row_idx = 0;
+        // A fresh view always starts at its top.
+        self.info_scroll = 0;
+        self.setup_scroll = 0;
         // First visit to the Setup view scans the Steam libraries; later
         // visits keep the last scan (r rescans on demand). The daemon
         // probe is cheap, so every entry refreshes it.
@@ -1061,6 +1082,48 @@ impl<S: SysfsIo> App<S> {
         }
     }
 
+    /// The full height (in lines) the current composed view wants to
+    /// render: what the scroll offset is clamped against. Only the two
+    /// scrollable views (Info/Testing, Setup) report one; the plain
+    /// settings categories return 0 (no scrolling there).
+    pub fn scroll_content_height(&self) -> u16 {
+        if self.is_setup() {
+            crate::ui::setup_content_height(self)
+        } else if self.is_info() {
+            crate::ui::info_content_height(self)
+        } else {
+            0
+        }
+    }
+
+    /// The highest scroll offset that still shows a full viewport of the
+    /// current view (0 when everything fits). Uses the last drawn body
+    /// height; before any draw the whole content counts as hidden minus
+    /// one line, so the offset can never leave the content.
+    pub fn max_scroll(&self) -> u16 {
+        self.scroll_content_height().saturating_sub(self.body_height.get().max(1))
+    }
+
+    /// One PgUp/PgDn step: a viewport minus one line of overlap (at least
+    /// one line before the first draw recorded a height).
+    pub fn scroll_page(&self) -> i32 {
+        i32::from(self.body_height.get()).saturating_sub(1).max(1)
+    }
+
+    /// Move the current view's scroll offset by `d` lines, clamped to
+    /// [0, `max_scroll`]. A no-op outside the two scrollable views.
+    pub fn scroll_view(&mut self, d: i32) {
+        let max = i32::from(self.max_scroll());
+        let offset = if self.is_setup() {
+            &mut self.setup_scroll
+        } else if self.is_info() {
+            &mut self.info_scroll
+        } else {
+            return;
+        };
+        *offset = (i32::from(*offset) + d).clamp(0, max) as u16;
+    }
+
     pub fn move_row(&mut self, d: i32) {
         if self.rows.is_empty() {
             return;
@@ -1374,8 +1437,13 @@ impl<S: SysfsIo> App<S> {
                 Char('q') => self.quit = true,
                 Left => self.move_cat(-1),
                 Right => self.move_cat(1),
-                Up => self.move_row(-1),
-                Down => self.move_row(1),
+                // The Info/Testing view has no list selection, so Up/Down
+                // scroll the composed view (one line) alongside the page
+                // keys; a small terminal can reach everything this way.
+                Up => self.scroll_view(-1),
+                Down => self.scroll_view(1),
+                PageUp => self.scroll_view(-self.scroll_page()),
+                PageDown => self.scroll_view(self.scroll_page()),
                 Char('d') => self.toggle_mode(),
                 // The Info view's r rescans both sides: the identity rows
                 // (sysfs; a missing wheel queues a re-discovery) and the
@@ -1466,6 +1534,10 @@ impl<S: SysfsIo> App<S> {
                         self.game_idx += 1;
                     }
                 }
+                // Up/Down select games here, so only the page keys scroll
+                // the Setup view.
+                PageUp => self.scroll_view(-self.scroll_page()),
+                PageDown => self.scroll_view(self.scroll_page()),
                 Char('r') => {
                     self.scan_games();
                     self.tf_probe();
@@ -3130,5 +3202,80 @@ mod tests {
         }
         a.on_key(KeyCode::Enter);
         assert_eq!(a.device.read("wheel_profile").unwrap(), Value::Int(5));
+    }
+
+    // --- viewport scrolling (the Setup and Info/Testing composed views) ---
+
+    #[test]
+    fn scroll_offset_clamps_to_the_content_height() {
+        let mut a = setup_app();
+        a.body_height.set(10); // what a small terminal's draw recorded
+        let max = a.max_scroll();
+        assert!(max > 0, "the Setup view is taller than 10 lines");
+        a.scroll_view(10_000);
+        assert_eq!(a.setup_scroll, max, "clamped at the last full viewport");
+        a.scroll_view(-10_000);
+        assert_eq!(a.setup_scroll, 0, "never negative");
+    }
+
+    #[test]
+    fn setup_page_keys_scroll_and_the_game_keys_stay_selection() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.body_height.set(10);
+        a.on_key(KeyCode::PageDown);
+        assert!(a.setup_scroll > 0, "PgDn scrolls the Setup view");
+        let scrolled = a.setup_scroll;
+        // Up/Down keep their game-selection meaning, untouched by scrolling.
+        a.on_key(KeyCode::Down);
+        assert_eq!(a.game_idx, 1, "Down still selects the next game");
+        assert_eq!(a.setup_scroll, scrolled, "Down does not scroll Setup");
+        a.on_key(KeyCode::Up);
+        assert_eq!(a.game_idx, 0, "Up still selects the previous game");
+        assert_eq!(a.setup_scroll, scrolled);
+        a.on_key(KeyCode::PageUp);
+        assert_eq!(a.setup_scroll, 0, "PgUp scrolls back to the top");
+    }
+
+    #[test]
+    fn info_view_scrolls_with_updown_and_the_page_keys() {
+        use crossterm::event::KeyCode;
+        let mut a = info_view_app();
+        a.body_height.set(5); // small enough that even the empty state clips
+        assert!(a.max_scroll() > 0, "the Info view is taller than 5 lines");
+        a.on_key(KeyCode::Down);
+        assert_eq!(a.info_scroll, 1, "Down scrolls one line (no list selection here)");
+        a.on_key(KeyCode::Up);
+        assert_eq!(a.info_scroll, 0);
+        a.on_key(KeyCode::PageDown);
+        assert_eq!(a.info_scroll, u16::try_from(a.scroll_page()).unwrap().min(a.max_scroll()));
+        a.on_key(KeyCode::PageUp);
+        assert_eq!(a.info_scroll, 0);
+    }
+
+    #[test]
+    fn switching_views_resets_the_scroll_offsets() {
+        let mut a = setup_app();
+        a.body_height.set(10);
+        a.scroll_view(3);
+        assert_eq!(a.setup_scroll, 3);
+        a.move_cat(1); // leave Setup (wraps to the first category)
+        assert_eq!(a.setup_scroll, 0, "a fresh view starts at its top");
+        let mut a = info_view_app();
+        a.body_height.set(5);
+        a.scroll_view(2);
+        assert_eq!(a.info_scroll, 2);
+        a.move_cat(-1);
+        assert_eq!(a.info_scroll, 0);
+    }
+
+    #[test]
+    fn scrolling_is_a_noop_on_the_plain_settings_views() {
+        use crossterm::event::KeyCode;
+        let mut a = app(); // the Ffb page
+        a.body_height.set(5);
+        a.on_key(KeyCode::PageDown);
+        assert_eq!((a.info_scroll, a.setup_scroll), (0, 0));
+        assert_eq!(a.scroll_content_height(), 0, "no composed content to scroll");
     }
 }

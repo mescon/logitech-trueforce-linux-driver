@@ -2,10 +2,11 @@ use crate::app::App;
 use crate::curve_editor::CurveEditor;
 use logi_dd_core::sysfs::SysfsIo;
 use logi_dd_core::{shaping, Category, Device, Mode, Value};
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget, Wrap};
 use ratatui::Frame;
 use std::collections::BTreeMap;
 
@@ -83,26 +84,35 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         body[0],
     );
 
+    // The scroll keys clamp against what the last draw could show.
+    app.body_height.set(body[1].height);
+
     if app.is_setup() {
-        draw_setup(f, app, body[1]);
+        // The two composed views (Setup, Info/Testing) render more than a
+        // small terminal fits, so they go through the scrolled window.
+        draw_scrolled(f, body[1], setup_content_height(app), app.setup_scroll, |buf, rect| {
+            draw_setup(buf, app, rect);
+        });
     } else if app.is_info() {
-        if app.no_wheel {
-            // No wheel: the whole body is the monitor's empty state (an
-            // evdev-only wheel input may still exist and rescan finds it).
-            draw_monitor(f, app, body[1]);
-        } else {
-            // The Info page: the identity rows (plus the doc link) on top,
-            // the live input monitor below them.
-            let rows_height = settings_height(app);
-            let split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(rows_height), Constraint::Min(3)])
-                .split(body[1]);
-            draw_settings(f, app, split[0]);
-            draw_monitor(f, app, split[1]);
-        }
+        draw_scrolled(f, body[1], info_content_height(app), app.info_scroll, |buf, rect| {
+            if app.no_wheel {
+                // No wheel: the whole body is the monitor's empty state (an
+                // evdev-only wheel input may still exist and rescan finds it).
+                draw_monitor(buf, app, rect);
+            } else {
+                // The Info page: the identity rows (plus the doc link) on
+                // top, the live input monitor below them.
+                let rows_height = settings_height(app);
+                let split = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(rows_height), Constraint::Min(3)])
+                    .split(rect);
+                draw_settings(buf, app, split[0]);
+                draw_monitor(buf, app, split[1]);
+            }
+        });
     } else {
-        draw_settings(f, app, body[1]);
+        draw_settings(f.buffer_mut(), app, body[1]);
     }
 
     // The curve editor takes over the body area as a modal when active.
@@ -132,10 +142,96 @@ fn settings_height<S: SysfsIo>(app: &App<S>) -> u16 {
     (lines + 2).min(u16::MAX as usize) as u16
 }
 
+/// The Setup view's full content height in lines. Must mirror
+/// `draw_setup`'s stacked blocks (the helper/SDK block, the Simulated
+/// TrueForce block, the games list at its natural height, the
+/// compatibility table), so the scroll offset clamps to what is drawn.
+pub(crate) fn setup_content_height<S: SysfsIo>(app: &App<S>) -> u16 {
+    // The games list: one line per game (or the one-line empty state)
+    // plus the block's two borders; `draw_setup` gives it Min(3).
+    let games = (app.games.len().max(1) as u16).saturating_add(2).max(3);
+    11 + 5 + games + 18
+}
+
+/// The Info/Testing view's full content height in lines: the identity
+/// rows above the live monitor (the monitor alone in the no-wheel
+/// state). Mirrors `draw`'s Info split and `draw_monitor`'s layouts.
+pub(crate) fn info_content_height<S: SysfsIo>(app: &App<S>) -> u16 {
+    let monitor = match &app.test.dev {
+        // The empty state: 5 text lines plus the block's two borders.
+        None => 7,
+        // The gauges block (13) plus the button tester: the recent-press
+        // line, one line per wheel button, and two borders.
+        Some(_) => 13 + 3 + logi_dd_core::evtest::WHEEL_BUTTONS.len() as u16,
+    };
+    if app.no_wheel {
+        monitor
+    } else {
+        settings_height(app).saturating_add(monitor)
+    }
+}
+
+/// Render a composed view that may be taller than its viewport: `render`
+/// draws the full `content_height` into an off-screen buffer and the
+/// window at `scroll` is copied into the frame; content that fits renders
+/// straight into the frame instead. While content is clipped, a dim
+/// "more above/below" marker (with the boundary line over the total)
+/// overlays the corresponding edge; the footer names the scroll keys.
+fn draw_scrolled(
+    f: &mut Frame,
+    area: Rect,
+    content_height: u16,
+    scroll: u16,
+    render: impl FnOnce(&mut Buffer, Rect),
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    if content_height <= area.height {
+        render(f.buffer_mut(), area);
+        return;
+    }
+    // Clamp here too: the offset is clamped on every key press, but a
+    // resize (or a content change) can shrink the range under it.
+    let scroll = scroll.min(content_height - area.height);
+    let virt = Rect::new(area.x, area.y, area.width, content_height);
+    let mut buf = Buffer::empty(virt);
+    render(&mut buf, virt);
+    let dst = f.buffer_mut();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            dst[(area.x + x, area.y + y)] = buf[(area.x + x, area.y + scroll + y)].clone();
+        }
+    }
+    let marker = |dst: &mut Buffer, y: u16, text: String| {
+        let w = text.chars().count() as u16;
+        if w + 2 <= area.width {
+            dst.set_string(
+                area.x + area.width - w - 2,
+                y,
+                text,
+                Style::default().fg(Color::DarkGray),
+            );
+        }
+    };
+    if scroll > 0 {
+        marker(dst, area.y, format!(" more above ({}/{}) ", scroll + 1, content_height));
+    }
+    if scroll < content_height - area.height {
+        marker(
+            dst,
+            area.y + area.height - 1,
+            format!(" more below ({}/{}) ", scroll + area.height, content_height),
+        );
+    }
+}
+
 /// Render the selected category's settings rows (the main body of every
 /// device category; on the Info page this is the top block, above the
-/// live input monitor).
-fn draw_settings<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+/// live input monitor). Renders into a `Buffer` rather than the `Frame`,
+/// so the Info page can compose it inside `draw_scrolled`'s off-screen
+/// pass; the plain categories pass the frame's own buffer.
+fn draw_settings<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
     // No wheel: a one-line empty state instead of the rows.
     if app.no_wheel {
         let lines = vec![
@@ -145,12 +241,10 @@ fn draw_settings<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
                 Style::default().fg(Color::Red),
             )),
         ];
-        f.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title("Settings")),
-            area,
-        );
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title("Settings"))
+            .render(area, buf);
         return;
     }
     let names = app.profile_names();
@@ -302,10 +396,9 @@ fn draw_settings<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
                 Span::styled(logi_dd_core::PROJECT_URL, Style::default().fg(Color::Cyan)),
             ])));
         }
-        f.render_widget(
-            List::new(rows).block(Block::default().borders(Borders::ALL).title("Settings")),
-            area,
-        );
+        List::new(rows)
+            .block(Block::default().borders(Borders::ALL).title("Settings"))
+            .render(area, buf);
 }
 
 /// Render the status line (green on success, red on trouble) + a dim
@@ -333,17 +426,17 @@ fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         } else if app.tf_sweep_confirm {
             "confirm:  y plays the ~6 s sweep on the wheel   any other key cancels"
         } else if app.tf_sweep_active() {
-            "s stop sweep   up/down game   i/u shim   g game sim TF   m TF on/off   e intensity   p pitch   d daemon   r rescan   q quit"
+            "s stop sweep   up/down game   PgUp/PgDn scroll   i/u shim   g game sim TF   m TF on/off   e intensity   p pitch   d daemon   r rescan   q quit"
         } else {
-            "up/down game   i/u shim   g game sim TF   m TF on/off   e intensity   p pitch   d daemon start/stop   t test sweep   s SDK folder   r rescan   <-/-> category   q quit"
+            "up/down game   PgUp/PgDn scroll   i/u shim   g game sim TF   m TF on/off   e intensity   p pitch   d daemon start/stop   t test sweep   s SDK folder   r rescan   <-/-> category   q quit"
         }
     } else if app.is_info() {
         if app.test.confirm.is_some() {
             "confirm:  y continue   any other key cancels"
         } else if app.test.sim_running() {
-            "s stop sim   r rescan   d desktop/onboard   <-/-> category   q quit"
+            "s stop sim   up/down/PgUp/PgDn scroll   r rescan   d desktop/onboard   <-/-> category   q quit"
         } else {
-            "f force feedback sim   t TrueForce texture sim   c show serial+firmware   r rescan   d desktop/onboard   <-/-> category   q quit"
+            "up/down/PgUp/PgDn scroll   f force feedback sim   t TrueForce texture sim   c show serial+firmware   r rescan   d desktop/onboard   <-/-> category   q quit"
         }
     } else if app.selected().is_some_and(|r| shaping::toggle_axis(&r.attr).is_some()) {
         // A toggle row's help explains why each axis shows only one of
@@ -379,8 +472,9 @@ fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
 /// via `s`; see `App::sdk_edit`), the per-game shim manager (the selectable
 /// Proton games list), and the static compatibility table at the bottom.
 /// Shown instead of the settings list whenever `app.is_setup()`, mirroring
-/// the GUI's Setup page in text form.
-fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+/// the GUI's Setup page in text form. Renders into `draw_scrolled`'s
+/// buffer: `area` is the view's full content height, not the viewport.
+fn draw_setup<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
     let found_style = |found: bool| {
         if found {
             Style::default().fg(Color::Green)
@@ -470,12 +564,10 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
              redistributed; see the project README for how to copy them.",
         ),
     ];
-    f.render_widget(
-        Paragraph::new(top)
-            .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title("Setup")),
-        rows[0],
-    );
+    Paragraph::new(top)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title("Setup"))
+        .render(rows[0], buf);
 
     // Simulated TrueForce: the daemon block (its per-game cells live in
     // the games list and the compatibility table below).
@@ -527,14 +619,14 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
             },
         ]),
     ];
-    f.render_widget(
-        Paragraph::new(tf).wrap(Wrap { trim: false }).block(
+    Paragraph::new(tf)
+        .wrap(Wrap { trim: false })
+        .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Simulated TrueForce (m on/off, e intensity, p pitch, d daemon, t test sweep)"),
-        ),
-        rows[1],
-    );
+        )
+        .render(rows[1], buf);
 
     // Middle: the installed Proton games, one selectable row each.
     let games: Vec<ListItem> = if app.games.is_empty() {
@@ -583,14 +675,13 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
             })
             .collect()
     };
-    f.render_widget(
-        List::new(games).block(
+    List::new(games)
+        .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Proton games (i install shim, u remove shim, g simulated TF)"),
-        ),
-        rows[2],
-    );
+        )
+        .render(rows[2], buf);
 
     // Bottom: the compatibility table. "expected" marks titles not
     // verified on this driver yet; the third column is the per-game
@@ -648,12 +739,10 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
             cell,
         ])
     }));
-    f.render_widget(
-        Paragraph::new(compat)
-            .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title("Game compatibility")),
-        rows[3],
-    );
+    Paragraph::new(compat)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title("Game compatibility"))
+        .render(rows[3], buf);
 }
 
 /// A `#`-filled 0..65535 gauge, `width` cells wide.
@@ -673,7 +762,8 @@ fn position_bar(value: i32, width: usize) -> String {
 /// Render the Info page's live input monitor: the steering/pedal state
 /// read off the wheel's evdev node, the light-up button list, and the
 /// guarded force-sim status. Mirrors the GUI's Info page in text form.
-fn draw_monitor<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+/// Renders into `draw_scrolled`'s buffer, like the other composed views.
+fn draw_monitor<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
     use logi_dd_core::evtest;
 
     let t = &app.test;
@@ -691,12 +781,10 @@ fn draw_monitor<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
                  needs read access to it (the project's udev rule sets this up).",
             ),
         ];
-        f.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title("Test area")),
-            area,
-        );
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title("Test area"))
+            .render(area, buf);
         return;
     };
 
@@ -763,12 +851,10 @@ fn draw_monitor<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     if let Some(err) = &t.open_error {
         top.push(Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red))));
     }
-    f.render_widget(
-        Paragraph::new(top)
-            .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title("Test area")),
-        rows[0],
-    );
+    Paragraph::new(top)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title("Test area"))
+        .render(rows[0], buf);
 
     // The button tester: every wheel button, reverse-video while held,
     // with the recent-press history on top.
@@ -789,12 +875,9 @@ fn draw_monitor<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         }
         item
     }));
-    f.render_widget(
-        List::new(items).block(
-            Block::default().borders(Borders::ALL).title("Buttons (highlighted while held)"),
-        ),
-        rows[1],
-    );
+    List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Buttons (highlighted while held)"))
+        .render(rows[1], buf);
 }
 
 /// Render the modal curve editor over `area`: a left field panel and a right
@@ -919,5 +1002,98 @@ fn status_colour(s: &str) -> Color {
         Color::Red
     } else {
         Color::Green
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::SETUP_INDEX;
+    use logi_dd_core::sysfs::FakeSysfs;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// The whole test backend buffer as one string, for containment
+    /// asserts against what a terminal of that size would show.
+    fn screen(term: &Terminal<TestBackend>) -> String {
+        let buf = term.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn wheel_app() -> App<FakeSysfs> {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_range", "900");
+        App::new(logi_dd_core::Device::with_io(fs))
+    }
+
+    /// An app parked on the Setup view without the Steam scan a key-driven
+    /// entry would run (the scan reads this machine's real libraries).
+    fn setup_view_app() -> App<FakeSysfs> {
+        let mut a = wheel_app();
+        a.cat_idx = SETUP_INDEX;
+        a.games_scanned = true;
+        a.reload();
+        a
+    }
+
+    #[test]
+    fn small_terminal_flags_the_clipped_setup_view_and_scrolls_to_the_end() {
+        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut a = setup_view_app();
+        term.draw(|f| draw(f, &a)).unwrap();
+        let text = screen(&term);
+        assert!(text.contains("more below"), "clipped content is flagged:\n{text}");
+        assert!(
+            !text.contains("Game compatibility"),
+            "the last block starts off-screen at 24 lines:\n{text}"
+        );
+        // Scroll to the bottom: the marker flips and the last block shows.
+        a.scroll_view(i32::from(a.max_scroll()));
+        term.draw(|f| draw(f, &a)).unwrap();
+        let text = screen(&term);
+        assert!(text.contains("more above"), "the scrolled state is flagged:\n{text}");
+        assert!(!text.contains("more below"), "nothing is clipped below any more:\n{text}");
+        assert!(text.contains("Game compatibility"), "scrolling reaches the bottom:\n{text}");
+    }
+
+    #[test]
+    fn a_tall_terminal_needs_no_scroll_marker() {
+        let mut term = Terminal::new(TestBackend::new(100, 60)).unwrap();
+        let a = setup_view_app();
+        term.draw(|f| draw(f, &a)).unwrap();
+        let text = screen(&term);
+        assert!(!text.contains("more below") && !text.contains("more above"), "{text}");
+        assert!(text.contains("Game compatibility"), "everything fits:\n{text}");
+    }
+
+    #[test]
+    fn info_view_scrolls_down_to_the_button_tester() {
+        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut a = wheel_app();
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Info).unwrap();
+        a.reload();
+        a.test.dev = Some(logi_dd_core::evtest::WheelInput {
+            event_path: "/nonexistent/event99".to_string(),
+            name: "Logitech RS50 Base".to_string(),
+        });
+        term.draw(|f| draw(f, &a)).unwrap();
+        let text = screen(&term);
+        assert!(text.contains("more below"), "the composed Info view clips at 24 lines:\n{text}");
+        a.scroll_view(i32::from(a.max_scroll()));
+        term.draw(|f| draw(f, &a)).unwrap();
+        let text = screen(&term);
+        // At the bottom the button tester's rows fill the viewport (its
+        // title scrolled past); the last buttons prove the end is reachable.
+        assert!(text.contains("G1 (Logo)"), "the button tester becomes reachable:\n{text}");
+        assert!(text.contains("more above"), "{text}");
+        assert!(!text.contains("more below"), "{text}");
     }
 }
