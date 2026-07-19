@@ -5,8 +5,10 @@ import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
 import { Setup, SetupGame } from "setup.slint";
+import { TestPage, TestButton, TestAxis } from "test_page.slint";
 export { SettingRow } from "widgets.slint";
 export { SetupGame } from "setup.slint";
+export { TestButton, TestAxis } from "test_page.slint";
 export { CurvePoint } from "curve_editor.slint";
 export { LedColor } from "rgb_strip.slint";
 export { SlotNameRow } from "slot_text.slint";
@@ -71,6 +73,28 @@ export component App inherits Window {
     callback setup-install-game(string);
     callback setup-remove-game(string);
     callback setup-rescan-games();
+
+    // The sidebar index of the "Test" row (`setup-index + 1`), set once
+    // from Rust; `-1` until then, same guard as `setup-index`. The live
+    // values below are pushed by the evdev reader thread `main.rs` runs
+    // while this page is open (throttled to ~30 Hz).
+    in property <int> test-index: -1;
+    in property <bool> test-available: false;
+    in property <bool> test-scanned: false;
+    in property <string> test-device-name: "";
+    in property <float> test-degrees: 0;
+    in property <string> test-degrees-text: "0.0 deg";
+    in property <int> test-range: 900;
+    in property <[TestButton]> test-buttons: [];
+    in property <string> test-hat: "centered";
+    in property <[TestAxis]> test-axes: [];
+    in property <bool> test-sim-running: false;
+    in property <string> test-sim-error: "";
+    callback test-rescan();
+    // Only ever fired by the Test page's confirm dialog (see
+    // `test_page.slint`); each plays a fixed 25%/2 s effect.
+    callback test-sim-constant();
+    callback test-sim-texture();
 
     // Content: the selected category's rows, same as Task 4.
     in property <string> category-label: "Force feedback";
@@ -305,14 +329,36 @@ export component App inherits Window {
                     open-url(url) => { root.open-url(url); }
                 }
 
-                if root.selected-category != root.setup-index: Text {
+                // The Test page likewise replaces the whole block; it runs
+                // even with no wheel bound to the driver (it reads evdev,
+                // not sysfs), which is why it lives inside the shell rather
+                // than behind the no-wheel screen.
+                if root.selected-category == root.test-index: TestPage {
+                    vertical-stretch: 1;
+                    available: root.test-available;
+                    scanned: root.test-scanned;
+                    device-name: root.test-device-name;
+                    degrees: root.test-degrees;
+                    degrees-text: root.test-degrees-text;
+                    range: root.test-range;
+                    buttons: root.test-buttons;
+                    hat: root.test-hat;
+                    axes: root.test-axes;
+                    sim-running: root.test-sim-running;
+                    sim-error: root.test-sim-error;
+                    rescan() => { root.test-rescan(); }
+                    sim-constant() => { root.test-sim-constant(); }
+                    sim-texture() => { root.test-sim-texture(); }
+                }
+
+                if root.selected-category != root.setup-index && root.selected-category != root.test-index: Text {
                     text: root.category-label;
                     font-size: 20px;
                     font-weight: 700;
                     color: Theme.text-color;
                 }
 
-                if root.selected-category != root.setup-index: SettingsList {
+                if root.selected-category != root.setup-index && root.selected-category != root.test-index: SettingsList {
                     // Claim all the vertical space left under the category
                     // title so the list (and its background/scrollbar) reaches
                     // the bottom of the window. Without this the ListView only
@@ -336,7 +382,7 @@ export component App inherits Window {
                 // Documentation / source link, only on the Info category. A
                 // plain accent-colored, underlined label that opens the
                 // project page in the browser when clicked.
-                if root.selected-category != root.setup-index && root.category-label == "Info": HorizontalLayout {
+                if root.selected-category != root.setup-index && root.selected-category != root.test-index && root.category-label == "Info": HorizontalLayout {
                     alignment: start;
                     spacing: 6px;
 

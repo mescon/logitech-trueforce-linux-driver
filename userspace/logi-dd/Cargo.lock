@@ -2853,6 +2853,7 @@ version = "0.1.0"
 name = "logi-dd-gui"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "logi-dd-core",
  "slint",
  "slint-build",
@@ -2863,6 +2864,7 @@ name = "logi-dd-tui"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "libc",
  "logi-dd-core",
  "ratatui",
 ]

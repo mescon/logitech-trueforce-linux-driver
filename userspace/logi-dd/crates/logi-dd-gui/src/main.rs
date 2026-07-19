@@ -1,6 +1,7 @@
 slint::include_modules!();
 
 mod bridge;
+mod testio;
 mod viewmodel;
 mod worker;
 
@@ -8,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use logi_dd_core::curve::Curve;
+use logi_dd_core::evtest;
 use logi_dd_core::{lightsync, shaping};
 use logi_dd_core::{Category, Color, Mode, Value, REGISTRY};
 use slint::Model as _;
@@ -439,6 +441,154 @@ fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<&'static str>, ar
     });
 }
 
+/// Push one reader-thread [`testio::Snapshot`] into the Test page's
+/// properties. Runs on the UI thread (the reader's callback hops here via
+/// `slint::invoke_from_event_loop` first). Degrees are derived from the
+/// raw 0..65535 steering axis and the `test-range` property the monitor
+/// start seeded from `wheel_range`.
+fn apply_test_snapshot(app: &App, snap: &testio::Snapshot) {
+    let range = app.get_test_range().max(1) as u32;
+    let deg = evtest::steering_degrees(snap.steering_raw, 0, evtest::AXIS_MAX, range);
+    app.set_test_degrees(deg);
+    app.set_test_degrees_text(format!("{deg:+.1} deg").into());
+    app.set_test_hat(evtest::hat_label(snap.hat.0, snap.hat.1).into());
+    let buttons: Vec<TestButton> = evtest::WHEEL_BUTTONS
+        .iter()
+        .zip(&snap.buttons)
+        .map(|((code, label), pressed)| TestButton {
+            code: i32::from(*code),
+            label: (*label).into(),
+            pressed: *pressed,
+        })
+        .collect();
+    app.set_test_buttons(slint::ModelRc::new(slint::VecModel::from(buttons)));
+    let axes: Vec<TestAxis> = [("Throttle", 0), ("Brake", 1), ("Clutch", 2), ("Handbrake", 3)]
+        .iter()
+        .map(|(label, i)| TestAxis { label: (*label).into(), value: snap.axes[*i] })
+        .collect();
+    app.set_test_axes(slint::ModelRc::new(slint::VecModel::from(axes)));
+}
+
+/// Stop (and join) the Test page's reader thread, if one is running.
+/// Cheap when none is: just a mutex lock. Called when navigating off the
+/// Test page, before every re-discovery, and at app exit.
+fn stop_test_monitor(reader_cell: &Arc<Mutex<Option<testio::Reader>>>) {
+    if let Some(reader) = reader_cell.lock().unwrap().take() {
+        reader.stop();
+    }
+}
+
+/// (Re-)discover the wheel's evdev node and start the reader thread for
+/// the Test page. Discovery and the one-off `wheel_range` read run off
+/// the UI thread (same pattern as `scan_games`); the result lands back
+/// via `slint::invoke_from_event_loop`, which also stores the running
+/// reader in `reader_cell` and the found device in `device_cell` (what
+/// the sim buttons play against). Called at page-open and on Rescan.
+fn start_test_monitor(
+    app_weak: slint::Weak<App>,
+    reader_cell: Arc<Mutex<Option<testio::Reader>>>,
+    device_cell: Arc<Mutex<Option<evtest::WheelInput>>>,
+) {
+    stop_test_monitor(&reader_cell);
+    std::thread::spawn(move || {
+        let found = evtest::discover_wheel_input();
+        // The configured rotation range, read once through the same sysfs
+        // plumbing the settings pages use; 900 when unreadable.
+        let range = logi_dd_core::Device::discover()
+            .ok()
+            .and_then(|d| d.read("wheel_range").ok())
+            .and_then(|v| match v {
+                Value::Int(n) => u32::try_from(n).ok(),
+                _ => None,
+            })
+            .unwrap_or(900);
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = app_weak.upgrade() else { return };
+            app.set_test_scanned(true);
+            app.set_test_range(range as i32);
+            app.set_test_sim_error("".into());
+            let Some(wheel) = found else {
+                *device_cell.lock().unwrap() = None;
+                app.set_test_available(false);
+                app.set_test_device_name("".into());
+                return;
+            };
+            app.set_test_device_name(wheel.name.as_str().into());
+            let snap_weak = app.as_weak();
+            let gone_weak = app.as_weak();
+            match testio::Reader::start(
+                &wheel.event_path,
+                move |snap| {
+                    // Reader thread -> UI thread, at most ~30 Hz (the
+                    // reader throttles before calling this).
+                    let weak = snap_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(app) = weak.upgrade() {
+                            apply_test_snapshot(&app, &snap);
+                        }
+                    });
+                },
+                move || {
+                    // The wheel disappeared mid-session: back to the
+                    // empty state (the dead reader handle is reaped by
+                    // the next start/stop).
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(app) = gone_weak.upgrade() {
+                            app.set_test_available(false);
+                            app.set_test_device_name("".into());
+                        }
+                    });
+                },
+            ) {
+                Ok(reader) => {
+                    *reader_cell.lock().unwrap() = Some(reader);
+                    *device_cell.lock().unwrap() = Some(wheel);
+                    app.set_test_available(true);
+                }
+                Err(e) => {
+                    // Found but not openable (most likely permissions):
+                    // stay in the empty state with the reason shown.
+                    *device_cell.lock().unwrap() = None;
+                    app.set_test_available(false);
+                    app.set_test_sim_error(
+                        format!("Cannot open {}: {e} (read access to /dev/input is required)", wheel.event_path)
+                            .into(),
+                    );
+                }
+            }
+        });
+    });
+}
+
+/// Run one confirmed force simulation against the discovered wheel, off
+/// the UI thread, pushing completion (and any error) back into the Test
+/// page's properties. A missing device is a silent no-op: the buttons
+/// are disabled without a wheel, so this only races an unplug.
+fn run_test_sim(
+    app_weak: slint::Weak<App>,
+    device_cell: &Arc<Mutex<Option<evtest::WheelInput>>>,
+    kind: testio::SimKind,
+) {
+    let Some(app) = app_weak.upgrade() else { return };
+    let Some(wheel) = device_cell.lock().unwrap().clone() else { return };
+    if app.get_test_sim_running() {
+        return;
+    }
+    app.set_test_sim_running(true);
+    app.set_test_sim_error("".into());
+    let weak = app.as_weak();
+    std::thread::spawn(move || {
+        let result = testio::run_simulation(&wheel.event_path, kind);
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = weak.upgrade() else { return };
+            app.set_test_sim_running(false);
+            if let Err(e) = result {
+                app.set_test_sim_error(e.into());
+            }
+        });
+    });
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
     // The sidebar labels are the real device categories plus a trailing
@@ -448,9 +598,12 @@ fn main() -> Result<(), slint::PlatformError> {
     // device category.
     let mut labels: Vec<slint::SharedString> = bridge::category_labels_model().iter().collect();
     labels.push("Setup".into());
+    labels.push("Test".into());
     app.set_category_labels(slint::ModelRc::new(slint::VecModel::from(labels)));
     let setup_index = Category::ALL.len() as i32;
     app.set_setup_index(setup_index);
+    let test_index = setup_index + 1;
+    app.set_test_index(test_index);
     app.set_project_url(logi_dd_core::PROJECT_URL.into());
     app.on_open_url(|url| open_in_browser(&url));
 
@@ -681,22 +834,36 @@ fn main() -> Result<(), slint::PlatformError> {
         })
     };
 
+    // The Test page's reader thread (`None` while the page is closed or no
+    // wheel was found) and the evdev node the sim buttons play against.
+    let test_reader: Arc<Mutex<Option<testio::Reader>>> = Arc::new(Mutex::new(None));
+    let test_device: Arc<Mutex<Option<evtest::WheelInput>>> = Arc::new(Mutex::new(None));
+
     {
         let worker = worker.clone();
         let current_category = current_category.clone();
         let app_weak = app.as_weak();
+        let test_reader = test_reader.clone();
+        let test_device = test_device.clone();
         app.on_select_category(move |index| {
-            // The trailing "Setup" row: show that page and stop, without
-            // asking the worker for a category (there is none). Switching
-            // back to a real category below still reloads it via the usual
-            // `LoadCategory` request, so nothing needs to force a refresh
-            // when leaving Setup.
-            if index == setup_index {
+            // The trailing "Setup"/"Test" rows: show that page and stop,
+            // without asking the worker for a category (there is none).
+            // Switching back to a real category below still reloads it via
+            // the usual `LoadCategory` request, so nothing needs to force
+            // a refresh when leaving either page. Entering Test starts the
+            // evdev monitor; leaving it (to Setup or a category) stops it.
+            if index == setup_index || index == test_index {
+                if index == test_index {
+                    start_test_monitor(app_weak.clone(), test_reader.clone(), test_device.clone());
+                } else {
+                    stop_test_monitor(&test_reader);
+                }
                 if let Some(app) = app_weak.upgrade() {
-                    app.set_selected_category(setup_index);
+                    app.set_selected_category(index);
                 }
                 return;
             }
+            stop_test_monitor(&test_reader);
             let cat = bridge::category_at(index);
             set(&current_category, cat);
             if let Some(app) = app_weak.upgrade() {
@@ -1306,7 +1473,36 @@ fn main() -> Result<(), slint::PlatformError> {
         app.on_setup_rescan_games(move || scan_games(app_weak.clone()));
     }
 
+    // Test page: Rescan re-runs discovery (restarting the reader), and the
+    // two sim callbacks only ever fire from the page's confirm dialog.
+    {
+        let app_weak = app.as_weak();
+        let test_reader = test_reader.clone();
+        let test_device = test_device.clone();
+        app.on_test_rescan(move || {
+            start_test_monitor(app_weak.clone(), test_reader.clone(), test_device.clone());
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        let test_device = test_device.clone();
+        app.on_test_sim_constant(move || {
+            run_test_sim(app_weak.clone(), &test_device, testio::SimKind::ConstantForce);
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        let test_device = test_device.clone();
+        app.on_test_sim_texture(move || {
+            run_test_sim(app_weak.clone(), &test_device, testio::SimKind::Texture);
+        });
+    }
+
     worker.request(Request::LoadCategory(get(&current_category)));
 
-    app.run()
+    let outcome = app.run();
+    // The reader thread must not outlive the window (it holds an open fd
+    // and a Weak<App> that would just go stale).
+    stop_test_monitor(&test_reader);
+    outcome
 }

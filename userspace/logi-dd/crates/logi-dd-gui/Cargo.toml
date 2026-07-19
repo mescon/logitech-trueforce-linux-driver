@@ -8,6 +8,9 @@ rust-version = "1.92"
 [dependencies]
 slint = "1.17"
 logi-dd-core = { path = "../logi-dd-core" }
+# Only for the Test page's evdev force-feedback ioctls (EVIOCSFF/EVIOCRMFF)
+# and the non-blocking open flag; already present in the workspace tree.
+libc = "0.2"
 
 [build-dependencies]
 slint-build = "1.17"
