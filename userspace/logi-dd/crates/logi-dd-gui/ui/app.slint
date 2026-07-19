@@ -4,8 +4,9 @@ import { SettingRow, SettingsList } from "widgets.slint";
 import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
-import { Setup } from "setup.slint";
+import { Setup, SetupGame } from "setup.slint";
 export { SettingRow } from "widgets.slint";
+export { SetupGame } from "setup.slint";
 export { CurvePoint } from "curve_editor.slint";
 export { LedColor } from "rgb_strip.slint";
 export { SlotNameRow } from "slot_text.slint";
@@ -55,9 +56,21 @@ export component App inherits Window {
     in property <bool> setup-shim-found: false;
     in property <bool> setup-shim-running: false;
     in property <string> setup-shim-output: "";
+    // The SDK folder field's initial text and live validity (see
+    // `Setup.sdk-dir`); `main.rs` re-checks on every edit-accept.
+    in property <string> setup-sdk-dir: "";
+    in property <bool> setup-sdk-valid: false;
+    in property <string> setup-sdk-status: "";
+    // The installed Proton games (scanned off the UI thread; see
+    // `Setup.games`).
+    in property <[SetupGame]> setup-games: [];
+    in property <bool> setup-games-scanned: false;
     callback setup-copy-launch();
-    callback setup-install-shim();
-    callback setup-uninstall-shim();
+    callback setup-sdk-dir-edited(string);
+    // Per-game shim install/remove; the argument is the row's wine prefix.
+    callback setup-install-game(string);
+    callback setup-remove-game(string);
+    callback setup-rescan-games();
 
     // Content: the selected category's rows, same as Task 4.
     in property <string> category-label: "Force feedback";
@@ -279,9 +292,16 @@ export component App inherits Window {
                     shim-found: root.setup-shim-found;
                     shim-running: root.setup-shim-running;
                     shim-output: root.setup-shim-output;
+                    sdk-dir: root.setup-sdk-dir;
+                    sdk-valid: root.setup-sdk-valid;
+                    sdk-status: root.setup-sdk-status;
+                    games: root.setup-games;
+                    games-scanned: root.setup-games-scanned;
                     copy-launch() => { root.setup-copy-launch(); }
-                    install-shim() => { root.setup-install-shim(); }
-                    uninstall-shim() => { root.setup-uninstall-shim(); }
+                    sdk-dir-edited(dir) => { root.setup-sdk-dir-edited(dir); }
+                    install-game(pfx) => { root.setup-install-game(pfx); }
+                    remove-game(pfx) => { root.setup-remove-game(pfx); }
+                    rescan-games() => { root.setup-rescan-games(); }
                     open-url(url) => { root.open-url(url); }
                 }
 

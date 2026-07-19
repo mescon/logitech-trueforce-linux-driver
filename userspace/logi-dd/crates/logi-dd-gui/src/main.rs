@@ -340,17 +340,77 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
-/// Run the TrueForce SDK shim installer with `arg` (`--all-steam` or
-/// `--uninstall`) off the UI thread, then push its combined stdout+stderr
-/// plus exit status back to `setup-shim-output` (and clear
-/// `setup-shim-running`) via `slint::invoke_from_event_loop`, the same
+/// Resolve the SDK folder the Setup page prefills:
+/// `$LOGITECH_TRUEFORCE_SDK_DIR` when set, else
+/// `~/.local/share/logitech-trueforce/sdk` (the installer script's own
+/// default). The user can still point elsewhere via the page's SDK folder
+/// field; whatever it holds is passed as `--sdk-dir` to every install run.
+fn resolve_sdk_dir() -> String {
+    if let Some(dir) = std::env::var_os("LOGITECH_TRUEFORCE_SDK_DIR") {
+        if !dir.is_empty() {
+            return dir.to_string_lossy().into_owned();
+        }
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    home.join(".local/share/logitech-trueforce/sdk").to_string_lossy().into_owned()
+}
+
+/// The SDK folder field's validity + status line: whether the marker DLL
+/// exists under `dir` (via `steam::sdk_dir_valid`) and the message the
+/// green/red indicator shows for it.
+fn sdk_status(dir: &str) -> (bool, String) {
+    let valid = logi_dd_core::steam::sdk_dir_valid(std::path::Path::new(dir));
+    let message = if valid {
+        "SDK DLLs found".to_string()
+    } else {
+        format!("trueforce_sdk_x64.dll not found under {dir}/Logi/Trueforce/1_3_11/")
+    };
+    (valid, message)
+}
+
+/// Rescan the installed Proton games off the UI thread (the Steam
+/// libraries can live on slow external drives) and push the result into
+/// `setup-games` via `slint::invoke_from_event_loop`, the same
 /// worker-thread-to-UI pattern `Worker::spawn`'s response closure uses.
-/// `binary` is `None` when neither name in `resolve_shim_binary` was found
-/// on `PATH` at startup; that is reported immediately, without spawning
-/// anything (the installer is never re-resolved mid-run, so a binary that
-/// appears on `PATH` after startup needs an app restart to be picked up,
-/// same as the presence hint next to the buttons).
-fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<&'static str>, arg: &'static str) {
+/// Runs at startup, on the Rescan button, and after every install/remove
+/// so the per-row shim status reflects what just happened.
+fn scan_games(app_weak: slint::Weak<App>) {
+    std::thread::spawn(move || {
+        let games = match std::env::var_os("HOME") {
+            Some(home) => {
+                let roots = logi_dd_core::steam::library_roots(std::path::Path::new(&home));
+                logi_dd_core::steam::installed_games(&roots)
+            }
+            None => Vec::new(),
+        };
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = app_weak.upgrade() else { return };
+            let items: Vec<SetupGame> = games
+                .iter()
+                .map(|g| SetupGame {
+                    name: g.name.as_str().into(),
+                    prefix: g.prefix.to_string_lossy().as_ref().into(),
+                    installed: g.shim_installed,
+                })
+                .collect();
+            app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
+            app.set_setup_games_scanned(true);
+        });
+    });
+}
+
+/// Run the TrueForce SDK shim installer with `args` (a per-game
+/// `--prefix <pfx> --sdk-dir <dir>` install or `--uninstall-prefix <pfx>`
+/// remove) off the UI thread, then push its combined stdout+stderr plus
+/// exit status back to `setup-shim-output` (and clear
+/// `setup-shim-running`) via `slint::invoke_from_event_loop`, followed by
+/// a games rescan so the row's shim status updates. `binary` is `None`
+/// when neither name in `resolve_shim_binary` was found on `PATH` at
+/// startup; that is reported immediately, without spawning anything (the
+/// installer is never re-resolved mid-run, so a binary that appears on
+/// `PATH` after startup needs an app restart to be picked up, same as the
+/// presence hint next to the buttons).
+fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<&'static str>, args: Vec<String>) {
     let Some(bin) = binary else {
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else { return };
@@ -360,7 +420,7 @@ fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<&'static str>, ar
         return;
     };
     std::thread::spawn(move || {
-        let text = match std::process::Command::new(bin).arg(arg).output() {
+        let text = match std::process::Command::new(bin).args(&args).output() {
             Ok(out) => {
                 let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
                 combined.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -369,11 +429,13 @@ fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<&'static str>, ar
             }
             Err(e) => format!("Failed to run {bin}: {e}"),
         };
+        let rescan_weak = app_weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else { return };
             app.set_setup_shim_output(text.into());
             app.set_setup_shim_running(false);
         });
+        scan_games(rescan_weak);
     });
 }
 
@@ -398,6 +460,18 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_setup_ffb_found(found_on_path("logi-ffb"));
     let shim_binary = resolve_shim_binary();
     app.set_setup_shim_found(shim_binary.is_some());
+    // Setup page: the SDK folder field's prefill + validity, and the
+    // installed-games scan (off the UI thread). The chosen dir lives in a
+    // shared cell so every per-game install run reads the freshest value.
+    let sdk_dir = Arc::new(Mutex::new(resolve_sdk_dir()));
+    {
+        let dir = sdk_dir.lock().unwrap().clone();
+        let (valid, message) = sdk_status(&dir);
+        app.set_setup_sdk_dir(dir.into());
+        app.set_setup_sdk_valid(valid);
+        app.set_setup_sdk_status(message.into());
+    }
+    scan_games(app.as_weak());
     // Installed once, here, and never replaced: `load_rows`/`update_row`
     // mutate this same `VecModel`'s contents for the rest of the app's
     // life (see `load_rows`'s doc comment for why that matters).
@@ -1194,22 +1268,42 @@ fn main() -> Result<(), slint::PlatformError> {
         std::thread::spawn(|| copy_to_clipboard(FFB_LAUNCH_OPTIONS));
     });
     {
+        let sdk_dir = sdk_dir.clone();
         let app_weak = app.as_weak();
-        app.on_setup_install_shim(move || {
+        app.on_setup_sdk_dir_edited(move |text| {
+            let text = text.to_string();
+            let (valid, message) = sdk_status(&text);
+            *sdk_dir.lock().unwrap() = text;
+            let Some(app) = app_weak.upgrade() else { return };
+            app.set_setup_sdk_valid(valid);
+            app.set_setup_sdk_status(message.into());
+        });
+    }
+    {
+        let sdk_dir = sdk_dir.clone();
+        let app_weak = app.as_weak();
+        app.on_setup_install_game(move |prefix| {
             let Some(app) = app_weak.upgrade() else { return };
             app.set_setup_shim_output("Running...".into());
             app.set_setup_shim_running(true);
-            run_shim_command(app_weak.clone(), shim_binary, "--all-steam");
+            let dir = sdk_dir.lock().unwrap().clone();
+            let args = vec!["--prefix".to_string(), prefix.to_string(), "--sdk-dir".to_string(), dir];
+            run_shim_command(app_weak.clone(), shim_binary, args);
         });
     }
     {
         let app_weak = app.as_weak();
-        app.on_setup_uninstall_shim(move || {
+        app.on_setup_remove_game(move |prefix| {
             let Some(app) = app_weak.upgrade() else { return };
             app.set_setup_shim_output("Running...".into());
             app.set_setup_shim_running(true);
-            run_shim_command(app_weak.clone(), shim_binary, "--uninstall");
+            let args = vec!["--uninstall-prefix".to_string(), prefix.to_string()];
+            run_shim_command(app_weak.clone(), shim_binary, args);
         });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_setup_rescan_games(move || scan_games(app_weak.clone()));
     }
 
     worker.request(Request::LoadCategory(get(&current_category)));

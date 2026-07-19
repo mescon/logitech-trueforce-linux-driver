@@ -41,6 +41,9 @@ export global Theme {
     out property <brush> muted-text-color: Palette.foreground.with-alpha(0.65);
     out property <brush> faint-text-color: Palette.foreground.with-alpha(0.5);
     out property <brush> error-color: #e0524a;
+    // Same reasoning as `error-color`: no cross-style semantic "success"
+    // brush exists, so a fixed green that reads on light and dark.
+    out property <brush> ok-color: #43a047;
 
     // Sidebar selection highlight.
     out property <brush> selected-background: Palette.accent-background;

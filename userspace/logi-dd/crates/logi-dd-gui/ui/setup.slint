@@ -1,31 +1,73 @@
-import { Button, LineEdit, TextEdit, Palette } from "std-widgets.slint";
+import { Button, LineEdit, TextEdit, ListView, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
-// The sidebar's "Setup" page: two helper sections (the DirectInput FFB proxy
-// and the TrueForce SDK shim installer) plus a documentation link, shown
-// instead of the settings list whenever `App.selected-category` equals
-// `App.setup-index` (see `app.slint`'s content area). Neither helper is a
-// device setting, so nothing here goes through `Category`/`SettingRow`; the
+// One row of the Setup page's Proton games list, built on the Rust side
+// from `logi_dd_core::steam::installed_games`: the game's display name,
+// the wine prefix path the installer targets, and whether the shim's
+// marker DLL is present in it.
+export struct SetupGame {
+    name: string,
+    prefix: string,
+    installed: bool,
+}
+
+// One static row of the compatibility table.
+struct CompatRow {
+    game: string,
+    how: string,
+}
+
+// The sidebar's "Setup" page: the DirectInput FFB proxy (logi-ffb), the
+// TrueForce SDK folder + per-game shim management, and a documentation
+// link, shown instead of the settings list whenever `App.selected-category`
+// equals `App.setup-index` (see `app.slint`'s content area). Nothing here
+// is a device setting, so nothing goes through `Category`/`SettingRow`; the
 // Rust side (`main.rs`) wires the callbacks directly to `std::process`
-// calls, off the UI thread for the shim installer.
+// calls, off the UI thread for the shim installer and the Steam scan.
 export component Setup inherits Rectangle {
     in property <string> project-url: "";
     in property <bool> ffb-found: false;
     in property <bool> shim-found: false;
     in property <bool> shim-running: false;
     in property <string> shim-output: "";
+    // The SDK folder field's initial text (resolved on the Rust side from
+    // $LOGITECH_TRUEFORCE_SDK_DIR, else ~/.local/share/logitech-trueforce/
+    // sdk) and its live validity, re-checked on every edit-accept.
+    in property <string> sdk-dir: "";
+    in property <bool> sdk-valid: false;
+    in property <string> sdk-status: "";
+    // The installed Proton games, scanned off the UI thread at startup and
+    // after every install/remove/rescan; `games-scanned` gates the empty
+    // state so "no Steam found" never flashes before the first scan lands.
+    in property <[SetupGame]> games: [];
+    in property <bool> games-scanned: false;
 
     // Copies "logi-ffb %command%" to the clipboard (best-effort, wl-copy
     // then xclip; the field next to the button is selectable as a fallback).
     callback copy-launch();
-    // Runs the shim installer with `--all-steam` / `--uninstall` off the UI
-    // thread; `shim-output` and `shim-running` are pushed back once it
-    // finishes (or immediately, if the installer was never found on PATH).
-    callback install-shim();
-    callback uninstall-shim();
+    // The SDK folder field's edit-accept: re-checks validity and becomes
+    // the --sdk-dir passed to every install call.
+    callback sdk-dir-edited(string);
+    // Per-game shim runs, off the UI thread; the argument is the row's
+    // wine prefix path. `shim-output` and `shim-running` are pushed back
+    // once the run finishes, followed by a rescan.
+    callback install-game(string);
+    callback remove-game(string);
+    callback rescan-games();
     // Opens `project-url` in the user's browser; wired to the same
     // `open-url` callback the Info category's link uses.
     callback open-url(string);
+
+    private property <[CompatRow]> compat-rows: [
+        { game: "ACC", how: "TrueForce (shim)" },
+        { game: "AC EVO", how: "TrueForce (shim)" },
+        { game: "iRacing", how: "FFB (native)" },
+        { game: "Le Mans Ultimate", how: "FFB (logi-ffb)" },
+        { game: "Automobilista 2", how: "FFB (logi-ffb)" },
+        { game: "rFactor 2", how: "FFB (logi-ffb)" },
+        { game: "Dirt Rally 2.0", how: "FFB (native)" },
+        { game: "BeamNG.drive", how: "FFB (native)" },
+    ];
 
     background: transparent;
 
@@ -39,94 +81,238 @@ export component Setup inherits Rectangle {
             color: Theme.text-color;
         }
 
-        // Section: logi-ffb (DirectInput/Proton FFB proxy).
-        Rectangle {
-            background: Theme.panel-background;
-            border-radius: Theme.panel-radius;
-            border-width: 1px;
-            border-color: Theme.panel-border;
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: Theme.gutter;
 
+            // Left column: logi-ffb, the SDK folder + libtrueforce note,
+            // and the compatibility table.
             VerticalLayout {
-                padding: 14px;
-                spacing: 8px;
+                horizontal-stretch: 1;
+                spacing: Theme.gutter;
 
-                Text {
-                    text: "Force feedback in games (logi-ffb)";
-                    font-size: 15px;
-                    font-weight: 700;
-                    color: Theme.text-color;
-                }
-                Text {
-                    text: "DirectInput sims run through Proton (e.g. Le Mans Ultimate) do not get force feedback by default. Running the game through logi-ffb gives them FFB via a virtual wheel.";
-                    color: Theme.muted-text-color;
-                    wrap: word-wrap;
-                }
-                Text {
-                    text: root.ffb-found ? "logi-ffb: Installed" : "logi-ffb: Not found on PATH";
-                    color: root.ffb-found ? Theme.text-color : Theme.error-color;
-                }
-                Text {
-                    text: "Add this to the game's Steam launch options:";
-                    color: Theme.muted-text-color;
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    LineEdit {
-                        horizontal-stretch: 1;
-                        text: "logi-ffb %command%";
-                        read-only: true;
+                // Section: logi-ffb (DirectInput/Proton FFB proxy).
+                Rectangle {
+                    background: Theme.panel-background;
+                    border-radius: Theme.panel-radius;
+                    border-width: 1px;
+                    border-color: Theme.panel-border;
+
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Force feedback in games (logi-ffb)";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: Theme.text-color;
+                        }
+                        Text {
+                            text: "DirectInput sims run through Proton (e.g. Le Mans Ultimate) do not get force feedback by default. Running the game through logi-ffb gives them FFB via a virtual wheel.";
+                            color: Theme.muted-text-color;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: root.ffb-found ? "logi-ffb: Installed" : "logi-ffb: Not found on PATH";
+                            font-size: 12px;
+                            color: root.ffb-found ? Theme.text-color : Theme.error-color;
+                        }
+                        Text {
+                            text: "Add this to the game's Steam launch options:";
+                            font-size: 12px;
+                            color: Theme.muted-text-color;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            LineEdit {
+                                horizontal-stretch: 1;
+                                text: "logi-ffb %command%";
+                                read-only: true;
+                            }
+                            Button {
+                                text: "Copy";
+                                clicked => { root.copy-launch(); }
+                            }
+                        }
                     }
-                    Button {
-                        text: "Copy";
-                        clicked => { root.copy-launch(); }
+                }
+
+                // Section: the TrueForce SDK folder + libtrueforce note.
+                Rectangle {
+                    background: Theme.panel-background;
+                    border-radius: Theme.panel-radius;
+                    border-width: 1px;
+                    border-color: Theme.panel-border;
+
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "TrueForce SDK folder";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: Theme.text-color;
+                        }
+                        LineEdit {
+                            text: root.sdk-dir;
+                            placeholder-text: "Path to your Logitech SDK DLLs";
+                            accepted(text) => { root.sdk-dir-edited(text); }
+                        }
+                        Text {
+                            text: root.sdk-status;
+                            font-size: 12px;
+                            color: root.sdk-valid ? Theme.ok-color : Theme.error-color;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "Native Linux apps can also drive TrueForce through this project's libtrueforce library (userspace/libtrueforce). The SDK DLLs themselves come from Logitech's G HUB install on Windows and are never redistributed; the project README explains how to copy them here.";
+                            font-size: 12px;
+                            color: Theme.muted-text-color;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // Section: compatibility table (static reference).
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: Theme.panel-background;
+                    border-radius: Theme.panel-radius;
+                    border-width: 1px;
+                    border-color: Theme.panel-border;
+
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 4px;
+
+                        Text {
+                            text: "Game compatibility";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: Theme.text-color;
+                        }
+                        Text {
+                            text: "\"FFB (logi-ffb)\" means launch with logi-ffb %command%.";
+                            font-size: 11px;
+                            color: Theme.muted-text-color;
+                            wrap: word-wrap;
+                        }
+                        for row in root.compat-rows: HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: row.game;
+                                font-size: 12px;
+                                color: Theme.text-color;
+                            }
+                            Text {
+                                text: row.how;
+                                font-size: 12px;
+                                color: Theme.muted-text-color;
+                            }
+                        }
+                        Rectangle { vertical-stretch: 1; }
                     }
                 }
             }
-        }
 
-        // Section: TrueForce SDK shim installer.
-        Rectangle {
-            vertical-stretch: 1;
-            background: Theme.panel-background;
-            border-radius: Theme.panel-radius;
-            border-width: 1px;
-            border-color: Theme.panel-border;
-
+            // Right column: the per-game shim manager and the installer's
+            // output.
             VerticalLayout {
-                padding: 14px;
-                spacing: 8px;
+                horizontal-stretch: 1;
+                spacing: Theme.gutter;
 
-                Text {
-                    text: "TrueForce in SDK games (shim)";
-                    font-size: 15px;
-                    font-weight: 700;
-                    color: Theme.text-color;
-                }
-                Text {
-                    text: "Installs Logitech's signed TrueForce/Wheel SDK DLLs into your Steam Proton prefixes so SDK sims (ACC, AC EVO) get TrueForce. Uses the real DLLs, no injection.";
-                    color: Theme.muted-text-color;
-                    wrap: word-wrap;
-                }
-                Text {
-                    text: root.shim-found ? "Installer: found on PATH" : "Installer: not found on PATH";
-                    color: root.shim-found ? Theme.text-color : Theme.error-color;
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    Button {
-                        text: "Install into all Steam games";
-                        enabled: !root.shim-running;
-                        clicked => { root.install-shim(); }
-                    }
-                    Button {
-                        text: "Uninstall";
-                        enabled: !root.shim-running;
-                        clicked => { root.uninstall-shim(); }
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: Theme.panel-background;
+                    border-radius: Theme.panel-radius;
+                    border-width: 1px;
+                    border-color: Theme.panel-border;
+
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: "TrueForce shim per game";
+                                font-size: 15px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                color: Theme.text-color;
+                            }
+                            Button {
+                                text: "Rescan";
+                                enabled: !root.shim-running;
+                                clicked => { root.rescan-games(); }
+                            }
+                        }
+                        Text {
+                            text: "Installs Logitech's signed TrueForce/Wheel SDK DLLs into a game's Proton prefix so SDK sims (ACC, AC EVO) get TrueForce. Uses the real DLLs, no injection.";
+                            font-size: 12px;
+                            color: Theme.muted-text-color;
+                            wrap: word-wrap;
+                        }
+                        if !root.shim-found: Text {
+                            text: "Installer: not found on PATH";
+                            font-size: 12px;
+                            color: Theme.error-color;
+                        }
+
+                        if root.games-scanned && root.games.length == 0: Text {
+                            text: "No Steam installation with Proton games found. Install a game that runs through Proton, then press Rescan.";
+                            font-size: 12px;
+                            color: Theme.muted-text-color;
+                            wrap: word-wrap;
+                        }
+
+                        ListView {
+                            vertical-stretch: 1;
+                            for game in root.games: Rectangle {
+                                height: 36px;
+
+                                HorizontalLayout {
+                                    padding-right: 8px;
+                                    spacing: 8px;
+
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: game.name;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        color: Theme.text-color;
+                                    }
+                                    Text {
+                                        text: game.installed ? "shim installed" : "-";
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        color: game.installed ? Theme.ok-color : Theme.muted-text-color;
+                                    }
+                                    Button {
+                                        width: 90px;
+                                        text: game.installed ? "Remove" : "Install";
+                                        enabled: !root.shim-running;
+                                        clicked => {
+                                            if (game.installed) {
+                                                root.remove-game(game.prefix);
+                                            } else {
+                                                root.install-game(game.prefix);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
                 output-edit := TextEdit {
-                    vertical-stretch: 1;
+                    height: 110px;
                     read-only: true;
                     wrap: word-wrap;
                     text: root.shim-output;
