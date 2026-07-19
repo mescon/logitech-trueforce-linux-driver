@@ -4354,6 +4354,11 @@ struct hidpp_dd_lightsync_slot {
 	u8 brightness;			/* Per-slot brightness (0-100) */
 	char name[HIDPP_DD_SLOT_NAME_MAX_LEN + 1];	/* Slot name + null terminator */
 	u8 colors[HIDPP_DD_LIGHTSYNC_NUM_LEDS * 3]; /* RGB for each LED (30 bytes) */
+	bool config_cached;		/* direction+colors reflect device state
+					 * (successful GET, or a successful apply
+					 * that pushed this cache to the device);
+					 * false = still the driver default and
+					 * must not be pushed as-is */
 };
 
 /* Marker for features that weren't discovered (not supported by device) */
@@ -9038,6 +9043,7 @@ static int hidpp_dd_lightsync_get_slot_config(struct hidpp_device *hidpp,
 		ff->led_slots[slot].colors[dst + 1] = response.fap.params[src + 1];
 		ff->led_slots[slot].colors[dst + 2] = response.fap.params[src + 2];
 	}
+	ff->led_slots[slot].config_cached = true;
 	return 0;
 }
 
@@ -9052,6 +9058,33 @@ static void hidpp_dd_lightsync_query_slot_configs(struct hidpp_device *hidpp,
 
 	for (i = 0; i < HIDPP_DD_LIGHTSYNC_NUM_SLOTS; i++)
 		hidpp_dd_lightsync_get_slot_config(hidpp, ff, i);
+}
+
+/*
+ * Make sure led_slots[slot] reflects real device state before it is used
+ * as a source of wire data. The cache starts as driver-default white and
+ * is normally populated by the init-time query_slot_configs sweep, but
+ * each per-slot GET can fail silently (busy device, timeout), leaving a
+ * default that a later apply would push over the wheel's saved colors.
+ * Re-query lazily and only while unpopulated: after the first successful
+ * GET, or after a successful apply (which makes the device match the
+ * cache by construction), the cache is authoritative.
+ *
+ * Callers that stage a new value into the slot before applying
+ * (wheel_led_direction/colors stores) must call this BEFORE staging, so
+ * the fetched device config cannot clobber the value being written.
+ * Failure is not propagated: the caller proceeds with the existing cache,
+ * which is today's behaviour.
+ */
+static void hidpp_dd_lightsync_ensure_slot_cached(struct hidpp_device *hidpp,
+					      struct hidpp_dd_ff_data *ff,
+					      u8 slot)
+{
+	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
+		return;
+	if (ff->led_slots[slot].config_cached)
+		return;
+	hidpp_dd_lightsync_get_slot_config(hidpp, ff, slot);
 }
 
 /*
@@ -9301,6 +9334,12 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 			ok, ARRAY_SIZE(desktop_sync_zones));
 	}
 
+	/*
+	 * The device now holds exactly what the cache holds: further
+	 * applies of this slot may push the cache without a re-query.
+	 */
+	ls->config_cached = true;
+
 	dd_dbg(hid, "apply_slot complete\n");
 	return 0;
 }
@@ -9347,6 +9386,14 @@ static ssize_t wheel_led_slot_store(struct device *dev, struct device_attribute 
 
 	if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 		return -EINVAL;
+
+	/*
+	 * Selecting a slot pushes the driver cache verbatim: fetch the
+	 * device's config first if this slot was never populated, so a
+	 * missed init-time query can't overwrite saved colors with the
+	 * driver-default white.
+	 */
+	hidpp_dd_lightsync_ensure_slot_cached(hidpp, ff, slot);
 
 	/* Apply the selected slot configuration to the device */
 	ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot, true);
@@ -9607,6 +9654,14 @@ static ssize_t wheel_led_direction_store(struct device *dev, struct device_attri
 		return -ERANGE;
 
 	/*
+	 * Populate the rest of the slot's config (colors) from the device
+	 * BEFORE staging the new direction, so an unpopulated cache does
+	 * not push default white alongside it - and so the fetch cannot
+	 * clobber the value being written.
+	 */
+	hidpp_dd_lightsync_ensure_slot_cached(hidpp, ff, slot);
+
+	/*
 	 * apply_slot reads led_slots[slot].direction to build the wire
 	 * command, so we must stage the new value first. On failure,
 	 * restore the previous value so sysfs doesn't diverge.
@@ -9737,6 +9792,11 @@ static ssize_t wheel_led_colors_store(struct device *dev, struct device_attribut
 
 		if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 			return -ERANGE;
+		/*
+		 * Fetch the device's config (direction) BEFORE staging the
+		 * new colors: see wheel_led_direction_store.
+		 */
+		hidpp_dd_lightsync_ensure_slot_cached(hidpp, ff, slot);
 		ls = &ff->led_slots[slot];
 		memcpy(prev, ls->colors, sizeof(prev));
 		memcpy(ls->colors, colors, sizeof(colors));
@@ -9779,6 +9839,7 @@ static ssize_t wheel_led_apply_store(struct device *dev, struct device_attribute
 
 		if (slot >= HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
 			return -ERANGE;
+		hidpp_dd_lightsync_ensure_slot_cached(hidpp, ff, slot);
 		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot, true);
 		if (ret)
 			return ret;
@@ -9877,8 +9938,26 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 	if (effect == 5) {
 		u8 slot = READ_ONCE(ff->led_active_slot);
 
-		if (slot < HIDPP_DD_LIGHTSYNC_NUM_SLOTS)
-			hidpp_dd_lightsync_apply_slot(hidpp, ff, slot, true);
+		if (slot < HIDPP_DD_LIGHTSYNC_NUM_SLOTS) {
+			hidpp_dd_lightsync_ensure_slot_cached(hidpp, ff, slot);
+			/*
+			 * Do NOT discard the apply result: the wheel drops
+			 * back to displaying its default custom slot when
+			 * the effect is switched to 5, so a failed re-apply
+			 * leaves the strip showing the WRONG slot's image
+			 * while this store reports success (seen live
+			 * 2026-07-20: slot 3 selected, strip rendered the
+			 * old slot-0 pattern, log said "success").
+			 */
+			ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, slot,
+							    true);
+			if (ret) {
+				dd_warn(hid,
+					"LED effect 5: re-apply of slot %u failed: %d\n",
+					slot, ret);
+				return ret;
+			}
+		}
 	} else {
 		/*
 		 * fn3 only STAGES the effect; the strip keeps showing its
