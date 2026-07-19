@@ -52,8 +52,8 @@ straight to racing if you do not need TrueForce).
 
 | Distro | Install |
 |---|---|
-| Arch, CachyOS, Manjaro | `paru -S logitech-trueforce-dkms` (AUR; or your AUR helper) |
-| Debian, Ubuntu, Mint, Pop!_OS | download `logitech-trueforce-dkms_*.deb` from [Releases](https://github.com/mescon/logitech-trueforce-linux-driver/releases) and `sudo apt install ./logitech-trueforce-dkms_*.deb` |
+| Arch, CachyOS, Manjaro | `paru -S logi-dd-gui` (AUR; or your AUR helper; pulls `logi-dd` and the driver. Headless box: `paru -S logi-dd`) |
+| Debian, Ubuntu, Mint, Pop!_OS | download the `.deb`s from [Releases](https://github.com/mescon/logitech-trueforce-linux-driver/releases) and `sudo apt install ./logitech-trueforce-dkms_*.deb ./logi-dd_*.deb ./logi-dd-gui_*.deb` (skip the gui one on a headless box) |
 | Bazzite, Silverblue, Kinoite | atomic; see [section 1a](#1a-atomic--immutable-distros-bazzite-silverblue-kinoite) |
 | Fedora, openSUSE, others | build from source (below) |
 

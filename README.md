@@ -85,9 +85,9 @@ in [**docs/GETTING_STARTED.md**](docs/GETTING_STARTED.md).
 
 | Distribution | Install |
 |---|---|
-| Arch, CachyOS, Manjaro | `paru -S logitech-trueforce-dkms` (AUR, or your AUR helper) |
-| Debian, Ubuntu, Mint, Pop!_OS | download `logitech-trueforce-dkms_*.deb` from [Releases](https://github.com/mescon/logitech-trueforce-linux-driver/releases), then `sudo apt install ./logitech-trueforce-dkms_*.deb` |
-| Fedora, Nobara | COPR akmod: `sudo dnf copr enable mescon/logitech-trueforce && sudo dnf install akmod-logitech-trueforce logitech-trueforce-tools` |
+| Arch, CachyOS, Manjaro | `paru -S logi-dd-gui` (AUR, or your AUR helper; pulls `logi-dd` and the driver. Headless box: `paru -S logi-dd`) |
+| Debian, Ubuntu, Mint, Pop!_OS | download the `.deb`s from [Releases](https://github.com/mescon/logitech-trueforce-linux-driver/releases), then `sudo apt install ./logitech-trueforce-dkms_*.deb ./logi-dd_*.deb ./logi-dd-gui_*.deb` (skip the gui one on a headless box) |
+| Fedora, Nobara | COPR akmod: `sudo dnf copr enable mescon/logitech-trueforce && sudo dnf install akmod-logitech-trueforce logi-dd-gui` (headless box: `logi-dd` instead of `logi-dd-gui`) |
 | openSUSE | OBS repo `home:mescon` (see GETTING_STARTED) |
 | From source (any distro) | `git clone` this repo, then `sudo ./tools/setup.sh` (DKMS build, udev rule, everything). `./tools/setup.sh doctor` health-checks it. |
 
