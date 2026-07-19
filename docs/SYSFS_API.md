@@ -663,10 +663,12 @@ wrong after an upload. Whether curves persist across power cycles is untested.
 ### wheel_rev_level
 **Access**: Read/Write
 **Values**: `0`-`10` (number of rev LEDs lit)
-**Availability**: real G PRO rim only. The attribute is present on every model,
-but the store returns `-EOPNOTSUPP` on hardware without the level-based rev-light
-feature (the RS50 uses the `wheel_led_*` LIGHTSYNC strip instead, which is hidden
-on a real G PRO).
+**Availability**: real G PRO rim AND the RS50's LIGHTSYNC strip. On the
+RS50 this was hardware-verified 2026-07-20: the level fills the 10-LED
+strip with the active slot's colours, following the slot's stored
+`wheel_led_direction` (left-to-right, right-to-left, centre-out or
+edges-in). A written level holds until the next write; write
+`wheel_led_effect` to restore the normal idle pattern.
 
 Rev-light level for the G PRO rim. The G PRO's rim lights are
 level-based: the host commands how many LEDs are lit (0-10) and the
@@ -681,8 +683,9 @@ lag. The
 wheel holds a level for a while but reverts eventually - a telemetry
 feeder should refresh at ~1 Hz or faster (natural for rev-light use).
 
-**Status: implemented from captures, not yet validated on a real G PRO
-- reports welcome (issue tracker).**
+**Status: hardware-validated on the RS50 (2026-07-20, incl. a live
+0-10-0 sweep demo and all four fill directions); not yet validated on a
+real G PRO - reports welcome (issue tracker).**
 
 ```bash
 # Light 7 of 10 rev LEDs

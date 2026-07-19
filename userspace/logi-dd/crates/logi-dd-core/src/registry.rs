@@ -34,7 +34,7 @@ pub const REGISTRY: &[SettingSpec] = &[
     // DesktopOnly pre-check would falsely reject onboard-mode writes.
     SettingSpec { attr: "wheel_response_curve", label: "Response curve", help: "Full steering response curve. 'reset' for built-in.", category: Steering, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_calibrate_here", label: "Calibrate centre here", help: "Adopt the current physical position as centre.", category: Steering, kind: Kind::Action, access: Action, mode_req: Any },
-    SettingSpec { attr: "wheel_rev_level", label: "Rev lights (G PRO)", help: "G PRO rev-light strip: how many of the 10 rev LEDs are lit (0-10), set manually. Not driven by engine RPM. The RS50 rim uses the LIGHTSYNC page instead.", category: Steering, kind: Kind::IntRange { min: 0, max: 10, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_rev_level", label: "Rev lights", help: "How many of the 10 rev LEDs are lit (0-10), set manually. Works on the RS50 strip too (hardware-verified): the fill uses the active slot's colours and direction. A telemetry bridge can drive this with live RPM.", category: Steering, kind: Kind::IntRange { min: 0, max: 10, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
     // --- Pedals ---
     // Each pedal has three generators that all write the one 0x80A4 curve the
     // pedal MCU applies to its axis (hardware-verified 2026-07-16). Last write

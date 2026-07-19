@@ -991,6 +991,18 @@ direction setting for the built-in sweep effects.
 > writes starves the wheel's shared HID++ command processor and cuts FFB
 > out on the Windows FFB path - pace level writes at G HUB's ~160 ms
 > cadence.
+>
+> **RS50 accepts the same level command (hardware-verified 2026-07-20):**
+> writes to `wheel_rev_level` visibly drive the RS50's 10-LED strip too -
+> 0 = all dark, 10 = all lit, intermediate values a partial fill. The fill
+> renders the active slot's colours and follows the slot's stored
+> DIRECTION (all four directions watched live: L-to-R, R-to-L,
+> centre-out, edges-in per the 9.4.1 mapping). G HUB itself was never
+> captured using this command on an RS50, so the exact idle/timeout
+> semantics may differ from the G PRO's; a written level holds until the
+> next level write, and writing `wheel_led_effect` restores the normal
+> idle pattern. This makes a live RPM rev display possible on the RS50
+> today without knowing G HUB's own feed format.
 
 ### 9.1 Physical LED Layout
 
@@ -1284,14 +1296,16 @@ the firmware for 2/3/4 and NAKed for the out-of-range 5:
 | `0x03` | Left to Right sweep          | VÄNSTER TILL HÖGER  | Left to Right   | 0 |
 | `0x04` | Right to Left sweep          | HÖGER TILL VÄNSTER  | Right to Left   | 1 |
 
-The older 0x807A quick-effect table (section 9, ~line 600-608) agrees on
-`0x01`=Inside-Out and `0x02`=Outside-In but is swapped on 3/4 relative to
-this table (it lists `0x03`=Right-to-Left, `0x04`=Left-to-Right). The two
-commands are different (0x807A effect select vs 0x807B slot config), so
-both tables could be correct as written. A 5-second hardware check (write
-direction 0 to a slot and watch which way the sweep runs) settles the
-slot-config labels above; if reversed, swap the two sweep entries in
-`hidpp_dd_lightsync_dir_to_wire()` / `hidpp_dd_lightsync_wire_to_dir()`.
+**Hardware-verified 2026-07-20** (RS50, live rev-fill sweeps): all four
+driver-enum directions were watched on the physical strip and match the
+table above exactly - enum 0 fills left to right, 1 right to left, 2 from
+the centre outward, 3 from the edges inward. The verification used the
+rev-level fill (0x807A fn2+fn6, see the rev-light note at the top of
+section 9), which follows the ACTIVE SLOT's stored
+direction, so the same test confirmed both the wire mapping and the
+fill/direction coupling. The older 0x807A quick-effect table (section 9,
+~line 600-608) remains unverified on 3/4 (different command, 0x807A effect
+select vs 0x807B slot config); its labels are cosmetic only.
 
 > **Historical bug:** an earlier driver encoded byte 5 as `enum + 2`
 > (L->R=2, R->L=3, IO=4, **OI=5**). That both mislabelled the sweeps (its
@@ -1688,4 +1702,5 @@ This returns the PAGE ID at each index. G Hub queries indices 0x00 through ~0x1F
 | 6.5 | 2026-07-03 | Renamed from RS50_PROTOCOL_SPECIFICATION.md (covers the whole direct-drive family); driver symbols updated to the hidpp_dd_ prefix; documented that the RS50 keeps its own USB product string in G PRO compatibility mode ("RS50 Base for PlayStation/PC" under PID c272) while a real G PRO reports "PRO Racing Wheel" - the driver uses this to tag log output per model |
 | 6.6 | 2026-07-04 | Cross-pollination from the TF4ALL project (issue #20): the Windows game-FFB path for DD wheels is HID++ 0x8123 fn2 (int16 BE at offset 10-11; catalog index 0x10 native / 0x0e G-PRO-PID); stream-packet bytes 6-9 ("cur") are the motor torque target and override 0x8123 while a session is active, with the window additive on top; AC EVO streams unified cur+audio packets at up to ~1000 pkt/s; texture amplitudes above ~0.5-0.7 FS cross from vibration into steering pull; the REAL G PRO rim has level-based rev lights on 0x807A (SHORT fn2 + LONG fn6, byte 9 = 0-10) with no per-LED RGB - section 9 describes RS50 hardware only |
 | 6.7 | 2026-07-06 | Section 4 corrected and de-duplicated against TRUEFORCE_PROTOCOL.md: byte 10 is the new-sample count that demuxes the shared ep-0x03 packet family (0 = constant force, 4 = unified force+audio), not padding; bytes 6-9 named as the "cur" motor torque target; force rate note updated (games 250-1000 Hz, driver 500 Hz); TRUEFORCE_PROTOCOL.md pointed to as the authoritative framing reference, with a reciprocal link back. Removed the RS50_PROTOCOL_SPECIFICATION.md redirect stub (rename complete). |
+| 6.9 | 2026-07-20 | Hardware-verified on the RS50: (a) all four 9.4.1 slot-direction wire values watched live via rev-fill sweeps - the driver-enum labels are correct as tabled; (b) the RS50 accepts the G PRO level-based rev-light command (0x807A fn2+fn6, byte 9 = 0-10) - the fill renders the active slot's colours and follows its direction, making a live RPM rev display possible without G HUB's own feed format; (c) fn3 SET_EFFECT only STAGES an effect - the strip repaints on a zero-parameter fn6 commit (driver now sends the pair). |
 | 6.8 | 2026-07-19 | LIGHTSYNC slot-direction wire encoding decoded from `dev/captures/2026-07-19_lightsync_direction.pcapng`: byte 5 of the 0x807B RGB config is a 1-4 value (1=Inside-Out, 2=Outside-In, 3=Left->Right, 4=Right->Left), not the driver's 0-3 enum (9.4.1). Fixed the driver's `direction + 2` encoding, which both mislabelled the sweeps and sent an out-of-range 5 for Outside-In (firmware NAK -> -EIO). Documented the 5-mirrored-pair (palindrome) behaviour of the two symmetric directions (9.8). |
