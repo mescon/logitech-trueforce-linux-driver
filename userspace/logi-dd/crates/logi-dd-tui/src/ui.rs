@@ -110,6 +110,11 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         draw_curve_editor(f, ce, root[1]);
     }
 
+    // The `i` info popup floats centered over the body; any key closes it.
+    if let Some(popup) = &app.info_popup {
+        draw_info_popup(f, popup, root[1]);
+    }
+
     draw_status(f, app, root[2]);
 }
 
@@ -306,7 +311,9 @@ fn draw_settings<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
 /// Render the status line (green on success, red on trouble) + a dim
 /// context-sensitive help line.
 fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
-    let help = if app.curve_edit.is_some() {
+    let help = if app.info_popup.is_some() {
+        "info:  any key closes"
+    } else if app.curve_edit.is_some() {
         "curve:  up/down field   <-/-> adjust   + add point   - delete   Enter save   Esc cancel"
     } else if app.effect_edit.is_some() {
         "effect:  <-/->  choose    Enter  apply    Esc  cancel"
@@ -346,14 +353,14 @@ fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         "no wheel connected   r retry discovery   <-/-> category   q quit"
     } else if !app.is_setup() && !app.is_info() && app.category() == Category::Leds {
         // No text-mode animation preview; the GUI has the animated one.
-        "up/down select   Enter edit   t try lighting on the wheel (custom slots play a rev sweep, built-ins hold 5 s, then restored)   d desktop/onboard   q quit"
+        "up/down select   Enter edit   i info   t try lighting on the wheel (custom slots play a rev sweep, built-ins hold 5 s, then restored)   d desktop/onboard   q quit"
     } else if app.rows.iter().any(|r| r.attr == crate::app::PROFILE_NEW_ATTR) {
         // The desktop Profiles page: the computer-side profile store.
-        "up/down select   Enter apply/save   n new profile   d delete profile (or desktop/onboard on Mode)   <-/-> category   q quit"
+        "up/down select   Enter apply/save   i info   n new profile   d delete profile (or desktop/onboard on Mode)   <-/-> category   q quit"
     } else if app.has_shaping_toggle() {
-        "up/down select   <-/-> category   Enter edit   a sensitivity/curve for this axis   d desktop/onboard   r refresh   q quit"
+        "up/down select   <-/-> category   Enter edit   i info   a sensitivity/curve for this axis   d desktop/onboard   r refresh   q quit"
     } else {
-        "up/down select   <-/-> category   Enter edit   d toggle desktop/onboard   r refresh   q quit"
+        "up/down select   <-/-> category   Enter edit   i info   d toggle desktop/onboard   r refresh   q quit"
     };
     let lines = vec![
         Line::from(Span::styled(
@@ -841,6 +848,36 @@ fn draw_curve_editor(f: &mut Frame, ce: &CurveEditor, area: Rect) {
             .collect();
         f.render_widget(Paragraph::new(text), pinner);
     }
+}
+
+/// Render the `i` info popup: a centered, cleared, bordered paragraph over
+/// the body (the same Clear + bordered block pattern the curve editor
+/// uses), sized to its wrapped content.
+fn draw_info_popup(f: &mut Frame, popup: &crate::app::InfoPopup, area: Rect) {
+    let width = area.width.saturating_sub(6).clamp(20, 56).min(area.width);
+    let inner_w = width.saturating_sub(2).max(1) as usize;
+    // Wrapped-height estimate (Paragraph wraps at the inner width), so the
+    // popup hugs its content instead of showing empty rows.
+    let text_lines: usize = popup
+        .lines
+        .iter()
+        .map(|l| l.chars().count().div_ceil(inner_w).max(1))
+        .sum();
+    let height = (text_lines as u16).saturating_add(2).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, rect);
+    let lines: Vec<Line> = popup.lines.iter().map(|l| Line::from(l.clone())).collect();
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default().borders(Borders::ALL).title(format!(" {} ", popup.title)),
+        ),
+        rect,
+    );
 }
 
 /// Render a profile number with its onboard slot name.

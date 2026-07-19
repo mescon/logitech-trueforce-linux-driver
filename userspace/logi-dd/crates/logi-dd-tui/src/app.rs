@@ -8,7 +8,7 @@ use logi_dd_core::lightsync;
 use logi_dd_core::steam::{self, SteamGame};
 use logi_dd_core::sysfs::SysfsIo;
 use logi_dd_core::tfsim;
-use logi_dd_core::{Category, Device, Error, Kind, Mode, Value, REGISTRY};
+use logi_dd_core::{Category, Device, Error, Kind, Mode, ModeReq, Value, REGISTRY};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -43,6 +43,43 @@ pub const PROFILE_NEW_ATTR: &str = "profile-new";
 pub struct EffectEdit {
     pub index: usize,
     pub labels: Vec<String>,
+}
+
+/// The `i` info popup's prepared content: the selected setting's label as
+/// the title, then the explainer body (the registry help text, the kind's
+/// range/choices line, the mode requirement). Built once when the popup
+/// opens (see `App::open_info`), so tests can assert the exact content and
+/// a reload can never yank the text from under the open popup.
+pub struct InfoPopup {
+    pub title: String,
+    pub lines: Vec<String>,
+}
+
+/// The one-line range/unit/choices summary a `Kind` contributes to the
+/// info popup.
+fn kind_detail(kind: &Kind) -> String {
+    match kind {
+        Kind::Percent => "Range: 0-100 %".to_string(),
+        Kind::IntRange { min, max, unit, .. } => {
+            if unit.is_empty() {
+                format!("Range: {min}-{max}")
+            } else {
+                format!("Range: {min}-{max} {unit}")
+            }
+        }
+        Kind::Enum(variants) => format!("Choices: {}", variants.join(", ")),
+        Kind::Toggle { off, on } => format!("Toggle: {off} / {on}"),
+        Kind::Pair { max } => {
+            format!("Two percentages (lower, upper), together at most {max}%")
+        }
+        Kind::TextField { max_len } => format!("Text, up to {max_len} characters"),
+        Kind::RgbStrip { leds } => format!("{leds} LED colors"),
+        Kind::SlotText { slots, max_len } => {
+            format!("{slots} slots, names up to {max_len} characters each")
+        }
+        Kind::Curve => "Response curve; Enter opens the curve editor".to_string(),
+        Kind::Action => "Action; Enter runs it".to_string(),
+    }
 }
 
 /// The index of the synthetic "Setup" sidebar entry, one past the last real
@@ -80,6 +117,10 @@ pub struct App<S: SysfsIo> {
     /// The LIGHTSYNC effect selector, active while the Effect row is being
     /// cycled.
     pub effect_edit: Option<EffectEdit>,
+    /// The `i` info popup (the selected setting's explainer), `Some` while
+    /// it is on screen; any key closes it. Settings views only: Setup's
+    /// `i` keeps its game-install meaning.
+    pub info_popup: Option<InfoPopup>,
     pub quit: bool,
     /// `logi-ffb`'s resolved path (`PATH`, else next to this executable;
     /// see `logi_dd_core::helpers`), or `None` if it was not found at
@@ -217,6 +258,7 @@ impl<S: SysfsIo> App<S> {
             edit: None,
             curve_edit: None,
             effect_edit: None,
+            info_popup: None,
             quit: false,
             shaping_toggles: shaping::AxisToggles::default(),
             ffb_path: logi_dd_core::helpers::ffb_path(),
@@ -361,6 +403,7 @@ impl<S: SysfsIo> App<S> {
             || self.edit.is_some()
             || self.curve_edit.is_some()
             || self.effect_edit.is_some()
+            || self.info_popup.is_some()
             || self.sdk_edit.is_some()
             || self.profile_name_edit.is_some()
             || self.profile_delete_confirm.is_some()
@@ -1030,6 +1073,36 @@ impl<S: SysfsIo> App<S> {
         self.rows.get(self.row_idx)
     }
 
+    /// Open the `i` info popup for the selected row: the registry help
+    /// text plus the kind's range/choices line and the mode requirement.
+    /// A synthetic row without a registry spec (a per-axis shaping toggle,
+    /// a computer-profile row) shows its view-provided help line instead,
+    /// or "(no details)" when it has none.
+    pub fn open_info(&mut self) {
+        let Some(row) = self.selected() else { return };
+        let title = row.label.trim().to_string();
+        let mut lines = Vec::new();
+        if let Some(spec) = Device::<S>::spec(&row.attr) {
+            lines.push(spec.help.to_string());
+            lines.push(String::new());
+            lines.push(kind_detail(&spec.kind));
+            match spec.mode_req {
+                ModeReq::DesktopOnly => lines.push("Desktop mode only.".to_string()),
+                ModeReq::OnboardOnly => lines.push("Onboard mode only.".to_string()),
+                ModeReq::Any => {}
+            }
+        } else if shaping::toggle_axis(&row.attr).is_some() {
+            lines.push(shaping::TOGGLE_HELP.to_string());
+        } else if let Ok(Value::Text(hint)) = &row.value {
+            // The profile rows carry their key hint as their value text;
+            // it doubles as the popup body.
+            lines.push(if hint.is_empty() { "(no details)".to_string() } else { hint.clone() });
+        } else {
+            lines.push("(no details)".to_string());
+        }
+        self.info_popup = Some(InfoPopup { title, lines });
+    }
+
     pub fn begin_edit(&mut self) {
         let (attr, label) = match self.selected() {
             Some(row) => (row.attr.clone(), row.label.clone()),
@@ -1243,6 +1316,11 @@ impl<S: SysfsIo> App<S> {
 
     pub fn on_key(&mut self, key: crossterm::event::KeyCode) {
         use crossterm::event::KeyCode::*;
+        // The info popup swallows the key that closes it, whatever it is.
+        if self.info_popup.is_some() {
+            self.info_popup = None;
+            return;
+        }
         if let Some(ce) = self.curve_edit.as_mut() {
             match key {
                 Enter => self.commit_curve_edit(),
@@ -1510,6 +1588,10 @@ impl<S: SysfsIo> App<S> {
             // toggle row or one of the axis's own rows); a plain typo
             // elsewhere does nothing.
             Char('a') => self.toggle_selected_axis(),
+            // The selected setting's explainer. Settings views only: the
+            // Setup view's branch above keeps `i` for the shim install,
+            // and the Info view's branch keeps its own bindings.
+            Char('i') => self.open_info(),
             // LIGHTSYNC only: queue a try-on-wheel (the 5 s hold blocks,
             // so the main loop draws a status line first, same pattern as
             // the shim runs).
@@ -1762,6 +1844,84 @@ mod tests {
         assert_eq!(
             a.device.read("wheel_throttle_curve").unwrap(),
             Value::Curve(vec![])
+        );
+    }
+
+    #[test]
+    fn i_opens_the_info_popup_and_any_key_closes_it() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_strength").unwrap();
+        a.on_key(KeyCode::Char('i'));
+        let popup = a.info_popup.as_ref().expect("popup opens");
+        assert_eq!(popup.title, "FFB strength");
+        assert!(
+            popup.lines.iter().any(|l| l.contains("Overall force output")),
+            "registry help shown: {:?}",
+            popup.lines
+        );
+        assert!(
+            popup.lines.iter().any(|l| l.contains("0-100")),
+            "kind range shown: {:?}",
+            popup.lines
+        );
+        // Any key closes it, and that key does nothing else (q must not
+        // quit through the popup).
+        a.on_key(KeyCode::Char('q'));
+        assert!(a.info_popup.is_none());
+        assert!(!a.quit);
+    }
+
+    #[test]
+    fn info_popup_shows_the_mode_requirement() {
+        use crossterm::event::KeyCode;
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_sensitivity", "50");
+        let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Steering).unwrap();
+        a.reload();
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_sensitivity").unwrap();
+        a.on_key(KeyCode::Char('i'));
+        let popup = a.info_popup.as_ref().unwrap();
+        assert!(
+            popup.lines.iter().any(|l| l == "Desktop mode only."),
+            "mode requirement shown: {:?}",
+            popup.lines
+        );
+    }
+
+    #[test]
+    fn info_popup_on_a_shaping_toggle_row_shows_the_shared_help() {
+        use crossterm::event::KeyCode;
+        let mut a = pedal_app();
+        a.row_idx = a
+            .rows
+            .iter()
+            .position(|r| r.attr == shaping::toggle_attr(shaping::Axis::Throttle))
+            .unwrap();
+        a.on_key(KeyCode::Char('i'));
+        let popup = a.info_popup.as_ref().expect("popup opens on a synthetic row");
+        assert_eq!(popup.title, "Throttle shaping");
+        assert_eq!(popup.lines, vec![shaping::TOGGLE_HELP.to_string()]);
+    }
+
+    #[test]
+    fn setup_keeps_i_for_the_shim_install() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        for _ in 0..Category::ALL.len() {
+            a.move_cat(1);
+        }
+        assert!(a.is_setup());
+        a.on_key(KeyCode::Char('i'));
+        assert!(a.info_popup.is_none(), "Setup's i must not open the info popup");
+        // The binding still means "install the shim": either a run was
+        // queued (a game is selected) or the no-game status appeared.
+        assert!(
+            a.take_pending_shim().is_some() || a.status.contains("no game selected"),
+            "status: {}",
+            a.status
         );
     }
 
