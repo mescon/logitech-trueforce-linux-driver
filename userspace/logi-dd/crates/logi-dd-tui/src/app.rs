@@ -135,6 +135,24 @@ pub struct App<S: SysfsIo> {
     /// status could never be drawn first, the loop takes this via
     /// `take_pending_shim`, draws once, then calls `run_shim`.
     pending_shim: Option<(Vec<String>, &'static str)>,
+    /// Whether the wrapped device probes as absent (no registry attribute
+    /// readable): the shell stays up with empty device categories and a
+    /// red header note, Setup and the Info monitor keep working, and `r`
+    /// queues a re-discovery. Refreshed by `adopt_device`.
+    pub no_wheel: bool,
+    /// A re-discovery queued by `r` in the no-wheel state; the main loop
+    /// takes it (`take_retry_request`), runs `Device::discover()` (which
+    /// only exists for the real sysfs type) and hands any find back via
+    /// `adopt_device`.
+    retry_requested: bool,
+}
+
+/// Whether `device` looks like a real wheel: at least one registry
+/// attribute is present. Mirrors `Device::discover`'s wheel_range probe
+/// without insisting on that one attribute (a test fake may expose any
+/// subset).
+fn wheel_present<S: SysfsIo>(device: &Device<S>) -> bool {
+    REGISTRY.iter().any(|s| device.available(s.attr))
 }
 
 impl<S: SysfsIo> App<S> {
@@ -163,10 +181,34 @@ impl<S: SysfsIo> App<S> {
             profile_name_edit: None,
             profile_delete_confirm: None,
             pending_shim: None,
+            no_wheel: false,
+            retry_requested: false,
         };
+        a.no_wheel = !wheel_present(&a.device);
         a.sdk_valid = steam::sdk_dir_valid(Path::new(&a.sdk_dir));
         a.reload();
         a
+    }
+
+    /// Swap in a freshly discovered device (the `r` retry's success path)
+    /// and bring the whole view back to life.
+    pub fn adopt_device(&mut self, device: Device<S>) {
+        self.device = device;
+        self.no_wheel = !wheel_present(&self.device);
+        self.status = if self.no_wheel {
+            "no wheel found (r to retry)".to_string()
+        } else {
+            "wheel found".to_string()
+        };
+        if self.is_info() && !self.no_wheel {
+            self.rescan_input();
+        }
+        self.reload();
+    }
+
+    /// Take the queued re-discovery, if any; see `retry_requested`.
+    pub fn take_retry_request(&mut self) -> bool {
+        std::mem::take(&mut self.retry_requested)
     }
 
     pub fn category(&self) -> Category {
@@ -202,6 +244,13 @@ impl<S: SysfsIo> App<S> {
     pub fn reload(&mut self) {
         if self.is_setup() {
             self.rows.clear();
+            return;
+        }
+        // Without a wheel there is nothing to read: every device category
+        // (Info included) shows its empty state instead of rows.
+        if self.no_wheel {
+            self.rows.clear();
+            self.row_idx = 0;
             return;
         }
         let cat = self.category();
@@ -797,8 +846,12 @@ impl<S: SysfsIo> App<S> {
                 Down => self.move_row(1),
                 Char('d') => self.toggle_mode(),
                 // The Info view's r rescans both sides: the identity rows
-                // (sysfs) and the monitor's input device (evdev).
+                // (sysfs; a missing wheel queues a re-discovery) and the
+                // monitor's input device (evdev).
                 Char('r') => {
+                    if self.no_wheel {
+                        self.retry_requested = true;
+                    }
                     self.rescan_input();
                     self.reload();
                     self.status = match &self.test.dev {
@@ -915,7 +968,16 @@ impl<S: SysfsIo> App<S> {
         }
         match key {
             Char('q') => self.quit = true,
-            Char('r') => self.reload(),
+            // Without a wheel, r queues a re-discovery instead of a
+            // (pointless) reload; the main loop runs it.
+            Char('r') => {
+                if self.no_wheel {
+                    self.retry_requested = true;
+                    self.status = "retrying wheel discovery...".to_string();
+                } else {
+                    self.reload();
+                }
+            }
             // On a saved-profile row 'd' arms its delete; anywhere else it
             // keeps its usual desktop/onboard meaning.
             Char('d') => match self.selected_profile_name() {
@@ -1759,6 +1821,128 @@ mod tests {
         a.on_key(KeyCode::Char('y'));
         assert!(!a.rows.iter().any(|r| r.attr == "profile:race"));
         assert!(a.status.contains("deleted"), "status: {}", a.status);
+    }
+
+    // --- the no-wheel state machine ---
+
+    /// An app whose device probes as absent (an empty fake sysfs).
+    fn no_wheel_app() -> App<FakeSysfs> {
+        let a = App::new(logi_dd_core::Device::with_io(FakeSysfs::new()));
+        assert!(a.no_wheel, "an empty sysfs probes as no wheel");
+        a
+    }
+
+    #[test]
+    fn no_wheel_starts_into_the_shell_with_empty_categories() {
+        let mut a = no_wheel_app();
+        // Every device category shows the empty state (no rows), Setup
+        // stays a full page.
+        for _ in 0..Category::ALL.len() + 1 {
+            assert!(a.rows.is_empty(), "no rows in the no-wheel state (cat {})", a.cat_idx);
+            a.move_cat(1);
+        }
+    }
+
+    #[test]
+    fn no_wheel_survives_every_keypress() {
+        use crossterm::event::KeyCode::*;
+        // Walk every category (Setup and Info included) mashing the whole
+        // key map; nothing may panic and nothing may open an editor.
+        let mut a = no_wheel_app();
+        for _ in 0..Category::ALL.len() + 1 {
+            for key in [
+                Enter,
+                Up,
+                Down,
+                Char('a'),
+                Char('d'),
+                Char('f'),
+                Char('t'),
+                Char('n'),
+                Char('i'),
+                Char('u'),
+                Char('s'),
+                Char('y'),
+                Esc,
+                Backspace,
+            ] {
+                a.on_key(key);
+            }
+            // Leave any editor/prompt a key might have opened (Setup's
+            // 's' SDK editor), then move on.
+            a.on_key(Esc);
+            assert!(a.edit.is_none() && a.curve_edit.is_none(), "no editor without rows");
+            a.on_key(Right);
+        }
+        assert!(!a.quit);
+    }
+
+    #[test]
+    fn no_wheel_r_queues_a_retry_once() {
+        use crossterm::event::KeyCode;
+        let mut a = no_wheel_app();
+        assert!(!a.take_retry_request(), "nothing queued at startup");
+        a.on_key(KeyCode::Char('r'));
+        assert!(a.take_retry_request());
+        assert!(!a.take_retry_request(), "taken once");
+        // With a wheel present, r reloads instead of queueing.
+        let mut b = app();
+        b.on_key(KeyCode::Char('r'));
+        assert!(!b.take_retry_request());
+    }
+
+    #[test]
+    fn info_r_without_a_wheel_also_queues_a_retry() {
+        use crossterm::event::KeyCode;
+        let mut a = no_wheel_app();
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Info).unwrap();
+        a.reload();
+        assert!(a.is_info());
+        a.on_key(KeyCode::Char('r'));
+        assert!(a.take_retry_request());
+    }
+
+    #[test]
+    fn adopt_device_restores_live_behavior() {
+        let mut a = no_wheel_app();
+        assert!(a.rows.is_empty());
+        let fs = FakeSysfs::new();
+        fs.set("wheel_strength", "62");
+        fs.set("wheel_range", "900");
+        fs.set("wheel_mode", "desktop");
+        a.adopt_device(logi_dd_core::Device::with_io(fs));
+        assert!(!a.no_wheel);
+        assert!(a.status.contains("wheel found"), "status: {}", a.status);
+        assert!(a.rows.iter().any(|r| r.attr == "wheel_strength"), "rows are live again");
+    }
+
+    #[test]
+    fn adopt_device_with_still_no_wheel_stays_in_the_empty_state() {
+        let mut a = no_wheel_app();
+        a.adopt_device(logi_dd_core::Device::with_io(FakeSysfs::new()));
+        assert!(a.no_wheel);
+        assert!(a.rows.is_empty());
+        assert!(a.status.contains("no wheel"), "status: {}", a.status);
+    }
+
+    #[test]
+    fn no_wheel_setup_stays_usable() {
+        use crossterm::event::KeyCode;
+        let mut a = no_wheel_app();
+        for _ in 0..Category::ALL.len() {
+            a.move_cat(1);
+        }
+        assert!(a.is_setup());
+        a.games = vec![SteamGame {
+            appid: 100,
+            name: "ACC".to_string(),
+            prefix: PathBuf::from("/lib/steamapps/compatdata/100/pfx"),
+            shim_installed: false,
+        }];
+        a.games_scanned = true;
+        a.sdk_dir = "/sdk".to_string();
+        a.on_key(KeyCode::Char('i'));
+        assert!(a.take_pending_shim().is_some(), "shim installs work without a wheel");
     }
 
     #[test]

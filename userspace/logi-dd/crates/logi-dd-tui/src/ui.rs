@@ -84,15 +84,21 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
     if app.is_setup() {
         draw_setup(f, app, body[1]);
     } else if app.is_info() {
-        // The Info page: the identity rows (plus the doc link) on top, the
-        // live input monitor below them.
-        let rows_height = settings_height(app);
-        let split = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(rows_height), Constraint::Min(3)])
-            .split(body[1]);
-        draw_settings(f, app, split[0]);
-        draw_monitor(f, app, split[1]);
+        if app.no_wheel {
+            // No wheel: the whole body is the monitor's empty state (an
+            // evdev-only wheel input may still exist and rescan finds it).
+            draw_monitor(f, app, body[1]);
+        } else {
+            // The Info page: the identity rows (plus the doc link) on top,
+            // the live input monitor below them.
+            let rows_height = settings_height(app);
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(rows_height), Constraint::Min(3)])
+                .split(body[1]);
+            draw_settings(f, app, split[0]);
+            draw_monitor(f, app, split[1]);
+        }
     } else {
         draw_settings(f, app, body[1]);
     }
@@ -123,6 +129,23 @@ fn settings_height<S: SysfsIo>(app: &App<S>) -> u16 {
 /// device category; on the Info page this is the top block, above the
 /// live input monitor).
 fn draw_settings<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+    // No wheel: a one-line empty state instead of the rows.
+    if app.no_wheel {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "(no wheel connected - r to retry)",
+                Style::default().fg(Color::Red),
+            )),
+        ];
+        f.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::default().borders(Borders::ALL).title("Settings")),
+            area,
+        );
+        return;
+    }
     let names = app.profile_names();
     let mut rows: Vec<ListItem> = app
             .rows
@@ -286,6 +309,8 @@ fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         // A toggle row's help explains why each axis shows only one of
         // the two shaping controls, same text the GUI rows carry.
         shaping::TOGGLE_HELP
+    } else if app.no_wheel && !app.is_setup() && !app.is_info() {
+        "no wheel connected   r retry discovery   <-/-> category   q quit"
     } else if app.rows.iter().any(|r| r.attr == crate::app::PROFILE_NEW_ATTR) {
         // The desktop Profiles page: the computer-side profile store.
         "up/down select   Enter apply/save   n new profile   d delete profile (or desktop/onboard on Mode)   <-/-> category   q quit"
@@ -690,6 +715,7 @@ fn status_colour(s: &str) -> Color {
         || l.contains("needs")
         || l.contains("fail")
         || l.contains("unavailable")
+        || l.contains("no wheel")
     {
         Color::Red
     } else {

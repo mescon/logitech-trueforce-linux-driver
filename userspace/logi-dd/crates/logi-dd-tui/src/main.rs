@@ -15,14 +15,20 @@ use ratatui::Terminal;
 use std::io;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let device = match Device::discover() {
-        Ok(d) => d,
+    // No wheel is not fatal: start the shell anyway (red header note,
+    // Setup fully usable, the Info monitor's empty state) with a
+    // placeholder device that reads as absent; `r` retries discovery.
+    let (device, discover_error) = match Device::discover() {
+        Ok(d) => (d, None),
         Err(e) => {
-            eprintln!("logi-dd: {e}");
-            std::process::exit(1);
+            (Device::with_io(RealSysfs::new(std::path::PathBuf::from("/nonexistent"))), Some(e))
         }
     };
-    run(App::new(device))
+    let mut app = App::new(device);
+    if let Some(e) = discover_error {
+        app.status = format!("{e} (r to retry)");
+    }
+    run(app)
 }
 
 fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
@@ -68,6 +74,14 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
         }
         if app.test_polling() && !app.test.tick() {
             app.status = "test: wheel disconnected".to_string();
+        }
+        // A queued re-discovery (r in the no-wheel state): a find swaps
+        // the device in and reloads; a miss refreshes the status line.
+        if app.take_retry_request() {
+            match Device::discover() {
+                Ok(d) => app.adopt_device(d),
+                Err(e) => app.status = format!("{e} (r to retry)"),
+            }
         }
         // A queued shim run blocks, so show a status line first, run,
         // rescan the games list (the row's shim status just changed),
