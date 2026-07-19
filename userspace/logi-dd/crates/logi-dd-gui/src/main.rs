@@ -277,7 +277,10 @@ fn refresh_light_effect_row(app: &App, led_names: &[String], effect: u8) {
 /// (`wheel_profile_names`'s freshest value). Called when a slot rename's
 /// `RowUpdated` lands: that response only updates the names row itself, but
 /// the sibling profile dropdown renders those same names and would otherwise
-/// keep the old ones until the next whole-category reload.
+/// keep the old ones until the next whole-category reload. Only the labels
+/// are replaced: the model row's `int_value` is already the shifted
+/// dropdown index (`apply_profile_choices` ran when the row was composed),
+/// so re-applying the full rewrite here would shift it twice.
 fn refresh_profile_row(app: &App, names: &[String]) {
     let model = app.get_rows();
     let Some(index) =
@@ -286,7 +289,7 @@ fn refresh_profile_row(app: &App, names: &[String]) {
         return;
     };
     let Some(mut sr) = model.row_data(index) else { return };
-    bridge::apply_profile_choices(&mut sr, names);
+    sr.choices = slint::ModelRc::new(slint::VecModel::from(bridge::profile_choice_labels(names)));
     sr.revision = sr.revision.wrapping_add(1);
     model.set_row_data(index, sr);
 }
