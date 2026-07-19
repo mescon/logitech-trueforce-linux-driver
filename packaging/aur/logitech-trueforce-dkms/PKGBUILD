@@ -43,9 +43,10 @@ sha256sums=('9755bb8261ef00fd4f3308230943fbc07804ee8707330b023312241e40da3ec2')
 build() {
 	local _src="$srcdir/logitech-trueforce-linux-driver-$pkgver"
 
-	# logi-ffb (DirectInput FFB proxy), logi-dd (settings TUI), and
-	# logi-dd-gui (Slint settings GUI, GPL-3.0-or-later), the userspace
-	# companions to the kernel module. Arch tracks current Rust, so
+	# logi-ffb (DirectInput FFB proxy), logi-dd (settings TUI), logi-dd-gui
+	# (Slint settings GUI, GPL-3.0-or-later), and logi-tf-sim (simulated-
+	# TrueForce daemon), the userspace companions to the kernel module.
+	# Arch tracks current Rust, so
 	# logi-dd-gui's MSRV (1.92, from Slint 1.17.1) is never a problem here;
 	# no version guard needed (contrast packaging/debian/rules).
 	cargo build --release --manifest-path "$_src/userspace/logi-dd/Cargo.toml"
@@ -78,7 +79,10 @@ package() {
 	install -Dm644 "$_src/udev/71-logi-ffb-uhid.rules" \
 		"$pkgdir/usr/lib/udev/rules.d/71-logi-ffb-uhid.rules"
 
-	# Userspace binaries: the DirectInput FFB proxy and the settings TUI.
+	# Userspace binaries: the DirectInput FFB proxy, the settings TUI/GUI,
+	# and the simulated-TrueForce daemon (logi-tf-sim, statically linked
+	# against the in-repo libtrueforce; its build.rs runs gcc+make, both in
+	# base-devel).
 	install -Dm755 \
 		"$_src/userspace/logi-dd/target/release/logi-ffb" \
 		"$pkgdir/usr/bin/logi-ffb"
@@ -88,6 +92,15 @@ package() {
 	install -Dm755 \
 		"$_src/userspace/logi-dd/target/release/logi-dd-gui" \
 		"$pkgdir/usr/bin/logi-dd-gui"
+	install -Dm755 \
+		"$_src/userspace/logi-dd/target/release/logi-tf-sim" \
+		"$pkgdir/usr/bin/logi-tf-sim"
+
+	# Desktop integration for the GUI.
+	install -Dm644 "$_src/desktop/logi-dd-gui.desktop" \
+		"$pkgdir/usr/share/applications/logi-dd-gui.desktop"
+	install -Dm644 "$_src/desktop/logi-dd-gui.svg" \
+		"$pkgdir/usr/share/icons/hicolor/scalable/apps/logi-dd-gui.svg"
 
 	# TrueForce-in-Proton helper (resolves the SDK DLL dir via --sdk-dir /
 	# $LOGITECH_TRUEFORCE_SDK_DIR / ~/.local/share/logitech-trueforce/sdk).
