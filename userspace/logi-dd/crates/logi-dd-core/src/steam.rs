@@ -5,6 +5,7 @@
 //! against a plain fixture tree.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -139,17 +140,70 @@ pub fn sdk_dir_valid(dir: &Path) -> bool {
     dir.join(SDK_MARKER).is_file()
 }
 
-/// The shim installer's per-game install arguments. `--sdk-dir` is only
-/// included when `sdk_dir` actually holds the SDK DLLs ([`sdk_dir_valid`]):
-/// the flag overrides the installer's own resolution order
-/// (`$LOGITECH_TRUEFORCE_SDK_DIR`, a repo `sdk/` next to the script, the
-/// XDG default), so passing along an invalid prefill would break an
-/// install the script could have resolved by itself.
-pub fn shim_install_args(prefix: &str, sdk_dir: &Path) -> Vec<String> {
+/// Resolve the SDK directory the front-ends' Setup pages report and their
+/// installs use, mirroring `tools/install-tf-shim.sh`'s own precedence
+/// (`--sdk-dir` override, `$LOGITECH_TRUEFORCE_SDK_DIR`, a repo `sdk/`
+/// next to the script, the XDG default) but only ever returning a
+/// directory that actually holds the marker DLL ([`sdk_dir_valid`]), so
+/// "found at <path>" is a fact, not a guess. `field` is the Setup page's
+/// SDK folder field (the user's would-be `--sdk-dir`); `installer` is the
+/// resolved installer path ([`crate::helpers::installer_path`]), whose
+/// `../sdk` sibling is the repo checkout's tree. `None` means no candidate
+/// holds the DLLs. [`resolve_sdk_dir`] applies the real process
+/// environment; everything else is parameterized for tests.
+pub fn resolve_sdk_dir_in(
+    field: &str,
+    env_dir: Option<&OsStr>,
+    installer: Option<&Path>,
+    xdg_default: Option<&Path>,
+) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let field = field.trim();
+    if !field.is_empty() {
+        candidates.push(PathBuf::from(field));
+    }
+    if let Some(env) = env_dir.filter(|v| !v.is_empty()) {
+        candidates.push(PathBuf::from(env));
+    }
+    // `<repo>/tools/install-tf-shim.sh` -> `<repo>/sdk`. A packaged
+    // installer (e.g. /usr/bin/...) yields a nonsense sibling here, which
+    // the validity check below simply skips.
+    if let Some(repo_sdk) = installer.and_then(|p| Some(p.parent()?.parent()?.join("sdk"))) {
+        candidates.push(repo_sdk);
+    }
+    if let Some(default) = xdg_default {
+        candidates.push(default.to_path_buf());
+    }
+    candidates.into_iter().find(|dir| sdk_dir_valid(dir))
+}
+
+/// The installer script's default SDK location:
+/// `${XDG_DATA_HOME:-$HOME/.local/share}/logitech-trueforce/sdk`.
+pub fn xdg_default_sdk_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+    Some(base.join("logitech-trueforce/sdk"))
+}
+
+/// [`resolve_sdk_dir_in`] over the real process environment.
+pub fn resolve_sdk_dir(field: &str, installer: Option<&Path>) -> Option<PathBuf> {
+    let env = std::env::var_os("LOGITECH_TRUEFORCE_SDK_DIR");
+    resolve_sdk_dir_in(field, env.as_deref(), installer, xdg_default_sdk_dir().as_deref())
+}
+
+/// The shim installer's per-game install arguments. `sdk_dir` is the
+/// RESOLVED directory ([`resolve_sdk_dir`]), passed explicitly as
+/// `--sdk-dir` so the install uses exactly the directory the Setup page's
+/// status line reported (no silent divergence between the two lookups).
+/// `None` (nothing resolved) omits the flag: the installer then runs its
+/// own resolution and prints its own copy-the-DLLs guidance on failure.
+pub fn shim_install_args(prefix: &str, sdk_dir: Option<&Path>) -> Vec<String> {
     let mut args = vec!["--prefix".to_string(), prefix.to_string()];
-    if sdk_dir_valid(sdk_dir) {
+    if let Some(dir) = sdk_dir {
         args.push("--sdk-dir".to_string());
-        args.push(sdk_dir.to_string_lossy().into_owned());
+        args.push(dir.to_string_lossy().into_owned());
     }
     args
 }
@@ -282,25 +336,98 @@ mod tests {
     }
 
     #[test]
-    fn shim_install_args_pass_sdk_dir_only_when_valid() {
-        let tree = TempTree::new();
-        let sdk = tree.path().join("sdk");
+    fn shim_install_args_pass_the_resolved_dir_and_omit_none() {
         assert_eq!(
-            shim_install_args("/pfx", &sdk),
+            shim_install_args("/pfx", None),
             vec!["--prefix".to_string(), "/pfx".to_string()],
-            "an invalid dir is omitted so the installer's own lookup runs"
+            "nothing resolved: the flag is omitted so the installer's own lookup (and its guidance) runs"
         );
-        write(&sdk.join(SDK_MARKER), "dll");
         assert_eq!(
-            shim_install_args("/pfx", &sdk),
+            shim_install_args("/pfx", Some(Path::new("/data/sdk"))),
             vec![
                 "--prefix".to_string(),
                 "/pfx".to_string(),
                 "--sdk-dir".to_string(),
-                sdk.to_string_lossy().into_owned(),
+                "/data/sdk".to_string(),
             ],
-            "a validated dir is passed through"
+            "the resolved dir is passed explicitly"
         );
+    }
+
+    /// A tree holding a populated SDK at `<root>/<name>` (the marker DLL
+    /// exists), for the resolver tests.
+    fn populated_sdk(tree: &TempTree, name: &str) -> PathBuf {
+        let dir = tree.path().join(name);
+        write(&dir.join(SDK_MARKER), "dll");
+        dir
+    }
+
+    #[test]
+    fn resolve_sdk_dir_prefers_a_valid_field() {
+        let tree = TempTree::new();
+        let field = populated_sdk(&tree, "field");
+        let env = populated_sdk(&tree, "env");
+        let found = resolve_sdk_dir_in(
+            &field.to_string_lossy(),
+            Some(env.as_os_str()),
+            None,
+            None,
+        );
+        assert_eq!(found, Some(field), "the field wins while it validates");
+    }
+
+    #[test]
+    fn resolve_sdk_dir_skips_an_invalid_field_for_the_env_var() {
+        let tree = TempTree::new();
+        let env = populated_sdk(&tree, "env");
+        let found = resolve_sdk_dir_in("/nowhere", Some(env.as_os_str()), None, None);
+        assert_eq!(found, Some(env), "an invalid field falls through instead of blocking");
+    }
+
+    #[test]
+    fn resolve_sdk_dir_finds_the_repo_sdk_next_to_the_installer() {
+        // The installer at <repo>/tools/install-tf-shim.sh resolves the
+        // checkout's <repo>/sdk sibling, exactly like the script's own
+        // "$REPO_ROOT/sdk" step.
+        let tree = TempTree::new();
+        let repo = tree.path().join("repo");
+        let sdk = repo.join("sdk");
+        write(&sdk.join(SDK_MARKER), "dll");
+        let installer = repo.join("tools").join("install-tf-shim.sh");
+        write(&installer, "#!/bin/sh");
+        let found = resolve_sdk_dir_in("", None, Some(&installer), None);
+        assert_eq!(found, Some(sdk));
+    }
+
+    #[test]
+    fn resolve_sdk_dir_falls_back_to_the_xdg_default() {
+        let tree = TempTree::new();
+        let default = populated_sdk(&tree, "xdg/logitech-trueforce/sdk");
+        let found = resolve_sdk_dir_in("/nowhere", None, None, Some(&default));
+        assert_eq!(found, Some(default));
+    }
+
+    #[test]
+    fn resolve_sdk_dir_with_no_valid_candidate_is_none() {
+        let tree = TempTree::new();
+        let empty = tree.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let installer = tree.path().join("repo/tools/install-tf-shim.sh");
+        write(&installer, "#!/bin/sh");
+        let found = resolve_sdk_dir_in(
+            &empty.to_string_lossy(),
+            Some(empty.as_os_str()),
+            Some(&installer),
+            Some(&empty),
+        );
+        assert_eq!(found, None, "candidates without the marker DLL never resolve");
+    }
+
+    #[test]
+    fn resolve_sdk_dir_ignores_blank_field_and_env() {
+        // A blank field or env var must not turn into a "" candidate that
+        // accidentally validates relative to the current directory.
+        assert_eq!(resolve_sdk_dir_in("   ", Some(OsStr::new("")), None, None), None);
     }
 
     #[test]

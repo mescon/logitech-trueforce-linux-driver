@@ -335,14 +335,12 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
-/// Resolve the SDK folder the Setup page prefills:
-/// `$LOGITECH_TRUEFORCE_SDK_DIR` when set, else
-/// `~/.local/share/logitech-trueforce/sdk` (the installer script's own
-/// default). The user can still point elsewhere via the page's SDK folder
-/// field; install runs pass it as `--sdk-dir` only while it validates
-/// (see `steam::shim_install_args`), so an invalid prefill never
-/// overrides the installer's own lookup.
-fn resolve_sdk_dir() -> String {
+/// The SDK folder field's prefill: `$LOGITECH_TRUEFORCE_SDK_DIR` when set,
+/// else `~/.local/share/logitech-trueforce/sdk` (the installer script's
+/// own default). Only a starting point for the editable field; the
+/// concrete outcome next to it always comes from the full resolution
+/// (`sdk_status`), which checks this and every other candidate.
+fn sdk_field_prefill() -> String {
     if let Some(dir) = std::env::var_os("LOGITECH_TRUEFORCE_SDK_DIR") {
         if !dir.is_empty() {
             return dir.to_string_lossy().into_owned();
@@ -352,21 +350,24 @@ fn resolve_sdk_dir() -> String {
     home.join(".local/share/logitech-trueforce/sdk").to_string_lossy().into_owned()
 }
 
-/// The SDK folder field's validity + status line: whether the marker DLL
-/// exists under `dir` (via `steam::sdk_dir_valid`) and the message the
-/// green/red indicator shows for it. An invalid folder is not a broken
-/// install: `--sdk-dir` is simply omitted then and the installer runs
-/// its own lookup, which the message says.
-fn sdk_status(dir: &str) -> (bool, String) {
-    let valid = logi_dd_core::steam::sdk_dir_valid(std::path::Path::new(dir));
-    let message = if valid {
-        "SDK DLLs found".to_string()
-    } else {
-        format!(
-            "No trueforce_sdk_x64.dll under {dir}/Logi/Trueforce/1_3_11/; installs will use the installer's own lookup (repo sdk/ or $LOGITECH_TRUEFORCE_SDK_DIR)"
-        )
-    };
-    (valid, message)
+/// The SDK folder status line: resolve the directory exactly like the
+/// installer does (`steam::resolve_sdk_dir`: the field while it validates,
+/// then `$LOGITECH_TRUEFORCE_SDK_DIR`, the repo `sdk/` next to the
+/// resolved installer, the XDG default) and report the concrete outcome:
+/// the resolved path (shown green, and passed explicitly to installs so
+/// status and install can never diverge), or a red not-found line saying
+/// where the DLLs come from.
+fn sdk_status(field: &str, installer: Option<&std::path::Path>) -> (Option<std::path::PathBuf>, String) {
+    match logi_dd_core::steam::resolve_sdk_dir(field, installer) {
+        Some(dir) => {
+            let message = format!("SDK DLLs: found at {}", dir.display());
+            (Some(dir), message)
+        }
+        None => (
+            None,
+            "SDK DLLs: not found - copy them from a Windows G HUB install; see the README".to_string(),
+        ),
+    }
 }
 
 /// Rescan the installed Proton games off the UI thread (the Steam
@@ -667,19 +668,23 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_setup_ffb_path(
         ffb_binary.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default().into(),
     );
-    let shim_binary =
-        logi_dd_core::helpers::installer_path().map(|p| p.to_string_lossy().into_owned());
+    // The installer's resolved path is kept both ways: the string feeds the
+    // status line and the shim runs, the `PathBuf` anchors the SDK
+    // resolution's repo-`sdk/` candidate (see `sdk_status`).
+    let installer_path: Option<std::path::PathBuf> = logi_dd_core::helpers::installer_path();
+    let shim_binary = installer_path.as_ref().map(|p| p.to_string_lossy().into_owned());
     app.set_setup_shim_found(shim_binary.is_some());
     app.set_setup_shim_path(shim_binary.clone().unwrap_or_default().into());
-    // Setup page: the SDK folder field's prefill + validity, and the
-    // installed-games scan (off the UI thread). The chosen dir lives in a
-    // shared cell so every per-game install run reads the freshest value.
-    let sdk_dir = Arc::new(Mutex::new(resolve_sdk_dir()));
+    // Setup page: the SDK folder field's prefill + resolved status, and the
+    // installed-games scan (off the UI thread). The field text lives in a
+    // shared cell so every per-game install run re-resolves from the
+    // freshest value.
+    let sdk_dir = Arc::new(Mutex::new(sdk_field_prefill()));
     {
         let dir = sdk_dir.lock().unwrap().clone();
-        let (valid, message) = sdk_status(&dir);
+        let (resolved, message) = sdk_status(&dir, installer_path.as_deref());
         app.set_setup_sdk_dir(dir.into());
-        app.set_setup_sdk_valid(valid);
+        app.set_setup_sdk_valid(resolved.is_some());
         app.set_setup_sdk_status(message.into());
     }
     scan_games(app.as_weak());
@@ -1558,18 +1563,20 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     {
         let sdk_dir = sdk_dir.clone();
+        let installer_path = installer_path.clone();
         let app_weak = app.as_weak();
         app.on_setup_sdk_dir_edited(move |text| {
             let text = text.to_string();
-            let (valid, message) = sdk_status(&text);
+            let (resolved, message) = sdk_status(&text, installer_path.as_deref());
             *sdk_dir.lock().unwrap() = text;
             let Some(app) = app_weak.upgrade() else { return };
-            app.set_setup_sdk_valid(valid);
+            app.set_setup_sdk_valid(resolved.is_some());
             app.set_setup_sdk_status(message.into());
         });
     }
     {
         let sdk_dir = sdk_dir.clone();
+        let installer_path = installer_path.clone();
         let shim_binary = shim_binary.clone();
         let app_weak = app.as_weak();
         app.on_setup_install_game(move |prefix| {
@@ -1577,11 +1584,11 @@ fn main() -> Result<(), slint::PlatformError> {
             app.set_setup_shim_output("Running...".into());
             app.set_setup_shim_running(true);
             let dir = sdk_dir.lock().unwrap().clone();
-            // `--sdk-dir` only when the folder validates; otherwise the
-            // installer's own resolution order (env var, repo sdk/, XDG
-            // default) stays in charge.
-            let args =
-                logi_dd_core::steam::shim_install_args(&prefix, std::path::Path::new(&dir));
+            // The install passes the RESOLVED dir explicitly, i.e. exactly
+            // the directory the status line reports; nothing resolved
+            // omits the flag and the installer's own error guidance runs.
+            let resolved = logi_dd_core::steam::resolve_sdk_dir(&dir, installer_path.as_deref());
+            let args = logi_dd_core::steam::shim_install_args(&prefix, resolved.as_deref());
             run_shim_command(app_weak.clone(), shim_binary.clone(), args);
         });
     }

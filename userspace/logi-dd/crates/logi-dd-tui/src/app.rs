@@ -52,12 +52,12 @@ pub struct EffectEdit {
 /// entry: the live input tester lives on the Info category's page.
 pub const SETUP_INDEX: usize = Category::ALL.len();
 
-/// Resolve the SDK folder the Setup view starts with:
-/// `$LOGITECH_TRUEFORCE_SDK_DIR` when set, else
-/// `~/.local/share/logitech-trueforce/sdk` (the installer script's own
-/// default). Editable in the view (the `s` key); whatever it holds is
-/// passed as `--sdk-dir` to install runs while it validates.
-fn resolve_sdk_dir() -> String {
+/// The SDK folder field's prefill: `$LOGITECH_TRUEFORCE_SDK_DIR` when set,
+/// else `~/.local/share/logitech-trueforce/sdk` (the installer script's
+/// own default). Editable in the view (the `s` key); the concrete outcome
+/// shown next to it always comes from the full resolution
+/// (`App::resolve_sdk`), which checks this and every other candidate.
+fn sdk_field_prefill() -> String {
     if let Some(dir) = std::env::var_os("LOGITECH_TRUEFORCE_SDK_DIR") {
         if !dir.is_empty() {
             return dir.to_string_lossy().into_owned();
@@ -97,15 +97,17 @@ pub struct App<S: SysfsIo> {
     /// pages; Enter on that row (or 'a' anywhere in the axis's block)
     /// flips it.
     pub shaping_toggles: shaping::AxisToggles,
-    /// The SDK folder per-game installs pass as `--sdk-dir` while it
-    /// validates (an invalid one is omitted so the installer's own
-    /// lookup runs); see
-    /// `resolve_sdk_dir` for the startup value, `s` in the Setup view to
-    /// edit it.
+    /// The Setup view's SDK folder field text (see `sdk_field_prefill` for
+    /// the startup value, `s` in the Setup view to edit it). The field is
+    /// only the first candidate; `sdk_resolved` holds the actual outcome.
     pub sdk_dir: String,
-    /// Whether `sdk_dir` holds the marker DLL (`steam::sdk_dir_valid`),
-    /// re-checked whenever the dir changes.
-    pub sdk_valid: bool,
+    /// The resolved SDK directory (`steam::resolve_sdk_dir` over the
+    /// field, `$LOGITECH_TRUEFORCE_SDK_DIR`, the repo `sdk/` next to the
+    /// resolved installer, and the XDG default), or `None` when no
+    /// candidate holds the DLLs. Recomputed at startup and on every field
+    /// commit; per-game installs pass it explicitly as `--sdk-dir`, so the
+    /// status line and the install can never diverge.
+    pub sdk_resolved: Option<PathBuf>,
     /// The SDK-dir line editor's draft, `Some` while the Setup view's `s`
     /// edit is active: type to append, Backspace to erase, Enter commits
     /// (re-checking `sdk_valid`), Esc discards.
@@ -179,8 +181,8 @@ impl<S: SysfsIo> App<S> {
             shaping_toggles: shaping::AxisToggles::default(),
             ffb_path: logi_dd_core::helpers::ffb_path(),
             shim_binary: logi_dd_core::helpers::installer_path(),
-            sdk_dir: resolve_sdk_dir(),
-            sdk_valid: false,
+            sdk_dir: sdk_field_prefill(),
+            sdk_resolved: None,
             sdk_edit: None,
             games: Vec::new(),
             game_idx: 0,
@@ -195,9 +197,17 @@ impl<S: SysfsIo> App<S> {
             last_drift: None,
         };
         a.no_wheel = !wheel_present(&a.device);
-        a.sdk_valid = steam::sdk_dir_valid(Path::new(&a.sdk_dir));
+        a.sdk_resolved = a.resolve_sdk();
         a.reload();
         a
+    }
+
+    /// Resolve the SDK directory the installs use, in the installer's own
+    /// order (the field, `$LOGITECH_TRUEFORCE_SDK_DIR`, the repo `sdk/`
+    /// next to the resolved installer, the XDG default); `None` when no
+    /// candidate holds the DLLs.
+    fn resolve_sdk(&self) -> Option<PathBuf> {
+        steam::resolve_sdk_dir(&self.sdk_dir, self.shim_binary.as_deref())
     }
 
     /// Swap in a freshly discovered device (the `r` retry's success path)
@@ -936,11 +946,10 @@ impl<S: SysfsIo> App<S> {
                 match key {
                     Enter => {
                         self.sdk_dir = self.sdk_edit.take().unwrap_or_default();
-                        self.sdk_valid = steam::sdk_dir_valid(Path::new(&self.sdk_dir));
-                        self.status = if self.sdk_valid {
-                            "SDK folder set (DLLs found)".to_string()
-                        } else {
-                            "SDK folder set; no DLLs there, so installs will use the installer's own lookup (repo sdk/ or $LOGITECH_TRUEFORCE_SDK_DIR)".to_string()
+                        self.sdk_resolved = self.resolve_sdk();
+                        self.status = match &self.sdk_resolved {
+                            Some(dir) => format!("SDK DLLs: found at {}", dir.display()),
+                            None => "SDK DLLs: not found - copy them from a Windows G HUB install; see the README".to_string(),
                         };
                     }
                     Esc => self.sdk_edit = None,
@@ -972,11 +981,11 @@ impl<S: SysfsIo> App<S> {
                 Char('i') => match self.selected_game() {
                     Some(game) => {
                         let pfx = game.prefix.to_string_lossy().into_owned();
-                        // --sdk-dir only when the folder validates; an
-                        // invalid one must not override the installer's
-                        // own resolution (env var, repo sdk/, XDG
-                        // default).
-                        let args = steam::shim_install_args(&pfx, Path::new(&self.sdk_dir));
+                        // The RESOLVED dir goes along explicitly, i.e.
+                        // exactly what the SDK status line reports;
+                        // nothing resolved omits the flag and the
+                        // installer's own error guidance runs.
+                        let args = steam::shim_install_args(&pfx, self.sdk_resolved.as_deref());
                         self.pending_shim = Some((args, "install"));
                     }
                     None => self.status = "shim install: no game selected".to_string(),
@@ -1436,9 +1445,12 @@ mod tests {
     fn setup_keys_queue_a_per_game_shim_run_instead_of_running_it() {
         use crossterm::event::KeyCode;
         let mut a = setup_app();
-        // An SDK folder without the DLLs: --sdk-dir is omitted so the
-        // installer's own lookup (repo sdk/, env var, XDG default) runs.
-        a.sdk_dir = "/sdk".to_string();
+        // Nothing resolved: --sdk-dir is omitted so the installer's own
+        // lookup (and its copy-the-DLLs guidance) runs. `sdk_resolved` is
+        // set directly: the real resolution reads this machine's
+        // environment (repo sdk/, env var), which a unit test must not
+        // depend on.
+        a.sdk_resolved = None;
         a.on_key(KeyCode::Char('i'));
         assert_eq!(
             a.take_pending_shim(),
@@ -1449,12 +1461,9 @@ mod tests {
         );
         // Taken once; a second take finds nothing queued.
         assert_eq!(a.take_pending_shim(), None);
-        // A validated folder (the marker DLL exists) is passed through.
-        let sdk = std::env::temp_dir().join(format!("logi-dd-tui-sdk-{}", std::process::id()));
-        let marker = sdk.join("Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll");
-        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-        std::fs::write(&marker, "dll").unwrap();
-        a.sdk_dir = sdk.to_string_lossy().into_owned();
+        // A resolved directory is passed through explicitly, exactly as
+        // the status line reported it.
+        a.sdk_resolved = Some(PathBuf::from("/data/sdk"));
         a.on_key(KeyCode::Char('i'));
         assert_eq!(
             a.take_pending_shim(),
@@ -1463,12 +1472,11 @@ mod tests {
                     "--prefix".to_string(),
                     "/lib/steamapps/compatdata/100/pfx".to_string(),
                     "--sdk-dir".to_string(),
-                    sdk.to_string_lossy().into_owned(),
+                    "/data/sdk".to_string(),
                 ],
                 "install"
             ))
         );
-        std::fs::remove_dir_all(&sdk).unwrap();
         a.on_key(KeyCode::Down); // select the second game
         a.on_key(KeyCode::Char('u'));
         assert_eq!(
@@ -1520,7 +1528,11 @@ mod tests {
         a.on_key(KeyCode::Enter);
         assert_eq!(a.sdk_dir, "/new");
         assert!(a.sdk_edit.is_none());
-        assert!(!a.sdk_valid, "no marker DLL under /new");
+        assert!(
+            a.status.starts_with("SDK DLLs:"),
+            "the commit reports the concrete resolution outcome: {}",
+            a.status
+        );
         a.on_key(KeyCode::Char('s'));
         a.on_key(KeyCode::Char('x'));
         a.on_key(KeyCode::Esc);
@@ -2111,11 +2123,13 @@ mod tests {
             shim_installed: false,
         }];
         a.games_scanned = true;
-        a.sdk_dir = "/sdk".to_string();
+        // Pinned rather than resolved: the real resolution reads this
+        // machine's environment (repo sdk/, env var).
+        a.sdk_resolved = None;
         a.on_key(KeyCode::Char('i'));
         let (args, verb) = a.take_pending_shim().expect("shim installs work without a wheel");
         assert_eq!(verb, "install");
-        assert!(!args.contains(&"--sdk-dir".to_string()), "invalid dir is not passed along");
+        assert!(!args.contains(&"--sdk-dir".to_string()), "nothing resolved: the flag is omitted");
     }
 
     #[test]

@@ -350,7 +350,8 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(11), Constraint::Min(3), Constraint::Length(12)])
+        // 18 = the 14 compat rows + note + header + the block's 2 borders.
+        .constraints([Constraint::Length(11), Constraint::Min(3), Constraint::Length(18)])
         .split(area);
 
     // Top: logi-ffb + the SDK folder line (with the libtrueforce note).
@@ -360,18 +361,22 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
             Span::raw("SDK folder: "),
             Span::styled(format!("{draft}_"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         ]),
+        // The concrete resolution outcome next to the field: the resolved
+        // path installs actually use (green), or a red not-found line.
         None => Line::from(vec![
             Span::raw("SDK folder: "),
             Span::raw(app.sdk_dir.clone()),
             Span::raw("  "),
-            Span::styled(
-                if app.sdk_valid {
-                    "SDK DLLs found"
-                } else {
-                    "no DLLs here; installer will use its own lookup (repo sdk/ or $LOGITECH_TRUEFORCE_SDK_DIR)"
-                },
-                if app.sdk_valid { found_style(true) } else { Style::default().fg(Color::DarkGray) },
-            ),
+            match &app.sdk_resolved {
+                Some(dir) => Span::styled(
+                    format!("SDK DLLs: found at {}", dir.display()),
+                    found_style(true),
+                ),
+                None => Span::styled(
+                    "SDK DLLs: not found - copy them from a Windows G HUB install; see the README",
+                    found_style(false),
+                ),
+            },
         ]),
     };
     let top = vec![
@@ -464,25 +469,42 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         rows[1],
     );
 
-    // Bottom: the static compatibility table.
-    let compat_rows: [(&str, &str); 8] = [
-        ("ACC", "TrueForce (shim)"),
-        ("AC EVO", "TrueForce (shim)"),
-        ("iRacing", "FFB (native)"),
-        ("Le Mans Ultimate", "FFB (logi-ffb)"),
-        ("Automobilista 2", "FFB (logi-ffb)"),
-        ("rFactor 2", "FFB (logi-ffb)"),
-        ("Dirt Rally 2.0", "FFB (native)"),
-        ("BeamNG.drive", "FFB (native)"),
+    // Bottom: the static compatibility table. "expected" marks titles not
+    // verified on this driver yet; the third column is the upcoming
+    // per-game "Simulate TrueForce" option ("planned" for FFB-only titles,
+    // "n/a (native)" where the shim already delivers real TrueForce).
+    // Mirrors the GUI Setup page's `compat-rows`.
+    let compat_rows: [(&str, &str, &str); 14] = [
+        ("ACC", "TrueForce (shim)", "n/a (native)"),
+        ("AC EVO", "TrueForce (shim)", "n/a (native)"),
+        ("iRacing", "FFB (native)", "planned"),
+        ("Le Mans Ultimate", "FFB (logi-ffb)", "planned"),
+        ("Automobilista 2", "FFB (logi-ffb)", "planned"),
+        ("rFactor 2", "FFB (logi-ffb)", "planned"),
+        ("Assetto Corsa", "FFB (logi-ffb, expected)", "planned"),
+        ("Project CARS 2", "FFB (logi-ffb, expected)", "planned"),
+        ("Dirt Rally 2.0", "FFB (native)", "planned"),
+        ("EA SPORTS WRC", "FFB (expected)", "planned"),
+        ("F1 series", "FFB (expected)", "planned"),
+        ("Euro Truck Simulator 2", "FFB (native Linux)", "planned"),
+        ("American Truck Simulator", "FFB (native Linux)", "planned"),
+        ("BeamNG.drive", "FFB (native)", "planned"),
     ];
-    let mut compat = vec![Line::from(Span::styled(
-        "\"FFB (logi-ffb)\" means launch with logi-ffb %command%.",
-        Style::default().fg(Color::DarkGray),
-    ))];
-    compat.extend(compat_rows.iter().map(|(game, how)| {
+    let mut compat = vec![
+        Line::from(Span::styled(
+            "\"FFB (logi-ffb)\" = launch with logi-ffb %command%. \"Simulated TF\" = upcoming per-game option; n/a (native) titles get real TrueForce via the shim.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            format!("{:<26}{:<26}{}", "Game", "Force feedback", "Simulated TF"),
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+        )),
+    ];
+    compat.extend(compat_rows.iter().map(|(game, how, tf)| {
         Line::from(vec![
-            Span::raw(format!("{game:<20}")),
-            Span::styled(*how, Style::default().fg(Color::Gray)),
+            Span::raw(format!("{game:<26}")),
+            Span::styled(format!("{how:<26}"), Style::default().fg(Color::Gray)),
+            Span::styled(*tf, Style::default().fg(Color::DarkGray)),
         ])
     }));
     f.render_widget(

@@ -11,10 +11,14 @@ export struct SetupGame {
     installed: bool,
 }
 
-// One static row of the compatibility table.
+// One static row of the compatibility table: the game, how force feedback
+// reaches it today, and where it stands with the upcoming per-game
+// "Simulate TrueForce" option ("planned" for FFB-only titles, "n/a
+// (native)" where the shim already delivers real TrueForce).
 struct CompatRow {
     game: string,
     how: string,
+    tf: string,
 }
 
 // The sidebar's "Setup" page: the DirectInput FFB proxy (logi-ffb), the
@@ -35,9 +39,12 @@ export component Setup inherits Rectangle {
     in property <string> shim-path: "";
     in property <bool> shim-running: false;
     in property <string> shim-output: "";
-    // The SDK folder field's initial text (resolved on the Rust side from
-    // $LOGITECH_TRUEFORCE_SDK_DIR, else ~/.local/share/logitech-trueforce/
-    // sdk) and its live validity, re-checked on every edit-accept.
+    // The SDK folder field's initial text ($LOGITECH_TRUEFORCE_SDK_DIR,
+    // else the XDG default) plus the resolution outcome: `sdk-status` is
+    // the concrete answer ("SDK DLLs: found at <path>" or a not-found
+    // line) the Rust side recomputes on page load and on every
+    // edit-accept, resolving in the installer's own order (field, env
+    // var, repo sdk/, XDG default); `sdk-valid` colors it green/red.
     in property <string> sdk-dir: "";
     in property <bool> sdk-valid: false;
     in property <string> sdk-status: "";
@@ -50,11 +57,10 @@ export component Setup inherits Rectangle {
     // Copies "logi-ffb %command%" to the clipboard (best-effort, wl-copy
     // then xclip; the field next to the button is selectable as a fallback).
     callback copy-launch();
-    // The SDK folder field's edit-accept: re-checks validity. Install
-    // calls pass the folder as --sdk-dir only while it validates;
-    // otherwise the flag is omitted and the installer's own lookup (env
-    // var, repo sdk/, XDG default) resolves the SDK, which is what the
-    // muted (not red) invalid status explains.
+    // The SDK folder field's edit-accept: re-runs the full resolution and
+    // pushes the fresh outcome back into `sdk-status`/`sdk-valid`.
+    // Installs pass the RESOLVED directory explicitly (--sdk-dir), so what
+    // the status line reports is exactly what an install uses.
     callback sdk-dir-edited(string);
     // Per-game shim runs, off the UI thread; the argument is the row's
     // wine prefix path. `shim-output` and `shim-running` are pushed back
@@ -66,15 +72,23 @@ export component Setup inherits Rectangle {
     // `open-url` callback the Info category's link uses.
     callback open-url(string);
 
+    // A trailing "*" marks titles not verified on this driver yet
+    // (expected to work: their input stack is one the helpers already
+    // cover); the note above the table says so.
     private property <[CompatRow]> compat-rows: [
-        { game: "ACC", how: "TrueForce (shim)" },
-        { game: "AC EVO", how: "TrueForce (shim)" },
-        { game: "iRacing", how: "FFB (native)" },
-        { game: "Le Mans Ultimate", how: "FFB (logi-ffb)" },
-        { game: "Automobilista 2", how: "FFB (logi-ffb)" },
-        { game: "rFactor 2", how: "FFB (logi-ffb)" },
-        { game: "Dirt Rally 2.0", how: "FFB (native)" },
-        { game: "BeamNG.drive", how: "FFB (native)" },
+        { game: "ACC", how: "TrueForce (shim)", tf: "n/a (native)" },
+        { game: "AC EVO", how: "TrueForce (shim)", tf: "n/a (native)" },
+        { game: "iRacing", how: "FFB (native)", tf: "planned" },
+        { game: "Le Mans Ultimate", how: "FFB (logi-ffb)", tf: "planned" },
+        { game: "Automobilista 2", how: "FFB (logi-ffb)", tf: "planned" },
+        { game: "rFactor 2", how: "FFB (logi-ffb)", tf: "planned" },
+        { game: "Assetto Corsa", how: "FFB (logi-ffb) *", tf: "planned" },
+        { game: "Project CARS 2", how: "FFB (logi-ffb) *", tf: "planned" },
+        { game: "Dirt Rally 2.0", how: "FFB (native)", tf: "planned" },
+        { game: "EA SPORTS WRC", how: "FFB *", tf: "planned" },
+        { game: "F1 series", how: "FFB *", tf: "planned" },
+        { game: "ETS2 / ATS", how: "FFB (native Linux)", tf: "planned" },
+        { game: "BeamNG.drive", how: "FFB (native)", tf: "planned" },
     ];
 
     background: transparent;
@@ -183,10 +197,14 @@ export component Setup inherits Rectangle {
                                     placeholder-text: "Path to your Logitech SDK DLLs";
                                     accepted(text) => { root.sdk-dir-edited(text); }
                                 }
+                                // The concrete resolution outcome: green
+                                // "found at <path>", or a red not-found
+                                // line (the DLLs must be copied from a
+                                // Windows G HUB install first).
                                 Text {
                                     text: root.sdk-status;
                                     font-size: 12px;
-                                    color: root.sdk-valid ? Theme.ok-color : Theme.muted-text-color;
+                                    color: root.sdk-valid ? Theme.ok-color : Theme.error-color;
                                     wrap: word-wrap;
                                 }
                                 Text {
@@ -216,10 +234,37 @@ export component Setup inherits Rectangle {
                                     color: Theme.text-color;
                                 }
                                 Text {
-                                    text: "\"FFB (logi-ffb)\" means launch with logi-ffb %command%.";
+                                    text: "\"FFB (logi-ffb)\" means launch with logi-ffb %command%. \"Simulated TF\" is an upcoming per-game option that synthesizes TrueForce for FFB-only titles; \"n/a (native)\" titles already get the real thing via the shim. * = expected to work, not verified on this driver yet.";
                                     font-size: 11px;
                                     color: Theme.muted-text-color;
                                     wrap: word-wrap;
+                                }
+                                // Header row, then one row per title. The
+                                // middle column gets a fixed width so the
+                                // three columns line up as a table.
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: "Game";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: Theme.muted-text-color;
+                                    }
+                                    Text {
+                                        width: 130px;
+                                        text: "Force feedback";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: Theme.muted-text-color;
+                                    }
+                                    Text {
+                                        width: 80px;
+                                        text: "Simulated TF";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: Theme.muted-text-color;
+                                    }
                                 }
                                 for row in root.compat-rows: HorizontalLayout {
                                     spacing: 8px;
@@ -228,9 +273,17 @@ export component Setup inherits Rectangle {
                                         text: row.game;
                                         font-size: 12px;
                                         color: Theme.text-color;
+                                        overflow: elide;
                                     }
                                     Text {
+                                        width: 130px;
                                         text: row.how;
+                                        font-size: 12px;
+                                        color: Theme.muted-text-color;
+                                    }
+                                    Text {
+                                        width: 80px;
+                                        text: row.tf;
                                         font-size: 12px;
                                         color: Theme.muted-text-color;
                                     }
@@ -267,29 +320,31 @@ export component Setup inherits Rectangle {
                                     color: Theme.muted-text-color;
                                     wrap: word-wrap;
                                 }
-                                // Its own row below the title/description: sharing
-                                // the title's row stretched the button to the full
-                                // header height. Start-aligned in both directions
-                                // so the panel's leftover space cannot stretch it
-                                // (same natural-size trick as the settings rows).
-                                VerticalLayout {
-                                    alignment: start;
-                                    HorizontalLayout {
-                                        alignment: start;
-                                        Button {
-                                            text: "Rescan";
-                                            enabled: !root.shim-running;
-                                            clicked => { root.rescan-games(); }
-                                        }
+                                // Compact toolbar between the description and
+                                // the games list: the Rescan button at its
+                                // natural size on the left, the installer's
+                                // resolved path filling the rest of the row.
+                                // The Text is the only stretching child, so
+                                // the Button never grows past its own size,
+                                // and the row is exactly one control tall.
+                                HorizontalLayout {
+                                    spacing: 8px;
+
+                                    Button {
+                                        text: "Rescan";
+                                        enabled: !root.shim-running;
+                                        clicked => { root.rescan-games(); }
                                     }
-                                }
-                                Text {
-                                    text: root.shim-found
-                                        ? "Installer: found: " + root.shim-path
-                                        : "Installer: not found (PATH or the repo's tools/ directory)";
-                                    font-size: 12px;
-                                    color: root.shim-found ? Theme.text-color : Theme.error-color;
-                                    wrap: word-wrap;
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: root.shim-found
+                                            ? "Installer: " + root.shim-path
+                                            : "Installer: not found (PATH or the repo's tools/ directory)";
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        color: root.shim-found ? Theme.muted-text-color : Theme.error-color;
+                                        overflow: elide;
+                                    }
                                 }
 
                                 if root.games-scanned && root.games.length == 0: Text {
@@ -300,12 +355,16 @@ export component Setup inherits Rectangle {
                                 }
 
                                 ListView {
-                                    // Sized to the list's contents (the page as a
-                                    // whole scrolls; see the ScrollView above), but
-                                    // clamped so a huge library scrolls inside the
-                                    // panel instead of stretching the page forever,
-                                    // and an empty scan still leaves a visible box.
-                                    height: clamp(root.games.length * 36px, 144px, 360px);
+                                    // The panel's only stretching child: it soaks
+                                    // up whatever height the column has to spare
+                                    // (the panel is stretched to the left column's
+                                    // height), so the title/description/toolbar
+                                    // rows above keep their natural heights packed
+                                    // at the top instead of being spread apart.
+                                    // The minimum keeps a visible box on an empty
+                                    // scan; a huge library scrolls inside.
+                                    vertical-stretch: 1;
+                                    min-height: 144px;
                                     for game in root.games: Rectangle {
                                         height: 36px;
 
