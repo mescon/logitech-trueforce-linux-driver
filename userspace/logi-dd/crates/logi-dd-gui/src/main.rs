@@ -477,13 +477,23 @@ fn send_sigterm(pid: i32) {
 }
 
 /// Re-probe whether the logi-tf-sim daemon is running (a /proc comm scan)
-/// off the UI thread, after `delay` (a just-spawned or just-terminated
-/// daemon needs a moment to appear/disappear), pushing the outcome into
-/// `setup-tf-running`.
-fn refresh_tf_daemon(app_weak: slint::Weak<App>, delay: std::time::Duration) {
+/// off the UI thread, pushing the outcome into `setup-tf-running`.
+/// `expect_running` is the state a just-issued Start/Stop is settling
+/// towards: the probe polls (up to ~1.5 s) until the scan agrees, so a
+/// daemon that takes a moment to appear or to handle its SIGTERM does not
+/// leave a stale status behind; `None` probes once, immediately.
+fn refresh_tf_daemon(app_weak: slint::Weak<App>, expect_running: Option<bool>) {
     std::thread::spawn(move || {
-        std::thread::sleep(delay);
-        let running = logi_dd_core::tfsim::daemon_pid().is_some();
+        let mut running = logi_dd_core::tfsim::daemon_pid().is_some();
+        if let Some(expected) = expect_running {
+            for _ in 0..10 {
+                if running == expected {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                running = logi_dd_core::tfsim::daemon_pid().is_some();
+            }
+        }
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(app) = app_weak.upgrade() {
                 app.set_setup_tf_running(running);
@@ -819,7 +829,7 @@ fn main() -> Result<(), slint::PlatformError> {
             bridge::compat_rows(&cfg),
         )));
     }
-    refresh_tf_daemon(app.as_weak(), std::time::Duration::ZERO);
+    refresh_tf_daemon(app.as_weak(), None);
     // Installed once, here, and never replaced: `load_rows`/`update_row`
     // mutate this same `VecModel`'s contents for the rest of the app's
     // life (see `load_rows`'s doc comment for why that matters).
@@ -1871,7 +1881,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     let _ = child.wait();
                 });
             }
-            refresh_tf_daemon(app_weak.clone(), std::time::Duration::from_millis(400));
+            refresh_tf_daemon(app_weak.clone(), Some(true));
         });
     }
     {
@@ -1880,7 +1890,7 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(pid) = logi_dd_core::tfsim::daemon_pid() {
                 send_sigterm(pid);
             }
-            refresh_tf_daemon(app_weak.clone(), std::time::Duration::from_millis(400));
+            refresh_tf_daemon(app_weak.clone(), Some(false));
         });
     }
     // The running sweep's pid, `None` while no sweep plays; the Stop
