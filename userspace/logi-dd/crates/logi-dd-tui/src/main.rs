@@ -132,7 +132,8 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
         // The 180 ms sweep step keeps rev-level writes above the ~160 ms
         // pacing floor the protocol docs require.
         if app.take_pending_led_try() {
-            app.status = "try on wheel: showing the selected lighting...".to_string();
+            app.status =
+                "try on wheel: playing the selection on the strip (blocks a few seconds)...".to_string();
             if let Err(e) = term.draw(|f| ui::draw(f, &app)) {
                 break Err(e.into());
             }

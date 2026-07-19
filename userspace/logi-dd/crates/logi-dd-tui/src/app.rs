@@ -2072,6 +2072,64 @@ mod tests {
     }
 
     #[test]
+    fn run_led_try_sequences_the_sweep_between_apply_and_restore() {
+        // Regression guard for the one-frame flash: the show phase (the
+        // sweep here) must land BETWEEN the apply writes and the restore
+        // writes, never after them. Pinned via the FakeSysfs write log.
+        use std::rc::Rc;
+        let fs = Rc::new(FakeSysfs::new());
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_effect", "5");
+        fs.set("wheel_led_slot", "1");
+        fs.set("wheel_led_brightness", "80");
+        fs.set("wheel_rev_level", "0");
+        let mut a = App::new(logi_dd_core::Device::with_io(fs.clone()));
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Leds).unwrap();
+        a.reload(); // reads only; the write log stays empty until the try
+        a.run_led_try(std::time::Duration::ZERO, std::time::Duration::ZERO);
+        let mut expected = vec![
+            ("wheel_led_slot".to_string(), "1".to_string()),
+            ("wheel_led_effect".to_string(), "5".to_string()),
+        ];
+        expected.extend(
+            (0..=10i32)
+                .chain((0..10).rev())
+                .map(|n| ("wheel_rev_level".to_string(), n.to_string())),
+        );
+        expected.push(("wheel_led_slot".to_string(), "1".to_string()));
+        expected.push(("wheel_led_effect".to_string(), "5".to_string()));
+        assert_eq!(fs.writes(), expected);
+    }
+
+    #[test]
+    fn run_led_try_really_blocks_between_apply_and_restore() {
+        // Regression: a custom slot's try used to flash for about one
+        // frame. The show phase must consume real wall time before the
+        // restore runs, for the sweep (one step per `sweep_step`, 21
+        // steps) and for a built-in effect's static hold alike.
+        let hold = std::time::Duration::from_millis(40);
+        let step = std::time::Duration::from_millis(2);
+
+        let mut a = leds_app("5", "0"); // custom: the sweep paces the show
+        let t0 = std::time::Instant::now();
+        a.run_led_try(std::time::Duration::ZERO, step);
+        assert!(
+            t0.elapsed() >= step * 21,
+            "the sweep must take at least 21 steps of real time, took {:?}",
+            t0.elapsed()
+        );
+
+        let mut a = leds_app("2", "0"); // built-in: the static hold
+        let t0 = std::time::Instant::now();
+        a.run_led_try(hold, std::time::Duration::ZERO);
+        assert!(
+            t0.elapsed() >= hold,
+            "the built-in hold must really elapse, took {:?}",
+            t0.elapsed()
+        );
+    }
+
+    #[test]
     fn run_led_try_skips_the_sweep_for_builtin_effects() {
         // A built-in effect's colours are firmware-owned: no rev fill.
         // The fixture's rev level starts at 3 and must stay untouched.
