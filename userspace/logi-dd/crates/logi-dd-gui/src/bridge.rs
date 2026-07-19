@@ -191,20 +191,22 @@ pub fn apply_profile_choices(sr: &mut SettingRow, names: &[String]) {
     sr.choices = slint::ModelRc::new(slint::VecModel::from(profile_choice_labels(names)));
 }
 
-/// The 13 effect-selector labels as Slint strings, in
-/// `lightsync::selection_index` order. `slot_names` is the per-slot name
-/// cache `main.rs` maintains (see its `led_slot_names` doc); missing or
-/// empty entries fall back to the plain "CUSTOM N" labels.
-pub fn lightsync_choice_labels(slot_names: &[String]) -> Vec<slint::SharedString> {
-    lightsync::dropdown_labels(slot_names).into_iter().map(slint::SharedString::from).collect()
+/// The effect-selector labels as Slint strings, in
+/// `lightsync::selection_index` order: the 4 sweeps, the 5 custom slots,
+/// plus the trailing raw entry only while `effect` is outside 1-5 (see
+/// `lightsync::dropdown_labels`). `slot_names` is the per-slot name cache
+/// `main.rs` maintains (see its `led_slot_names` doc); missing, empty or
+/// default-named entries fall back to the plain "CUSTOM N" labels.
+pub fn lightsync_choice_labels(slot_names: &[String], effect: u8) -> Vec<slint::SharedString> {
+    lightsync::dropdown_labels(slot_names, effect).into_iter().map(slint::SharedString::from).collect()
 }
 
 /// Rewrite `sr` (already built by `to_setting_row` for the
 /// `wheel_led_effect` row, so `sr.int_value` is the raw effect value 1-9)
 /// into the composed effect selector: tags it `KIND_LIGHT_EFFECT`,
-/// installs the 13 labels, and replaces `int_value` with the selector
-/// index for the current effect + `slot` (`wheel_led_slot`'s value, which
-/// picks the CUSTOM entry when the effect is 5). Only meaningful for
+/// installs the labels, and replaces `int_value` with the selector index
+/// for the current effect + `slot` (`wheel_led_slot`'s value, which picks
+/// the CUSTOM entry when the effect is 5). Only meaningful for
 /// `wheel_led_effect`; callers guard on `attr` before calling this, same
 /// convention as `apply_profile_choices`.
 pub fn apply_lightsync_effect(sr: &mut SettingRow, slot: i32, slot_names: &[String]) {
@@ -212,7 +214,19 @@ pub fn apply_lightsync_effect(sr: &mut SettingRow, slot: i32, slot_names: &[Stri
     let slot = slot.clamp(0, lightsync::CUSTOM_SLOTS as i32 - 1) as u8;
     sr.kind = KIND_LIGHT_EFFECT;
     sr.int_value = lightsync::selection_index(effect, slot) as i32;
-    sr.choices = slint::ModelRc::new(slint::VecModel::from(lightsync_choice_labels(slot_names)));
+    sr.choices = slint::ModelRc::new(slint::VecModel::from(lightsync_choice_labels(slot_names, effect)));
+}
+
+/// Record one slot-name read in the per-slot cache the effect selector's
+/// CUSTOM labels are built from. `slot` MUST be the slot that was active
+/// when `name` was read (`wheel_led_slot_name` only ever reads the ACTIVE
+/// slot's name), and only that one entry is written: attributing a name to
+/// any other slot is exactly the poisoned-cache bug this guards against.
+/// An out-of-range slot is ignored rather than panicking.
+pub fn record_led_slot_name(cache: &mut [String], slot: i32, name: &str) {
+    if let Some(entry) = usize::try_from(slot).ok().and_then(|i| cache.get_mut(i)) {
+        *entry = name.to_string();
+    }
 }
 
 /// Build the synthetic "Edit slot" row `compose_lightsync` appends.
@@ -224,7 +238,7 @@ fn light_slot_row(effect: i32, available: bool, mode_ok: bool) -> SettingRow {
     SettingRow {
         attr: LIGHT_EDIT_SLOT_ATTR.into(),
         label: "Custom slot".into(),
-        help: "Colors, direction, name and brightness of the active CUSTOM slot. Pick a CUSTOM effect above to edit it.".into(),
+        help: "A custom slot is a saved lighting preset: colors, direction, name and brightness. Pick a CUSTOM effect above, then edit the active slot here.".into(),
         kind: KIND_LIGHT_SLOT,
         int_value: 0,
         int_value2: 0,
@@ -1214,11 +1228,21 @@ mod tests {
         // effect 3 = "Right to left" = selector index 2
         assert_eq!(effect.int_value, 2);
         let choices: Vec<String> = effect.choices.iter().map(|s| s.to_string()).collect();
-        assert_eq!(choices.len(), 13);
+        assert_eq!(choices.len(), 9, "4 sweeps + 5 custom slots, no unlabeled effects");
         assert_eq!(choices[2], "Right to left");
         assert_eq!(choices[4], "CUSTOM 1: GT7");
         assert_eq!(choices[5], "CUSTOM 2");
-        assert_eq!(choices[12], "Effect 9");
+        assert!(!choices.iter().any(|c| c.starts_with("Effect ")));
+    }
+
+    #[test]
+    fn compose_lightsync_appends_the_raw_entry_for_an_out_of_range_effect() {
+        let out = compose_lightsync(leds_setting_rows("7", "0"), &[]);
+        let effect = out.iter().find(|r| r.attr == "wheel_led_effect").unwrap();
+        assert_eq!(effect.int_value, 9, "the trailing raw entry is selected");
+        let choices: Vec<String> = effect.choices.iter().map(|s| s.to_string()).collect();
+        assert_eq!(choices.len(), 10);
+        assert_eq!(choices[9], "Effect 7");
     }
 
     #[test]
@@ -1261,6 +1285,43 @@ mod tests {
         apply_lightsync_effect(sr, 4, &[]);
         assert_eq!(sr.kind, KIND_LIGHT_EFFECT);
         assert_eq!(sr.int_value, 8, "effect 5 + slot 4 = CUSTOM 5 = index 8");
+    }
+
+    // --- the per-slot name cache ---
+
+    #[test]
+    fn record_led_slot_name_updates_only_the_named_slot() {
+        // Regression for the poisoned cache the user saw ("CUSTOM 2:
+        // CUSTOM 1", "CUSTOM 3: CUSTOM 1"): a name read while slot N was
+        // active must land in entry N and nowhere else.
+        let mut cache = vec![String::new(); 5];
+        record_led_slot_name(&mut cache, 0, "RACE");
+        assert_eq!(cache, vec!["RACE", "", "", "", ""]);
+        record_led_slot_name(&mut cache, 2, "GT7");
+        assert_eq!(cache, vec!["RACE", "", "GT7", "", ""]);
+        // Re-reading slot 0's name never touches the other entries.
+        record_led_slot_name(&mut cache, 0, "DRIFT");
+        assert_eq!(cache, vec!["DRIFT", "", "GT7", "", ""]);
+    }
+
+    #[test]
+    fn record_led_slot_name_follows_a_slot_switch_sequence() {
+        // The sequence behind the bug report: activate slots 0, 1, 2 in
+        // turn, reading each one's (own) name while it is active. Every
+        // entry must hold the name read while THAT slot was active.
+        let mut cache = vec![String::new(); 5];
+        for (slot, name) in [(0, "CUSTOM 1"), (1, "CUSTOM 2"), (2, "MY SLOT")] {
+            record_led_slot_name(&mut cache, slot, name);
+        }
+        assert_eq!(cache, vec!["CUSTOM 1", "CUSTOM 2", "MY SLOT", "", ""]);
+    }
+
+    #[test]
+    fn record_led_slot_name_ignores_out_of_range_slots() {
+        let mut cache = vec!["A".to_string()];
+        record_led_slot_name(&mut cache, -1, "X");
+        record_led_slot_name(&mut cache, 5, "X");
+        assert_eq!(cache, vec!["A".to_string()]);
     }
 
     // --- advanced-shaping composition ---

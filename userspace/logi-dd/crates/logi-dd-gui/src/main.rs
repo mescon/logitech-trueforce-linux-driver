@@ -123,12 +123,20 @@ fn led_slot(known_values: &Arc<Mutex<HashMap<String, Value>>>) -> i32 {
 /// Record the active slot's name in the per-slot cache `main` keeps for
 /// the effect selector's CUSTOM labels. `slot`/`name` must come from the
 /// same read (a whole-category reload, or a rename's reply paired with the
-/// already-settled active slot); out-of-range slots are ignored.
+/// slot row the worker re-reads alongside it; see `worker::handle`); the
+/// pure mapping (and its only-the-active-slot guarantee) lives in
+/// `bridge::record_led_slot_name`.
 fn cache_led_slot_name(cache: &Arc<Mutex<Vec<String>>>, slot: i32, name: &str) {
-    if let Ok(idx) = usize::try_from(slot) {
-        if let Some(entry) = cache.lock().unwrap().get_mut(idx) {
-            *entry = name.to_string();
-        }
+    bridge::record_led_slot_name(&mut cache.lock().unwrap(), slot, name);
+}
+
+/// Read `wheel_led_effect`'s last-known raw value out of `known_values`
+/// (1 when unread), for the effect selector's labels and for resolving a
+/// trailing raw-entry pick (see `lightsync::dropdown_labels`).
+fn led_effect(known_values: &Arc<Mutex<HashMap<String, Value>>>) -> u8 {
+    match known_values.lock().unwrap().get("wheel_led_effect") {
+        Some(Value::Int(n)) => (*n).clamp(0, i32::from(u8::MAX)) as u8,
+        _ => 1,
     }
 }
 
@@ -251,7 +259,7 @@ fn update_row(
 /// only carries the (hidden) name row, but the selector renders that name
 /// in its CUSTOM entry, same pattern as `refresh_profile_row`. Selection
 /// and everything else on the row stay as they are.
-fn refresh_light_effect_row(app: &App, led_names: &[String]) {
+fn refresh_light_effect_row(app: &App, led_names: &[String], effect: u8) {
     let model = app.get_rows();
     let Some(index) = (0..model.row_count()).find(|&i| {
         model.row_data(i).is_some_and(|r| r.attr == "wheel_led_effect" && r.kind == bridge::KIND_LIGHT_EFFECT)
@@ -259,7 +267,8 @@ fn refresh_light_effect_row(app: &App, led_names: &[String]) {
         return;
     };
     let Some(mut sr) = model.row_data(index) else { return };
-    sr.choices = slint::ModelRc::new(slint::VecModel::from(bridge::lightsync_choice_labels(led_names)));
+    sr.choices =
+        slint::ModelRc::new(slint::VecModel::from(bridge::lightsync_choice_labels(led_names, effect)));
     sr.revision = sr.revision.wrapping_add(1);
     model.set_row_data(index, sr);
 }
@@ -756,7 +765,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                 app.set_rgb_slot_name(name.as_str().into());
                             }
                             let led_names = led_slot_names.lock().unwrap().clone();
-                            refresh_light_effect_row(&app, &led_names);
+                            refresh_light_effect_row(&app, &led_names, led_effect(&known_values));
                         }
                         // Same push-back for the slot brightness slider in
                         // the overlay (a rejected write must visibly
@@ -983,9 +992,13 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let worker = worker.clone();
         let current_category = current_category.clone();
+        let known_values = known_values.clone();
         app.on_edit_light_effect(move |index| {
             let category = get(&current_category);
-            match lightsync::index_selection(index.max(0) as usize) {
+            // The current raw effect only matters for the trailing raw
+            // entry (present while the device reports an effect outside
+            // 1-5): picking it re-writes that same value.
+            match lightsync::index_selection(index.max(0) as usize, led_effect(&known_values)) {
                 lightsync::Selection::Effect(e) => {
                     worker.request(Request::Edit {
                         category,

@@ -155,7 +155,25 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
             // edit (see `Response::RowUpdated`'s doc comment).
             let error = vm.edit(&attr, input).err().map(|e| e.to_string());
             let mode_changed = attr == "wheel_mode" && error.is_none();
-            if let Some(row) = vm.rows_for(category).into_iter().find(|r| r.attr == attr) {
+            // A slot rename's reply gets the active slot's row from the
+            // SAME read sent ahead of it: the UI attributes the re-read
+            // name to its per-slot cache via the last-known slot, and a
+            // stale slot there would file the name under the wrong entry
+            // (the poisoned-cache bug). Both rows coming from one
+            // `rows_for` pass makes the pairing exact by construction.
+            let mut slot_row = None;
+            let mut edited_row = None;
+            for row in vm.rows_for(category) {
+                if attr == "wheel_led_slot_name" && row.attr == "wheel_led_slot" {
+                    slot_row = Some(row);
+                } else if row.attr == attr {
+                    edited_row = Some(row);
+                }
+            }
+            if let Some(row) = slot_row {
+                on_response(Response::RowUpdated { category, row, error: None });
+            }
+            if let Some(row) = edited_row {
                 on_response(Response::RowUpdated { category, row, error });
             }
             // A successful mode edit through the settings row changes more
@@ -375,6 +393,66 @@ mod tests {
                 assert_eq!(row.attr, "wheel_mode");
                 assert!(error.is_some());
             }
+            _ => panic!("expected RowUpdated"),
+        }
+    }
+
+    #[test]
+    fn slot_name_edit_sends_the_active_slot_row_first_from_the_same_read() {
+        // Regression: the UI files a rename's re-read name in a per-slot
+        // cache keyed by the last-known active slot. The worker must send
+        // the slot row (same rows_for pass) ahead of the name row, so the
+        // pairing can never use a stale slot.
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_slot", "2");
+        fs.set("wheel_led_slot_name", "OLD");
+        let vm = ViewModel::with_io(fs);
+
+        let req = Request::Edit {
+            category: Category::Leds,
+            attr: "wheel_led_slot_name".to_string(),
+            input: WidgetInput::Text("RACE".into()),
+        };
+        let responses = responses(|on_response| handle(&vm, req, on_response));
+        assert_eq!(responses.len(), 2);
+        match &responses[0] {
+            Response::RowUpdated { row, error, .. } => {
+                assert_eq!(row.attr, "wheel_led_slot");
+                assert_eq!(row.value, Some(Value::Int(2)));
+                assert!(error.is_none(), "the slot row never carries the rename's error");
+            }
+            _ => panic!("expected the slot RowUpdated first"),
+        }
+        match &responses[1] {
+            Response::RowUpdated { row, error, .. } => {
+                assert_eq!(row.attr, "wheel_led_slot_name");
+                assert_eq!(row.value, Some(Value::Text("RACE".into())));
+                assert!(error.is_none());
+            }
+            _ => panic!("expected the name RowUpdated second"),
+        }
+    }
+
+    #[test]
+    fn other_edits_send_only_their_own_row() {
+        // The slot pairing is rename-specific: a plain Leds edit (e.g. the
+        // brightness) must not grow a second response.
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_slot", "2");
+        fs.set("wheel_led_brightness", "80");
+        let vm = ViewModel::with_io(fs);
+
+        let req = Request::Edit {
+            category: Category::Leds,
+            attr: "wheel_led_brightness".to_string(),
+            input: WidgetInput::Slider(70),
+        };
+        let responses = responses(|on_response| handle(&vm, req, on_response));
+        assert_eq!(responses.len(), 1);
+        match &responses[0] {
+            Response::RowUpdated { row, .. } => assert_eq!(row.attr, "wheel_led_brightness"),
             _ => panic!("expected RowUpdated"),
         }
     }

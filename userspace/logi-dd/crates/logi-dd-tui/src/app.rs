@@ -18,11 +18,12 @@ pub struct Row {
 }
 
 /// The LIGHTSYNC effect selector's modal state: left/right cycles `index`
-/// through `labels` (the 13 entries `lightsync::dropdown_labels` builds),
-/// Enter commits it (one or two device writes; see `commit_effect_edit`),
-/// Esc discards. A separate little state from `edit::EditState` because
-/// the selector's index is a position in a dynamic label list, not a value
-/// any registry `Kind` can bump.
+/// through `labels` (the entries `lightsync::dropdown_labels` builds: the
+/// 4 sweeps, the 5 custom slots, plus the raw current effect only while it
+/// is outside 1-5), Enter commits it (one or two device writes; see
+/// `commit_effect_edit`), Esc discards. A separate little state from
+/// `edit::EditState` because the selector's index is a position in a
+/// dynamic label list, not a value any registry `Kind` can bump.
 pub struct EffectEdit {
     pub index: usize,
     pub labels: Vec<String>,
@@ -319,7 +320,7 @@ impl<S: SysfsIo> App<S> {
             Ok(Value::Int(n)) => n.clamp(0, lightsync::CUSTOM_SLOTS as i32 - 1) as u8,
             _ => 0,
         };
-        let labels = lightsync::dropdown_labels(&self.led_slot_names());
+        let labels = lightsync::dropdown_labels(&self.led_slot_names(), effect);
         labels
             .into_iter()
             .nth(lightsync::selection_index(effect, slot))
@@ -451,7 +452,7 @@ impl<S: SysfsIo> App<S> {
             };
             self.effect_edit = Some(EffectEdit {
                 index: lightsync::selection_index(effect, slot),
-                labels: lightsync::dropdown_labels(&self.led_slot_names()),
+                labels: lightsync::dropdown_labels(&self.led_slot_names(), effect),
             });
             return;
         }
@@ -486,7 +487,14 @@ impl<S: SysfsIo> App<S> {
     /// the GUI uses.
     pub fn commit_effect_edit(&mut self) {
         let Some(fe) = self.effect_edit.take() else { return };
-        let result = match lightsync::index_selection(fe.index) {
+        // The raw current effect only matters when the trailing raw entry
+        // (shown while the device reports an effect outside 1-5) is
+        // re-picked: that entry commits the same value back.
+        let current = match self.device.read("wheel_led_effect") {
+            Ok(Value::Int(n)) => n.clamp(0, i32::from(u8::MAX)) as u8,
+            _ => 1,
+        };
+        let result = match lightsync::index_selection(fe.index, current) {
             lightsync::Selection::Effect(e) => {
                 self.device.write("wheel_led_effect", &Value::Int(i32::from(e)))
             }
@@ -1220,7 +1228,7 @@ mod tests {
         a.row_idx = 0;
         a.on_key(KeyCode::Enter);
         let fe = a.effect_edit.as_ref().expect("Enter opens the effect selector");
-        assert_eq!(fe.labels.len(), 13);
+        assert_eq!(fe.labels.len(), 9, "4 sweeps + 5 custom slots, no unlabeled effects");
         assert_eq!(fe.index, 4, "effect 5 + slot 0 = CUSTOM 1");
         assert_eq!(fe.labels[4], "CUSTOM 1: RACE", "the active slot's name is shown");
         assert!(a.edit.is_none(), "not the inline field editor");
@@ -1234,12 +1242,32 @@ mod tests {
         a.on_key(KeyCode::Enter);
         assert_eq!(a.effect_edit.as_ref().unwrap().index, 0);
         a.on_key(KeyCode::Left);
-        assert_eq!(a.effect_edit.as_ref().unwrap().index, 12, "left from the first entry wraps");
+        assert_eq!(a.effect_edit.as_ref().unwrap().index, 8, "left from the first entry wraps");
         a.on_key(KeyCode::Right);
         assert_eq!(a.effect_edit.as_ref().unwrap().index, 0);
         a.on_key(KeyCode::Esc);
         assert!(a.effect_edit.is_none(), "Esc discards without writing");
         assert_eq!(a.device.read("wheel_led_effect").unwrap(), Value::Int(1));
+    }
+
+    #[test]
+    fn effect_selector_shows_a_raw_entry_only_for_an_out_of_range_effect() {
+        use crossterm::event::KeyCode;
+        // The driver accepts 1-9; a device reporting 7 gets a trailing
+        // "Effect 7" entry so the selector reflects the real state, and
+        // committing it re-writes the same value.
+        let mut a = leds_app("7", "0");
+        a.row_idx = 0;
+        assert_eq!(a.lightsync_effect_label(), "Effect 7");
+        a.on_key(KeyCode::Enter);
+        {
+            let fe = a.effect_edit.as_ref().unwrap();
+            assert_eq!(fe.labels.len(), 10);
+            assert_eq!(fe.index, 9, "the raw entry is selected");
+            assert_eq!(fe.labels[9], "Effect 7");
+        }
+        a.on_key(KeyCode::Enter); // commit unchanged
+        assert_eq!(a.device.read("wheel_led_effect").unwrap(), Value::Int(7));
     }
 
     #[test]
