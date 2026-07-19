@@ -223,7 +223,9 @@ export component InfoPage inherits Rectangle {
                             spacing: 4px;
 
                             Text {
-                                text: "Steering";
+                                // The box tests everything (steering, pedals,
+                                // buttons, haptics), not just the wheel axis.
+                                text: "Test area";
                                 font-size: 15px;
                                 font-weight: 700;
                                 color: Theme.text-color;

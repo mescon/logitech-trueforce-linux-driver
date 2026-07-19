@@ -531,7 +531,7 @@ fn draw_monitor<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         f.render_widget(
             Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title("Live input")),
+                .block(Block::default().borders(Borders::ALL).title("Test area")),
             area,
         );
         return;
@@ -603,7 +603,7 @@ fn draw_monitor<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     f.render_widget(
         Paragraph::new(top)
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title("Live input")),
+            .block(Block::default().borders(Borders::ALL).title("Test area")),
         rows[0],
     );
 

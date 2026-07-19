@@ -30,7 +30,9 @@ impl Category {
             Category::Pedals => "Pedals",
             Category::Leds => "LIGHTSYNC",
             Category::Profiles => "Profiles / mode",
-            Category::Info => "Info",
+            // The page carries the live input monitor and the force
+            // simulations alongside the identity rows, so say so.
+            Category::Info => "Info / Testing",
         }
     }
 }
