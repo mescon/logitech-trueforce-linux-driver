@@ -89,7 +89,16 @@ fn kind_tag(attr: &str, kind: &Kind) -> i32 {
 pub fn to_setting_row(row: &Row) -> SettingRow {
     let kind = *row.kind;
     let tag = kind_tag(row.attr, &kind);
-    let display = row.value.as_ref().map(|v| kind.display(v)).unwrap_or_default();
+    let mut display = row.value.as_ref().map(|v| kind.display(v)).unwrap_or_default();
+    // `Kind::display` collapses newlines into " / " for one-line surfaces
+    // (the TUI's list style). The GUI's read-only rows grow with their
+    // content, so keep the raw multi-line text instead: the firmware attr
+    // then shows base on one line and motor on the next.
+    if tag == KIND_READONLY {
+        if let Some(Value::Text(s)) = &row.value {
+            display = s.clone();
+        }
+    }
 
     let (min, max, step, unit) = match kind {
         Kind::Percent => (0, 100, 1, "%"),
@@ -720,6 +729,21 @@ mod tests {
         let sr = to_setting_row(&row_for("wheel_serial"));
         assert_eq!(sr.kind, KIND_READONLY);
         assert_eq!(sr.display, "ABC123");
+    }
+
+    #[test]
+    fn readonly_multiline_text_keeps_its_line_breaks() {
+        // The firmware attr reads back two lines (base and motor); the
+        // GUI row must show them as two lines, not "base ... / motor ...".
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_firmware", "base: U1 65.04.B0039\nmotor: SC 02.01.B0042");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row =
+            vm.rows_for(Category::Info).into_iter().find(|r| r.attr == "wheel_firmware").unwrap();
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.kind, KIND_READONLY);
+        assert_eq!(sr.display, "base: U1 65.04.B0039\nmotor: SC 02.01.B0042");
     }
 
     #[test]

@@ -102,24 +102,29 @@ export component SettingsList inherits ListView {
     // label column, a control area that stretches to fill the window, a
     // fixed value/status column so a control's x position never depends on
     // what the row next to it is showing (fixes controls jumping around
-    // between rows), all inside a row box sized to `Theme.row-height` so
-    // the drawn content and the row's own box always match (a plain
-    // `height`, not `min-height`, since inside a `ListView` a `min-height`
-    // let the allocated slot and the painted content disagree).
+    // between rows). The row box grows with its own content: its height is
+    // the greater of `Theme.row-height` and the row layout's computed
+    // minimum (wrapped Text reports its wrapped height as its minimum, so
+    // a long help line makes the row taller instead of being cut off; the
+    // vendored StandardListView sizes its delegates from `min-height` the
+    // same way, and ListView supports per-item heights). The control and
+    // status columns are wrapped in center-aligned VerticalLayouts so a
+    // taller row centers them at their natural size; without that, the
+    // stretched columns would balloon SpinBoxes and Buttons to the full
+    // row height (the earlier regression). Only the text column is allowed
+    // to drive extra height. `clip: true` stays as a last-resort guard.
     for row in rows: Rectangle {
         width: parent.width;
-        height: Theme.row-height;
-        // Never let an unusually long (wrapped) help line paint over the row
-        // below it; at worst it is trimmed at the row boundary. ComboBox
-        // popups render in a separate overlay, so this does not clip them.
+        height: max(Theme.row-height, row-layout.min-height);
         clip: true;
 
-        HorizontalLayout {
+        row-layout := HorizontalLayout {
             padding: Theme.gutter;
             spacing: Theme.gutter;
 
             // Column 1: label (bold) plus a smaller muted help line. Fixed
-            // width so labels/controls line up across rows.
+            // width so labels/controls line up across rows; the only column
+            // whose (wrapped) content may grow the row.
             VerticalLayout {
                 width: Theme.label-column-width;
                 alignment: center;
@@ -144,9 +149,14 @@ export component SettingsList inherits ListView {
             // branches so each one pairs its control with a value slot of
             // the same `Theme.value-column-width` (empty for non-sliders);
             // that keeps the status column below always starting at the
-            // same x, independent of which kind a row renders.
-            if row.kind == 0 || row.kind == 1: HorizontalLayout {
+            // same x, independent of which kind a row renders. Each branch
+            // is a center-aligned VerticalLayout so its controls keep their
+            // natural height however tall the text column makes the row.
+            if row.kind == 0 || row.kind == 1: VerticalLayout {
                 horizontal-stretch: 1;
+                alignment: center;
+
+                HorizontalLayout {
                 spacing: 8px;
 
                 // Committed on `released`, not `changed`: writing on every
@@ -206,10 +216,14 @@ export component SettingsList inherits ListView {
                         color: Theme.muted-text-color;
                     }
                 }
+                }
             }
 
-            if row.kind != 0 && row.kind != 1: HorizontalLayout {
+            if row.kind != 0 && row.kind != 1: VerticalLayout {
                 horizontal-stretch: 1;
+                alignment: center;
+
+                HorizontalLayout {
                 spacing: 8px;
 
                 HorizontalLayout {
@@ -300,10 +314,15 @@ export component SettingsList inherits ListView {
                         clicked => { trigger(row.attr); }
                     }
 
+                    // Read-only values keep their line breaks (the
+                    // firmware attr reads back "base: ...\nmotor: ..."),
+                    // and wrap as a last resort; the row's content-driven
+                    // height makes room for the extra lines.
                     if row.kind == 6: Text {
                         text: row.display;
                         vertical-alignment: center;
                         color: Theme.text-color;
+                        wrap: word-wrap;
                     }
 
                     if row.kind == 7: Button {
@@ -409,13 +428,19 @@ export component SettingsList inherits ListView {
                 Rectangle {
                     width: Theme.value-column-width;
                 }
+                }
             }
 
             // Status slot (error / unavailable / wrong-mode plus the
             // "Switch mode" button). Always instantiated, even when showing
             // nothing, at a position now fixed by the value slot/placeholder
-            // before it rather than by its own width.
-            HorizontalLayout {
+            // before it rather than by its own width. Center-aligned like
+            // the control columns so a grown row does not stretch the
+            // Switch mode button.
+            VerticalLayout {
+                alignment: center;
+
+                HorizontalLayout {
                 alignment: start;
                 spacing: 8px;
 
@@ -438,6 +463,7 @@ export component SettingsList inherits ListView {
                 if row.available && !row.mode-ok: Button {
                     text: "Switch mode";
                     clicked => { switch-mode(); }
+                }
                 }
             }
         }

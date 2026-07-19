@@ -104,7 +104,7 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
                 // the edit state, only for the row being edited
                 let editing = app.edit.as_ref().filter(|_| i == app.row_idx);
 
-                let (val, mut val_style) = if !row.available {
+                let (mut val, mut val_style) = if !row.available {
                     ("(not on this wheel)".to_string(), Style::default().fg(Color::DarkGray))
                 } else if shaping::toggle_axis(row.attr).is_some() {
                     // A synthetic per-axis view toggle (no registry spec):
@@ -152,12 +152,35 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
                     val_style = val_style.add_modifier(Modifier::BOLD);
                 }
 
+                // A multi-line text value (the firmware's base/motor pair)
+                // renders its extra lines indented under the first instead
+                // of being collapsed onto one line by `Kind::display`.
+                let mut extra: Vec<Line> = Vec::new();
+                if row.available && editing.is_none() {
+                    if let Ok(Value::Text(s)) = &row.value {
+                        if s.contains('\n') {
+                            let mut parts = s.lines().map(str::to_string);
+                            val = parts.next().unwrap_or_default();
+                            extra = parts
+                                .map(|p| {
+                                    Line::from(vec![
+                                        Span::raw(" ".repeat(25)),
+                                        Span::styled(p, val_style),
+                                    ])
+                                })
+                                .collect();
+                        }
+                    }
+                }
+
                 let line = Line::from(vec![
                     Span::styled(format!("{:<24}", row.label), Style::default().fg(Color::Gray)),
                     Span::raw(" "),
                     Span::styled(val, val_style),
                 ]);
-                let mut item = ListItem::new(line);
+                let mut lines = vec![line];
+                lines.extend(extra);
+                let mut item = ListItem::new(lines);
                 if i == app.row_idx {
                     item = item.style(Style::default().add_modifier(Modifier::REVERSED));
                 }
