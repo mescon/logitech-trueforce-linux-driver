@@ -5,7 +5,9 @@ UDEVDIR ?= /etc/udev/rules.d
 
 CC ?= cc
 CFLAGS ?= -O2 -g -Wall -Wextra -Wno-unused-parameter -fPIC
-CPPFLAGS ?= -Iinclude
+# -Iinclude must survive an environment-provided CPPFLAGS (dpkg-buildpackage
+# exports one during package builds), so always append instead of defaulting.
+override CPPFLAGS += -Iinclude
 LDFLAGS ?=
 LDLIBS := -lpthread
 

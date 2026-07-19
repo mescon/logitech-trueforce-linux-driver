@@ -34,6 +34,11 @@ optdepends=('oversteer: GUI to configure wheel settings'
             'python: required by the TrueForce Proton shim installer')
 provides=("$_dkmsname")
 conflicts=("$_dkmsname")
+# !lto: makepkg's default -flto=auto would leave libtrueforce.a (built by
+# tf-sim's build.rs and linked statically into logi-tf-sim) as GCC LTO
+# bitcode, which rustc's lld link step cannot read (undefined logiTrueForce*
+# symbols at link time).
+options=('!lto')
 install="$pkgname.install"
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 # sha256 of the v0.15.0 release tarball. On the next version bump, regenerate:
