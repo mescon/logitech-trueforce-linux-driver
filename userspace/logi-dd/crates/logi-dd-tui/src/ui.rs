@@ -336,7 +336,7 @@ fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         } else if app.test.sim_running() {
             "s stop sim   r rescan   d desktop/onboard   <-/-> category   q quit"
         } else {
-            "f force feedback sim   t TrueForce texture sim   r rescan   d desktop/onboard   <-/-> category   q quit"
+            "f force feedback sim   t TrueForce texture sim   c show serial+firmware   r rescan   d desktop/onboard   <-/-> category   q quit"
         }
     } else if app.selected().is_some_and(|r| shaping::toggle_axis(&r.attr).is_some()) {
         // A toggle row's help explains why each axis shows only one of

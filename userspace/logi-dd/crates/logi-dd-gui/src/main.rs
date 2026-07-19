@@ -1747,6 +1747,14 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_setup_copy_launch(move || {
         std::thread::spawn(|| copy_to_clipboard(FFB_LAUNCH_OPTIONS));
     });
+    // The Info page's Serial/Firmware Copy buttons: same best-effort
+    // clipboard mechanism, same off-the-UI-thread rule. The firmware
+    // value keeps the driver's own base/motor line break, so it lands in
+    // the clipboard as two lines.
+    app.on_info_copy(move |text| {
+        let text = text.to_string();
+        std::thread::spawn(move || copy_to_clipboard(&text));
+    });
     {
         let sdk_dir = sdk_dir.clone();
         let installer_path = installer_path.clone();

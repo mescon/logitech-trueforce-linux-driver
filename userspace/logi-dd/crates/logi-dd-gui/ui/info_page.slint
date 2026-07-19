@@ -65,6 +65,11 @@ export component InfoPage inherits Rectangle {
     // Project home, opened via `open-url` (xdg-open on the Rust side).
     in property <string> project-url: "";
     callback open-url(string);
+    // Copy one identity value to the clipboard (best-effort, wl-copy or
+    // xclip on the Rust side, same mechanism as the Setup page's launch-
+    // options Copy). The firmware value carries its base/motor line
+    // break, so it copies as two lines.
+    callback copy-value(string);
 
     // Whether a wheel evdev node was found; gates the live monitor body
     // and both sim buttons. `scanned` keeps the empty state from
@@ -125,13 +130,20 @@ export component InfoPage inherits Rectangle {
                             width: 90px;
                             text: "Serial";
                             font-weight: 600;
+                            vertical-alignment: center;
                             color: Theme.muted-text-color;
                         }
                         Text {
                             horizontal-stretch: 1;
                             text: root.serial == "" ? "-" : root.serial;
+                            vertical-alignment: center;
                             color: Theme.text-color;
                             overflow: elide;
+                        }
+                        Button {
+                            text: "Copy";
+                            enabled: root.serial != "";
+                            clicked => { root.copy-value(root.serial); }
                         }
                     }
                     HorizontalLayout {
@@ -140,13 +152,22 @@ export component InfoPage inherits Rectangle {
                             width: 90px;
                             text: "Firmware";
                             font-weight: 600;
+                            vertical-alignment: center;
                             color: Theme.muted-text-color;
                         }
                         Text {
                             horizontal-stretch: 1;
                             text: root.firmware == "" ? "-" : root.firmware;
+                            vertical-alignment: center;
                             color: Theme.text-color;
                             wrap: word-wrap;
+                        }
+                        Button {
+                            // Copies both firmware lines (base and motor)
+                            // as two lines.
+                            text: "Copy";
+                            enabled: root.firmware != "";
+                            clicked => { root.copy-value(root.firmware); }
                         }
                     }
                 }

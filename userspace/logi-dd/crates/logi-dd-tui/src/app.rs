@@ -1315,6 +1315,21 @@ impl<S: SysfsIo> App<S> {
                 }
                 Char('f') => self.request_sim(SimKind::ConstantForce),
                 Char('t') => self.request_sim(SimKind::Texture),
+                // Show serial + firmware on the status line. This TUI has
+                // no clipboard mechanism (and deliberately gains no
+                // dependency for one), so the values are surfaced for a
+                // manual terminal copy instead.
+                Char('c') => {
+                    let read = |attr: &str| match self.device.read(attr) {
+                        Ok(Value::Text(s)) => s.trim().replace('\n', " / "),
+                        _ => "-".to_string(),
+                    };
+                    self.status = format!(
+                        "serial: {}   firmware: {}   (shown for manual copy)",
+                        read("wheel_serial"),
+                        read("wheel_firmware")
+                    );
+                }
                 // Stop the playing sim; a no-op while nothing plays.
                 Char('s') if self.test.stop_sim() => {
                     self.status = "test: simulation stopped".to_string();
@@ -1826,6 +1841,29 @@ mod tests {
         a.on_key(KeyCode::Esc);
         assert!(a.test.confirm.is_none());
         assert!(!a.test.sim_running());
+    }
+
+    #[test]
+    fn info_c_shows_serial_and_firmware_for_manual_copy() {
+        // No clipboard mechanism exists in the TUI (and none is added for
+        // this), so 'c' surfaces the values on the status line instead.
+        use crossterm::event::KeyCode;
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_serial", "0000TESTSER1");
+        fs.set("wheel_firmware", "base: U1 00.00.B0000\nmotor: SC 00.00.B0000");
+        let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Info).unwrap();
+        a.reload();
+        assert!(a.is_info());
+        a.on_key(KeyCode::Char('c'));
+        assert!(a.status.contains("serial: 0000TESTSER1"), "status: {}", a.status);
+        assert!(
+            a.status.contains("base: U1 00.00.B0000 / motor: SC 00.00.B0000"),
+            "both firmware lines flattened onto the one-line status: {}",
+            a.status
+        );
+        assert!(a.status.contains("manual copy"), "status: {}", a.status);
     }
 
     #[test]
