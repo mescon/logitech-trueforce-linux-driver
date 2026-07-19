@@ -30,12 +30,14 @@ needs a copy of Logitech G HUB to source files from.
   friction, periodic, rumble) with no extra setup beyond step 1.
 - **Tuning**: rotation range, force feedback, LEDs, profiles and the
   pedal / handbrake response curves are all configurable. The friendliest
-  way is **logi-dd**, a terminal settings app with a G HUB-style curve
-  editor (`userspace/logi-dd/`); the same settings are also plain sysfs
+  way is **logi-dd-gui**, a desktop settings app, or **logi-dd**, its
+  terminal twin, both with a G HUB-style curve editor
+  (`userspace/logi-dd/`); the same settings are also plain sysfs
   files, documented in `docs/SYSFS_API.md`.
 - Honest expectations: see "State of the driver" in the README. Short
   version: the core works and is verified on real hardware; settings are
-  a terminal app (logi-dd) or sysfs files, not a full GUI; and install is
+  a desktop app (logi-dd-gui), a terminal app (logi-dd) or sysfs files;
+  and install is
   one command plus a couple of per-game Steam settings nobody can automate.
   Most distros have a native package (see the table in step 1); everything
   else installs from source in one command.

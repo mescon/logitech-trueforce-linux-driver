@@ -551,6 +551,10 @@ Sets the LED animation direction for the current slot:
 - `2` = Inside Out (center outward)
 - `3` = Outside In (edges inward)
 
+On the wire the `0x807B` config carries a 1-4 value; the driver translates
+between this 0-3 enum and the device's 1-4 encoding internally (see
+PROTOCOL_SPECIFICATION.md section 9.4.1).
+
 ```bash
 # Set direction to Right-to-Left
 echo 1 > wheel_led_direction

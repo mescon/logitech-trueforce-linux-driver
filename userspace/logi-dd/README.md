@@ -1,17 +1,20 @@
 # logi-dd
 
-A terminal settings app for the Logitech direct-drive wheels (RS50, G PRO),
-a native Linux stand-in for the parts of G HUB that configure the wheel. It
-reads and writes the `wheel_*` sysfs attributes the `hid-logitech-dd` driver
-exposes, with typed values, validation, and mode awareness, so you do not have
-to `echo` values into sysfs by hand.
+Settings apps for the Logitech direct-drive wheels (RS50, G PRO): a terminal
+app (`logi-dd`) and a desktop app (`logi-dd-gui`), native Linux stand-ins for
+the parts of G HUB that configure the wheel. Both read and write the `wheel_*`
+sysfs attributes the `hid-logitech-dd` driver exposes, with typed values,
+validation, and mode awareness, so you do not have to `echo` values into sysfs
+by hand. The workspace also builds `logi-ffb`, the DirectInput force-feedback
+proxy (see below).
 
 ## Features
 
 - **Every wheel setting in one place**, grouped into categories: Force
-  feedback, Steering, Pedals, LEDs, Profiles / mode, Info. Each row shows the
-  live value read from the wheel; settings absent on your hardware are marked
-  unavailable rather than hidden.
+  feedback, Steering, Pedals, LIGHTSYNC, Profiles / mode, Info. Each row shows
+  the live value read from the wheel; settings absent on your hardware are
+  marked unavailable rather than hidden. Steering and Pedals have an Advanced
+  toggle that reveals the full curve and filter set behind the simple sliders.
 - **Typed, validated edits.** Percentages, ranges, enums, toggles and colours
   are parsed and range-checked before they reach the wheel, so an out-of-range
   value is rejected in the UI instead of erroring at the device.
@@ -21,22 +24,32 @@ to `echo` values into sysfs by hand.
 - **A G HUB-style curve editor** for the pedal, steering and handbrake response
   curves: edit control points (input / output percent) plus lower and upper
   deadzones, with a live plot of the composed curve, then upload it.
+- **A LIGHTSYNC slot editor**: per-LED colors (with an HSV picker in the GUI),
+  effect, brightness and animation direction, composed per onboard slot.
 - **Onboard profile renaming**: pick a slot and type a new name.
 - **Combined pedals** toggle and per-pedal / handbrake sensitivity sliders.
+- **A Setup section**: per-game TrueForce shim management over Steam/Proton
+  game discovery (with an SDK directory picker), plus logi-ffb helper setup.
+- **A Test section**: a live input monitor and guarded force-feedback
+  simulations.
 
 ## Building
 
-logi-dd is a Rust workspace: a `logi-dd-core` library and the `logi-dd-tui`
-crate that builds the `logi-dd` binary. It needs a Rust toolchain (edition
-2021, Rust 1.74 or newer) and no system libraries beyond the standard terminal.
+logi-dd is a Rust workspace of four crates (see Layout below): the
+`logi-dd-core` library, the `logi-dd-tui` and `logi-dd-gui` frontends, and the
+`ffb-proxy` crate that builds `logi-ffb`. It needs a Rust toolchain (edition
+2021, Rust 1.74 or newer; the Slint GUI wants a current stable). The TUI needs
+no system libraries beyond the standard terminal; the GUI additionally needs
+`pkg-config` and the fontconfig headers (`libfontconfig-dev` on Debian/Ubuntu,
+`fontconfig-devel` on Fedora, `fontconfig` on Arch).
 
 ```bash
 cd userspace/logi-dd
 cargo build --release
 ```
 
-The binary lands at `userspace/logi-dd/target/release/logi-dd`. Copy it
-somewhere on your `PATH` if you like, or run it in place.
+The binaries land at `userspace/logi-dd/target/release/{logi-dd,logi-dd-gui,logi-ffb}`.
+Copy them somewhere on your `PATH` if you like, or run them in place.
 
 ## Running
 
@@ -101,8 +114,19 @@ works, build instructions, and the standalone `--daemon` mode.
 
 ## Layout
 
-- `crates/logi-dd-core` - the library: the setting registry, typed values,
-  validation, and the sysfs read/write layer. Reusable without the TUI.
-- `crates/logi-dd-tui` - the terminal UI (ratatui + crossterm) and the curve
-  editor.
+- `crates/logi-dd-core` - the shared library: the setting registry, typed
+  values, validation, the sysfs read/write layer, plus the `steam` (Steam /
+  Proton game discovery), `evtest` (live input monitoring for the Test views),
+  `lightsync` (composed per-slot LED model) and `shaping` (simple / advanced
+  attribute split) modules. Reusable without either frontend.
+- `crates/logi-dd-tui` - the terminal UI (ratatui + crossterm), builds the
+  `logi-dd` binary.
+- `crates/logi-dd-gui` - the desktop UI (Slint), builds the `logi-dd-gui`
+  binary.
 - `crates/ffb-proxy` - the `logi-ffb` DirectInput force-feedback proxy binary.
+
+## Development without a wheel
+
+Set `LOGI_DD_SYSFS_DIR=/path/to/dir` to point the apps at a directory of
+plain `wheel_*` files instead of the real sysfs tree; both frontends then run
+fully headless against it, no wheel or driver needed.

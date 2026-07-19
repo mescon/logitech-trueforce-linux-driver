@@ -7,7 +7,59 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+The settings app grows a desktop GUI and both frontends gain LIGHTSYNC,
+Setup and Test sections. Driver-side, one LIGHTSYNC encoding fix.
+
 ### Added
+- **`logi-dd-gui`, a desktop settings app** (Slint): the full `wheel_*`
+  settings surface as a GUI - every category with live values, mode
+  switching and refresh, a G HUB-style curve editor, an HSV color picker,
+  a deadzone pair editor, onboard profile renaming, and a named-profile
+  dropdown. Ships in all packaging channels alongside the TUI.
+- **LIGHTSYNC redesign** in both frontends: the LED settings are composed
+  into a per-slot model (colors per LED, effect, brightness, animation
+  direction) with a slot editor, replacing the flat "LEDs" list.
+- **Setup section** (GUI page and TUI view): per-game management of the
+  TrueForce shim over Steam/Proton game discovery, with an SDK directory
+  picker, plus logi-ffb helper setup.
+- **Test section** (GUI page and TUI view): a live input monitor and
+  guarded force-feedback simulations for checking the wheel end to end.
+- **Advanced shaping toggle** in Steering and Pedals: the simple view
+  shows the G HUB-equivalent sliders, Advanced reveals the full curve
+  and filter set.
+- **`LOGI_DD_SYSFS_DIR`** environment override for development: point the
+  apps at a directory of plain `wheel_*` files and they run fully
+  headless, no wheel or driver needed.
+- **`install-tf-shim.sh --uninstall-prefix`** removes the shim from a
+  single Wine/Proton prefix.
+
+### Fixed
+- **LIGHTSYNC direction wire encoding.** The driver wrote the sysfs 0-3
+  direction enum straight into the 0x807B config, but the device expects
+  1-4 on the wire; the firmware NAKed the off-by-one config (an `-EIO` on
+  writing Outside-In). The driver now translates both ways.
+- **logi-ffb virtual wheel identity.** The virtual wheel cloned the real
+  wheel's name and IDs, so games (and the proxy itself) could bind the
+  wrong device and the wrapper hid steering. It now appears as
+  "logi-ffb Virtual Wheel" with its own IDs, and the proxy refuses to
+  bind its own virtual device.
+- **GUI/TUI fix wave**: the curve plot maps linearly with repaired point
+  hit-testing and no drag stalls, editor overlays are actually modal,
+  severed widget bindings re-sync from model pushes, pair edits no longer
+  race, mode edits no longer desync the header, and slot renames give
+  feedback and refresh the profile dropdown.
+
+## 0.15.0 - 2026-07-18
+
+The release adding `logi-ffb` plus the pedal-shaping restoration below
+(the tag was documented in the GitHub release notes; summarized here for
+completeness).
+
+### Added
+- **`logi-ffb`, a DirectInput force-feedback proxy** (`ffb-proxy` crate):
+  presents a virtual force-feedback wheel to Wine/Proton sims on the
+  `PROTON_ENABLE_HIDRAW=1` path and forwards effects to the real wheel's
+  evdev FF interface. Run as `logi-ffb %command%` in Steam launch options.
 - **Combined pedals.** `wheel_combined_pedals` (0/1, desktop only) toggles G HUB's
   legacy throttle+brake axis merge via feature `0x80D0`. Verified on an RS50: on,
   the two pedals collapse to a single centred axis (`ABS_RX` re-centres, `ABS_RY`

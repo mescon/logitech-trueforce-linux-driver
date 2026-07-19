@@ -35,7 +35,7 @@ G PRO Racing Wheel (`046d:c272` Xbox/PC, `046d:c268` PS/PC).
 
 ## What's included
 
-Four pieces, all built from this repository:
+Five pieces, all built from this repository:
 
 - **The kernel driver** (`hid-logitech-dd`) is the core. It exposes force
   feedback through the standard Linux evdev interface and every wheel setting
@@ -46,7 +46,12 @@ Four pieces, all built from this repository:
   G HUB that configure the wheel, with typed, validated edits and a G HUB-style
   curve editor. So you do not have to `echo` values into sysfs by hand.
 
-  ![logi-dd settings](docs/images/logi-dd.png)
+- **logi-dd-gui**, the same settings surface as a desktop app (Slint): every
+  wheel setting, a LIGHTSYNC editor with per-slot colors and animation
+  direction, per-game TrueForce shim management on a Setup page, and a Test
+  page with a live input tester and guarded force-feedback simulations.
+
+  ![logi-dd-gui settings](docs/images/logi-dd.png)
 
 - **logi-ffb**, a DirectInput force-feedback proxy for Wine/Proton sims that lose
   force feedback on the `PROTON_ENABLE_HIDRAW=1` path (see below).
@@ -55,8 +60,9 @@ Four pieces, all built from this repository:
   SDK, for apps that want to drive TrueForce without Wine (a telemetry-driven
   haptic generator, for example). Optional; not needed for the Proton recipe.
 
-The distribution packages install the driver plus the `logi-dd` and `logi-ffb`
-tools; `libtrueforce` has its own build under `userspace/libtrueforce/`.
+The distribution packages install the driver plus the `logi-dd`, `logi-dd-gui`
+and `logi-ffb` tools; `libtrueforce` has its own build under
+`userspace/libtrueforce/`.
 
 ## Install
 
@@ -93,20 +99,24 @@ tools work without root.
   fixes: run them with `PROTON_ENABLE_HIDRAW=0` (feedback routes through evdev),
   or prepend **`logi-ffb`** to the launch command (`logi-ffb %command%` in Steam
   launch options), which presents a virtual wheel that catches the DirectInput
-  effects and forwards them to the real one. `logi-ffb` is hardware-validated but
-  wants an in-game tester; if you have such a sim, reports are very welcome.
+  effects and forwards them to the real one. The virtual wheel appears as
+  "logi-ffb Virtual Wheel" (its own name and IDs, not the real wheel's), so a
+  game may need a one-time manual binding to it. `logi-ffb` is
+  hardware-validated but wants an in-game tester; if you have such a sim,
+  reports are very welcome.
 
 ## Configuring the wheel
 
-Run **logi-dd** and edit settings live: rotation range, force-feedback strength
-and filters, TrueForce level, LEDs, profiles, and per-pedal / steering response
-curves through a point-list curve editor.
+Run **logi-dd-gui** (or **logi-dd** in a terminal) and edit settings live:
+rotation range, force-feedback strength and filters, TrueForce level, LIGHTSYNC
+LEDs, profiles, and per-pedal / steering response curves through a G HUB-style
+curve editor.
 
-![logi-dd curve editor](docs/images/logi-dd-curve-editor.png)
+![logi-dd-gui Steering page](docs/images/logi-dd-curve-editor.png)
 
 ```bash
 cd userspace/logi-dd && cargo build --release
-./target/release/logi-dd
+./target/release/logi-dd-gui    # desktop app; ./target/release/logi-dd for the TUI
 ```
 
 Everything logi-dd sets is also available as plain sysfs attributes under
