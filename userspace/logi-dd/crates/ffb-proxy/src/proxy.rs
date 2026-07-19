@@ -315,4 +315,12 @@ mod tests {
         assert!(!is_wheel("RS50 Wireless Keyboard"));
         assert!(!is_wheel("G PRO Wireless Mouse"));
     }
+
+    #[test]
+    fn rejects_the_virtual_wheel_name() {
+        // If the virtual device's name ever matches the wheel heuristic, a
+        // restarted proxy could discover and bind its own stale virtual
+        // device as its source.
+        assert!(!is_wheel(descriptor::VIRTUAL_NAME));
+    }
 }

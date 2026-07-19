@@ -14,10 +14,13 @@
 //!   per-user registry key (`HKCU\Software\Wine\DirectInput\Joysticks`) for
 //!   devices explicitly marked "disabled".
 //!
-//! The exact discriminator (vid/pid vs. name) that reliably hides only the
-//! real device without also hiding the virtual clone is validated against
-//! real hardware in a later task. Keeping the computed values in one place
-//! (`plan_for`) means that adjustment stays localized to this module.
+//! Both discriminators hide only the real device because the virtual proxy
+//! advertises a product id and name distinct from the real wheel (see
+//! `descriptor::VIRTUAL_PRODUCT` / `VIRTUAL_NAME`): the vid/pid ignore
+//! targets the real `0x046d/0xc276` and the name-disable targets the real
+//! product name, and the clone matches neither. Were the clone to share the
+//! real identity, this steering would hide it too and the game would find no
+//! wheel at all.
 
 use std::fs;
 use std::path::Path;
@@ -110,6 +113,27 @@ mod tests {
     fn child_env_returns_plan_env() {
         let p = plan_for(0x046d, 0xc262, "Logitech G PRO Racing Wheel");
         assert_eq!(child_env(&p), p.env);
+    }
+
+    #[test]
+    fn steering_the_real_wheel_never_hides_the_virtual_clone() {
+        // The whole point of the distinct virtual identity: the steering that
+        // hides the real wheel must leave the proxy clone visible, or the game
+        // sees no wheel at all (the `logi-ffb <game>` wrapper regression where
+        // LMU reported no detected devices). This holds only while the virtual
+        // product id and name differ from the real ones.
+        let p = plan_for(crate::descriptor::VENDOR, crate::descriptor::PRODUCT, "Logitech RS50 Base for PlayStation/PC");
+        let sdl_ignore = &p.env[0].1;
+        assert!(
+            !sdl_ignore.contains(&format!("{:04x}", crate::descriptor::VIRTUAL_PRODUCT)),
+            "SDL ignore list {sdl_ignore:?} must not match the virtual product 0x{:04x}",
+            crate::descriptor::VIRTUAL_PRODUCT,
+        );
+        assert_ne!(
+            p.reg_disable_name,
+            crate::descriptor::VIRTUAL_NAME,
+            "Wine disable-by-name must not match the virtual device name",
+        );
     }
 
     #[test]
