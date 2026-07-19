@@ -50,8 +50,11 @@ export component Setup inherits Rectangle {
     // Copies "logi-ffb %command%" to the clipboard (best-effort, wl-copy
     // then xclip; the field next to the button is selectable as a fallback).
     callback copy-launch();
-    // The SDK folder field's edit-accept: re-checks validity and becomes
-    // the --sdk-dir passed to every install call.
+    // The SDK folder field's edit-accept: re-checks validity. Install
+    // calls pass the folder as --sdk-dir only while it validates;
+    // otherwise the flag is omitted and the installer's own lookup (env
+    // var, repo sdk/, XDG default) resolves the SDK, which is what the
+    // muted (not red) invalid status explains.
     callback sdk-dir-edited(string);
     // Per-game shim runs, off the UI thread; the argument is the row's
     // wine prefix path. `shim-output` and `shim-running` are pushed back
@@ -183,7 +186,7 @@ export component Setup inherits Rectangle {
                                 Text {
                                     text: root.sdk-status;
                                     font-size: 12px;
-                                    color: root.sdk-valid ? Theme.ok-color : Theme.error-color;
+                                    color: root.sdk-valid ? Theme.ok-color : Theme.muted-text-color;
                                     wrap: word-wrap;
                                 }
                                 Text {

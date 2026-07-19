@@ -56,7 +56,7 @@ pub const SETUP_INDEX: usize = Category::ALL.len();
 /// `$LOGITECH_TRUEFORCE_SDK_DIR` when set, else
 /// `~/.local/share/logitech-trueforce/sdk` (the installer script's own
 /// default). Editable in the view (the `s` key); whatever it holds is
-/// passed as `--sdk-dir` to every install run.
+/// passed as `--sdk-dir` to install runs while it validates.
 fn resolve_sdk_dir() -> String {
     if let Some(dir) = std::env::var_os("LOGITECH_TRUEFORCE_SDK_DIR") {
         if !dir.is_empty() {
@@ -97,7 +97,9 @@ pub struct App<S: SysfsIo> {
     /// pages; Enter on that row (or 'a' anywhere in the axis's block)
     /// flips it.
     pub shaping_toggles: shaping::AxisToggles,
-    /// The SDK folder every per-game install passes as `--sdk-dir`; see
+    /// The SDK folder per-game installs pass as `--sdk-dir` while it
+    /// validates (an invalid one is omitted so the installer's own
+    /// lookup runs); see
     /// `resolve_sdk_dir` for the startup value, `s` in the Setup view to
     /// edit it.
     pub sdk_dir: String,
@@ -531,8 +533,8 @@ impl<S: SysfsIo> App<S> {
     }
 
     /// Run the TrueForce SDK shim installer with `args` (a per-game
-    /// `--prefix <pfx> --sdk-dir <dir>` install or `--uninstall-prefix
-    /// <pfx>` remove), blocking: the TUI's event loop is synchronous, so
+    /// install, `--prefix <pfx>` plus `--sdk-dir <dir>` when the folder
+    /// validates, or an `--uninstall-prefix <pfx>` remove), blocking: the TUI's event loop is synchronous, so
     /// there is no worker thread to hand this off to. The main loop calls
     /// this via the `pending_shim` queue so a "running..." status gets
     /// drawn first, then rescans the games list so the row's shim status
@@ -880,7 +882,7 @@ impl<S: SysfsIo> App<S> {
                         self.status = if self.sdk_valid {
                             "SDK folder set (DLLs found)".to_string()
                         } else {
-                            format!("SDK folder set, but no trueforce_sdk_x64.dll under {}/Logi/...", self.sdk_dir)
+                            "SDK folder set; no DLLs there, so installs will use the installer's own lookup (repo sdk/ or $LOGITECH_TRUEFORCE_SDK_DIR)".to_string()
                         };
                     }
                     Esc => self.sdk_edit = None,
@@ -912,12 +914,11 @@ impl<S: SysfsIo> App<S> {
                 Char('i') => match self.selected_game() {
                     Some(game) => {
                         let pfx = game.prefix.to_string_lossy().into_owned();
-                        let args = vec![
-                            "--prefix".to_string(),
-                            pfx,
-                            "--sdk-dir".to_string(),
-                            self.sdk_dir.clone(),
-                        ];
+                        // --sdk-dir only when the folder validates; an
+                        // invalid one must not override the installer's
+                        // own resolution (env var, repo sdk/, XDG
+                        // default).
+                        let args = steam::shim_install_args(&pfx, Path::new(&self.sdk_dir));
                         self.pending_shim = Some((args, "install"));
                     }
                     None => self.status = "shim install: no game selected".to_string(),
@@ -1286,7 +1287,25 @@ mod tests {
     fn setup_keys_queue_a_per_game_shim_run_instead_of_running_it() {
         use crossterm::event::KeyCode;
         let mut a = setup_app();
+        // An SDK folder without the DLLs: --sdk-dir is omitted so the
+        // installer's own lookup (repo sdk/, env var, XDG default) runs.
         a.sdk_dir = "/sdk".to_string();
+        a.on_key(KeyCode::Char('i'));
+        assert_eq!(
+            a.take_pending_shim(),
+            Some((
+                vec!["--prefix".to_string(), "/lib/steamapps/compatdata/100/pfx".to_string()],
+                "install"
+            ))
+        );
+        // Taken once; a second take finds nothing queued.
+        assert_eq!(a.take_pending_shim(), None);
+        // A validated folder (the marker DLL exists) is passed through.
+        let sdk = std::env::temp_dir().join(format!("logi-dd-tui-sdk-{}", std::process::id()));
+        let marker = sdk.join("Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "dll").unwrap();
+        a.sdk_dir = sdk.to_string_lossy().into_owned();
         a.on_key(KeyCode::Char('i'));
         assert_eq!(
             a.take_pending_shim(),
@@ -1295,13 +1314,12 @@ mod tests {
                     "--prefix".to_string(),
                     "/lib/steamapps/compatdata/100/pfx".to_string(),
                     "--sdk-dir".to_string(),
-                    "/sdk".to_string(),
+                    sdk.to_string_lossy().into_owned(),
                 ],
                 "install"
             ))
         );
-        // Taken once; a second take finds nothing queued.
-        assert_eq!(a.take_pending_shim(), None);
+        std::fs::remove_dir_all(&sdk).unwrap();
         a.on_key(KeyCode::Down); // select the second game
         a.on_key(KeyCode::Char('u'));
         assert_eq!(
@@ -1946,7 +1964,9 @@ mod tests {
         a.games_scanned = true;
         a.sdk_dir = "/sdk".to_string();
         a.on_key(KeyCode::Char('i'));
-        assert!(a.take_pending_shim().is_some(), "shim installs work without a wheel");
+        let (args, verb) = a.take_pending_shim().expect("shim installs work without a wheel");
+        assert_eq!(verb, "install");
+        assert!(!args.contains(&"--sdk-dir".to_string()), "invalid dir is not passed along");
     }
 
     #[test]

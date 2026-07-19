@@ -139,6 +139,21 @@ pub fn sdk_dir_valid(dir: &Path) -> bool {
     dir.join(SDK_MARKER).is_file()
 }
 
+/// The shim installer's per-game install arguments. `--sdk-dir` is only
+/// included when `sdk_dir` actually holds the SDK DLLs ([`sdk_dir_valid`]):
+/// the flag overrides the installer's own resolution order
+/// (`$LOGITECH_TRUEFORCE_SDK_DIR`, a repo `sdk/` next to the script, the
+/// XDG default), so passing along an invalid prefill would break an
+/// install the script could have resolved by itself.
+pub fn shim_install_args(prefix: &str, sdk_dir: &Path) -> Vec<String> {
+    let mut args = vec!["--prefix".to_string(), prefix.to_string()];
+    if sdk_dir_valid(sdk_dir) {
+        args.push("--sdk-dir".to_string());
+        args.push(sdk_dir.to_string_lossy().into_owned());
+    }
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +279,28 @@ mod tests {
         assert!(!sdk_dir_valid(&sdk), "missing tree is invalid");
         write(&sdk.join(SDK_MARKER), "dll");
         assert!(sdk_dir_valid(&sdk), "marker DLL makes it valid");
+    }
+
+    #[test]
+    fn shim_install_args_pass_sdk_dir_only_when_valid() {
+        let tree = TempTree::new();
+        let sdk = tree.path().join("sdk");
+        assert_eq!(
+            shim_install_args("/pfx", &sdk),
+            vec!["--prefix".to_string(), "/pfx".to_string()],
+            "an invalid dir is omitted so the installer's own lookup runs"
+        );
+        write(&sdk.join(SDK_MARKER), "dll");
+        assert_eq!(
+            shim_install_args("/pfx", &sdk),
+            vec![
+                "--prefix".to_string(),
+                "/pfx".to_string(),
+                "--sdk-dir".to_string(),
+                sdk.to_string_lossy().into_owned(),
+            ],
+            "a validated dir is passed through"
+        );
     }
 
     #[test]

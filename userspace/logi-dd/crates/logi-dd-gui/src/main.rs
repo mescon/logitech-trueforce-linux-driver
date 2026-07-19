@@ -339,7 +339,9 @@ fn copy_to_clipboard(text: &str) {
 /// `$LOGITECH_TRUEFORCE_SDK_DIR` when set, else
 /// `~/.local/share/logitech-trueforce/sdk` (the installer script's own
 /// default). The user can still point elsewhere via the page's SDK folder
-/// field; whatever it holds is passed as `--sdk-dir` to every install run.
+/// field; install runs pass it as `--sdk-dir` only while it validates
+/// (see `steam::shim_install_args`), so an invalid prefill never
+/// overrides the installer's own lookup.
 fn resolve_sdk_dir() -> String {
     if let Some(dir) = std::env::var_os("LOGITECH_TRUEFORCE_SDK_DIR") {
         if !dir.is_empty() {
@@ -352,13 +354,17 @@ fn resolve_sdk_dir() -> String {
 
 /// The SDK folder field's validity + status line: whether the marker DLL
 /// exists under `dir` (via `steam::sdk_dir_valid`) and the message the
-/// green/red indicator shows for it.
+/// green/red indicator shows for it. An invalid folder is not a broken
+/// install: `--sdk-dir` is simply omitted then and the installer runs
+/// its own lookup, which the message says.
 fn sdk_status(dir: &str) -> (bool, String) {
     let valid = logi_dd_core::steam::sdk_dir_valid(std::path::Path::new(dir));
     let message = if valid {
         "SDK DLLs found".to_string()
     } else {
-        format!("trueforce_sdk_x64.dll not found under {dir}/Logi/Trueforce/1_3_11/")
+        format!(
+            "No trueforce_sdk_x64.dll under {dir}/Logi/Trueforce/1_3_11/; installs will use the installer's own lookup (repo sdk/ or $LOGITECH_TRUEFORCE_SDK_DIR)"
+        )
     };
     (valid, message)
 }
@@ -394,9 +400,9 @@ fn scan_games(app_weak: slint::Weak<App>) {
     });
 }
 
-/// Run the TrueForce SDK shim installer with `args` (a per-game
-/// `--prefix <pfx> --sdk-dir <dir>` install or `--uninstall-prefix <pfx>`
-/// remove) off the UI thread, then push its combined stdout+stderr plus
+/// Run the TrueForce SDK shim installer with `args` (a per-game install,
+/// `--prefix <pfx>` plus `--sdk-dir <dir>` when the folder validates, or
+/// an `--uninstall-prefix <pfx>` remove) off the UI thread, then push its combined stdout+stderr plus
 /// exit status back to `setup-shim-output` (and clear
 /// `setup-shim-running`) via `slint::invoke_from_event_loop`, followed by
 /// a games rescan so the row's shim status updates. `binary` is `None`
@@ -1571,7 +1577,11 @@ fn main() -> Result<(), slint::PlatformError> {
             app.set_setup_shim_output("Running...".into());
             app.set_setup_shim_running(true);
             let dir = sdk_dir.lock().unwrap().clone();
-            let args = vec!["--prefix".to_string(), prefix.to_string(), "--sdk-dir".to_string(), dir];
+            // `--sdk-dir` only when the folder validates; otherwise the
+            // installer's own resolution order (env var, repo sdk/, XDG
+            // default) stays in charge.
+            let args =
+                logi_dd_core::steam::shim_install_args(&prefix, std::path::Path::new(&dir));
             run_shim_command(app_weak.clone(), shim_binary.clone(), args);
         });
     }

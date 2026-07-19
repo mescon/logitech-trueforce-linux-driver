@@ -365,8 +365,12 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
             Span::raw(app.sdk_dir.clone()),
             Span::raw("  "),
             Span::styled(
-                if app.sdk_valid { "SDK DLLs found" } else { "trueforce_sdk_x64.dll not found" },
-                found_style(app.sdk_valid),
+                if app.sdk_valid {
+                    "SDK DLLs found"
+                } else {
+                    "no DLLs here; installer will use its own lookup (repo sdk/ or $LOGITECH_TRUEFORCE_SDK_DIR)"
+                },
+                if app.sdk_valid { found_style(true) } else { Style::default().fg(Color::DarkGray) },
             ),
         ]),
     };
