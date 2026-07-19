@@ -1238,7 +1238,7 @@ Byte    Field           Description
 2       Feature Index   [discovered, typically 0x0B or 0x0C]
 3       Function        0x2C (Set RGB Zone Config)
 4       Slot Index      0x00-0x04 (CUSTOM 1-5)
-5       Direction       0x00-0x03 (animation direction)
+5       Direction       0x01-0x04 (animation direction wire value, see 9.4.1)
 6-8     LED10 RGB       R, G, B (0x00-0xFF each)
 9-11    LED9 RGB        R, G, B
 12-14   LED8 RGB        R, G, B
@@ -1265,13 +1265,41 @@ Byte    Field           Description
 | 0x03 | CUSTOM 4 |
 | 0x04 | CUSTOM 5 |
 
-**Direction Values:**
-| Value | Effect | G Hub Swedish | G Hub English |
-|-------|--------|---------------|---------------|
-| 0x00 | Left to Right sweep | VÄNSTER TILL HÖGER | Left to Right |
-| 0x01 | Right to Left sweep | HÖGER TILL VÄNSTER | Right to Left |
-| 0x02 | Inside to Outside (expand) | FRÅN INSIDAN UT | From Inside Out |
-| 0x03 | Outside to Inside (contract) | FRÅN UTSIDAN IN | From Outside In |
+##### 9.4.1 Direction Values
+
+Byte 5 carries a **1-based wire value (1-4)**, NOT the driver's 0-3
+`HIDPP_DD_LIGHTSYNC_DIR_*` enum.
+`dev/captures/2026-07-19_lightsync_direction.pcapng` contains only
+device-to-host GET (fn1) echoes of the state G Hub had already applied for
+each direction - no host-to-device 0x0C SET frames were captured. The wire
+values below were derived from those GET echoes (GET/SET symmetry: a Get
+Zone Config response carries the same byte 5 a Set would have sent),
+corroborated by the old driver's `direction + 2` encoding being accepted by
+the firmware for 2/3/4 and NAKed for the out-of-range 5:
+
+| Wire (byte 5) | Effect | G Hub Swedish | G Hub English | Driver enum |
+|---------------|--------|---------------|---------------|-------------|
+| `0x01` | Inside to Outside (expand)  | FRÅN INSIDAN UT     | From Inside Out | 2 |
+| `0x02` | Outside to Inside (contract) | FRÅN UTSIDAN IN     | From Outside In | 3 |
+| `0x03` | Left to Right sweep          | VÄNSTER TILL HÖGER  | Left to Right   | 0 |
+| `0x04` | Right to Left sweep          | HÖGER TILL VÄNSTER  | Right to Left   | 1 |
+
+The older 0x807A quick-effect table (section 9, ~line 600-608) agrees on
+`0x01`=Inside-Out and `0x02`=Outside-In but is swapped on 3/4 relative to
+this table (it lists `0x03`=Right-to-Left, `0x04`=Left-to-Right). The two
+commands are different (0x807A effect select vs 0x807B slot config), so
+both tables could be correct as written. A 5-second hardware check (write
+direction 0 to a slot and watch which way the sweep runs) settles the
+slot-config labels above; if reversed, swap the two sweep entries in
+`hidpp_dd_lightsync_dir_to_wire()` / `hidpp_dd_lightsync_wire_to_dir()`.
+
+> **Historical bug:** an earlier driver encoded byte 5 as `enum + 2`
+> (L->R=2, R->L=3, IO=4, **OI=5**). That both mislabelled the sweeps (its
+> "Left to Right" actually sent Outside-In's value) and sent `5` for
+> Outside-In, which is out of the device's 1-4 range - the firmware NAKs it
+> and the write surfaces as `-EIO`. The driver now maps enum<->wire
+> explicitly via `hidpp_dd_lightsync_dir_to_wire()` /
+> `hidpp_dd_lightsync_wire_to_dir()`.
 
 **Response Format:**
 The device echoes back the configuration in a 0x12 response.
@@ -1324,7 +1352,7 @@ User wants: LED1=Red, LED2=Orange, LED3=Yellow, LED4=Green, LED5=Cyan,
 
 Protocol payload (after reversing LED order):
 ```
-12 FF 0C 2C 00 00     Header: slot=0, direction=0 (L→R)
+12 FF 0C 2C 00 03     Header: slot=0, direction=0x03 (Left->Right)
 FF FF FF              LED10: White   (0xFFFFFF)
 FF 69 B4              LED9:  Pink    (0xFF69B4)
 8B 00 FF              LED8:  Violet  (0x8B00FF)
@@ -1352,17 +1380,25 @@ Response (device returns current config):
 
 ### 9.8 LED Mirroring Based on Direction
 
-When using directional animations, G Hub groups LEDs in pairs that mirror each other:
+For the two **symmetric** directions - **Inside-Out** (driver enum 2, wire
+`0x01`) and **Outside-In** (driver enum 3, wire `0x02`) - G Hub collapses the
+10 LEDs into **5 mirrored pairs**, so the colours are a palindrome about the
+strip's centre:
 
-**Direction 0x03 (Outside→In) LED Pairing:**
 - LED1 ↔ LED10 (outermost pair)
 - LED2 ↔ LED9
 - LED3 ↔ LED8
 - LED4 ↔ LED7
 - LED5 ↔ LED6 (innermost pair)
 
-Setting LED1's color may automatically set LED10 to the same color in G Hub.
-This is G Hub application behavior, not protocol-level enforcement.
+Painting one LED sets its mirror to the same colour (G Hub draws a bracket
+linking the pair). Confirmed 2026-07-19 from G Hub screenshots. The two sweep
+directions (Left-to-Right, Right-to-Left) leave all 10 LEDs independent.
+
+This is application behaviour, not protocol-level enforcement - the wire
+format still carries all 10 colours - but a UI that mirrors these directions
+(as G Hub and `logi-dd` do) must send a palindrome so the animation looks
+right. The `wheel_led_colors` sysfs attribute always takes 10 colours.
 
 ### 9.9 Linux Driver Implementation
 
@@ -1468,7 +1504,10 @@ Step  Feature  Function  Purpose                    Parameters
 ```
 
 **Important Notes:**
-- params[1] in RGB config must be 0x03, not direction
+- params[1] in the RGB config (byte 5) IS the animation direction, as a 1-4
+  wire value (see 9.4.1): 1=Inside-Out, 2=Outside-In, 3=L->R, 4=R->L. An
+  earlier note here claimed it "must be 0x03, not direction" - that was from
+  before the direction encoding was decoded and is incorrect.
 - fn6/fn7 only work on feature 0x0B (0x807A), not on 0x0C (0x807B)
 
 #### Two-Feature Architecture
@@ -1649,3 +1688,4 @@ This returns the PAGE ID at each index. G Hub queries indices 0x00 through ~0x1F
 | 6.5 | 2026-07-03 | Renamed from RS50_PROTOCOL_SPECIFICATION.md (covers the whole direct-drive family); driver symbols updated to the hidpp_dd_ prefix; documented that the RS50 keeps its own USB product string in G PRO compatibility mode ("RS50 Base for PlayStation/PC" under PID c272) while a real G PRO reports "PRO Racing Wheel" - the driver uses this to tag log output per model |
 | 6.6 | 2026-07-04 | Cross-pollination from the TF4ALL project (issue #20): the Windows game-FFB path for DD wheels is HID++ 0x8123 fn2 (int16 BE at offset 10-11; catalog index 0x10 native / 0x0e G-PRO-PID); stream-packet bytes 6-9 ("cur") are the motor torque target and override 0x8123 while a session is active, with the window additive on top; AC EVO streams unified cur+audio packets at up to ~1000 pkt/s; texture amplitudes above ~0.5-0.7 FS cross from vibration into steering pull; the REAL G PRO rim has level-based rev lights on 0x807A (SHORT fn2 + LONG fn6, byte 9 = 0-10) with no per-LED RGB - section 9 describes RS50 hardware only |
 | 6.7 | 2026-07-06 | Section 4 corrected and de-duplicated against TRUEFORCE_PROTOCOL.md: byte 10 is the new-sample count that demuxes the shared ep-0x03 packet family (0 = constant force, 4 = unified force+audio), not padding; bytes 6-9 named as the "cur" motor torque target; force rate note updated (games 250-1000 Hz, driver 500 Hz); TRUEFORCE_PROTOCOL.md pointed to as the authoritative framing reference, with a reciprocal link back. Removed the RS50_PROTOCOL_SPECIFICATION.md redirect stub (rename complete). |
+| 6.8 | 2026-07-19 | LIGHTSYNC slot-direction wire encoding decoded from `dev/captures/2026-07-19_lightsync_direction.pcapng`: byte 5 of the 0x807B RGB config is a 1-4 value (1=Inside-Out, 2=Outside-In, 3=Left->Right, 4=Right->Left), not the driver's 0-3 enum (9.4.1). Fixed the driver's `direction + 2` encoding, which both mislabelled the sweeps and sent an out-of-range 5 for Outside-In (firmware NAK -> -EIO). Documented the 5-mirrored-pair (palindrome) behaviour of the two symmetric directions (9.8). |
