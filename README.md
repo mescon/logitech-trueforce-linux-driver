@@ -2,8 +2,11 @@
 
 A Linux kernel driver and userspace tools for Logitech's direct-drive racing
 wheels: the **RS50** and the **G PRO Racing Wheel**. It brings force feedback,
-TrueForce haptics, LED control, and G HUB-equivalent wheel settings to Linux,
-including in Proton/Wine sims.
+TrueForce haptics (native, and simulated from game telemetry for titles
+without it), a live RPM rev-light display, LIGHTSYNC LED control, and
+G HUB-equivalent wheel settings to Linux, including in Proton/Wine sims -
+all managed from a desktop app (**logi-dd-gui**) or a terminal one
+(**logi-dd**).
 
 > Not a direct-drive wheel? The belt-driven **G920 / G923** are already served
 > by the in-tree `hid-logitech-hidpp` driver and do not need this one.
@@ -27,15 +30,17 @@ to work · 🟡 needs a tester · `-` not applicable.
 | Rotation range (90 to 2700°), strength, damping, filters | ✅ | 🟢 |
 | Pedal response curves, sensitivity, deadzones, combined pedals | ✅ | 🟢 |
 | RS Shifter & Handbrake (shift, digital + analog handbrake) | ✅ | 🟢 |
-| LIGHTSYNC RGB LEDs | ✅ (faceplate strip) | 🟡 (rev lights) |
-| Centre calibration, mode / profile switching | ✅ | 🟢 |
+| LIGHTSYNC RGB LEDs (slots, colors, direction, on-wheel preview) | ✅ (faceplate strip) | 🟡 (rev lights) |
+| RPM rev-light display (level fill, direction-aware) | ✅ | 🟡 |
+| Simulated TrueForce from game telemetry (`logi-tf-sim`) | ✅ (sweep-verified) | 🟢 |
+| Centre calibration, mode / profile switching, computer-side profiles | ✅ | 🟢 |
 
 USB IDs covered: RS50 (`046d:c276` native, `046d:c272` compatibility mode) and
 G PRO Racing Wheel (`046d:c272` Xbox/PC, `046d:c268` PS/PC).
 
 ## What's included
 
-Five pieces, all built from this repository:
+Six pieces, all built from this repository:
 
 - **The kernel driver** (`hid-logitech-dd`) is the core. It exposes force
   feedback through the standard Linux evdev interface and every wheel setting
@@ -47,14 +52,23 @@ Five pieces, all built from this repository:
   curve editor. So you do not have to `echo` values into sysfs by hand.
 
 - **logi-dd-gui**, the same settings surface as a desktop app (Slint): every
-  wheel setting, a LIGHTSYNC editor with per-slot colors and animation
-  direction, per-game TrueForce shim management on a Setup page, and a Test
-  page with a live input tester and guarded force-feedback simulations.
+  wheel setting, a LIGHTSYNC editor with per-slot colors, animation direction
+  and an on-wheel preview, per-game TrueForce shim and simulated-TrueForce
+  management on the Setup page, computer-side profile presets, and an
+  Info / Testing page with a live input tester (rotating wheel diagram,
+  button and pedal readouts) and guarded, cancelable force simulations.
 
   ![logi-dd-gui settings](docs/images/logi-dd.png)
 
 - **logi-ffb**, a DirectInput force-feedback proxy for Wine/Proton sims that lose
   force feedback on the `PROTON_ENABLE_HIDRAW=1` path (see below).
+
+- **logi-tf-sim**, a background daemon that synthesizes TrueForce engine
+  haptics from a game's own UDP telemetry, for titles with no native
+  TrueForce - and feeds the same telemetry to the wheel's rev-light strip as
+  a live RPM display. Auto-detects supported games (DiRT Rally 2.0 and the
+  classic Codemasters format, Automobilista 2 / Project CARS 2); enable and
+  tune it per game from the Setup page.
 
 - **libtrueforce**, a native-Linux C library reimplementing Logitech's TrueForce
   SDK, for apps that want to drive TrueForce without Wine (a telemetry-driven
@@ -104,6 +118,14 @@ tools work without root.
   game may need a one-time manual binding to it. `logi-ffb` is
   hardware-validated but wants an in-game tester; if you have such a sim,
   reports are very welcome.
+
+- **Simulated TrueForce** for games without native support: enable the game
+  in Setup's "Simulated TrueForce" panel, switch on the game's own UDP
+  telemetry setting, and `logi-tf-sim` synthesizes engine haptics from live
+  RPM and throttle - and drives the rev LEDs to match. Intensity and felt
+  rev rate (pitch) are tunable; a consent-gated test sweep lets you feel it
+  without a game. Hardware-verified with synthetic sweeps; in-game reports
+  welcome.
 
 ## Configuring the wheel
 
