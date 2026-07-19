@@ -25,8 +25,11 @@ flows. Enable UDP telemetry in the game's settings.
 
 WARNING: --sweep drives the wheel with real haptic force. Hold the rim.
 
+While streaming, the daemon also drives the wheel's rev-LED display
+from telemetry RPM (leds=0 turns that off).
+
 config: ~/.config/logi-dd/tf-sim.conf (key=value)
-  enabled=0|1, intensity=0-100, port.codemasters=, port.pcars=,
+  enabled=0|1, intensity=0-100, leds=0|1, port.codemasters=, port.pcars=,
   game.<id>.enabled=0|1, game.<id>.intensity=0-100
   (game ids: dirt-rally-2, codemasters, ams2-pcars2)";
 

@@ -13,8 +13,8 @@
 //!
 //! Two deliberate differences from tf-sim's own store:
 //! - the front-ends only model the keys they edit (`enabled`, `intensity`,
-//!   `pitch`, `game.<id>.*`); everything else (the `port.*` keys, comments,
-//!   hand-added lines) is opaque and
+//!   `pitch`, `leds`, `game.<id>.*`); everything else (the `port.*` keys,
+//!   comments, hand-added lines) is opaque and
 //! - writes go through [`write_key_in`], which rewrites ONE key in place
 //!   and preserves every other line verbatim, so a front-end edit can never
 //!   drop a key it does not know about.
@@ -66,6 +66,9 @@ pub struct Config {
     pub intensity: u8,
     /// Felt rev-rate scale in percent (10-200; 100 = the crank rate).
     pub pitch_pct: u8,
+    /// Whether the daemon also drives the wheel's rev display
+    /// (`wheel_rev_level`) from telemetry RPM while streaming.
+    pub leds: bool,
     /// Per-game overrides, keyed by tf-sim game id.
     pub games: BTreeMap<String, GameConfig>,
 }
@@ -76,6 +79,7 @@ impl Default for Config {
             enabled: true,
             intensity: DEFAULT_INTENSITY,
             pitch_pct: DEFAULT_PITCH,
+            leds: true,
             games: BTreeMap::new(),
         }
     }
@@ -143,6 +147,11 @@ impl Config {
                         if (10..=200u16).contains(&u16::from(v)) {
                             cfg.pitch_pct = v;
                         }
+                    }
+                }
+                "leds" => {
+                    if let Some(v) = parse_bool(raw) {
+                        cfg.leds = v;
                     }
                 }
                 _ => {
@@ -223,6 +232,11 @@ pub fn set_intensity_in(path: &Path, intensity: u8) -> Result<(), Error> {
 /// Write the pitch scale (clamped to 10-200).
 pub fn set_pitch_in(path: &Path, pitch_pct: u8) -> Result<(), Error> {
     write_key_in(path, "pitch", &pitch_pct.clamp(10, 200).to_string())
+}
+
+/// Write the rev-display switch.
+pub fn set_leds_in(path: &Path, leds: bool) -> Result<(), Error> {
+    write_key_in(path, "leds", if leds { "1" } else { "0" })
 }
 
 /// Write one game's enable switch.
@@ -338,6 +352,7 @@ mod tests {
          enabled=0\n\
          intensity=42\n\
          pitch=50\n\
+         leds=0\n\
          port.codemasters=30500\n\
          port.pcars=5607\n\
          game.ams2-pcars2.enabled=0\n\
@@ -350,6 +365,7 @@ mod tests {
         let cfg = Config::load_from(Path::new("/nonexistent-tf-sim.conf"));
         assert_eq!(cfg, Config::default());
         assert!(cfg.enabled);
+        assert!(cfg.leds, "the rev display defaults on");
         assert_eq!(cfg.intensity, DEFAULT_INTENSITY);
         assert_eq!(cfg.pitch_pct, DEFAULT_PITCH);
         assert_eq!(cfg.game("dirt-rally-2"), GameConfig::default());
@@ -364,6 +380,7 @@ mod tests {
         assert!(!cfg.enabled);
         assert_eq!(cfg.intensity, 42);
         assert_eq!(cfg.pitch_pct, 50);
+        assert!(!cfg.leds);
         assert_eq!(cfg.game("dirt-rally-2"), GameConfig { enabled: true, intensity: 80 });
         assert_eq!(cfg.game("ams2-pcars2"), GameConfig { enabled: false, intensity: 100 });
         assert_eq!(cfg.game("unlisted"), GameConfig::default());
@@ -427,11 +444,13 @@ mod tests {
         let path = tree.path().join("nested").join(FILE_NAME);
         set_enabled_in(&path, false).unwrap();
         set_pitch_in(&path, 150).unwrap();
+        set_leds_in(&path, false).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.starts_with(FILE_HEADER));
         let cfg = Config::load_from(&path);
         assert!(!cfg.enabled);
         assert_eq!(cfg.pitch_pct, 150);
+        assert!(!cfg.leds);
     }
 
     #[test]

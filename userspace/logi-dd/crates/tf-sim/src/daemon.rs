@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::leds::RevLeds;
 use crate::synth::EngineSynth;
 use crate::telemetry::Telemetry;
 use crate::tf::TfStream;
@@ -68,6 +69,10 @@ struct Active {
     last_telemetry: Instant,
     last_gen: Instant,
     samples: Vec<f32>,
+    /// The wheel's rev display, when the config enables it and a wheel
+    /// exposing `wheel_rev_level` was found at stream start; `None`
+    /// otherwise. Stopped (blank + idle-pattern restore) with the stream.
+    leds: Option<RevLeds>,
 }
 
 fn bind(port: u16) -> Result<UdpSocket> {
@@ -157,6 +162,10 @@ pub fn run(cfg: &Config) -> Result<()> {
                                 "logi-tf-sim: stream start ({id}, rpm {:.0}/{:.0}, speed {:.0} m/s)",
                                 tel.rpm, tel.max_rpm, tel.speed
                             );
+                            let leds = if cfg.leds { RevLeds::discover() } else { None };
+                            if leds.is_some() {
+                                eprintln!("logi-tf-sim: driving the wheel's rev display");
+                            }
                             active = Some(Active {
                                 stream,
                                 synth: EngineSynth::new(),
@@ -165,6 +174,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                                 last_telemetry: now,
                                 last_gen: now,
                                 samples: Vec::with_capacity(MAX_GEN_SAMPLES as usize),
+                                leds,
                             });
                         }
                         Err(e) => {
@@ -201,16 +211,28 @@ pub fn run(cfg: &Config) -> Result<()> {
                         stop_reason = Some(format!("stream push failed: {e}"));
                     }
                 }
+                // The rev display rides the same telemetry: RevLeds
+                // paces itself (>=160 ms between writes) and only writes
+                // changed levels, so this per-iteration call is cheap.
+                if let Some(leds) = &mut a.leds {
+                    leds.update(a.tel.rpm, a.tel.max_rpm, now);
+                }
             }
         }
         if let Some(reason) = stop_reason {
-            if let Some(a) = active.take() {
+            if let Some(mut a) = active.take() {
+                if let Some(leds) = &mut a.leds {
+                    leds.stop();
+                }
                 eprintln!("logi-tf-sim: stream stop ({}): {reason}", a.game);
             }
         }
     }
 
-    if let Some(a) = active.take() {
+    if let Some(mut a) = active.take() {
+        if let Some(leds) = &mut a.leds {
+            leds.stop();
+        }
         eprintln!("logi-tf-sim: stream stop ({}): shutting down", a.game);
     }
     eprintln!("logi-tf-sim: exiting");

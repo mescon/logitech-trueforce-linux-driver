@@ -47,6 +47,7 @@ fn full_config() -> Config {
         enabled: false,
         intensity: 42,
         pitch_pct: 50,
+        leds: false,
         codemasters_port: 30500,
         pcars_port: 5607,
         games,
@@ -63,6 +64,7 @@ fn frontend_reader_parses_this_crates_writer() {
     assert!(!seen.enabled);
     assert_eq!(seen.intensity, 42);
     assert_eq!(seen.pitch_pct, 50);
+    assert!(!seen.leds);
     assert_eq!(
         seen.game("dirt-rally-2"),
         logi_dd_core::tfsim::GameConfig { enabled: true, intensity: 80 }
@@ -80,10 +82,11 @@ fn frontend_edits_survive_this_crates_reader_and_keep_the_ports() {
     full_config().save_to(&path).unwrap();
 
     // A front-end session: master on, intensity up, one game toggled, one
-    // game's intensity trimmed, pitch changed.
+    // game's intensity trimmed, pitch changed, the rev display re-enabled.
     logi_dd_core::tfsim::set_enabled_in(&path, true).unwrap();
     logi_dd_core::tfsim::set_intensity_in(&path, 75).unwrap();
     logi_dd_core::tfsim::set_pitch_in(&path, 120).unwrap();
+    logi_dd_core::tfsim::set_leds_in(&path, true).unwrap();
     logi_dd_core::tfsim::set_game_enabled_in(&path, "ams2-pcars2", true).unwrap();
     logi_dd_core::tfsim::set_game_intensity_in(&path, "dirt-rally-2", 65).unwrap();
 
@@ -91,6 +94,7 @@ fn frontend_edits_survive_this_crates_reader_and_keep_the_ports() {
     assert!(seen.enabled);
     assert_eq!(seen.intensity, 75);
     assert_eq!(seen.pitch_pct, 120);
+    assert!(seen.leds);
     assert_eq!(seen.codemasters_port, 30500, "port keys the front-end never models survive");
     assert_eq!(seen.pcars_port, 5607);
     assert_eq!(seen.games["ams2-pcars2"], GameConfig { enabled: true, intensity: 100 });

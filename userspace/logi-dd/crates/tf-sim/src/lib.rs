@@ -13,6 +13,7 @@
 //! - [`synth`]: pure engine-note generator (1 kHz sample stream).
 //! - [`config`]: `~/.config/logi-dd/tf-sim.conf` key=value store.
 //! - [`tf`]: safe wrapper over the libtrueforce FFI (stream lifecycle).
+//! - [`leds`]: the rev-display feeder (`wheel_rev_level` via sysfs).
 //! - [`daemon`]: the UDP listen / synthesize / watchdog loop.
 //! - [`sweep`]: the `--sweep` hardware-test mode (synthetic RPM sweep).
 
@@ -20,6 +21,7 @@ pub mod codemasters;
 pub mod config;
 pub mod daemon;
 pub mod error;
+pub mod leds;
 pub mod pcars;
 pub mod sweep;
 pub mod synth;

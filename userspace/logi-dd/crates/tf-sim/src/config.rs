@@ -10,6 +10,7 @@
 //! Keys:
 //! - `enabled` (0/1): master switch
 //! - `intensity` (0-100): master intensity
+//! - `leds` (0/1): drive the wheel's rev display from telemetry RPM
 //! - `port.codemasters`, `port.pcars`: UDP listen ports
 //! - `game.<id>.enabled` (0/1), `game.<id>.intensity` (0-100)
 
@@ -54,6 +55,9 @@ pub struct Config {
     /// Felt rev-rate scale in percent (10-200; 100 = fundamental at the
     /// crank rate rpm/60 Hz, 50 = half for a slower engine feel).
     pub pitch_pct: u8,
+    /// Whether the daemon also drives the wheel's rev display
+    /// (`wheel_rev_level`) from telemetry RPM while streaming.
+    pub leds: bool,
     /// Codemasters/EA family listen port.
     pub codemasters_port: u16,
     /// PCARS2/AMS2 listen port.
@@ -68,6 +72,7 @@ impl Default for Config {
             enabled: true,
             intensity: DEFAULT_INTENSITY,
             pitch_pct: 100,
+            leds: true,
             codemasters_port: codemasters::DEFAULT_PORT,
             pcars_port: pcars::DEFAULT_PORT,
             games: BTreeMap::new(),
@@ -136,6 +141,11 @@ impl Config {
                         }
                     }
                 }
+                "leds" => {
+                    if let Some(v) = parse_bool(raw) {
+                        cfg.leds = v;
+                    }
+                }
                 "port.codemasters" => {
                     if let Ok(v) = raw.parse::<u16>() {
                         cfg.codemasters_port = v;
@@ -183,6 +193,7 @@ impl Config {
         out.push_str(&format!("enabled={}\n", u8::from(self.enabled)));
         out.push_str(&format!("intensity={}\n", self.intensity));
         out.push_str(&format!("pitch={}\n", self.pitch_pct));
+        out.push_str(&format!("leds={}\n", u8::from(self.leds)));
         out.push_str(&format!("port.codemasters={}\n", self.codemasters_port));
         out.push_str(&format!("port.pcars={}\n", self.pcars_port));
         for (id, game) in &self.games {
@@ -231,6 +242,7 @@ mod tests {
         let cfg = Config::load_from(Path::new("/nonexistent-tf-sim.conf"));
         assert_eq!(cfg, Config::default());
         assert!(cfg.enabled);
+        assert!(cfg.leds, "the rev display defaults on");
         assert_eq!(cfg.intensity, DEFAULT_INTENSITY);
         assert_eq!(cfg.codemasters_port, 20777);
         assert_eq!(cfg.pcars_port, 5606);
@@ -239,13 +251,14 @@ mod tests {
     #[test]
     fn save_load_round_trips() {
         let path = tempdir().join(FILE_NAME);
-        let mut cfg = Config { enabled: false, intensity: 42, pitch_pct: 50, codemasters_port: 30500, pcars_port: 5607, games: BTreeMap::new() };
+        let mut cfg = Config { enabled: false, intensity: 42, pitch_pct: 50, leds: false, codemasters_port: 30500, pcars_port: 5607, games: BTreeMap::new() };
         cfg.games.insert("dirt-rally-2".into(), GameConfig { enabled: true, intensity: 80 });
         cfg.games.insert("ams2-pcars2".into(), GameConfig { enabled: false, intensity: 100 });
         cfg.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path), cfg);
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.starts_with(FILE_HEADER));
+        assert!(text.contains("leds=0\n"));
         assert!(text.contains("game.dirt-rally-2.intensity=80\n"));
     }
 
@@ -264,13 +277,14 @@ mod tests {
             format!(
                 "{FILE_HEADER}\nintensity=55\nbogus_key=7\nintensity=notanumber\n\
                  not a line\ngame..enabled=1\ngame.dirt-rally-2.bogus=3\n\
-                 game.dirt-rally-2.enabled=0\nintensity2=99\nenabled=maybe\n"
+                 game.dirt-rally-2.enabled=0\nintensity2=99\nenabled=maybe\nleds=maybe\n"
             ),
         )
         .unwrap();
         let cfg = Config::load_from(&path);
         assert_eq!(cfg.intensity, 55, "good line before the bad one sticks");
         assert!(cfg.enabled, "unparsable bool keeps the default");
+        assert!(cfg.leds, "unparsable leds bool keeps the default");
         assert!(!cfg.game_enabled("dirt-rally-2"));
         assert_eq!(cfg.games.len(), 1);
     }
