@@ -284,7 +284,7 @@ export component Setup inherits Rectangle {
                                         color: Theme.muted-text-color;
                                     }
                                     Text {
-                                        width: 140px;
+                                        width: 175px;
                                         text: "Simulated TF";
                                         font-size: 11px;
                                         font-weight: 600;
@@ -319,14 +319,18 @@ export component Setup inherits Rectangle {
                                     // (toggle + per-game intensity writing
                                     // tf-sim.conf), static text otherwise.
                                     if row.sim-id == "": Text {
-                                        width: 140px;
+                                        width: 175px;
                                         text: row.tf;
                                         font-size: 12px;
                                         color: Theme.muted-text-color;
                                         vertical-alignment: center;
                                     }
                                     if row.sim-id != "": HorizontalLayout {
-                                        width: 140px;
+                                        // Fluent SpinBox min-width is 112px;
+                                        // 140px could not hold Switch+SpinBox
+                                        // and the cell spilled past the panel
+                                        // edge (user screenshot 2026-07-20).
+                                        width: 175px;
                                         spacing: 4px;
                                         Switch {
                                             checked: row.sim-enabled;
