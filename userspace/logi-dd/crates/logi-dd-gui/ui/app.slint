@@ -55,7 +55,11 @@ export component App inherits Window {
     // then, so nothing routes to the Setup page before it is set.
     in property <int> setup-index: -1;
     in property <bool> setup-ffb-found: false;
+    // The resolved helper paths ("" while not found): PATH hit or the
+    // repo-checkout fallback; shown in the Setup status lines.
+    in property <string> setup-ffb-path: "";
     in property <bool> setup-shim-found: false;
+    in property <string> setup-shim-path: "";
     in property <bool> setup-shim-running: false;
     in property <string> setup-shim-output: "";
     // The SDK folder field's initial text and live validity (see
@@ -313,7 +317,9 @@ export component App inherits Window {
                     vertical-stretch: 1;
                     project-url: root.project-url;
                     ffb-found: root.setup-ffb-found;
+                    ffb-path: root.setup-ffb-path;
                     shim-found: root.setup-shim-found;
+                    shim-path: root.setup-shim-path;
                     shim-running: root.setup-shim-running;
                     shim-output: root.setup-shim-output;
                     sdk-dir: root.setup-sdk-dir;

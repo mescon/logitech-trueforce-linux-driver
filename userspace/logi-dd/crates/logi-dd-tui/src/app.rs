@@ -41,24 +41,6 @@ pub const SETUP_INDEX: usize = Category::ALL.len();
 /// wheel's evdev node rather than sysfs.
 pub const TEST_INDEX: usize = Category::ALL.len() + 1;
 
-/// Whether `bin` resolves on `$PATH`: a plain directory scan rather than a
-/// subprocess spawn, so a missing binary costs nothing at startup. Good
-/// enough for a presence hint; the actual install/uninstall run still goes
-/// through `std::process::Command`, which does its own `$PATH` lookup.
-fn found_on_path(bin: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
-        .unwrap_or(false)
-}
-
-/// Resolve the TrueForce SDK shim installer's binary name: prefer the
-/// packaged `logitech-trueforce-install-shim`, falling back to
-/// `install-tf-shim.sh` (a dev checkout's `tools/` script, also expected on
-/// `PATH` there). `None` means neither was found.
-fn resolve_shim_binary() -> Option<&'static str> {
-    ["logitech-trueforce-install-shim", "install-tf-shim.sh"].into_iter().find(|bin| found_on_path(bin))
-}
-
 /// Resolve the SDK folder the Setup view starts with:
 /// `$LOGITECH_TRUEFORCE_SDK_DIR` when set, else
 /// `~/.local/share/logitech-trueforce/sdk` (the installer script's own
@@ -87,11 +69,14 @@ pub struct App<S: SysfsIo> {
     /// cycled.
     pub effect_edit: Option<EffectEdit>,
     pub quit: bool,
-    /// Whether `logi-ffb` was found on `PATH` at startup (Setup body status).
-    pub ffb_found: bool,
-    /// The TrueForce SDK shim installer's resolved binary name, or `None` if
-    /// neither candidate name was found on `PATH` at startup.
-    pub shim_binary: Option<&'static str>,
+    /// `logi-ffb`'s resolved path (`PATH`, else next to this executable;
+    /// see `logi_dd_core::helpers`), or `None` if it was not found at
+    /// startup. The Setup body shows the path.
+    pub ffb_path: Option<PathBuf>,
+    /// The TrueForce SDK shim installer's resolved path (`PATH`, else the
+    /// checkout's `tools/install-tf-shim.sh` above this executable), or
+    /// `None` if it was not found at startup.
+    pub shim_binary: Option<PathBuf>,
     /// The per-axis shaping view toggles: pure per-session view state
     /// (never persisted, never a sysfs write). While an axis's toggle is
     /// off (simple, the default) its block shows the sensitivity row and
@@ -144,8 +129,8 @@ impl<S: SysfsIo> App<S> {
             effect_edit: None,
             quit: false,
             shaping_toggles: shaping::AxisToggles::default(),
-            ffb_found: found_on_path("logi-ffb"),
-            shim_binary: resolve_shim_binary(),
+            ffb_path: logi_dd_core::helpers::ffb_path(),
+            shim_binary: logi_dd_core::helpers::installer_path(),
             sdk_dir: resolve_sdk_dir(),
             sdk_valid: false,
             sdk_edit: None,
@@ -398,11 +383,11 @@ impl<S: SysfsIo> App<S> {
     /// updates. Never sudo. A missing binary or a spawn failure lands in
     /// the status line instead of taking the TUI down.
     pub fn run_shim(&mut self, args: &[String], verb: &str) {
-        let Some(bin) = self.shim_binary else {
-            self.status = "shim: installer not found on PATH".to_string();
+        let Some(bin) = self.shim_binary.clone() else {
+            self.status = "shim: installer not found (PATH or the repo's tools/)".to_string();
             return;
         };
-        match std::process::Command::new(bin).args(args).output() {
+        match std::process::Command::new(&bin).args(args).output() {
             Ok(out) if out.status.success() => {
                 self.status = format!("shim {verb}: ok");
             }
@@ -418,7 +403,7 @@ impl<S: SysfsIo> App<S> {
                 self.status = format!("shim {verb}: {last}");
             }
             Err(e) => {
-                self.status = format!("shim {verb}: failed to run {bin}: {e}");
+                self.status = format!("shim {verb}: failed to run {}: {e}", bin.display());
             }
         }
     }
@@ -1156,7 +1141,7 @@ mod tests {
     #[test]
     fn run_shim_reports_success() {
         let mut a = app();
-        a.shim_binary = Some("true"); // exists on PATH, exits 0, ignores args
+        a.shim_binary = Some(PathBuf::from("true")); // exists on PATH, exits 0, ignores args
         a.run_shim(&["--prefix".to_string(), "/x".to_string()], "install");
         assert_eq!(a.status, "shim install: ok");
     }
@@ -1164,7 +1149,7 @@ mod tests {
     #[test]
     fn run_shim_reports_failure_without_crashing() {
         let mut a = app();
-        a.shim_binary = Some("false"); // exists on PATH, exits non-zero
+        a.shim_binary = Some(PathBuf::from("false")); // exists on PATH, exits non-zero
         a.run_shim(&["--uninstall-prefix".to_string(), "/x".to_string()], "uninstall");
         assert!(a.status.starts_with("shim uninstall:"), "status: {}", a.status);
         assert_ne!(a.status, "shim uninstall: ok");
@@ -1173,7 +1158,7 @@ mod tests {
     #[test]
     fn run_shim_reports_spawn_failure_without_crashing() {
         let mut a = app();
-        a.shim_binary = Some("this-binary-does-not-exist-anywhere");
+        a.shim_binary = Some(PathBuf::from("this-binary-does-not-exist-anywhere"));
         a.run_shim(&["--prefix".to_string(), "/x".to_string()], "install");
         assert!(a.status.contains("failed to run"), "status: {}", a.status);
     }

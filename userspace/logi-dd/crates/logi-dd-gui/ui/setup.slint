@@ -27,7 +27,12 @@ struct CompatRow {
 export component Setup inherits Rectangle {
     in property <string> project-url: "";
     in property <bool> ffb-found: false;
+    // The resolved helper paths ("" while not found): a PATH hit, or the
+    // repo-checkout fallback (logi-ffb next to the app binary, the
+    // installer in tools/ above it).
+    in property <string> ffb-path: "";
     in property <bool> shim-found: false;
+    in property <string> shim-path: "";
     in property <bool> shim-running: false;
     in property <string> shim-output: "";
     // The SDK folder field's initial text (resolved on the Rust side from
@@ -115,9 +120,12 @@ export component Setup inherits Rectangle {
                             wrap: word-wrap;
                         }
                         Text {
-                            text: root.ffb-found ? "logi-ffb: Installed" : "logi-ffb: Not found on PATH";
+                            text: root.ffb-found
+                                ? "logi-ffb: found: " + root.ffb-path
+                                : "logi-ffb: not found (PATH or next to this app)";
                             font-size: 12px;
                             color: root.ffb-found ? Theme.text-color : Theme.error-color;
+                            wrap: word-wrap;
                         }
                         Text {
                             text: "Add this to the game's Steam launch options:";
@@ -258,10 +266,13 @@ export component Setup inherits Rectangle {
                             color: Theme.muted-text-color;
                             wrap: word-wrap;
                         }
-                        if !root.shim-found: Text {
-                            text: "Installer: not found on PATH";
+                        Text {
+                            text: root.shim-found
+                                ? "Installer: found: " + root.shim-path
+                                : "Installer: not found (PATH or the repo's tools/ directory)";
                             font-size: 12px;
-                            color: Theme.error-color;
+                            color: root.shim-found ? Theme.text-color : Theme.error-color;
+                            wrap: word-wrap;
                         }
 
                         if root.games-scanned && root.games.length == 0: Text {

@@ -275,8 +275,11 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         Line::from(vec![
             Span::raw("logi-ffb: "),
             Span::styled(
-                if app.ffb_found { "found on PATH" } else { "not found on PATH" },
-                found_style(app.ffb_found),
+                match &app.ffb_path {
+                    Some(p) => format!("found: {}", p.display()),
+                    None => "not found (PATH or next to logi-dd)".to_string(),
+                },
+                found_style(app.ffb_path.is_some()),
             ),
             Span::raw("    launch options: "),
             Span::styled("logi-ffb %command%", Style::default().fg(Color::Yellow)),
@@ -289,7 +292,10 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         Line::from(vec![
             Span::raw("Installer: "),
             Span::styled(
-                if shim_found { "found on PATH" } else { "not found on PATH" },
+                match &app.shim_binary {
+                    Some(p) => format!("found: {}", p.display()),
+                    None => "not found (PATH or the repo's tools/)".to_string(),
+                },
                 found_style(shim_found),
             ),
         ]),

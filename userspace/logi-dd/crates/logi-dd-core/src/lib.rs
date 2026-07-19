@@ -14,6 +14,7 @@ pub mod setting;
 pub use setting::{Access, Category, ModeReq, SettingSpec};
 pub mod registry;
 pub use registry::REGISTRY;
+pub mod helpers;
 pub mod shaping;
 pub mod steam;
 pub mod device;

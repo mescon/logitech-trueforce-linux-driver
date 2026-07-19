@@ -302,25 +302,6 @@ fn open_in_browser(url: &str) {
 /// The exact launch-options string the Setup page's "Copy" button copies.
 const FFB_LAUNCH_OPTIONS: &str = "logi-ffb %command%";
 
-/// Whether `bin` resolves on `$PATH`: a plain directory scan rather than
-/// spawning `which`, so a missing binary never costs a subprocess at
-/// startup. Good enough for a presence hint; the actual install/uninstall
-/// run still goes through `std::process::Command`, which does its own (and
-/// authoritative) `$PATH` lookup.
-fn found_on_path(bin: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
-        .unwrap_or(false)
-}
-
-/// Resolve the TrueForce SDK shim installer's binary name: prefer
-/// `logitech-trueforce-install-shim` (the packaged name), falling back to
-/// `install-tf-shim.sh` (a dev checkout's `tools/` script, also expected on
-/// `PATH` there). `None` means neither was found.
-fn resolve_shim_binary() -> Option<&'static str> {
-    ["logitech-trueforce-install-shim", "install-tf-shim.sh"].into_iter().find(|bin| found_on_path(bin))
-}
-
 /// Copy `text` to the clipboard, best-effort: try `wl-copy` (Wayland), then
 /// `xclip -selection clipboard` (X11). Ignores every failure (no clipboard
 /// tool installed, no display server, ...) since the Setup page's launch-
@@ -407,22 +388,22 @@ fn scan_games(app_weak: slint::Weak<App>) {
 /// exit status back to `setup-shim-output` (and clear
 /// `setup-shim-running`) via `slint::invoke_from_event_loop`, followed by
 /// a games rescan so the row's shim status updates. `binary` is `None`
-/// when neither name in `resolve_shim_binary` was found on `PATH` at
-/// startup; that is reported immediately, without spawning anything (the
-/// installer is never re-resolved mid-run, so a binary that appears on
-/// `PATH` after startup needs an app restart to be picked up, same as the
-/// presence hint next to the buttons).
-fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<&'static str>, args: Vec<String>) {
+/// when `helpers::installer_path` found nothing at startup (neither on
+/// `PATH` nor in a checkout above the executable); that is reported
+/// immediately, without spawning anything (the installer is never
+/// re-resolved mid-run, so a binary installed after startup needs an app
+/// restart to be picked up, same as the status line next to the buttons).
+fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<String>, args: Vec<String>) {
     let Some(bin) = binary else {
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else { return };
-            app.set_setup_shim_output("Installer not found on PATH.".into());
+            app.set_setup_shim_output("Installer not found (PATH or the repo's tools/ directory).".into());
             app.set_setup_shim_running(false);
         });
         return;
     };
     std::thread::spawn(move || {
-        let text = match std::process::Command::new(bin).args(&args).output() {
+        let text = match std::process::Command::new(&bin).args(&args).output() {
             Ok(out) => {
                 let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
                 combined.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -607,12 +588,19 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_project_url(logi_dd_core::PROJECT_URL.into());
     app.on_open_url(|url| open_in_browser(&url));
 
-    // Setup page: helper presence, checked once at startup (see
-    // `found_on_path`'s doc comment for why this is a plain `PATH` scan
-    // rather than spawning `which`).
-    app.set_setup_ffb_found(found_on_path("logi-ffb"));
-    let shim_binary = resolve_shim_binary();
+    // Setup page: helper presence, resolved once at startup: `PATH` first,
+    // then the repo-checkout fallbacks (`logi-ffb` next to this executable,
+    // the installer in a `tools/` directory above it); see
+    // `logi_dd_core::helpers`. The status lines show the resolved path.
+    let ffb_binary = logi_dd_core::helpers::ffb_path();
+    app.set_setup_ffb_found(ffb_binary.is_some());
+    app.set_setup_ffb_path(
+        ffb_binary.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default().into(),
+    );
+    let shim_binary =
+        logi_dd_core::helpers::installer_path().map(|p| p.to_string_lossy().into_owned());
     app.set_setup_shim_found(shim_binary.is_some());
+    app.set_setup_shim_path(shim_binary.clone().unwrap_or_default().into());
     // Setup page: the SDK folder field's prefill + validity, and the
     // installed-games scan (off the UI thread). The chosen dir lives in a
     // shared cell so every per-game install run reads the freshest value.
@@ -1452,6 +1440,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     {
         let sdk_dir = sdk_dir.clone();
+        let shim_binary = shim_binary.clone();
         let app_weak = app.as_weak();
         app.on_setup_install_game(move |prefix| {
             let Some(app) = app_weak.upgrade() else { return };
@@ -1459,17 +1448,18 @@ fn main() -> Result<(), slint::PlatformError> {
             app.set_setup_shim_running(true);
             let dir = sdk_dir.lock().unwrap().clone();
             let args = vec!["--prefix".to_string(), prefix.to_string(), "--sdk-dir".to_string(), dir];
-            run_shim_command(app_weak.clone(), shim_binary, args);
+            run_shim_command(app_weak.clone(), shim_binary.clone(), args);
         });
     }
     {
+        let shim_binary = shim_binary.clone();
         let app_weak = app.as_weak();
         app.on_setup_remove_game(move |prefix| {
             let Some(app) = app_weak.upgrade() else { return };
             app.set_setup_shim_output("Running...".into());
             app.set_setup_shim_running(true);
             let args = vec!["--uninstall-prefix".to_string(), prefix.to_string()];
-            run_shim_command(app_weak.clone(), shim_binary, args);
+            run_shim_command(app_weak.clone(), shim_binary.clone(), args);
         });
     }
     {
