@@ -107,6 +107,93 @@ pub const WHEEL_BUTTONS: &[(u16, &str)] = &[
     (0x2cb, "G1 (Logo)"),
 ];
 
+/// One numbered callout box on the button-layout diagram
+/// (`docs/images/rs-wheel-hub-button-layout.png`, 2500x2160): the box's
+/// center and size as fractions of the image dimensions, and the evdev
+/// button codes that light it up. Extracted from the PNG itself
+/// (connected-components analysis of the white boxes), so a front-end can
+/// tint the pressed button's box by scaling these fractions to whatever
+/// size it draws the image at.
+///
+/// The numbering on the diagram follows the wheel manual, not the
+/// joystick indices in `docs/BUTTON_MAPPING.md`. Two quirks:
+/// - The hub's round GL/GR buttons (boxes 13 and 7) report the same gear
+///   inputs as the shift paddles (boxes 16 and 17), so both boxes of a
+///   pair light together.
+/// - Each encoder's twist/push callout (boxes 12 and 8) is one block for
+///   all three of its codes (CW, CCW, push).
+///
+/// An empty `codes` slice marks the D-pad box: the hat is not a button,
+/// so the front-end lights it whenever the hat leaves center.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CalloutBox {
+    /// Box center, as fractions of the image width/height.
+    pub cx: f32,
+    pub cy: f32,
+    /// Box size, as fractions of the image width/height.
+    pub w: f32,
+    pub h: f32,
+    /// The evdev codes that light this box (empty = the D-pad box).
+    pub codes: &'static [u16],
+}
+
+/// Standard callout box size on the diagram (77x52 px of 2500x2160).
+const BOX_W: f32 = 0.0308;
+const BOX_H: f32 = 0.0241;
+/// The two encoder twist/push label blocks (177x127 px).
+const KNOB_W: f32 = 0.0708;
+const KNOB_H: f32 = 0.0588;
+
+/// Every callout box on the layout diagram; see [`CalloutBox`].
+pub const CALLOUT_BOXES: &[CalloutBox] = &[
+    // Box 1: X.
+    CalloutBox { cx: 0.1082, cy: 0.0269, w: BOX_W, h: BOX_H, codes: &[0x121] },
+    // Box 2: Y.
+    CalloutBox { cx: 0.1882, cy: 0.0269, w: BOX_W, h: BOX_H, codes: &[0x123] },
+    // Box 3: A.
+    CalloutBox { cx: 0.7682, cy: 0.0269, w: BOX_W, h: BOX_H, codes: &[0x120] },
+    // Box 4: B.
+    CalloutBox { cx: 0.8482, cy: 0.0269, w: BOX_W, h: BOX_H, codes: &[0x122] },
+    // Box 5: RT.
+    CalloutBox { cx: 0.9722, cy: 0.1750, w: BOX_W, h: BOX_H, codes: &[0x126] },
+    // Box 6: RSB.
+    CalloutBox { cx: 0.9722, cy: 0.2444, w: BOX_W, h: BOX_H, codes: &[0x12a] },
+    // Box 7: GR (same gear-right input as the right paddle).
+    CalloutBox { cx: 0.9722, cy: 0.3370, w: BOX_W, h: BOX_H, codes: &[0x124] },
+    // Box 8: right encoder (twist CW/CCW + push).
+    CalloutBox { cx: 0.9522, cy: 0.6553, w: KNOB_W, h: KNOB_H, codes: &[0x2c5, 0x2c6, 0x2c7] },
+    // Box 9: Menu.
+    CalloutBox { cx: 0.9722, cy: 0.4528, w: BOX_W, h: BOX_H, codes: &[0x129] },
+    // Box 10: G1 (Logitech logo).
+    CalloutBox { cx: 0.4842, cy: 0.7769, w: BOX_W, h: BOX_H, codes: &[0x2cb] },
+    // Box 11: Camera / View.
+    CalloutBox { cx: 0.0282, cy: 0.5222, w: BOX_W, h: BOX_H, codes: &[0x128] },
+    // Box 12: left encoder (twist CW/CCW + push).
+    CalloutBox { cx: 0.0482, cy: 0.6553, w: KNOB_W, h: KNOB_H, codes: &[0x2c8, 0x2c9, 0x2ca] },
+    // Box 13: GL (same gear-left input as the left paddle).
+    CalloutBox { cx: 0.0282, cy: 0.4065, w: BOX_W, h: BOX_H, codes: &[0x125] },
+    // Box 14: LSB.
+    CalloutBox { cx: 0.0282, cy: 0.2444, w: BOX_W, h: BOX_H, codes: &[0x12b] },
+    // Box 15: LT.
+    CalloutBox { cx: 0.0282, cy: 0.1750, w: BOX_W, h: BOX_H, codes: &[0x127] },
+    // Box 16: left paddle.
+    CalloutBox { cx: 0.0282, cy: 0.0269, w: BOX_W, h: BOX_H, codes: &[0x125] },
+    // Box 17: right paddle.
+    CalloutBox { cx: 0.9682, cy: 0.0269, w: BOX_W, h: BOX_H, codes: &[0x124] },
+    // Box D: the D-pad hat (62x52 px box; lit while the hat is off center).
+    CalloutBox { cx: 0.0252, cy: 0.3139, w: 0.0248, h: BOX_H, codes: &[] },
+];
+
+/// Whether `b` should be tinted: any of its button codes held, or (for
+/// the D-pad box) the hat off center. `held` answers "is this evdev code
+/// currently pressed" from whatever state the front-end keeps.
+pub fn callout_lit(b: &CalloutBox, hat: (i32, i32), held: impl Fn(u16) -> bool) -> bool {
+    if b.codes.is_empty() {
+        return hat != (0, 0);
+    }
+    b.codes.iter().any(|c| held(*c))
+}
+
 /// The label for a wheel button's evdev code, or `None` for a code not in
 /// [`WHEEL_BUTTONS`] (a descriptor gap, or another device's button).
 pub fn button_label(code: u16) -> Option<&'static str> {
@@ -294,6 +381,50 @@ mod tests {
         assert_eq!(button_label(0x12c), None, "descriptor gap");
         assert_eq!(button_name(0x129), "Menu");
         assert_eq!(button_name(0x2c0), "BTN 704");
+    }
+
+    #[test]
+    fn callout_boxes_cover_every_wheel_button_and_nothing_else() {
+        // Every code a box lights must be a real wheel button, and every
+        // wheel button must light at least one box (the paddles and the
+        // GL/GR hub buttons share codes, so some codes light two).
+        for b in CALLOUT_BOXES {
+            for code in b.codes {
+                assert!(
+                    button_label(*code).is_some(),
+                    "callout code {code:#x} is not in WHEEL_BUTTONS"
+                );
+            }
+        }
+        for (code, label) in WHEEL_BUTTONS {
+            assert!(
+                CALLOUT_BOXES.iter().any(|b| b.codes.contains(code)),
+                "button {label} ({code:#x}) has no callout box"
+            );
+        }
+    }
+
+    #[test]
+    fn callout_boxes_stay_inside_the_image() {
+        for b in CALLOUT_BOXES {
+            assert!(b.w > 0.0 && b.h > 0.0, "degenerate box");
+            assert!(b.cx - b.w / 2.0 >= 0.0 && b.cx + b.w / 2.0 <= 1.0, "x out of range");
+            assert!(b.cy - b.h / 2.0 >= 0.0 && b.cy + b.h / 2.0 <= 1.0, "y out of range");
+        }
+        let hat_boxes = CALLOUT_BOXES.iter().filter(|b| b.codes.is_empty()).count();
+        assert_eq!(hat_boxes, 1, "exactly one D-pad box");
+    }
+
+    #[test]
+    fn callout_lit_checks_codes_and_the_hat() {
+        let paddle = CALLOUT_BOXES.iter().find(|b| b.codes == [0x124]).unwrap();
+        assert!(callout_lit(paddle, (0, 0), |c| c == 0x124));
+        assert!(!callout_lit(paddle, (1, 0), |c| c == 0x120), "other buttons stay dark");
+        let knob = CALLOUT_BOXES.iter().find(|b| b.codes.contains(&0x2c6)).unwrap();
+        assert!(callout_lit(knob, (0, 0), |c| c == 0x2c6), "any encoder code lights the block");
+        let dpad = CALLOUT_BOXES.iter().find(|b| b.codes.is_empty()).unwrap();
+        assert!(!callout_lit(dpad, (0, 0), |_| true), "centered hat stays dark");
+        assert!(callout_lit(dpad, (0, -1), |_| false), "hat off center lights up");
     }
 
     #[test]

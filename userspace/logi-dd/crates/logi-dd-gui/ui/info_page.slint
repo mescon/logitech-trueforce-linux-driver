@@ -1,4 +1,4 @@
-import { Button, ListView, Palette } from "std-widgets.slint";
+import { Button, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // One cell of the Info page's button tester grid: the wheel button's
@@ -16,6 +16,18 @@ export struct TestButton {
 export struct TestAxis {
     label: string,
     value: int,
+}
+
+// One callout box on the wheel-layout image (`evtest::CALLOUT_BOXES`):
+// center and size as fractions of the image dimensions, plus whether its
+// button is currently held. Drawn as a green tint over the numbered white
+// box, inside the rotated image element so it turns with the artwork.
+export struct TestCallout {
+    cx: float,
+    cy: float,
+    w: float,
+    h: float,
+    pressed: bool,
 }
 
 // A small horizontal 0..65535 bar.
@@ -37,13 +49,14 @@ component AxisBar inherits Rectangle {
 }
 
 // The Info page: device identity (serial, firmware) on top, then the live
-// input monitor (steering dial, pedal bars, light-up button grid, hat
-// state), the two guarded force-feedback simulations, and the project
-// documentation link at the bottom. The monitor auto-starts whenever this
-// page is open and a wheel evdev node is found; everything live is pushed
-// from the Rust reader thread, and the two sim buttons round-trip through
-// a confirm dialog before their callbacks ever fire (the wheel physically
-// moves).
+// input monitor (the wheel image turning with the live steering angle,
+// per-button callout highlights, the full button list beside the image,
+// pedal bars, hat state), the two guarded force-feedback simulations, and
+// the project documentation link at the bottom. The monitor auto-starts
+// whenever this page is open and a wheel evdev node is found; everything
+// live is pushed from the Rust reader thread, and the two sim buttons
+// round-trip through a confirm dialog before their callbacks ever fire
+// (the wheel physically moves).
 export component InfoPage inherits Rectangle {
     // Device identity, read through the driver's sysfs attrs (the registry
     // Info rows); empty strings while no wheel is bound.
@@ -67,7 +80,11 @@ export component InfoPage inherits Rectangle {
     in property <[TestButton]> buttons: [];
     in property <string> hat: "centered";
     in property <[TestAxis]> axes: [];
-    // True while a simulation plays; disables both sim buttons.
+    // The layout image's callout boxes, tinted while pressed; see
+    // `TestCallout`.
+    in property <[TestCallout]> callouts: [];
+    // True while a simulation plays; disables both sim buttons and shows
+    // the Stop button.
     in property <bool> sim-running: false;
     in property <string> sim-error: "";
 
@@ -76,6 +93,8 @@ export component InfoPage inherits Rectangle {
     // directly from the sim buttons.
     callback sim-constant();
     callback sim-texture();
+    // Stops (and erases) the currently playing simulation immediately.
+    callback sim-stop();
 
     // The confirm dialog's state: 0 closed, 1 constant force, 2 texture.
     private property <int> confirm-kind: 0;
@@ -172,99 +191,177 @@ export component InfoPage inherits Rectangle {
             }
         }
 
-        if root.available: HorizontalLayout {
+        // The live monitor. One panel holds the wheel image (turning with
+        // the live steering angle, callout tints riding on it) with the
+        // full button list BESIDE it, wrapped into columns so every
+        // button is visible at once; pedals and the sims stack below.
+        // The Flickable is only the fallback for very short windows: at
+        // the default window size everything fits without scrolling.
+        if root.available: Flickable {
             vertical-stretch: 1;
-            spacing: Theme.gutter;
+            viewport-height: max(monitor-column.preferred-height, self.height);
 
-            // Left column: rotation dial, pedals, simulations. Wrapped in
-            // a Flickable so the sim section stays reachable in a short
-            // window (the column is taller than the default window).
-            Flickable {
-                horizontal-stretch: 1;
-                viewport-height: left-column.preferred-height;
-
-                left-column := VerticalLayout {
+            monitor-column := VerticalLayout {
                 spacing: Theme.gutter;
 
-                // Section: steering rotation.
+                // Section: steering + buttons, side by side.
                 Rectangle {
+                    vertical-stretch: 1;
                     background: Theme.panel-background;
                     border-radius: Theme.panel-radius;
                     border-width: 1px;
                     border-color: Theme.panel-border;
 
-                    VerticalLayout {
+                    HorizontalLayout {
                         padding: 14px;
-                        spacing: 8px;
+                        spacing: Theme.gutter;
 
-                        Text {
-                            text: "Steering";
-                            font-size: 15px;
-                            font-weight: 700;
-                            color: Theme.text-color;
-                        }
-                        Text {
-                            text: root.device-name;
-                            font-size: 11px;
-                            color: Theme.muted-text-color;
-                            overflow: elide;
-                        }
-                        HorizontalLayout {
-                            alignment: center;
-                            dial := Rectangle {
-                                width: 160px;
-                                height: 160px;
-                                border-radius: self.width / 2;
-                                border-width: 3px;
-                                border-color: Theme.panel-border;
-                                background: Palette.alternate-background;
+                        // Left half: the layout image, rotated by the live
+                        // steering angle, with the degrees readout under it.
+                        VerticalLayout {
+                            horizontal-stretch: 11;
+                            spacing: 4px;
 
-                                // Center hub.
-                                Rectangle {
-                                    width: 14px;
-                                    height: 14px;
+                            Text {
+                                text: "Steering";
+                                font-size: 15px;
+                                font-weight: 700;
+                                color: Theme.text-color;
+                            }
+                            Text {
+                                text: root.device-name;
+                                font-size: 11px;
+                                color: Theme.muted-text-color;
+                                overflow: elide;
+                            }
+                            img-area := Rectangle {
+                                vertical-stretch: 1;
+                                min-height: 230px;
+                                // Manual `contain` fit: the rotated element
+                                // must match the drawn image exactly, so the
+                                // callout children can position themselves
+                                // as fractions of ITS size (= fractions of
+                                // the source image).
+                                property <float> aspect: 2500 / 2160;
+                                property <length> img-w: min(self.width, self.height * self.aspect);
+
+                                // Turned by the live steering angle
+                                // (positive degrees = turned right =
+                                // clockwise on screen). `transform-rotation`
+                                // is the reserved rotation property every
+                                // Slint element carries (`rotation-angle`
+                                // only exists on Image/Text); it rotates the
+                                // element AND its children around
+                                // `transform-origin`, which defaults to the
+                                // element's center.
+                                rotator := Rectangle {
+                                    width: img-area.img-w;
+                                    height: self.width / img-area.aspect;
                                     x: (parent.width - self.width) / 2;
                                     y: (parent.height - self.height) / 2;
-                                    border-radius: 7px;
-                                    background: Theme.muted-text-color;
-                                }
-                                // Needle: a stroked line from the hub toward
-                                // the rim, swung around the dial center by
-                                // the live steering angle (0 deg = straight
-                                // up, positive = clockwise/right).
-                                needle := Path {
-                                    width: 100%;
-                                    height: 100%;
-                                    viewbox-width: 160;
-                                    viewbox-height: 160;
-                                    stroke: Palette.accent-background;
-                                    stroke-width: 5px;
+                                    transform-rotation: root.degrees * 1deg;
 
-                                    MoveTo { x: 80; y: 80; }
-                                    LineTo {
-                                        x: 80 + 62 * sin(root.degrees * 1deg);
-                                        y: 80 - 62 * cos(root.degrees * 1deg);
+                                    Image {
+                                        width: 100%;
+                                        height: 100%;
+                                        source: @image-url("assets/rs-wheel-hub-button-layout.png");
+                                        image-fit: contain;
+                                    }
+                                    // Pressed-button tints over the numbered
+                                    // callout boxes; children of `rotator`,
+                                    // so they turn with the artwork. Semi-
+                                    // transparent green keeps the number
+                                    // readable underneath.
+                                    for c in root.callouts: Rectangle {
+                                        x: (c.cx - c.w / 2) * rotator.width;
+                                        y: (c.cy - c.h / 2) * rotator.height;
+                                        width: c.w * rotator.width;
+                                        height: c.h * rotator.height;
+                                        border-radius: 4px;
+                                        background: #00c8538c;
+                                        visible: c.pressed;
                                     }
                                 }
                             }
+                            Text {
+                                text: root.degrees-text;
+                                font-size: 20px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                color: Theme.text-color;
+                            }
+                            Text {
+                                text: "Range: \{root.range} deg (\{-root.range / 2} to +\{root.range / 2})";
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                color: Theme.muted-text-color;
+                            }
                         }
-                        Text {
-                            text: root.degrees-text;
-                            font-size: 24px;
-                            font-weight: 700;
-                            horizontal-alignment: center;
-                            color: Theme.text-color;
-                        }
-                        Text {
-                            text: "Range: \{root.range} deg (\{-root.range / 2} to +\{root.range / 2})";
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                            color: Theme.muted-text-color;
+
+                        // Right half: every wheel button as a light-up
+                        // chip, wrapped into 2-3 columns (never a scroll
+                        // list: the whole set stays visible), with the
+                        // D-pad state underneath.
+                        VerticalLayout {
+                            horizontal-stretch: 9;
+                            spacing: 8px;
+                            alignment: start;
+
+                            Text {
+                                text: "Buttons";
+                                font-size: 15px;
+                                font-weight: 700;
+                                color: Theme.text-color;
+                            }
+                            grid := Rectangle {
+                                property <int> columns: self.width > 440px ? 3 : 2;
+                                property <int> rows: ceil(root.buttons.length / self.columns);
+                                property <length> cell-w: (self.width - (self.columns - 1) * 6px) / self.columns;
+                                height: self.rows * 26px;
+
+                                // Column-major: reads top to bottom, then
+                                // wraps to the next column.
+                                for b[i] in root.buttons: Rectangle {
+                                    x: floor(i / grid.rows) * (grid.cell-w + 6px);
+                                    y: mod(i, grid.rows) * 26px;
+                                    width: grid.cell-w;
+                                    height: 24px;
+                                    border-radius: 5px;
+                                    background: b.pressed ? Palette.accent-background : Palette.alternate-background;
+
+                                    Text {
+                                        x: 8px;
+                                        width: parent.width - 16px;
+                                        height: 100%;
+                                        text: b.label;
+                                        font-size: 12px;
+                                        font-weight: b.pressed ? 700 : 400;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        color: b.pressed ? Palette.accent-foreground : Theme.text-color;
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    width: 80px;
+                                    text: "D-pad";
+                                    font-size: 12px;
+                                    color: Theme.text-color;
+                                }
+                                Text {
+                                    text: root.hat;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    color: Theme.text-color;
+                                }
+                            }
                         }
                     }
                 }
 
-                // Section: pedals + handbrake bars and the D-pad state.
+                // Section: pedals + handbrake bars.
                 Rectangle {
                     background: Theme.panel-background;
                     border-radius: Theme.panel-radius;
@@ -303,27 +400,11 @@ export component InfoPage inherits Rectangle {
                                 color: Theme.muted-text-color;
                             }
                         }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                width: 80px;
-                                text: "D-pad";
-                                font-size: 12px;
-                                color: Theme.text-color;
-                            }
-                            Text {
-                                text: root.hat;
-                                font-size: 12px;
-                                font-weight: 700;
-                                color: Theme.text-color;
-                            }
-                        }
                     }
                 }
 
                 // Section: the two guarded force simulations.
                 Rectangle {
-                    vertical-stretch: 1;
                     background: Theme.panel-background;
                     border-radius: Theme.panel-radius;
                     border-width: 1px;
@@ -359,72 +440,29 @@ export component InfoPage inherits Rectangle {
                                 clicked => { root.confirm-kind = 2; }
                             }
                         }
-                        if root.sim-running: Text {
-                            text: "force playing...";
-                            font-size: 12px;
-                            font-weight: 700;
-                            color: Theme.ok-color;
+                        // While an effect plays: the status plus a Stop
+                        // button that stops and erases it immediately.
+                        if root.sim-running: HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+
+                            Text {
+                                text: "force playing...";
+                                font-size: 12px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                color: Theme.ok-color;
+                            }
+                            Button {
+                                text: "Stop";
+                                clicked => { root.sim-stop(); }
+                            }
                         }
                         if root.sim-error != "": Text {
                             text: root.sim-error;
                             font-size: 12px;
                             color: Theme.error-color;
                             wrap: word-wrap;
-                        }
-                    }
-                }
-                }
-            }
-
-            // Right column: the layout image and the light-up button grid.
-            Rectangle {
-                horizontal-stretch: 1;
-                background: Theme.panel-background;
-                border-radius: Theme.panel-radius;
-                border-width: 1px;
-                border-color: Theme.panel-border;
-
-                VerticalLayout {
-                    padding: 14px;
-                    spacing: 8px;
-
-                    Text {
-                        text: "Buttons";
-                        font-size: 15px;
-                        font-weight: 700;
-                        color: Theme.text-color;
-                    }
-                    Image {
-                        source: @image-url("assets/rs-wheel-hub-button-layout.png");
-                        image-fit: contain;
-                        vertical-stretch: 1;
-                        min-height: 120px;
-                    }
-                    // Light-up rows, one per wheel button, scrollable so
-                    // the image above keeps its share of the panel.
-                    ListView {
-                        vertical-stretch: 2;
-                        for b in root.buttons: Rectangle {
-                            height: 26px;
-
-                            Rectangle {
-                                width: parent.width - 8px;
-                                height: 24px;
-                                border-radius: 5px;
-                                background: b.pressed ? Palette.accent-background : Palette.alternate-background;
-
-                                Text {
-                                    x: 8px;
-                                    width: parent.width - 16px;
-                                    height: 100%;
-                                    text: b.label;
-                                    font-size: 12px;
-                                    font-weight: b.pressed ? 700 : 400;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                    color: b.pressed ? Palette.accent-foreground : Theme.text-color;
-                                }
-                            }
                         }
                     }
                 }

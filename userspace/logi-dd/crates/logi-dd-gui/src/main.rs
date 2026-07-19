@@ -434,6 +434,18 @@ fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<String>, args: Ve
     });
 }
 
+/// Dev-only render aid: `LOGI_DD_TEST_OVERLAYS=<degrees>` forces every
+/// callout overlay visible and the wheel image to that steering angle, so
+/// the overlay positions and the rotation can be screenshot-verified
+/// against the layout PNG without pressing 19 physical buttons. Inert
+/// unless the variable is set; read once.
+fn overlay_debug() -> Option<f32> {
+    static FLAG: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("LOGI_DD_TEST_OVERLAYS").ok().map(|v| v.trim().parse().unwrap_or(0.0))
+    })
+}
+
 /// Push one reader-thread [`testio::Snapshot`] into the Test page's
 /// properties. Runs on the UI thread (the reader's callback hops here via
 /// `slint::invoke_from_event_loop` first). Degrees are derived from the
@@ -441,7 +453,9 @@ fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<String>, args: Ve
 /// start seeded from `wheel_range`.
 fn apply_test_snapshot(app: &App, snap: &testio::Snapshot) {
     let range = app.get_test_range().max(1) as u32;
-    let deg = evtest::steering_degrees(snap.steering_raw, 0, evtest::AXIS_MAX, range);
+    let debug = overlay_debug();
+    let deg = debug
+        .unwrap_or_else(|| evtest::steering_degrees(snap.steering_raw, 0, evtest::AXIS_MAX, range));
     app.set_test_degrees(deg);
     app.set_test_degrees_text(format!("{deg:+.1} deg").into());
     app.set_test_hat(evtest::hat_label(snap.hat.0, snap.hat.1).into());
@@ -455,6 +469,26 @@ fn apply_test_snapshot(app: &App, snap: &testio::Snapshot) {
         })
         .collect();
     app.set_test_buttons(slint::ModelRc::new(slint::VecModel::from(buttons)));
+    // The layout image's callout tints: a box lights while any of its
+    // buttons is held (`snap.buttons` is parallel to `WHEEL_BUTTONS`), the
+    // D-pad box while the hat is off center.
+    let held = |code: u16| {
+        evtest::WHEEL_BUTTONS
+            .iter()
+            .position(|(c, _)| *c == code)
+            .is_some_and(|i| snap.buttons.get(i).copied().unwrap_or(false))
+    };
+    let callouts: Vec<TestCallout> = evtest::CALLOUT_BOXES
+        .iter()
+        .map(|b| TestCallout {
+            cx: b.cx,
+            cy: b.cy,
+            w: b.w,
+            h: b.h,
+            pressed: debug.is_some() || evtest::callout_lit(b, snap.hat, held),
+        })
+        .collect();
+    app.set_test_callouts(slint::ModelRc::new(slint::VecModel::from(callouts)));
     let axes: Vec<TestAxis> = [("Throttle", 0), ("Brake", 1), ("Clutch", 2), ("Handbrake", 3)]
         .iter()
         .map(|(label, i)| TestAxis { label: (*label).into(), value: snap.axes[*i] })

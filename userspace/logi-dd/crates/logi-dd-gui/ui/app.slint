@@ -5,11 +5,11 @@ import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
 import { Setup, SetupGame } from "setup.slint";
-import { InfoPage, TestButton, TestAxis } from "info_page.slint";
+import { InfoPage, TestButton, TestAxis, TestCallout } from "info_page.slint";
 import { ComputerProfiles } from "computer_profiles.slint";
 export { SettingRow } from "widgets.slint";
 export { SetupGame } from "setup.slint";
-export { TestButton, TestAxis } from "info_page.slint";
+export { TestButton, TestAxis, TestCallout } from "info_page.slint";
 export { CurvePoint } from "curve_editor.slint";
 export { LedColor } from "rgb_strip.slint";
 export { SlotNameRow } from "slot_text.slint";
@@ -100,6 +100,7 @@ export component App inherits Window {
     in property <[TestButton]> test-buttons: [];
     in property <string> test-hat: "centered";
     in property <[TestAxis]> test-axes: [];
+    in property <[TestCallout]> test-callouts: [];
     in property <bool> test-sim-running: false;
     in property <string> test-sim-error: "";
     callback test-rescan();
@@ -107,6 +108,8 @@ export component App inherits Window {
     // `info_page.slint`); each plays a fixed 25%/2 s effect.
     callback test-sim-constant();
     callback test-sim-texture();
+    // Stops the currently playing simulation (the Info page's Stop button).
+    callback test-sim-stop();
 
     // Content: the selected category's rows, same as Task 4.
     in property <string> category-label: "Force feedback";
@@ -392,12 +395,14 @@ export component App inherits Window {
                     buttons: root.test-buttons;
                     hat: root.test-hat;
                     axes: root.test-axes;
+                    callouts: root.test-callouts;
                     sim-running: root.test-sim-running;
                     sim-error: root.test-sim-error;
                     open-url(url) => { root.open-url(url); }
                     rescan() => { root.test-rescan(); }
                     sim-constant() => { root.test-sim-constant(); }
                     sim-texture() => { root.test-sim-texture(); }
+                    sim-stop() => { root.test-sim-stop(); }
                 }
 
                 // Without a wheel a device category shows a short empty
