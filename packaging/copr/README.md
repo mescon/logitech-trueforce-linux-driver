@@ -17,8 +17,10 @@ and it loads and registers the `logitech-dd` driver.
   needed at build time.
 - The same spec also builds a `logitech-trueforce-tools` subpackage with the
   userspace companions, `logi-ffb` (a DirectInput force-feedback proxy),
-  `logi-dd` (a terminal settings UI), and `logi-dd-gui` (a graphical
-  settings app), from the `userspace/logi-dd` Rust workspace. This pulls
+  `logi-dd` (a terminal settings UI), `logi-dd-gui` (a graphical
+  settings app, with desktop entry and icon), and `logi-tf-sim` (a
+  simulated-TrueForce daemon), plus the TrueForce SDK shim installer,
+  from the `userspace/logi-dd` Rust workspace. This pulls
   `cargo`/`rust` into the build dependencies alongside
   `gcc`/`make`/`kernel-rpm-macros`.
 - `logi-dd-gui` is GPL-3.0-or-later (the rest of the driver is
@@ -78,5 +80,7 @@ sudo dnf install akmod-logitech-trueforce logitech-trueforce-tools
 
 The first `akmods` run builds the module for the running kernel (and every
 kernel installed afterwards). `logitech-trueforce-tools` installs
-`logi-ffb`, `logi-dd`, and `logi-dd-gui` to `/usr/bin`, built from the same
-repo checkout. See `docs/GETTING_STARTED.md` for the full flow.
+`logi-ffb`, `logi-dd`, `logi-dd-gui` (plus its desktop entry and icon),
+`logi-tf-sim`, and `logitech-trueforce-install-shim` to `/usr/bin`, built
+from the same repo checkout. See `docs/GETTING_STARTED.md` for the full
+flow.

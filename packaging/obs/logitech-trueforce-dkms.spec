@@ -17,6 +17,9 @@ URL:            https://github.com/mescon/logitech-trueforce-linux-driver
 Source0:        logitech-trueforce-linux-driver-%{version}.tar.gz
 BuildArch:      noarch
 BuildRequires:  cargo, rust
+# logi-tf-sim's build.rs compiles the in-repo libtrueforce.a via make+gcc
+# and links it statically (no runtime dependency).
+BuildRequires:  gcc, make
 # logi-dd-gui's yeslogic-fontconfig-sys dependency links fontconfig/freetype
 # at build time (build.rs calls pkg_config::find_library, no dlopen), so the
 # devel package and pkg-config must be present or `cargo build` panics and
@@ -56,6 +59,8 @@ guide.
 %package -n logitech-trueforce-tools
 Summary:        Userspace tools for the Logitech direct-drive wheel driver
 License:        GPL-2.0-only AND GPL-3.0-or-later
+# Owns the hicolor icon directories the GUI's launcher icon lands in.
+Requires:       hicolor-icon-theme
 # logi-dd-gui (Slint GUI) runtime stack: windowing (Wayland/X11), input
 # (xkbcommon), and GL/EGL rendering. Derived from `ldd`/`strings` on the
 # built binary; Slint dlopen's the wayland/X11/GL bits at runtime rather
@@ -95,10 +100,11 @@ Requires:       freetype
 
 %description -n logitech-trueforce-tools
 logi-ffb, a DirectInput force-feedback proxy, logi-dd, a terminal settings
-UI, and logi-dd-gui, a graphical settings app (GPL-3.0-or-later), for the
-Logitech direct-drive wheel driver. Includes the udev rule granting the
-"input" group access to /dev/uhid, which logi-ffb needs to create its
-virtual force-feedback device.
+UI, logi-tf-sim, a simulated-TrueForce daemon driven by game telemetry,
+and logi-dd-gui, a graphical settings app (GPL-3.0-or-later, with a
+desktop menu entry), for the Logitech direct-drive wheel driver. Includes
+the udev rule granting the "input" group access to /dev/uhid, which
+logi-ffb needs to create its virtual force-feedback device.
 
 %prep
 %autosetup -n logitech-trueforce-linux-driver-%{version}
@@ -136,6 +142,13 @@ install -D -m 0755 userspace/logi-dd/target/release/logi-dd \
     %{buildroot}%{_bindir}/logi-dd
 install -D -m 0755 userspace/logi-dd/target/release/logi-dd-gui \
     %{buildroot}%{_bindir}/logi-dd-gui
+install -D -m 0755 userspace/logi-dd/target/release/logi-tf-sim \
+    %{buildroot}%{_bindir}/logi-tf-sim
+# Desktop integration for the GUI.
+install -D -m 0644 desktop/logi-dd-gui.desktop \
+    %{buildroot}%{_datadir}/applications/logi-dd-gui.desktop
+install -D -m 0644 desktop/logi-dd-gui.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/logi-dd-gui.svg
 install -D -m 0644 udev/71-logi-ffb-uhid.rules \
     %{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
 
@@ -150,6 +163,9 @@ install -D -m 0644 udev/71-logi-ffb-uhid.rules \
 %{_bindir}/logi-ffb
 %{_bindir}/logi-dd
 %{_bindir}/logi-dd-gui
+%{_bindir}/logi-tf-sim
+%{_datadir}/applications/logi-dd-gui.desktop
+%{_datadir}/icons/hicolor/scalable/apps/logi-dd-gui.svg
 %{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
 
 %post
@@ -166,7 +182,8 @@ dkms remove -m %{module} -v %{modver} --all --rpm_safe_upgrade >/dev/null 2>&1 |
 %changelog
 * Sat Jul 18 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.15.0-1
 - Add a logitech-trueforce-tools subpackage with logi-ffb (DirectInput
-  force-feedback proxy), logi-dd (settings TUI), and logi-dd-gui (graphical
-  settings app, GPL-3.0-or-later), built from the userspace/logi-dd Rust
-  workspace, plus the udev rule for /dev/uhid access and the GUI's
-  windowing/rendering runtime dependencies.
+  force-feedback proxy), logi-dd (settings TUI), logi-dd-gui (graphical
+  settings app, GPL-3.0-or-later, with desktop entry and icon), and
+  logi-tf-sim (simulated-TrueForce daemon), built from the
+  userspace/logi-dd Rust workspace, plus the udev rule for /dev/uhid
+  access and the GUI's windowing/rendering runtime dependencies.

@@ -86,6 +86,8 @@ wheel_* sysfs attributes and hidraw nodes, so settings do not need root.
 Summary:        Userspace tools for the %{kmod_name} direct-drive wheel driver
 License:        GPL-2.0-only AND GPL-3.0-or-later
 BuildRequires:  cargo, rust
+# Owns the hicolor icon directories the GUI's launcher icon lands in.
+Requires:       hicolor-icon-theme
 # logi-dd-gui (Slint GUI) runtime stack: windowing (Wayland/X11), input
 # (xkbcommon), and GL/EGL rendering. Derived from `ldd`/`strings` on the
 # built binary; Slint dlopen's the wayland/X11/GL bits at runtime rather
@@ -108,15 +110,22 @@ Requires:       freetype
 
 %description -n %{kmod_name}-tools
 logi-ffb, a DirectInput force-feedback proxy, logi-dd, a terminal settings
-UI, and logi-dd-gui, a graphical settings app (GPL-3.0-or-later), for the
-Logitech direct-drive wheel driver. Includes the udev rule granting the
-"input" group access to /dev/uhid, which logi-ffb needs to create its
-virtual force-feedback device.
+UI, logi-tf-sim, a simulated-TrueForce daemon driven by game telemetry,
+and logi-dd-gui, a graphical settings app (GPL-3.0-or-later, with a
+desktop menu entry), for the Logitech direct-drive wheel driver. Also
+ships the TrueForce SDK shim installer
+(logitech-trueforce-install-shim) and the udev rule granting the "input"
+group access to /dev/uhid, which logi-ffb needs to create its virtual
+force-feedback device.
 
 %files -n %{kmod_name}-tools
 %{_bindir}/logi-ffb
 %{_bindir}/logi-dd
 %{_bindir}/logi-dd-gui
+%{_bindir}/logi-tf-sim
+%{_bindir}/logitech-trueforce-install-shim
+%{_datadir}/applications/logi-dd-gui.desktop
+%{_datadir}/icons/hicolor/scalable/apps/logi-dd-gui.svg
 %{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
 
 %prep
@@ -157,16 +166,30 @@ install -D -m 0755 userspace/logi-dd/target/release/logi-dd \
     "%{buildroot}%{_bindir}/logi-dd"
 install -D -m 0755 userspace/logi-dd/target/release/logi-dd-gui \
     "%{buildroot}%{_bindir}/logi-dd-gui"
+install -D -m 0755 userspace/logi-dd/target/release/logi-tf-sim \
+    "%{buildroot}%{_bindir}/logi-tf-sim"
+# TrueForce-in-Proton shim installer (no-op without the proprietary SDK
+# DLLs; resolves the SDK dir via --sdk-dir / $LOGITECH_TRUEFORCE_SDK_DIR /
+# ~/.local/share/logitech-trueforce/sdk).
+install -D -m 0755 tools/install-tf-shim.sh \
+    "%{buildroot}%{_bindir}/logitech-trueforce-install-shim"
+# Desktop integration for the GUI.
+install -D -m 0644 desktop/logi-dd-gui.desktop \
+    "%{buildroot}%{_datadir}/applications/logi-dd-gui.desktop"
+install -D -m 0644 desktop/logi-dd-gui.svg \
+    "%{buildroot}%{_datadir}/icons/hicolor/scalable/apps/logi-dd-gui.svg"
 install -D -m 0644 udev/71-logi-ffb-uhid.rules \
     "%{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules"
 
 %changelog
 * Sat Jul 18 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.15.0-1
 - Add a logitech-trueforce-tools subpackage with logi-ffb (DirectInput
-  force-feedback proxy), logi-dd (settings TUI), and logi-dd-gui (graphical
-  settings app, GPL-3.0-or-later), built from the userspace/logi-dd Rust
-  workspace, plus the udev rule for /dev/uhid access and the GUI's
-  windowing/rendering runtime dependencies.
+  force-feedback proxy), logi-dd (settings TUI), logi-dd-gui (graphical
+  settings app, GPL-3.0-or-later, with desktop entry and icon), and
+  logi-tf-sim (simulated-TrueForce daemon), built from the
+  userspace/logi-dd Rust workspace, plus the TrueForce SDK shim installer,
+  the udev rule for /dev/uhid access and the GUI's windowing/rendering
+  runtime dependencies.
 
 * Thu Jul 09 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.12.1-1
 - kmod package for atomic distros (Bazzite/Silverblue/Kinoite). Verified on
