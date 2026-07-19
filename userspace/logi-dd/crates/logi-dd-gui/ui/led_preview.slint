@@ -15,9 +15,12 @@ import { LedColor } from "rgb_strip.slint";
 // game or telemetry bridge feeds it, which the caption says outright.
 //
 // "Try on wheel" is wired through the Rust side's worker (apply the
-// selected effect/slot, hold ~5 s, restore the prior state; LED state
-// only, nothing moves); `try-running` disables the button while a try is
-// in flight and `try-error` surfaces a failed run.
+// selected effect/slot, show it, restore the prior state; LED state
+// only, nothing moves). A custom slot's try also plays one animated rev
+// sweep (`wheel_rev_level` 0..10..0) on the physical strip, so the slot's
+// colours AND direction show as a live fill; built-in effects hold ~5 s
+// (their colours are firmware-owned). `try-running` disables the button
+// while a try is in flight and `try-error` surfaces a failed run.
 export component LedPreview inherits Rectangle {
     // The ACTIVE slot's stored colors, from the same last-known values the
     // slot editor seeds from (mirrored pairs already collapsed for the
@@ -123,7 +126,7 @@ export component LedPreview inherits Rectangle {
         }
 
         Text {
-            text: "On-screen preview only: the physical strip is a rev-light display, RPM-driven by a game or telemetry bridge, and shows a static idle pattern otherwise. \"Try on wheel\" shows the selected effect on the wheel for 5 seconds, then restores the previous state.";
+            text: "The physical strip is a rev-light display, RPM-driven by a game or telemetry bridge, and shows a static idle pattern otherwise. \"Try on wheel\" shows the selected effect on the wheel, then restores the previous state; a custom slot also plays one animated rev sweep in its colours and direction (built-in effects hold for 5 seconds).";
             font-size: 11px;
             color: Theme.muted-text-color;
             wrap: word-wrap;

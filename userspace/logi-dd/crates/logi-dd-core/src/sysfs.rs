@@ -35,6 +35,7 @@ impl SysfsIo for RealSysfs {
 pub struct FakeSysfs {
     vals: RefCell<HashMap<String, String>>,
     errno: RefCell<HashMap<String, i32>>,
+    log: RefCell<Vec<(String, String)>>,
 }
 
 impl FakeSysfs {
@@ -42,6 +43,7 @@ impl FakeSysfs {
         Self {
             vals: RefCell::new(HashMap::new()),
             errno: RefCell::new(HashMap::new()),
+            log: RefCell::new(Vec::new()),
         }
     }
     pub fn set(&self, attr: &str, val: &str) {
@@ -52,6 +54,12 @@ impl FakeSysfs {
     }
     pub fn set_errno(&self, attr: &str, errno: i32) {
         self.errno.borrow_mut().insert(attr.to_string(), errno);
+    }
+    /// Every successful `write` so far, oldest first, as (attr, value)
+    /// pairs. `set`/failed writes are not recorded, so a test can assert
+    /// the exact write sequence a code path produced.
+    pub fn writes(&self) -> Vec<(String, String)> {
+        self.log.borrow().clone()
     }
 }
 
@@ -91,6 +99,7 @@ impl SysfsIo for FakeSysfs {
             return Err(io::Error::from_raw_os_error(*e));
         }
         self.vals.borrow_mut().insert(attr.to_string(), val.trim().to_string());
+        self.log.borrow_mut().push((attr.to_string(), val.trim().to_string()));
         Ok(())
     }
     fn exists(&self, attr: &str) -> bool {

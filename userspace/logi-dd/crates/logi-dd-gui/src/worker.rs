@@ -47,6 +47,18 @@ const DRIFT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// nothing else should rewrite LED state mid-try anyway.
 const LED_TRY_HOLD: Duration = Duration::from_secs(5);
 
+/// The `wheel_led_effect` value that plays a stored CUSTOM slot (see
+/// `logi_dd_core::lightsync`): the only selection whose try also plays a
+/// rev sweep, since a slot's colours and direction are host-visible while
+/// the built-in effects (1-4) are firmware-owned.
+const CUSTOM_EFFECT: u8 = 5;
+
+/// Pace of the try-on-wheel rev sweep: one `wheel_rev_level` step per this
+/// interval. Must stay above the ~160 ms floor from the protocol docs
+/// (faster bursts starve the wheel's shared HID++ command processor and
+/// can cut FFB); 21 steps at 180 ms make the sweep run just under 4 s.
+const REV_SWEEP_STEP: Duration = Duration::from_millis(180);
+
 /// A request from the UI thread. Every variant that touches the device
 /// blocks on sysfs I/O; that is the whole reason this thread exists.
 pub enum Request {
@@ -74,10 +86,11 @@ pub enum Request {
     /// Delete computer profile `name`. Replied with `Response::Profiles`.
     ProfileDelete(String),
     /// The LIGHTSYNC page's "Try on wheel": apply `effect` (+ `slot` when
-    /// the effect is the custom 5) to the physical strip for
-    /// [`LED_TRY_HOLD`], then restore the prior effect+slot state. Only
-    /// LED state is written (nothing moves). Replied with
-    /// `Response::LedTryDone`.
+    /// the effect is the custom 5) to the physical strip, show it (a
+    /// custom slot plays one animated rev sweep in the slot's colours and
+    /// direction; a built-in effect holds for [`LED_TRY_HOLD`]), then
+    /// restore the prior effect+slot state. Only LED state is written
+    /// (nothing moves). Replied with `Response::LedTryDone`.
     LedTry { effect: u8, slot: u8 },
 }
 
@@ -243,17 +256,21 @@ fn request_category(req: &Request) -> Option<Category> {
 
 /// Run one "Try on wheel": remember the current effect+slot, write the
 /// chosen ones (the slot first, then the effect: the driver re-applies the
-/// slot's stored config on the transition to the custom effect), hold for
-/// `hold`, then write the prior state back. The restore runs even when the
-/// apply failed (a half-applied try must not stick); the first error wins.
-/// Everything goes through the same `ViewModel::edit` path the settings
-/// widgets use, so validation and mode gating apply as usual. Pulled out
-/// of `handle` so tests can pass a zero hold.
+/// slot's stored config on the transition to the custom effect), show
+/// them (a custom slot plays one [`rev_sweep`] when the wheel exposes
+/// `wheel_rev_level`; anything else holds for `hold`), then write the
+/// prior state back. Restoring `wheel_led_effect` also exits any rev fill
+/// back to the idle pattern. The restore runs even when the apply or the
+/// sweep failed (a half-applied try must not stick); the first error
+/// wins. Everything goes through the same `ViewModel::edit` path the
+/// settings widgets use, so validation and mode gating apply as usual.
+/// Pulled out of `handle` so tests can pass zero durations.
 fn led_try_on_wheel<S: SysfsIo>(
     vm: &ViewModel<S>,
     effect: u8,
     slot: u8,
     hold: Duration,
+    sweep_step: Duration,
 ) -> Result<(), Error> {
     let prior_effect = match vm.device_read("wheel_led_effect")? {
         Value::Int(n) => n.clamp(1, 9),
@@ -266,12 +283,35 @@ fn led_try_on_wheel<S: SysfsIo>(
     let applied = vm
         .edit("wheel_led_slot", WidgetInput::Slider(i64::from(slot)))
         .and_then(|()| vm.edit("wheel_led_effect", WidgetInput::Slider(i64::from(effect))));
-    if applied.is_ok() {
-        thread::sleep(hold);
-    }
+    let shown = if applied.is_ok() {
+        if effect == CUSTOM_EFFECT && vm.device_read("wheel_rev_level").is_ok() {
+            rev_sweep(vm, sweep_step)
+        } else {
+            // Built-in effects (and wheels without a rev-level attribute)
+            // keep the static apply-hold-restore.
+            thread::sleep(hold);
+            Ok(())
+        }
+    } else {
+        Ok(())
+    };
     let restored_slot = vm.edit("wheel_led_slot", WidgetInput::Slider(i64::from(prior_slot)));
     let restored_effect = vm.edit("wheel_led_effect", WidgetInput::Slider(i64::from(prior_effect)));
-    applied.and(restored_slot).and(restored_effect)
+    applied.and(shown).and(restored_slot).and(restored_effect)
+}
+
+/// One animated rev sweep on the physical strip: `wheel_rev_level`
+/// stepping 0..10..0, one step per `step` (kept above the ~160 ms pacing
+/// floor by [`REV_SWEEP_STEP`]). The fill uses the active slot's colours
+/// and follows its direction, so the user sees the slot as a live
+/// animated fill. The caller restores `wheel_led_effect` afterwards,
+/// which exits the fill back to the idle pattern.
+fn rev_sweep<S: SysfsIo>(vm: &ViewModel<S>, step: Duration) -> Result<(), Error> {
+    for level in (0..=10i64).chain((0..10).rev()) {
+        vm.edit("wheel_rev_level", WidgetInput::Slider(level))?;
+        thread::sleep(step);
+    }
+    Ok(())
 }
 
 /// One idle-tick external-change check. When the profile or mode moved
@@ -448,7 +488,9 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
             }
         }
         Request::LedTry { effect, slot } => {
-            let error = led_try_on_wheel(vm, effect, slot, LED_TRY_HOLD).err().map(|e| e.to_string());
+            let error = led_try_on_wheel(vm, effect, slot, LED_TRY_HOLD, REV_SWEEP_STEP)
+                .err()
+                .map(|e| e.to_string());
             on_response(Response::LedTryDone { error });
         }
         // Handled in `spawn`'s loop before `handle` is ever called, so that
@@ -943,11 +985,70 @@ mod tests {
         fs.set("wheel_led_effect", "1");
         fs.set("wheel_led_slot", "0");
         let vm = ViewModel::with_io(fs);
-        // Zero hold: the test only cares about the write/restore contract,
-        // not the 5 s the real request holds the state.
-        led_try_on_wheel(&vm, 5, 2, Duration::ZERO).unwrap();
+        // Zero durations: the test only cares about the write/restore
+        // contract, not the hold or the sweep pacing the real request uses.
+        led_try_on_wheel(&vm, 5, 2, Duration::ZERO, Duration::ZERO).unwrap();
         assert_eq!(vm.device_read("wheel_led_effect").unwrap(), Value::Int(1), "effect restored");
         assert_eq!(vm.device_read("wheel_led_slot").unwrap(), Value::Int(0), "slot restored");
+    }
+
+    #[test]
+    fn led_try_on_a_custom_slot_plays_one_rev_sweep_between_apply_and_restore() {
+        let fs = std::rc::Rc::new(FakeSysfs::new());
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_effect", "1");
+        fs.set("wheel_led_slot", "0");
+        fs.set("wheel_rev_level", "0");
+        let vm = ViewModel::with_io(fs.clone());
+        led_try_on_wheel(&vm, 5, 2, Duration::ZERO, Duration::ZERO).unwrap();
+        // The exact sequence: apply (slot, then effect), ONE 0..10..0
+        // sweep, restore (slot, then effect; the effect write exits the
+        // fill back to the idle pattern).
+        let mut expected = vec![
+            ("wheel_led_slot".to_string(), "2".to_string()),
+            ("wheel_led_effect".to_string(), "5".to_string()),
+        ];
+        expected.extend(
+            (0..=10i64)
+                .chain((0..10).rev())
+                .map(|n| ("wheel_rev_level".to_string(), n.to_string())),
+        );
+        expected.push(("wheel_led_slot".to_string(), "0".to_string()));
+        expected.push(("wheel_led_effect".to_string(), "1".to_string()));
+        assert_eq!(fs.writes(), expected);
+    }
+
+    #[test]
+    fn led_try_on_a_builtin_effect_writes_no_rev_levels() {
+        // Built-in effects (1-4) keep the static apply-hold-restore: their
+        // colours are firmware-owned, so a rev fill would show nothing of
+        // the user's own choices.
+        let fs = std::rc::Rc::new(FakeSysfs::new());
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_effect", "1");
+        fs.set("wheel_led_slot", "0");
+        fs.set("wheel_rev_level", "0");
+        let vm = ViewModel::with_io(fs.clone());
+        led_try_on_wheel(&vm, 3, 0, Duration::ZERO, Duration::ZERO).unwrap();
+        assert!(
+            fs.writes().iter().all(|(attr, _)| attr != "wheel_rev_level"),
+            "no rev writes for a built-in effect: {:?}",
+            fs.writes()
+        );
+    }
+
+    #[test]
+    fn led_try_on_a_custom_slot_without_a_rev_attr_falls_back_to_the_hold() {
+        // A wheel (or driver) without `wheel_rev_level` still gets the
+        // plain apply-hold-restore, with no error from the missing sweep.
+        let fs = std::rc::Rc::new(FakeSysfs::new());
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_effect", "1");
+        fs.set("wheel_led_slot", "0");
+        let vm = ViewModel::with_io(fs.clone());
+        led_try_on_wheel(&vm, 5, 2, Duration::ZERO, Duration::ZERO).unwrap();
+        assert!(fs.writes().iter().all(|(attr, _)| attr != "wheel_rev_level"));
+        assert_eq!(vm.device_read("wheel_led_effect").unwrap(), Value::Int(1), "effect restored");
     }
 
     #[test]
@@ -958,7 +1059,7 @@ mod tests {
         fs.set("wheel_led_slot", "0");
         fs.set_errno("wheel_led_effect", 5); // EIO on the effect write
         let vm = ViewModel::with_io(fs);
-        let err = led_try_on_wheel(&vm, 5, 2, Duration::ZERO);
+        let err = led_try_on_wheel(&vm, 5, 2, Duration::ZERO, Duration::ZERO);
         assert!(err.is_err(), "the apply failure is reported");
         // The slot write landed before the effect failed; the restore must
         // still put the prior slot back so nothing half-applied sticks.
@@ -973,7 +1074,7 @@ mod tests {
         fs.set("wheel_led_slot", "0");
         let vm = ViewModel::with_io(fs);
         assert!(
-            led_try_on_wheel(&vm, 5, 2, Duration::ZERO).is_err(),
+            led_try_on_wheel(&vm, 5, 2, Duration::ZERO, Duration::ZERO).is_err(),
             "no prior state to restore means no try at all"
         );
         assert_eq!(vm.device_read("wheel_led_slot").unwrap(), Value::Int(0), "slot untouched");

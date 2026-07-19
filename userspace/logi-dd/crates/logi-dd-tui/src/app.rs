@@ -601,15 +601,21 @@ impl<S: SysfsIo> App<S> {
     }
 
     /// Run one LIGHTSYNC "try on wheel": show the currently selected
-    /// effect/slot on the physical strip for `hold`, then restore the
-    /// previous state. The selection commits immediately in this TUI, so
-    /// the device's current effect+slot IS the selection; re-applying it
+    /// effect/slot on the physical strip, then restore the previous
+    /// state. The selection commits immediately in this TUI, so the
+    /// device's current effect+slot IS the selection; re-applying it
     /// (slot first, then the effect: the driver re-applies the slot's
     /// stored config on that transition) makes the wheel visibly play it,
-    /// and the restore writes the same pair back. Only LED state is
-    /// written, nothing moves. Blocking, like the shim runs: the main
-    /// loop draws a status line first via the `pending_led_try` queue.
-    pub fn run_led_try(&mut self, hold: std::time::Duration) {
+    /// and the restore writes the same pair back. A CUSTOM slot then
+    /// plays one animated rev sweep (`wheel_rev_level` 0..10..0, one step
+    /// per `sweep_step`, which must stay above the ~160 ms pacing floor),
+    /// so the slot's colours AND direction show as a live fill; built-in
+    /// effects hold for `hold` (their colours are firmware-owned). The
+    /// restoring effect write also exits the fill back to the idle
+    /// pattern. Only LED state is written, nothing moves. Blocking, like
+    /// the shim runs: the main loop draws a status line first via the
+    /// `pending_led_try` queue.
+    pub fn run_led_try(&mut self, hold: std::time::Duration, sweep_step: std::time::Duration) {
         let effect = match self.device.read("wheel_led_effect") {
             Ok(Value::Int(n)) => n.clamp(1, 9),
             _ => {
@@ -625,20 +631,39 @@ impl<S: SysfsIo> App<S> {
             .device
             .write("wheel_led_slot", &Value::Int(slot))
             .and_then(|()| self.device.write("wheel_led_effect", &Value::Int(effect)));
-        if applied.is_ok() {
-            std::thread::sleep(hold);
-        }
-        // Restore even after a failed apply, so nothing half-applied
-        // sticks; the first error wins.
+        let shown = if applied.is_ok() {
+            if effect == 5 && self.device.read("wheel_rev_level").is_ok() {
+                self.rev_sweep(sweep_step)
+            } else {
+                std::thread::sleep(hold);
+                Ok(())
+            }
+        } else {
+            Ok(())
+        };
+        // Restore even after a failed apply or sweep, so nothing
+        // half-applied sticks; the first error wins.
         let restored = self
             .device
             .write("wheel_led_slot", &Value::Int(slot))
             .and_then(|()| self.device.write("wheel_led_effect", &Value::Int(effect)));
-        self.status = match applied.and(restored) {
+        self.status = match applied.and(shown).and(restored) {
             Ok(()) => "try on wheel: done, previous state restored".to_string(),
             Err(e) => format!("try on wheel: {e}"),
         };
         self.reload();
+    }
+
+    /// One animated rev sweep: `wheel_rev_level` stepping 0..10..0, one
+    /// step per `step`. The fill uses the active slot's colours and
+    /// follows its direction; the caller's `wheel_led_effect` restore
+    /// exits the fill afterwards.
+    fn rev_sweep(&self, step: std::time::Duration) -> Result<(), logi_dd_core::Error> {
+        for level in (0..=10i32).chain((0..10).rev()) {
+            self.device.write("wheel_rev_level", &Value::Int(level))?;
+            std::thread::sleep(step);
+        }
+        Ok(())
     }
 
     /// The selector label for the device's current effect (+ slot when the
@@ -2027,12 +2052,40 @@ mod tests {
     #[test]
     fn run_led_try_restores_the_state_and_reports() {
         let mut a = leds_app("5", "0");
-        // Zero hold: the test pins the write/restore contract, not the
-        // real 5 s the queued run holds the state for.
-        a.run_led_try(std::time::Duration::ZERO);
+        // Zero durations: the test pins the write/restore contract, not
+        // the hold or the sweep pacing the queued run uses.
+        a.run_led_try(std::time::Duration::ZERO, std::time::Duration::ZERO);
         assert_eq!(a.device.read("wheel_led_effect").unwrap(), Value::Int(5), "effect restored");
         assert_eq!(a.device.read("wheel_led_slot").unwrap(), Value::Int(0), "slot restored");
         assert!(a.status.contains("restored"), "status: {}", a.status);
+    }
+
+    #[test]
+    fn run_led_try_plays_a_rev_sweep_for_the_custom_effect() {
+        // The custom effect (5) plays one 0..10..0 rev sweep; the sweep's
+        // last write leaves the fill at 0 before the effect restore exits
+        // it back to the idle pattern.
+        let mut a = leds_app("5", "0");
+        a.run_led_try(std::time::Duration::ZERO, std::time::Duration::ZERO);
+        assert!(a.status.contains("restored"), "status: {}", a.status);
+        assert_eq!(a.device.read("wheel_rev_level").unwrap(), Value::Int(0), "sweep ended at 0");
+    }
+
+    #[test]
+    fn run_led_try_skips_the_sweep_for_builtin_effects() {
+        // A built-in effect's colours are firmware-owned: no rev fill.
+        // The fixture's rev level starts at 3 and must stay untouched.
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_effect", "2");
+        fs.set("wheel_led_slot", "0");
+        fs.set("wheel_led_brightness", "80");
+        fs.set("wheel_rev_level", "3");
+        let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Leds).unwrap();
+        a.reload();
+        a.run_led_try(std::time::Duration::ZERO, std::time::Duration::ZERO);
+        assert_eq!(a.device.read("wheel_rev_level").unwrap(), Value::Int(3), "rev level untouched");
     }
 
     #[test]

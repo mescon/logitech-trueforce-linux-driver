@@ -281,7 +281,7 @@ fn draw_settings<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
                     spans.push(Span::styled("██", Style::default().fg(Color::Rgb(c.r, c.g, c.b))));
                 }
                 spans.push(Span::styled(
-                    "  t shows it on the wheel for 5 s",
+                    "  t shows it on the wheel (custom slots play a rev sweep)",
                     Style::default().fg(Color::DarkGray),
                 ));
                 rows.insert(0, ListItem::new(Line::from(spans)));
@@ -346,7 +346,7 @@ fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         "no wheel connected   r retry discovery   <-/-> category   q quit"
     } else if !app.is_setup() && !app.is_info() && app.category() == Category::Leds {
         // No text-mode animation preview; the GUI has the animated one.
-        "up/down select   Enter edit   t try lighting on the wheel (5 s, then restored; animated preview: GUI only)   d desktop/onboard   q quit"
+        "up/down select   Enter edit   t try lighting on the wheel (custom slots play a rev sweep, built-ins hold 5 s, then restored)   d desktop/onboard   q quit"
     } else if app.rows.iter().any(|r| r.attr == crate::app::PROFILE_NEW_ATTR) {
         // The desktop Profiles page: the computer-side profile store.
         "up/down select   Enter apply/save   n new profile   d delete profile (or desktop/onboard on Mode)   <-/-> category   q quit"
