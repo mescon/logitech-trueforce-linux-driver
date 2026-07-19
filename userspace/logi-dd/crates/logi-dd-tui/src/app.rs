@@ -661,7 +661,7 @@ impl<S: SysfsIo> App<S> {
         std::mem::take(&mut self.pending_led_try)
     }
 
-    /// Run one LIGHTSYNC "try on wheel": show the currently selected
+    /// Run one LIGHTSYNC "preview on wheel": show the currently selected
     /// effect/slot on the physical strip, then restore the previous
     /// state. The selection commits immediately in this TUI, so the
     /// device's current effect+slot IS the selection; re-applying it
@@ -680,7 +680,7 @@ impl<S: SysfsIo> App<S> {
         let effect = match self.device.read("wheel_led_effect") {
             Ok(Value::Int(n)) => n.clamp(1, 9),
             _ => {
-                self.status = "try on wheel: effect unreadable".to_string();
+                self.status = "preview on wheel: effect unreadable".to_string();
                 return;
             }
         };
@@ -709,8 +709,8 @@ impl<S: SysfsIo> App<S> {
             .write("wheel_led_slot", &Value::Int(slot))
             .and_then(|()| self.device.write("wheel_led_effect", &Value::Int(effect)));
         self.status = match applied.and(shown).and(restored) {
-            Ok(()) => "try on wheel: done, previous state restored".to_string(),
-            Err(e) => format!("try on wheel: {e}"),
+            Ok(()) => "preview on wheel: done, previous state restored".to_string(),
+            Err(e) => format!("preview on wheel: {e}"),
         };
         self.reload();
     }
@@ -2303,7 +2303,7 @@ mod tests {
     }
 
     #[test]
-    fn t_on_the_lightsync_page_queues_a_try_on_wheel() {
+    fn t_on_the_lightsync_page_queues_a_preview_on_wheel() {
         use crossterm::event::KeyCode;
         let mut a = leds_app("5", "0");
         a.on_key(KeyCode::Char('t'));

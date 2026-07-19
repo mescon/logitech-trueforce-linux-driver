@@ -133,7 +133,7 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
         // pacing floor the protocol docs require.
         if app.take_pending_led_try() {
             app.status =
-                "try on wheel: playing the selection on the strip (blocks a few seconds)...".to_string();
+                "preview on wheel: previewing the selection on the strip (blocks a few seconds)...".to_string();
             if let Err(e) = term.draw(|f| ui::draw(f, &app)) {
                 break Err(e.into());
             }
