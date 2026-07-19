@@ -291,8 +291,14 @@ export component Setup inherits Rectangle {
                                         color: Theme.muted-text-color;
                                     }
                                 }
+                                // Fixed row height: without it the layout
+                                // hands the panel's spare vertical space to
+                                // whichever rows hold widgets, ballooning
+                                // the live rows' Switch/SpinBox to comic
+                                // size (user screenshot, 2026-07-20).
                                 for row in root.compat-rows: HorizontalLayout {
                                     spacing: 8px;
+                                    height: 30px;
                                     Text {
                                         horizontal-stretch: 1;
                                         text: row.game;
