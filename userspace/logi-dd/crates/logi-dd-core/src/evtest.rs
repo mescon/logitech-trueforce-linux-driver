@@ -108,6 +108,11 @@ pub const WHEEL_BUTTONS: &[(u16, &str)] = &[
     (0x2c9, "L Encoder CCW"),
     (0x2ca, "L Encoder Push"),
     (0x2cb, "G1 (Logo)"),
+    // GL/GR are their own buttons, NOT aliases of the shifter paddles:
+    // guided capture 2026-07-20, GL=0x2cc, GR=0x2cd (bits 0/1 of the
+    // report's byte 20 on the joystick interface).
+    (0x2cc, "GL"),
+    (0x2cd, "GR"),
 ];
 
 /// One numbered callout box on the button-layout diagram
@@ -161,8 +166,8 @@ pub const CALLOUT_BOXES: &[CalloutBox] = &[
     CalloutBox { cx: 0.9722, cy: 0.1750, w: BOX_W, h: BOX_H, codes: &[0x126] },
     // Box 6: RSB.
     CalloutBox { cx: 0.9722, cy: 0.2444, w: BOX_W, h: BOX_H, codes: &[0x12a] },
-    // Box 7: GR (same gear-right input as the right paddle).
-    CalloutBox { cx: 0.9722, cy: 0.3370, w: BOX_W, h: BOX_H, codes: &[0x124] },
+    // Box 7: GR (its own button, hardware-verified 2026-07-20).
+    CalloutBox { cx: 0.9722, cy: 0.3370, w: BOX_W, h: BOX_H, codes: &[0x2cd] },
     // Box 8: right encoder (twist CW/CCW + push).
     CalloutBox { cx: 0.9522, cy: 0.6553, w: KNOB_W, h: KNOB_H, codes: &[0x2c5, 0x2c6, 0x2c7] },
     // Box 9: Menu.
@@ -173,8 +178,8 @@ pub const CALLOUT_BOXES: &[CalloutBox] = &[
     CalloutBox { cx: 0.0282, cy: 0.5222, w: BOX_W, h: BOX_H, codes: &[0x128] },
     // Box 12: left encoder (twist CW/CCW + push).
     CalloutBox { cx: 0.0482, cy: 0.6553, w: KNOB_W, h: KNOB_H, codes: &[0x2c8, 0x2c9, 0x2ca] },
-    // Box 13: GL (same gear-left input as the left paddle).
-    CalloutBox { cx: 0.0282, cy: 0.4065, w: BOX_W, h: BOX_H, codes: &[0x125] },
+    // Box 13: GL (its own button, hardware-verified 2026-07-20).
+    CalloutBox { cx: 0.0282, cy: 0.4065, w: BOX_W, h: BOX_H, codes: &[0x2cc] },
     // Box 14: LSB.
     CalloutBox { cx: 0.0282, cy: 0.2444, w: BOX_W, h: BOX_H, codes: &[0x12b] },
     // Box 15: LT.
