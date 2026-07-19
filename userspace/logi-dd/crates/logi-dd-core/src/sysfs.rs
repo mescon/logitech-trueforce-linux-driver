@@ -61,6 +61,22 @@ impl Default for FakeSysfs {
     }
 }
 
+/// Forward through `Rc`, so a test can keep a second handle to the
+/// `FakeSysfs` a `Device` owns and mutate attributes "behind the device's
+/// back" (what an external actor, e.g. the wheel's physical profile
+/// button, looks like to a frontend's drift detection).
+impl<T: SysfsIo> SysfsIo for std::rc::Rc<T> {
+    fn read(&self, attr: &str) -> io::Result<String> {
+        (**self).read(attr)
+    }
+    fn write(&self, attr: &str, val: &str) -> io::Result<()> {
+        (**self).write(attr, val)
+    }
+    fn exists(&self, attr: &str) -> bool {
+        (**self).exists(attr)
+    }
+}
+
 impl SysfsIo for FakeSysfs {
     fn read(&self, attr: &str) -> io::Result<String> {
         self.vals
