@@ -1,4 +1,4 @@
-import { Button, LineEdit, TextEdit, ListView, ScrollView, Palette } from "std-widgets.slint";
+import { Button, LineEdit, TextEdit, ListView, ScrollView, Slider, SpinBox, Switch, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // One row of the Setup page's Proton games list, built on the Rust side
@@ -11,14 +11,21 @@ export struct SetupGame {
     installed: bool,
 }
 
-// One static row of the compatibility table: the game, how force feedback
-// reaches it today, and where it stands with the upcoming per-game
-// "Simulate TrueForce" option ("planned" for FFB-only titles, "n/a
-// (native)" where the shim already delivers real TrueForce).
-struct CompatRow {
+// One row of the compatibility table, built on the Rust side
+// (`bridge::compat_rows`): the game, how force feedback reaches it today,
+// and the "Simulated TF" cell. Titles the tf-sim daemon can identify from
+// their telemetry carry their tf-sim game id in `sim-id` and render a
+// live per-game toggle + intensity (from tf-sim.conf, `sim-enabled` /
+// `sim-intensity`); every other row keeps the static `tf` text ("planned"
+// for FFB-only titles, "n/a (native)" where the shim already delivers
+// real TrueForce).
+export struct SetupCompatRow {
     game: string,
     how: string,
     tf: string,
+    sim-id: string,
+    sim-enabled: bool,
+    sim-intensity: int,
 }
 
 // The sidebar's "Setup" page: the DirectInput FFB proxy (logi-ffb), the
@@ -53,6 +60,25 @@ export component Setup inherits Rectangle {
     // state so "no Steam found" never flashes before the first scan lands.
     in property <[SetupGame]> games: [];
     in property <bool> games-scanned: false;
+    // The compatibility table's rows, built on the Rust side so the
+    // "Simulated TF" cells can carry live tf-sim.conf state; refreshed
+    // after every per-game edit.
+    in property <[SetupCompatRow]> compat-rows: [];
+    // Simulated TrueForce (the logi-tf-sim daemon): the resolved binary
+    // ("" while not found), whether the daemon is running, the master
+    // switch/intensity/pitch from tf-sim.conf, and the test sweep's
+    // run state + surfaced output.
+    in property <bool> tf-found: false;
+    in property <string> tf-path: "";
+    in property <bool> tf-running: false;
+    in property <bool> tf-enabled: false;
+    in property <int> tf-intensity: 60;
+    in property <int> tf-pitch: 100;
+    in property <bool> tf-sweep-running: false;
+    in property <string> tf-output: "";
+    // The test sweep's consent dialog; the sweep only ever fires from its
+    // Continue button, same discipline as the Test page's simulations.
+    private property <bool> tf-confirm-open: false;
 
     // Copies "logi-ffb %command%" to the clipboard (best-effort, wl-copy
     // then xclip; the field next to the button is selectable as a fallback).
@@ -71,25 +97,22 @@ export component Setup inherits Rectangle {
     // Opens `project-url` in the user's browser; wired to the same
     // `open-url` callback the Info category's link uses.
     callback open-url(string);
-
-    // A trailing "*" marks titles not verified on this driver yet
-    // (expected to work: their input stack is one the helpers already
-    // cover); the note above the table says so.
-    private property <[CompatRow]> compat-rows: [
-        { game: "ACC", how: "TrueForce (shim)", tf: "n/a (native)" },
-        { game: "AC EVO", how: "TrueForce (shim)", tf: "n/a (native)" },
-        { game: "iRacing", how: "FFB (native)", tf: "planned" },
-        { game: "Le Mans Ultimate", how: "FFB (logi-ffb)", tf: "planned" },
-        { game: "Automobilista 2", how: "FFB (logi-ffb)", tf: "planned" },
-        { game: "rFactor 2", how: "FFB (logi-ffb)", tf: "planned" },
-        { game: "Assetto Corsa", how: "FFB (logi-ffb) *", tf: "planned" },
-        { game: "Project CARS 2", how: "FFB (logi-ffb) *", tf: "planned" },
-        { game: "Dirt Rally 2.0", how: "FFB (native)", tf: "planned" },
-        { game: "EA SPORTS WRC", how: "FFB *", tf: "planned" },
-        { game: "F1 series", how: "FFB *", tf: "planned" },
-        { game: "ETS2 / ATS", how: "FFB (native Linux)", tf: "planned" },
-        { game: "BeamNG.drive", how: "FFB (native)", tf: "planned" },
-    ];
+    // Simulated TrueForce edits, all writing tf-sim.conf on the Rust
+    // side (one key per call, so hand-added lines survive).
+    callback tf-set-enabled(bool);
+    callback tf-set-intensity(int);
+    callback tf-set-pitch(int);
+    callback tf-start-daemon();
+    callback tf-stop-daemon();
+    // Fired only from the consent dialog's Continue button: runs
+    // `logi-tf-sim --sweep` (about 6 s of real haptics) off the UI thread.
+    callback tf-sweep();
+    // SIGTERMs the running sweep so it stops cleanly (stop packets sent).
+    callback tf-sweep-stop();
+    // A compatibility row's live "Simulated TF" cell: the row's tf-sim
+    // game id plus the new value.
+    callback sim-game-enabled(string, bool);
+    callback sim-game-intensity(string, int);
 
     background: transparent;
 
@@ -234,14 +257,16 @@ export component Setup inherits Rectangle {
                                     color: Theme.text-color;
                                 }
                                 Text {
-                                    text: "\"FFB (logi-ffb)\" means launch with logi-ffb %command%. \"Simulated TF\" is an upcoming per-game option that synthesizes TrueForce for FFB-only titles; \"n/a (native)\" titles already get the real thing via the shim. * = expected to work, not verified on this driver yet.";
+                                    text: "\"FFB (logi-ffb)\" means launch with logi-ffb %command%. \"Simulated TF\" synthesizes TrueForce from the game's telemetry (see the Simulated TrueForce panel): titles the daemon can identify get a live per-game toggle + intensity here; other FFB-only titles are planned; \"n/a (native)\" titles already get the real thing via the shim. * = expected to work, not verified on this driver yet.";
                                     font-size: 11px;
                                     color: Theme.muted-text-color;
                                     wrap: word-wrap;
                                 }
                                 // Header row, then one row per title. The
-                                // middle column gets a fixed width so the
-                                // three columns line up as a table.
+                                // middle and right columns get fixed widths
+                                // so the three columns line up as a table
+                                // (the right one is wide enough for the
+                                // live toggle + intensity cells).
                                 HorizontalLayout {
                                     spacing: 8px;
                                     Text {
@@ -252,14 +277,14 @@ export component Setup inherits Rectangle {
                                         color: Theme.muted-text-color;
                                     }
                                     Text {
-                                        width: 130px;
+                                        width: 112px;
                                         text: "Force feedback";
                                         font-size: 11px;
                                         font-weight: 600;
                                         color: Theme.muted-text-color;
                                     }
                                     Text {
-                                        width: 80px;
+                                        width: 140px;
                                         text: "Simulated TF";
                                         font-size: 11px;
                                         font-weight: 600;
@@ -274,18 +299,41 @@ export component Setup inherits Rectangle {
                                         font-size: 12px;
                                         color: Theme.text-color;
                                         overflow: elide;
+                                        vertical-alignment: center;
                                     }
                                     Text {
-                                        width: 130px;
+                                        width: 112px;
                                         text: row.how;
                                         font-size: 12px;
                                         color: Theme.muted-text-color;
+                                        vertical-alignment: center;
                                     }
-                                    Text {
-                                        width: 80px;
+                                    // The "Simulated TF" cell: live for
+                                    // rows carrying a tf-sim game id
+                                    // (toggle + per-game intensity writing
+                                    // tf-sim.conf), static text otherwise.
+                                    if row.sim-id == "": Text {
+                                        width: 140px;
                                         text: row.tf;
                                         font-size: 12px;
                                         color: Theme.muted-text-color;
+                                        vertical-alignment: center;
+                                    }
+                                    if row.sim-id != "": HorizontalLayout {
+                                        width: 140px;
+                                        spacing: 4px;
+                                        Switch {
+                                            checked: row.sim-enabled;
+                                            toggled => { root.sim-game-enabled(row.sim-id, self.checked); }
+                                        }
+                                        SpinBox {
+                                            horizontal-stretch: 1;
+                                            minimum: 0;
+                                            maximum: 100;
+                                            value: row.sim-intensity;
+                                            enabled: row.sim-enabled;
+                                            edited(v) => { root.sim-game-intensity(row.sim-id, v); }
+                                        }
                                     }
                                 }
                             }
@@ -409,6 +457,146 @@ export component Setup inherits Rectangle {
                             wrap: word-wrap;
                             text: root.shim-output;
                         }
+
+                        // Section: Simulated TrueForce (the logi-tf-sim
+                        // daemon). Master switch + intensity/pitch write
+                        // tf-sim.conf; the per-game cells live in the
+                        // compatibility table on the left.
+                        Rectangle {
+                            background: Theme.panel-background;
+                            border-radius: Theme.panel-radius;
+                            border-width: 1px;
+                            border-color: Theme.panel-border;
+
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 8px;
+
+                                Text {
+                                    text: "Simulated TrueForce (logi-tf-sim)";
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                    color: Theme.text-color;
+                                }
+                                Text {
+                                    text: "Synthesizes TrueForce engine haptics from a game's own UDP telemetry, for titles without native TrueForce. The daemon listens in the background and streams only while a supported game sends telemetry.";
+                                    font-size: 12px;
+                                    color: Theme.muted-text-color;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.tf-found
+                                        ? "logi-tf-sim: found: " + root.tf-path
+                                        : "logi-tf-sim: not found (PATH or next to this app)";
+                                    font-size: 12px;
+                                    color: root.tf-found ? Theme.text-color : Theme.error-color;
+                                    wrap: word-wrap;
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: root.tf-running ? "Daemon: running" : "Daemon: stopped";
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        color: root.tf-running ? Theme.ok-color : Theme.muted-text-color;
+                                    }
+                                    Button {
+                                        text: "Start";
+                                        enabled: root.tf-found && !root.tf-running;
+                                        clicked => { root.tf-start-daemon(); }
+                                    }
+                                    Button {
+                                        text: "Stop";
+                                        enabled: root.tf-running;
+                                        clicked => { root.tf-stop-daemon(); }
+                                    }
+                                }
+                                Switch {
+                                    text: "Enabled (master switch)";
+                                    checked: root.tf-enabled;
+                                    toggled => { root.tf-set-enabled(self.checked); }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        width: 60px;
+                                        text: "Intensity";
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        color: Theme.text-color;
+                                    }
+                                    intensity-slider := Slider {
+                                        horizontal-stretch: 1;
+                                        minimum: 0;
+                                        maximum: 100;
+                                        value: root.tf-intensity;
+                                        // Committed on release, not on every
+                                        // drag tick, same rule as the
+                                        // settings sliders.
+                                        released(v) => { root.tf-set-intensity(round(v)); }
+                                    }
+                                    Text {
+                                        width: 36px;
+                                        text: round(intensity-slider.value) + "%";
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: right;
+                                        color: Theme.muted-text-color;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        width: 60px;
+                                        text: "Pitch";
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        color: Theme.text-color;
+                                    }
+                                    pitch-slider := Slider {
+                                        horizontal-stretch: 1;
+                                        minimum: 10;
+                                        maximum: 200;
+                                        value: root.tf-pitch;
+                                        released(v) => { root.tf-set-pitch(round(v)); }
+                                    }
+                                    Text {
+                                        width: 36px;
+                                        text: round(pitch-slider.value) + "%";
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: right;
+                                        color: Theme.muted-text-color;
+                                    }
+                                }
+                                Text {
+                                    text: "Pitch is the felt rev rate; 100 = crank speed.";
+                                    font-size: 11px;
+                                    color: Theme.muted-text-color;
+                                    wrap: word-wrap;
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Button {
+                                        text: "Test simulated TrueForce";
+                                        enabled: root.tf-found && !root.tf-sweep-running;
+                                        clicked => { root.tf-confirm-open = true; }
+                                    }
+                                    Button {
+                                        text: "Stop test";
+                                        enabled: root.tf-sweep-running;
+                                        clicked => { root.tf-sweep-stop(); }
+                                    }
+                                }
+                                if root.tf-output != "": TextEdit {
+                                    height: 70px;
+                                    read-only: true;
+                                    wrap: word-wrap;
+                                    text: root.tf-output;
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -429,6 +617,61 @@ export component Setup inherits Rectangle {
                         TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.open-url(root.project-url); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The test sweep's consent dialog, painted over the whole page. The
+    // sweep never fires without pressing Continue here (same discipline
+    // as the Test page's simulation dialogs).
+    if root.tf-confirm-open: Rectangle {
+        background: Theme.scrim;
+
+        // Swallow clicks outside the dialog panel.
+        TouchArea { }
+
+        Rectangle {
+            width: min(parent.width - 40px, 420px);
+            height: tf-panel-layout.preferred-height;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: Theme.panel-background;
+            border-radius: Theme.panel-radius;
+            border-width: 1px;
+            border-color: Theme.panel-border;
+
+            tf-panel-layout := VerticalLayout {
+                padding: 18px;
+                spacing: 12px;
+
+                Text {
+                    text: "Test simulated TrueForce";
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text-color;
+                }
+                Text {
+                    text: "The wheel WILL produce haptic force for about 6 seconds. Keep hands relaxed. Continue?";
+                    font-size: 13px;
+                    color: Theme.text-color;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancel";
+                        clicked => { root.tf-confirm-open = false; }
+                    }
+                    Button {
+                        text: "Continue";
+                        primary: true;
+                        clicked => {
+                            root.tf-sweep();
+                            root.tf-confirm-open = false;
                         }
                     }
                 }

@@ -467,6 +467,91 @@ fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<String>, args: Ve
     });
 }
 
+/// Send SIGTERM to `pid`: the clean stop for both the logi-tf-sim daemon
+/// and a running `--sweep` (its handler sends the wheel stop packets on
+/// the way out, which a hard kill would skip).
+fn send_sigterm(pid: i32) {
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+}
+
+/// Re-probe whether the logi-tf-sim daemon is running (a /proc comm scan)
+/// off the UI thread, after `delay` (a just-spawned or just-terminated
+/// daemon needs a moment to appear/disappear), pushing the outcome into
+/// `setup-tf-running`.
+fn refresh_tf_daemon(app_weak: slint::Weak<App>, delay: std::time::Duration) {
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        let running = logi_dd_core::tfsim::daemon_pid().is_some();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(app) = app_weak.upgrade() {
+                app.set_setup_tf_running(running);
+            }
+        });
+    });
+}
+
+/// Reload tf-sim.conf and rebuild the compatibility table's rows: a
+/// per-game edit must show up on BOTH titles sharing an id (AMS2 and
+/// Project CARS 2 are one daemon id), so the whole model is rebuilt from
+/// the file rather than patching the edited row.
+fn refresh_compat_rows(app: &App) {
+    let cfg = logi_dd_core::tfsim::Config::load();
+    app.set_setup_compat_rows(slint::ModelRc::new(slint::VecModel::from(bridge::compat_rows(&cfg))));
+}
+
+/// Surface a tf-sim.conf write failure in the Simulated TrueForce panel's
+/// output area (successes stay quiet; the controls already show the value).
+fn report_tf_write(app: &App, result: Result<(), logi_dd_core::Error>) {
+    if let Err(e) = result {
+        app.set_setup_tf_output(format!("tf-sim.conf: {e}").into());
+    }
+}
+
+/// Run `logi-tf-sim --sweep` (about 6 s of real haptics; only ever fired
+/// from the consent dialog) off the UI thread. The child's pid is parked
+/// in `pid_cell` so the Stop button can SIGTERM it early; either way the
+/// wait completes here, which pushes the combined output + exit status
+/// into `setup-tf-output` and resets the run state exactly once, same
+/// single-cleanup-site discipline as the Test page's simulations.
+fn run_tf_sweep(
+    app_weak: slint::Weak<App>,
+    binary: String,
+    pid_cell: Arc<Mutex<Option<i32>>>,
+) {
+    std::thread::spawn(move || {
+        let spawned = std::process::Command::new(&binary)
+            .arg("--sweep")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let text = match spawned {
+            Ok(child) => {
+                *pid_cell.lock().unwrap() = Some(child.id() as i32);
+                let waited = child.wait_with_output();
+                *pid_cell.lock().unwrap() = None;
+                match waited {
+                    Ok(out) => {
+                        let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
+                        combined.push_str(&String::from_utf8_lossy(&out.stderr));
+                        combined.push_str(&format!("\n[exit status: {}]", out.status));
+                        combined
+                    }
+                    Err(e) => format!("Failed to wait for {binary}: {e}"),
+                }
+            }
+            Err(e) => format!("Failed to run {binary}: {e}"),
+        };
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = app_weak.upgrade() else { return };
+            app.set_setup_tf_output(text.into());
+            app.set_setup_tf_sweep_running(false);
+        });
+    });
+}
+
 /// Dev-only render aid: `LOGI_DD_TEST_OVERLAYS=<degrees>` forces every
 /// callout overlay visible and the wheel image to that steering angle, so
 /// the overlay positions and the rotation can be screenshot-verified
@@ -717,6 +802,24 @@ fn main() -> Result<(), slint::PlatformError> {
         app.set_setup_sdk_status(message.into());
     }
     scan_games(app.as_weak());
+    // Setup page: Simulated TrueForce. The binary resolves once at startup
+    // (same rule as logi-ffb); tf-sim.conf is read fresh for the controls
+    // and the compatibility table, and the daemon's run state is probed
+    // off the UI thread.
+    let tf_binary: Option<String> =
+        logi_dd_core::helpers::tf_sim_path().map(|p| p.to_string_lossy().into_owned());
+    app.set_setup_tf_found(tf_binary.is_some());
+    app.set_setup_tf_path(tf_binary.clone().unwrap_or_default().into());
+    {
+        let cfg = logi_dd_core::tfsim::Config::load();
+        app.set_setup_tf_enabled(cfg.enabled);
+        app.set_setup_tf_intensity(i32::from(cfg.intensity));
+        app.set_setup_tf_pitch(i32::from(cfg.pitch_pct));
+        app.set_setup_compat_rows(slint::ModelRc::new(slint::VecModel::from(
+            bridge::compat_rows(&cfg),
+        )));
+    }
+    refresh_tf_daemon(app.as_weak(), std::time::Duration::ZERO);
     // Installed once, here, and never replaced: `load_rows`/`update_row`
     // mutate this same `VecModel`'s contents for the rest of the app's
     // life (see `load_rows`'s doc comment for why that matters).
@@ -1679,6 +1782,135 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let app_weak = app.as_weak();
         app.on_setup_rescan_games(move || scan_games(app_weak.clone()));
+    }
+
+    // Setup page: Simulated TrueForce. Every conf edit writes exactly one
+    // key (logi_dd_core::tfsim's writers preserve everything else in the
+    // file); the daemon and the sweep are plain child processes, stopped
+    // with SIGTERM so their handlers send the wheel clean stop packets.
+    {
+        let app_weak = app.as_weak();
+        app.on_setup_tf_set_enabled(move |v| {
+            let Some(app) = app_weak.upgrade() else { return };
+            report_tf_write(
+                &app,
+                logi_dd_core::tfsim::set_enabled_in(&logi_dd_core::tfsim::default_path(), v),
+            );
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_setup_tf_set_intensity(move |v| {
+            let Some(app) = app_weak.upgrade() else { return };
+            report_tf_write(
+                &app,
+                logi_dd_core::tfsim::set_intensity_in(
+                    &logi_dd_core::tfsim::default_path(),
+                    v.clamp(0, 100) as u8,
+                ),
+            );
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_setup_tf_set_pitch(move |v| {
+            let Some(app) = app_weak.upgrade() else { return };
+            report_tf_write(
+                &app,
+                logi_dd_core::tfsim::set_pitch_in(
+                    &logi_dd_core::tfsim::default_path(),
+                    v.clamp(10, 200) as u8,
+                ),
+            );
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_setup_sim_game_enabled(move |id, v| {
+            let Some(app) = app_weak.upgrade() else { return };
+            report_tf_write(
+                &app,
+                logi_dd_core::tfsim::set_game_enabled_in(&logi_dd_core::tfsim::default_path(), &id, v),
+            );
+            // Both titles sharing the id must show the fresh value.
+            refresh_compat_rows(&app);
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_setup_sim_game_intensity(move |id, v| {
+            let Some(app) = app_weak.upgrade() else { return };
+            report_tf_write(
+                &app,
+                logi_dd_core::tfsim::set_game_intensity_in(
+                    &logi_dd_core::tfsim::default_path(),
+                    &id,
+                    v.clamp(0, 100) as u8,
+                ),
+            );
+            refresh_compat_rows(&app);
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        let tf_binary = tf_binary.clone();
+        app.on_setup_tf_start_daemon(move || {
+            // The button is disabled while unresolved, so this only races
+            // a stale click; detached, like every helper spawn.
+            let Some(bin) = tf_binary.clone() else { return };
+            if let Ok(mut child) = std::process::Command::new(bin)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                // Reap the daemon whenever it exits: an un-reaped child
+                // stays a zombie in our process table for the app's whole
+                // lifetime (one parked thread is the cheapest cure).
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            refresh_tf_daemon(app_weak.clone(), std::time::Duration::from_millis(400));
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_setup_tf_stop_daemon(move || {
+            if let Some(pid) = logi_dd_core::tfsim::daemon_pid() {
+                send_sigterm(pid);
+            }
+            refresh_tf_daemon(app_weak.clone(), std::time::Duration::from_millis(400));
+        });
+    }
+    // The running sweep's pid, `None` while no sweep plays; the Stop
+    // button reads it, the runner thread owns its lifecycle.
+    let tf_sweep_pid: Arc<Mutex<Option<i32>>> = Arc::new(Mutex::new(None));
+    {
+        let app_weak = app.as_weak();
+        let tf_binary = tf_binary.clone();
+        let tf_sweep_pid = tf_sweep_pid.clone();
+        // Only ever fired from the consent dialog's Continue button.
+        app.on_setup_tf_sweep(move || {
+            let Some(app) = app_weak.upgrade() else { return };
+            let Some(bin) = tf_binary.clone() else { return };
+            if app.get_setup_tf_sweep_running() {
+                return;
+            }
+            app.set_setup_tf_sweep_running(true);
+            app.set_setup_tf_output("Running logi-tf-sim --sweep...".into());
+            run_tf_sweep(app_weak.clone(), bin, tf_sweep_pid.clone());
+        });
+    }
+    {
+        let tf_sweep_pid = tf_sweep_pid.clone();
+        app.on_setup_tf_sweep_stop(move || {
+            // A stray click after the sweep finished finds the cell empty
+            // and does nothing.
+            if let Some(pid) = *tf_sweep_pid.lock().unwrap() {
+                send_sigterm(pid);
+            }
+        });
     }
 
     // Test page: Rescan re-runs discovery (restarting the reader), and the

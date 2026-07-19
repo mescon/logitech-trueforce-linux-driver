@@ -261,9 +261,18 @@ pub fn stat_comm(stat: &str) -> Option<&str> {
     Some(&stat[open + 1..close])
 }
 
+/// The state character after the comm field of a `/proc/<pid>/stat` line
+/// (`R`, `S`, `Z`, ...).
+fn stat_state(stat: &str) -> Option<char> {
+    stat[stat.rfind(')')? + 1..].trim_start().chars().next()
+}
+
 /// Every pid under `proc_root` whose stat comm equals `comm`, ascending.
-/// Parameterized over the proc root so the scan is testable against a
-/// fixture tree; unreadable entries are skipped.
+/// Zombies are excluded: a front-end that spawned the daemon detached may
+/// hold its exit status un-reaped for a while, and a zombie's comm still
+/// matches even though nothing is running. Parameterized over the proc
+/// root so the scan is testable against a fixture tree; unreadable
+/// entries are skipped.
 pub fn pids_by_comm_in(proc_root: &Path, comm: &str) -> Vec<i32> {
     let Ok(entries) = fs::read_dir(proc_root) else { return Vec::new() };
     let mut pids: Vec<i32> = entries
@@ -271,6 +280,9 @@ pub fn pids_by_comm_in(proc_root: &Path, comm: &str) -> Vec<i32> {
         .filter_map(|entry| {
             let pid: i32 = entry.file_name().to_str()?.parse().ok()?;
             let stat = fs::read_to_string(entry.path().join("stat")).ok()?;
+            if matches!(stat_state(&stat), Some('Z') | Some('X')) {
+                return None;
+            }
             (stat_comm(&stat)? == comm).then_some(pid)
         })
         .collect();
@@ -478,6 +490,12 @@ mod tests {
         write_stat("100", "bash");
         write_stat("250", DAEMON_COMM);
         write_stat("90", DAEMON_COMM);
+        // A zombie's comm still matches, but nothing is running: it must
+        // not count (a front-end that spawned the daemon detached may
+        // hold the exit status un-reaped for a while).
+        let zombie = proc_root.join("400");
+        fs::create_dir_all(&zombie).unwrap();
+        fs::write(zombie.join("stat"), format!("400 ({DAEMON_COMM}) Z 1 400")).unwrap();
         // Non-pid entries (like /proc/self) and pid dirs without a
         // readable stat are skipped, not errors.
         fs::create_dir_all(proc_root.join("self")).unwrap();

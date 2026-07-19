@@ -8,8 +8,10 @@ use logi_dd_core::curve::{Curve, FULL};
 use logi_dd_core::shaping::{self, ShapingRole};
 use logi_dd_core::{lightsync, Access, Category, Color, Error, Kind, Value, REGISTRY};
 
+use logi_dd_core::tfsim;
+
 use crate::viewmodel::Row;
-use crate::{CurvePoint, LedColor, SettingRow, SlotNameRow};
+use crate::{CurvePoint, LedColor, SettingRow, SetupCompatRow, SlotNameRow};
 
 // Stable `SettingRow.kind` tag numbering; keep in sync with the doc comment
 // on `SettingRow` and the per-kind branches in `ui/widgets.slint`.
@@ -666,6 +668,49 @@ pub fn apply_set_slot_name(names: &mut [String], slot: u8, name: &str) {
     }
 }
 
+/// The Setup page's compatibility table: game, how force feedback reaches
+/// it today, and the static "Simulated TF" cell text used for rows the
+/// tf-sim daemon cannot identify. A trailing "*" marks titles not verified
+/// on this driver yet; the note above the table says so.
+const COMPAT_BASE: [(&str, &str, &str); 13] = [
+    ("ACC", "TrueForce (shim)", "n/a (native)"),
+    ("AC EVO", "TrueForce (shim)", "n/a (native)"),
+    ("iRacing", "FFB (native)", "planned"),
+    ("Le Mans Ultimate", "FFB (logi-ffb)", "planned"),
+    ("Automobilista 2", "FFB (logi-ffb)", "planned"),
+    ("rFactor 2", "FFB (logi-ffb)", "planned"),
+    ("Assetto Corsa", "FFB (logi-ffb) *", "planned"),
+    ("Project CARS 2", "FFB (logi-ffb) *", "planned"),
+    ("Dirt Rally 2.0", "FFB (native)", "planned"),
+    ("EA SPORTS WRC", "FFB *", "planned"),
+    ("F1 series", "FFB *", "planned"),
+    ("ETS2 / ATS", "FFB (native Linux)", "planned"),
+    ("BeamNG.drive", "FFB (native)", "planned"),
+];
+
+/// Build the compatibility table's rows from the static base plus `cfg`
+/// (the current tf-sim.conf): a row whose title maps to a tf-sim game id
+/// (`tfsim::game_id_for_title`, deliberately conservative) carries the id
+/// and that game's live toggle + intensity, so the Slint side renders the
+/// live "Simulated TF" cell; every other row keeps its static text.
+pub fn compat_rows(cfg: &tfsim::Config) -> Vec<SetupCompatRow> {
+    COMPAT_BASE
+        .iter()
+        .map(|(game, how, tf)| {
+            let sim_id = tfsim::game_id_for_title(game).unwrap_or("");
+            let sim = cfg.game(sim_id);
+            SetupCompatRow {
+                game: (*game).into(),
+                how: (*how).into(),
+                tf: (*tf).into(),
+                sim_id: sim_id.into(),
+                sim_enabled: sim.enabled,
+                sim_intensity: i32::from(sim.intensity),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,6 +733,47 @@ mod tests {
             .chain(vm.rows_for(Category::Info))
             .find(|r| r.attr == attr)
             .unwrap_or_else(|| panic!("no row for {attr}"))
+    }
+
+    #[test]
+    fn compat_rows_carry_live_cells_only_for_daemon_known_titles() {
+        let mut cfg = tfsim::Config::default();
+        cfg.games.insert(
+            "dirt-rally-2".to_string(),
+            tfsim::GameConfig { enabled: false, intensity: 40 },
+        );
+        let rows = compat_rows(&cfg);
+        assert_eq!(rows.len(), COMPAT_BASE.len());
+
+        let live: Vec<(&str, &str)> = rows
+            .iter()
+            .filter(|r| !r.sim_id.is_empty())
+            .map(|r| (r.game.as_str(), r.sim_id.as_str()))
+            .collect();
+        assert_eq!(
+            live,
+            vec![
+                ("Automobilista 2", "ams2-pcars2"),
+                ("Project CARS 2", "ams2-pcars2"),
+                ("Dirt Rally 2.0", "dirt-rally-2"),
+            ],
+            "only the ids the daemon detects go live; everything else stays static"
+        );
+
+        let dr2 = rows.iter().find(|r| r.game == "Dirt Rally 2.0").unwrap();
+        assert!(!dr2.sim_enabled);
+        assert_eq!(dr2.sim_intensity, 40);
+        // The unlisted shared id falls back to the daemon's defaults, and
+        // both titles carrying it show the same state.
+        let ams2 = rows.iter().find(|r| r.game == "Automobilista 2").unwrap();
+        let pc2 = rows.iter().find(|r| r.game == "Project CARS 2").unwrap();
+        assert!(ams2.sim_enabled && pc2.sim_enabled);
+        assert_eq!(ams2.sim_intensity, 100);
+        assert_eq!(pc2.sim_intensity, 100);
+        // Shim titles keep their static "n/a (native)" text.
+        let acc = rows.iter().find(|r| r.game == "ACC").unwrap();
+        assert_eq!(acc.tf.as_str(), "n/a (native)");
+        assert!(acc.sim_id.is_empty());
     }
 
     #[test]

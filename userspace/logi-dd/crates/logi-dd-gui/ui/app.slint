@@ -4,12 +4,12 @@ import { SettingRow, SettingsList } from "widgets.slint";
 import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
-import { Setup, SetupGame } from "setup.slint";
+import { Setup, SetupGame, SetupCompatRow } from "setup.slint";
 import { InfoPage, TestButton, TestAxis, TestCallout } from "info_page.slint";
 import { ComputerProfiles } from "computer_profiles.slint";
 import { LedPreview } from "led_preview.slint";
 export { SettingRow } from "widgets.slint";
-export { SetupGame } from "setup.slint";
+export { SetupGame, SetupCompatRow } from "setup.slint";
 export { TestButton, TestAxis, TestCallout } from "info_page.slint";
 export { CurvePoint } from "curve_editor.slint";
 export { LedColor } from "rgb_strip.slint";
@@ -77,12 +77,33 @@ export component App inherits Window {
     // `Setup.games`).
     in property <[SetupGame]> setup-games: [];
     in property <bool> setup-games-scanned: false;
+    in property <[SetupCompatRow]> setup-compat-rows: [];
+    // Simulated TrueForce (see `Setup`'s tf-* properties): the resolved
+    // logi-tf-sim binary, the daemon's run state, the tf-sim.conf master
+    // values, and the test sweep's run state + output.
+    in property <bool> setup-tf-found: false;
+    in property <string> setup-tf-path: "";
+    in property <bool> setup-tf-running: false;
+    in property <bool> setup-tf-enabled: false;
+    in property <int> setup-tf-intensity: 60;
+    in property <int> setup-tf-pitch: 100;
+    in property <bool> setup-tf-sweep-running: false;
+    in property <string> setup-tf-output: "";
     callback setup-copy-launch();
     callback setup-sdk-dir-edited(string);
     // Per-game shim install/remove; the argument is the row's wine prefix.
     callback setup-install-game(string);
     callback setup-remove-game(string);
     callback setup-rescan-games();
+    callback setup-tf-set-enabled(bool);
+    callback setup-tf-set-intensity(int);
+    callback setup-tf-set-pitch(int);
+    callback setup-tf-start-daemon();
+    callback setup-tf-stop-daemon();
+    callback setup-tf-sweep();
+    callback setup-tf-sweep-stop();
+    callback setup-sim-game-enabled(string, bool);
+    callback setup-sim-game-intensity(string, int);
 
     // The sidebar index of the Info category (the page that carries the
     // live input monitor), set once from Rust; `-1` until then, same guard
@@ -376,11 +397,29 @@ export component App inherits Window {
                     sdk-status: root.setup-sdk-status;
                     games: root.setup-games;
                     games-scanned: root.setup-games-scanned;
+                    compat-rows: root.setup-compat-rows;
+                    tf-found: root.setup-tf-found;
+                    tf-path: root.setup-tf-path;
+                    tf-running: root.setup-tf-running;
+                    tf-enabled: root.setup-tf-enabled;
+                    tf-intensity: root.setup-tf-intensity;
+                    tf-pitch: root.setup-tf-pitch;
+                    tf-sweep-running: root.setup-tf-sweep-running;
+                    tf-output: root.setup-tf-output;
                     copy-launch() => { root.setup-copy-launch(); }
                     sdk-dir-edited(dir) => { root.setup-sdk-dir-edited(dir); }
                     install-game(pfx) => { root.setup-install-game(pfx); }
                     remove-game(pfx) => { root.setup-remove-game(pfx); }
                     rescan-games() => { root.setup-rescan-games(); }
+                    tf-set-enabled(v) => { root.setup-tf-set-enabled(v); }
+                    tf-set-intensity(v) => { root.setup-tf-set-intensity(v); }
+                    tf-set-pitch(v) => { root.setup-tf-set-pitch(v); }
+                    tf-start-daemon() => { root.setup-tf-start-daemon(); }
+                    tf-stop-daemon() => { root.setup-tf-stop-daemon(); }
+                    tf-sweep() => { root.setup-tf-sweep(); }
+                    tf-sweep-stop() => { root.setup-tf-sweep-stop(); }
+                    sim-game-enabled(id, v) => { root.setup-sim-game-enabled(id, v); }
+                    sim-game-intensity(id, v) => { root.setup-sim-game-intensity(id, v); }
                     open-url(url) => { root.open-url(url); }
                 }
 
