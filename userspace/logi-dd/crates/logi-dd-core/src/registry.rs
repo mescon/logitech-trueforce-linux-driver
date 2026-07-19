@@ -75,7 +75,7 @@ pub const REGISTRY: &[SettingSpec] = &[
     SettingSpec { attr: "wheel_led_apply", label: "Apply", help: "Commit the current slot config to the wheel.", category: Leds, kind: Kind::Action, access: Action, mode_req: Any },
     // --- Profiles / mode ---
     SettingSpec { attr: "wheel_mode", label: "Mode", help: "desktop (host-controlled) or onboard (wheel-stored).", category: Profiles, kind: Kind::Enum(&["desktop", "onboard"]), access: ReadWrite, mode_req: Any },
-    SettingSpec { attr: "wheel_profile", label: "Profile", help: "Active profile (0=desktop, 1-5 onboard).", category: Profiles, kind: Kind::IntRange { min: 0, max: 5, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_profile", label: "Profile", help: "Active onboard profile slot (1-5). The wheel follows it while in onboard mode.", category: Profiles, kind: Kind::IntRange { min: 0, max: 5, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
     // max_len is the wheel's limit (9), not the driver's protocol cap (14):
     // the RS50 rejects a longer name with -EIO. The wheel stores names
     // uppercased.

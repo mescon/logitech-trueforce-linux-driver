@@ -251,6 +251,15 @@ export component SettingsList inherits ListView {
                         width: 220px;
                         model: row.choices;
                         current-index: row.int-value;
+                        // The wheel can report profile 0 (the desktop
+                        // profile) while in onboard mode, e.g. right after a
+                        // mode switch; that maps to index -1 here, which the
+                        // widget would render as a confusingly blank box.
+                        // Show a placeholder instead; picking any entry
+                        // writes a real 1-5 profile and clears it.
+                        current-value: row.int-value < 0
+                            ? "(no onboard profile active)"
+                            : row.choices[row.int-value];
                         enabled: row.available && row.mode-ok;
                         // Re-assert on every model push; see
                         // `SettingRow.revision`.
