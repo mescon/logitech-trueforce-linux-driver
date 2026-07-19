@@ -11,8 +11,11 @@
 //! Discovery is not a one-shot gate any more: if `Device::discover()` fails
 //! (no wheel bound, wrong permissions, unplugged mid-session, ...) the
 //! worker keeps running with no device, reports `Response::NoWheel`, and
-//! waits for a `Request::Discover` to try again. The UI turns that into the
-//! no-wheel screen with a Retry button rather than a dead window.
+//! waits for a `Request::Discover` to try again. The UI keeps its normal
+//! shell (Setup/Test stay usable) with a banner and a Retry button; device
+//! requests sent meanwhile (the sidebar stays navigable) are answered with
+//! a fresh `NoWheel` rather than silently dropped, so the banner's message
+//! never goes stale.
 
 use std::sync::mpsc;
 use std::thread;
@@ -82,22 +85,17 @@ impl Worker {
         let (tx, rx) = mpsc::channel::<Request>();
         thread::spawn(move || {
             let (mut vm, resp) = discover_outcome(Device::discover());
+            let mut no_wheel_msg = no_wheel_message(&resp);
             on_response(resp);
             for req in rx {
                 if matches!(req, Request::Discover) {
                     let (new_vm, resp) = discover_outcome(Device::discover());
                     vm = new_vm;
+                    no_wheel_msg = no_wheel_message(&resp);
                     on_response(resp);
                     continue;
                 }
-                // If there is no device, drop the request rather than
-                // resend NoWheel per request (which would just repeat the
-                // same message); the UI should only be sending requests
-                // other than Discover once it has seen a non-NoWheel
-                // response, so this is not expected in practice.
-                if let Some(v) = &vm {
-                    handle(v, req, &on_response);
-                }
+                dispatch(&vm, &no_wheel_msg, req, &on_response);
             }
         });
         Worker { tx }
@@ -130,6 +128,32 @@ fn discover_outcome<S: SysfsIo>(result: Result<Device<S>, Error>) -> (Option<Vie
             }
         }
         Err(e) => (None, Response::NoWheel(e.to_string())),
+    }
+}
+
+/// The message the last discovery failure carried, for re-answering device
+/// requests that arrive while there is no wheel (see `dispatch`). Empty
+/// after a successful discovery, in which case it is never sent.
+fn no_wheel_message(resp: &Response) -> String {
+    match resp {
+        Response::NoWheel(msg) => msg.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Route one non-`Discover` request: with a device, `handle` runs it; with
+/// none, answer `NoWheel` (the shell stays fully navigable without a wheel
+/// now, so category loads DO arrive in this state; a reply keeps the UI's
+/// banner message fresh instead of leaving the request silently dropped).
+fn dispatch<S: SysfsIo>(
+    vm: &Option<ViewModel<S>>,
+    no_wheel_msg: &str,
+    req: Request,
+    on_response: &dyn Fn(Response),
+) {
+    match vm {
+        Some(v) => handle(v, req, on_response),
+        None => on_response(Response::NoWheel(no_wheel_msg.to_string())),
     }
 }
 
@@ -268,6 +292,37 @@ mod tests {
             matches!(&responses[0], Response::NoWheel(_)),
             "should return NoWheel when info() fails"
         );
+    }
+
+    #[test]
+    fn device_requests_without_a_wheel_answer_no_wheel() {
+        // The shell stays navigable with no wheel, so category loads keep
+        // arriving; each must get a NoWheel reply (with the discovery
+        // failure's message) instead of being silently dropped.
+        let vm: Option<ViewModel<FakeSysfs>> = None;
+        let responses = responses(|on_response| {
+            dispatch(&vm, "no wheel bound", Request::LoadCategory(Category::Ffb), on_response);
+            dispatch(&vm, "no wheel bound", Request::Refresh(Category::Info), on_response);
+        });
+        assert_eq!(responses.len(), 2);
+        for r in &responses {
+            match r {
+                Response::NoWheel(msg) => assert_eq!(msg, "no wheel bound"),
+                _ => panic!("expected NoWheel"),
+            }
+        }
+    }
+
+    #[test]
+    fn dispatch_with_a_wheel_delegates_to_handle() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_strength", "80");
+        let vm = Some(ViewModel::with_io(fs));
+        let responses =
+            responses(|on_response| dispatch(&vm, "", Request::LoadCategory(Category::Ffb), on_response));
+        assert_eq!(responses.len(), 1);
+        assert!(matches!(&responses[0], Response::Rows { .. }));
     }
 
     #[test]

@@ -21,12 +21,15 @@ export component App inherits Window {
     min-height: 480px;
     background: Palette.background;
 
-    // No-wheel screen: shown instead of the shell whenever the worker
-    // reports it cannot reach the device (nothing bound, unplugged mid
-    // session, ...). `retry-discover` re-attempts `Device::discover()`.
-    // Defaults to shown: the worker's first response (Info or NoWheel)
-    // settles which screen is right, and that reply arrives well before
-    // anyone could act on a flash of the wrong one.
+    // No-wheel state: the shell always shows (Setup, Test and the docs are
+    // useful without a wheel); when the worker reports it cannot reach the
+    // device (nothing bound, unplugged mid-session, ...) a slim banner
+    // appears under the header and the device categories show an empty
+    // state instead of their rows. `retry-discover` re-attempts
+    // `Device::discover()`; a wheel appearing later restores everything
+    // live. Defaults to on: the worker's first response (Info or NoWheel)
+    // settles it, and that reply arrives well before anyone could act on a
+    // flash of the wrong state.
     in property <bool> no-wheel: true;
     in property <string> no-wheel-message: "Looking for your wheel...";
     callback retry-discover();
@@ -178,46 +181,21 @@ export component App inherits Window {
     callback slot-text-set-name(int, string);
     callback slot-text-close();
 
-    // One unconditional root layout wraps both screens so their `if` branches
-    // are laid out (and stretched to fill) by it. A conditional element placed
-    // directly under a `Window` is positioned manually and never fills the
-    // window, regardless of any width/height/alignment set on it; the same
-    // element nested inside a layout fills normally. The editor overlays stay
-    // separate `Window` children: they size themselves to the window and paint
-    // on top of this shell.
+    // One unconditional root layout wraps the shell so conditional children
+    // (the no-wheel banner) are laid out (and stretched to fill) by it. A
+    // conditional element placed directly under a `Window` is positioned
+    // manually and never fills the window, regardless of any
+    // width/height/alignment set on it; the same element nested inside a
+    // layout fills normally. The editor overlays stay separate `Window`
+    // children: they size themselves to the window and paint on top of
+    // this shell.
     VerticalLayout {
-    if root.no-wheel: VerticalLayout {
-        alignment: center;
-        spacing: 12px;
-
-        Text {
-            text: "No wheel found";
-            font-size: 22px;
-            font-weight: 700;
-            color: Theme.text-color;
-            horizontal-alignment: center;
-        }
-        Text {
-            text: root.no-wheel-message;
-            color: Theme.muted-text-color;
-            horizontal-alignment: center;
-            wrap: word-wrap;
-        }
-        HorizontalLayout {
-            alignment: center;
-            Button {
-                text: "Retry";
-                width: 120px;
-                clicked => { root.retry-discover(); }
-            }
-        }
-    }
-
-    if !root.no-wheel: VerticalLayout {
         // Header: app name plus the mode toggle. A thin bottom divider
         // (rather than a background-color band) so it reads correctly against
         // every widget style's own background brush. Device identity (serial,
-        // firmware) is shown in the Info category, not here.
+        // firmware) is shown in the Info category, not here. The two device
+        // buttons grey out while no wheel is reachable; the shell itself
+        // stays up (Setup/Test work without a wheel).
         Rectangle {
             height: 52px;
 
@@ -237,11 +215,43 @@ export component App inherits Window {
 
                 Button {
                     text: root.mode-onboard ? "Mode: onboard" : "Mode: desktop";
+                    enabled: !root.no-wheel;
                     clicked => { root.toggle-mode(); }
                 }
                 Button {
                     text: "Refresh";
+                    enabled: !root.no-wheel;
                     clicked => { root.refresh(); }
+                }
+            }
+
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Palette.border;
+            }
+        }
+
+        // No-wheel banner: slim, under the header, with the discovery
+        // error and a Retry button. The rest of the shell stays usable.
+        if root.no-wheel: Rectangle {
+            background: Theme.panel-background;
+
+            HorizontalLayout {
+                padding: Theme.gutter;
+                spacing: Theme.gutter;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: "No compatible wheel found - connect the wheel and press Retry. ("
+                        + root.no-wheel-message + ")";
+                    color: Theme.text-color;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+                Button {
+                    text: "Retry";
+                    clicked => { root.retry-discover(); }
                 }
             }
 
@@ -364,7 +374,27 @@ export component App inherits Window {
                     color: Theme.text-color;
                 }
 
-                if root.selected-category != root.setup-index && root.selected-category != root.test-index: SettingsList {
+                // Without a wheel a device category shows a short empty
+                // state instead of its rows (the worker has nothing to
+                // read); Setup and Test above stay fully functional.
+                if root.selected-category != root.setup-index && root.selected-category != root.test-index && root.no-wheel: VerticalLayout {
+                    vertical-stretch: 1;
+                    alignment: start;
+                    spacing: 6px;
+
+                    Text {
+                        text: "No wheel connected.";
+                        font-weight: 600;
+                        color: Theme.text-color;
+                    }
+                    Text {
+                        text: "These settings become available when a compatible wheel is found. Connect the wheel and press Retry in the banner above. Setup and Test work without a wheel.";
+                        color: Theme.muted-text-color;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.selected-category != root.setup-index && root.selected-category != root.test-index && !root.no-wheel: SettingsList {
                     // Claim all the vertical space left under the category
                     // title so the list (and its background/scrollbar) reaches
                     // the bottom of the window. Without this the ListView only
@@ -410,7 +440,6 @@ export component App inherits Window {
                 }
             }
         }
-    }
     }
 
     // Painted last so it sits on top of the shell above.
