@@ -17,19 +17,19 @@ elsewhere), so the same package builds on Fedora targets too.
 - `_service` - pulls the tagged source tarball from GitHub. Bump `revision`
   and `version` together on each release.
 
-The userspace binaries (`logi-ffb`, `logi-dd`, `logi-dd-gui`,
-`logi-tf-sim`) are built with
-`cargo`, which needs build-time network access to fetch crate dependencies
-(nothing is vendored), so the OBS project must have build networking
-enabled.
+The userspace binaries ship as layered subpackages, driver <- `logi-dd`
+(the TUI, `logi-ffb`, `logi-tf-sim`, and the shim installer: the complete
+headless install) <- `logi-dd-gui` (the graphical settings app with
+desktop entry and icon). They are built with `cargo`, which needs
+build-time network access to fetch crate dependencies (nothing is
+vendored), so the OBS project must have build networking enabled.
 
 `logi-dd-gui` is a Slint GUI and is GPL-3.0-or-later (the rest of the
-driver is GPL-2.0-only), so `logitech-trueforce-tools`' `License` states
-both. Its runtime needs a windowing/rendering stack (Wayland/X11,
-xkbcommon, GL/EGL); the spec's distro-conditional `Requires` cover both
-openSUSE and Fedora package names. Both targets ship a rustc new enough
-for Slint's MSRV (1.92), so, unlike the Debian package, no version guard
-is needed here.
+driver is GPL-2.0-only); each subpackage carries its own `License`. The
+GUI's runtime needs a windowing/rendering stack (Wayland/X11, xkbcommon,
+GL/EGL); the `logi-dd-gui` subpackage's distro-conditional `Requires`
+cover both openSUSE and Fedora package names, so headless installs stay
+lean. Both targets ship a rustc new enough for Slint's MSRV (1.92).
 
 ## Automated publishing
 

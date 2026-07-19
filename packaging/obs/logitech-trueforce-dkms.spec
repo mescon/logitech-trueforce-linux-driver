@@ -1,10 +1,11 @@
 # DKMS RPM for the Open Build Service (openSUSE Tumbleweed/Leap and Fedora).
-# Main package is noarch: it ships only the module source; DKMS compiles on
-# the user's machine and rebuilds on kernel updates. The same source,
-# dkms.conf, and udev rule as every other channel; the module builds as
-# hid-logitech-dd. The userspace companions (logi-ffb, logi-dd) are
-# ordinary compiled binaries, so they ship in an arch-specific -tools
-# subpackage instead of joining the noarch main package.
+# Main package is noarch: it ships only the module source + udev rules;
+# DKMS compiles on the user's machine and rebuilds on kernel updates. The
+# same source, dkms.conf, and udev rules as every other channel; the module
+# builds as hid-logitech-dd. The userspace companions are ordinary compiled
+# binaries, shipped as layered subpackages: driver <- logi-dd (TUI,
+# logi-ffb, logi-tf-sim, shim installer; the complete headless install)
+# <- logi-dd-gui (graphical settings app + desktop entry).
 %global module   logitech-trueforce
 %global modver   0.12.1
 
@@ -27,7 +28,10 @@ BuildRequires:  gcc, make
 # Fedora, no %if split needed.
 BuildRequires:  pkgconfig(fontconfig)
 Requires:       dkms >= 2.1.0.0
-Requires:       logitech-trueforce-tools
+# The pre-split package pulled the userspace tools in hard; recommending
+# logi-dd keeps "install the driver, get the ecosystem" while still
+# allowing a lean module-only install.
+Recommends:     logi-dd
 Requires(post): dkms
 Requires(preun): dkms
 # The user needs kernel headers + a compiler for DKMS to build against.
@@ -54,11 +58,27 @@ TrueForce in Proton sims additionally needs Logitech's proprietary signed SDK
 DLLs, which are not shipped by this package; see the bundled Getting Started
 guide.
 
-# logi-ffb/logi-dd are GPL-2.0-only (the main package's License); logi-dd-gui
-# is GPL-3.0-or-later, so this subpackage carries both.
-%package -n logitech-trueforce-tools
-Summary:        Userspace tools for the Logitech direct-drive wheel driver
-License:        GPL-2.0-only AND GPL-3.0-or-later
+# Layered userspace subpackages: driver <- logi-dd (the complete headless
+# install) <- logi-dd-gui. logi-ffb/logi-dd/logi-tf-sim are GPL-2.0-only
+# (the main package's License); logi-dd-gui is GPL-3.0-or-later.
+%package -n logi-dd
+Summary:        Terminal tools for the Logitech direct-drive wheel driver
+License:        GPL-2.0-only
+Requires:       logitech-trueforce-dkms
+# The shim installer edits the wine prefix registry with python3.
+Recommends:     python3
+
+%description -n logi-dd
+The complete headless toolset for the Logitech direct-drive wheel driver:
+logi-dd, a terminal settings UI, logi-ffb, a DirectInput force-feedback
+proxy, logi-tf-sim, a simulated-TrueForce daemon driven by game telemetry,
+and logitech-trueforce-install-shim, the TrueForce SDK shim installer for
+Proton prefixes.
+
+%package -n logi-dd-gui
+Summary:        Graphical settings app for the Logitech direct-drive wheel driver
+License:        GPL-3.0-or-later
+Requires:       logi-dd
 # Owns the hicolor icon directories the GUI's launcher icon lands in.
 Requires:       hicolor-icon-theme
 # logi-dd-gui (Slint GUI) runtime stack: windowing (Wayland/X11), input
@@ -98,13 +118,10 @@ Requires:       fontconfig
 Requires:       freetype
 %endif
 
-%description -n logitech-trueforce-tools
-logi-ffb, a DirectInput force-feedback proxy, logi-dd, a terminal settings
-UI, logi-tf-sim, a simulated-TrueForce daemon driven by game telemetry,
-and logi-dd-gui, a graphical settings app (GPL-3.0-or-later, with a
-desktop menu entry), for the Logitech direct-drive wheel driver. Includes
-the udev rule granting the "input" group access to /dev/uhid, which
-logi-ffb needs to create its virtual force-feedback device.
+%description -n logi-dd-gui
+logi-dd-gui, a graphical settings app (GPL-3.0-or-later, with a desktop
+menu entry) for the Logitech direct-drive wheel driver: wheel settings,
+LIGHTSYNC, response curves, game-helper setup pages, and a test section.
 
 %prep
 %autosetup -n logitech-trueforce-linux-driver-%{version}
@@ -129,44 +146,48 @@ install -m 0644 mainline/hid-logitech-hidpp.c mainline/hid-ids.h \
 sed 's/@PKGVER@/%{modver}/' packaging/aur/logitech-trueforce-dkms/dkms.conf \
     > %{buildroot}%{_usrsrc}/%{module}-%{modver}/dkms.conf
 echo "v%{modver}" > %{buildroot}%{_usrsrc}/%{module}-%{modver}/.git_hash
-# udev rule: hand the wheel's sysfs + hidraw nodes to the input group.
+# udev rules: hand the wheel's sysfs + hidraw nodes, and /dev/uhid for the
+# logi-ffb virtual-device proxy, to the input group. Both ship with the
+# driver package.
 install -D -m 0644 udev/70-logitech-trueforce.rules \
     %{buildroot}%{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules
+install -D -m 0644 udev/71-logi-ffb-uhid.rules \
+    %{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
+# Headless toolset (the logi-dd subpackage).
+install -D -m 0755 userspace/logi-dd/target/release/logi-dd \
+    %{buildroot}%{_bindir}/logi-dd
+install -D -m 0755 userspace/logi-dd/target/release/logi-ffb \
+    %{buildroot}%{_bindir}/logi-ffb
+install -D -m 0755 userspace/logi-dd/target/release/logi-tf-sim \
+    %{buildroot}%{_bindir}/logi-tf-sim
 # TrueForce-in-Proton shim installer (no-op without the proprietary SDK DLLs).
 install -D -m 0755 tools/install-tf-shim.sh \
     %{buildroot}%{_bindir}/logitech-trueforce-install-shim
-# Userspace binaries + their udev rule ship in the -tools subpackage.
-install -D -m 0755 userspace/logi-dd/target/release/logi-ffb \
-    %{buildroot}%{_bindir}/logi-ffb
-install -D -m 0755 userspace/logi-dd/target/release/logi-dd \
-    %{buildroot}%{_bindir}/logi-dd
+# The GUI + its desktop integration (the logi-dd-gui subpackage).
 install -D -m 0755 userspace/logi-dd/target/release/logi-dd-gui \
     %{buildroot}%{_bindir}/logi-dd-gui
-install -D -m 0755 userspace/logi-dd/target/release/logi-tf-sim \
-    %{buildroot}%{_bindir}/logi-tf-sim
-# Desktop integration for the GUI.
 install -D -m 0644 desktop/logi-dd-gui.desktop \
     %{buildroot}%{_datadir}/applications/logi-dd-gui.desktop
 install -D -m 0644 desktop/logi-dd-gui.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/logi-dd-gui.svg
-install -D -m 0644 udev/71-logi-ffb-uhid.rules \
-    %{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
 
 %files
 %license COPYING
 %doc README.md docs/GETTING_STARTED.md
 %{_usrsrc}/%{module}-%{modver}/
 %{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules
+%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
+
+%files -n logi-dd
+%{_bindir}/logi-dd
+%{_bindir}/logi-ffb
+%{_bindir}/logi-tf-sim
 %{_bindir}/logitech-trueforce-install-shim
 
-%files -n logitech-trueforce-tools
-%{_bindir}/logi-ffb
-%{_bindir}/logi-dd
+%files -n logi-dd-gui
 %{_bindir}/logi-dd-gui
-%{_bindir}/logi-tf-sim
 %{_datadir}/applications/logi-dd-gui.desktop
 %{_datadir}/icons/hicolor/scalable/apps/logi-dd-gui.svg
-%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
 
 %post
 dkms add -m %{module} -v %{modver} --rpm_safe_upgrade >/dev/null 2>&1 || true
@@ -181,9 +202,10 @@ dkms remove -m %{module} -v %{modver} --all --rpm_safe_upgrade >/dev/null 2>&1 |
 
 %changelog
 * Sat Jul 18 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.15.0-1
-- Add a logitech-trueforce-tools subpackage with logi-ffb (DirectInput
-  force-feedback proxy), logi-dd (settings TUI), logi-dd-gui (graphical
-  settings app, GPL-3.0-or-later, with desktop entry and icon), and
-  logi-tf-sim (simulated-TrueForce daemon), built from the
-  userspace/logi-dd Rust workspace, plus the udev rule for /dev/uhid
-  access and the GUI's windowing/rendering runtime dependencies.
+- Ship the userspace ecosystem as layered subpackages: logi-dd (settings
+  TUI, logi-ffb DirectInput force-feedback proxy, logi-tf-sim
+  simulated-TrueForce daemon, and the TrueForce SDK shim installer;
+  requires the driver package, which now carries both udev rules) and
+  logi-dd-gui (graphical settings app, GPL-3.0-or-later, with desktop
+  entry, icon, and the GUI's windowing/rendering runtime dependencies;
+  requires logi-dd). Built from the userspace/logi-dd Rust workspace.
