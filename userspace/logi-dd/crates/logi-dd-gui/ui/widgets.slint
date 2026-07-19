@@ -25,6 +25,10 @@ import { Theme } from "theme.slint";
 //   13 = LIGHTSYNC edit-slot button (opens the slot editor overlay via
 //                 edit-rgb; enabled only while `bool-value` says a CUSTOM
 //                 effect is active)
+//   14 = per-axis shaping toggle (Switch labelled with the control the
+//                 axis currently shows: "Sensitivity" off, "Curve" on;
+//                 commits via edit-switch, intercepted as view state on
+//                 the Rust side)
 export struct SettingRow {
     attr: string,
     label: string,
@@ -255,6 +259,21 @@ export component SettingsList inherits ListView {
                     }
 
                     if row.kind == 3: Switch {
+                        checked: row.bool-value;
+                        enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.checked = row.bool-value; }
+                        toggled => { edit-switch(row.attr, self.checked); }
+                    }
+
+                    // The per-axis shaping toggle: same Switch as kind 3,
+                    // plus a label naming the control the axis currently
+                    // shows. The Rust side intercepts its attr as pure
+                    // view state (never a device write).
+                    if row.kind == 14: Switch {
+                        text: self.checked ? "Curve" : "Sensitivity";
                         checked: row.bool-value;
                         enabled: row.available && row.mode-ok;
                         // Re-assert on every model push; see

@@ -92,13 +92,15 @@ pub struct App<S: SysfsIo> {
     /// The TrueForce SDK shim installer's resolved binary name, or `None` if
     /// neither candidate name was found on `PATH` at startup.
     pub shim_binary: Option<&'static str>,
-    /// The Advanced shaping view toggle: pure per-session view state (never
-    /// persisted, never a sysfs write). While off (simple, the default) the
-    /// Steering/Pedals pages show the sensitivity rows and hide the curve
-    /// rows; while on, the other way around. Deadzones show either way.
-    /// Rendered as a synthetic first row (`shaping::TOGGLE_ATTR`) on those
-    /// pages; Enter on that row or 'a' anywhere on the page flips it.
-    pub advanced_shaping: bool,
+    /// The per-axis shaping view toggles: pure per-session view state
+    /// (never persisted, never a sysfs write). While an axis's toggle is
+    /// off (simple, the default) its block shows the sensitivity row and
+    /// hides the curve row; while on, the other way around. Deadzones show
+    /// either way. Each axis is rendered as a synthetic toggle row
+    /// (`shaping::toggle_attr`) heading its block on the Steering/Pedals
+    /// pages; Enter on that row (or 'a' anywhere in the axis's block)
+    /// flips it.
+    pub shaping_toggles: shaping::AxisToggles,
     /// The SDK folder every per-game install passes as `--sdk-dir`; see
     /// `resolve_sdk_dir` for the startup value, `s` in the Setup view to
     /// edit it.
@@ -141,7 +143,7 @@ impl<S: SysfsIo> App<S> {
             curve_edit: None,
             effect_edit: None,
             quit: false,
-            advanced_shaping: false,
+            shaping_toggles: shaping::AxisToggles::default(),
             ffb_found: found_on_path("logi-ffb"),
             shim_binary: resolve_shim_binary(),
             sdk_dir: resolve_sdk_dir(),
@@ -213,45 +215,70 @@ impl<S: SysfsIo> App<S> {
         }
     }
 
-    /// Compose a category's rows for the advanced-shaping toggle: when any
+    /// Compose a category's rows for the per-axis shaping toggles: when any
     /// row is a shaping generator (a sensitivity or a curve; see
-    /// `shaping::role`), prepend the synthetic toggle row and keep only the
-    /// rows `shaping::visible` allows in the current state (simple hides
-    /// curves, advanced hides sensitivities, deadzones and everything else
-    /// stay). Rows for a category with no shaping generators pass through
-    /// untouched, so `reload` can call this unconditionally, matching the
-    /// GUI's `compose_shaping`.
-    fn shaping_rows(&self, mut rows: Vec<Row>) -> Vec<Row> {
+    /// `shaping::role`), insert each axis's synthetic toggle row right
+    /// before that axis's first row (its block heading) and keep only the
+    /// rows `shaping::visible` allows for the current toggles (an axis on
+    /// sensitivity hides its curve, an axis on the curve hides its
+    /// sensitivity, deadzones and everything else stay). Rows for a
+    /// category with no shaping generators pass through untouched, so
+    /// `reload` can call this unconditionally, matching the GUI's
+    /// `compose_shaping`.
+    fn shaping_rows(&self, rows: Vec<Row>) -> Vec<Row> {
         if !rows.iter().any(|r| shaping::role(r.attr) != ShapingRole::Neutral) {
             return rows;
         }
-        let mut out = Vec::with_capacity(rows.len() + 1);
-        out.push(Row {
-            attr: shaping::TOGGLE_ATTR,
-            label: shaping::TOGGLE_LABEL,
-            available: true,
-            value: Ok(Value::Bool(self.advanced_shaping)),
-        });
-        out.extend(rows.drain(..).filter(|r| shaping::visible(r.attr, self.advanced_shaping)));
+        let mut out = Vec::with_capacity(rows.len() + shaping::Axis::ALL.len());
+        let mut headed: Vec<shaping::Axis> = Vec::new();
+        for row in rows {
+            if let Some(ax) = shaping::axis(row.attr) {
+                if !headed.contains(&ax) {
+                    headed.push(ax);
+                    out.push(Row {
+                        attr: shaping::toggle_attr(ax),
+                        label: shaping::toggle_label(ax),
+                        available: true,
+                        value: Ok(Value::Bool(self.shaping_toggles.get(ax))),
+                    });
+                }
+            }
+            if shaping::visible(row.attr, self.shaping_toggles) {
+                out.push(row);
+            }
+        }
         out
     }
 
-    /// Whether the on-screen category carries the advanced-shaping toggle
-    /// row (Steering and Pedals do).
+    /// Whether the on-screen category carries any shaping toggle rows
+    /// (Steering and Pedals do).
     pub fn has_shaping_toggle(&self) -> bool {
-        self.rows.iter().any(|r| r.attr == shaping::TOGGLE_ATTR)
+        self.rows.iter().any(|r| shaping::toggle_axis(r.attr).is_some())
     }
 
-    /// Flip the advanced-shaping view toggle and re-compose the page. Pure
+    /// Flip one axis's shaping view toggle and re-compose the page. Pure
     /// view state: nothing is written to the device.
-    pub fn toggle_shaping(&mut self) {
-        self.advanced_shaping = !self.advanced_shaping;
-        self.status = if self.advanced_shaping {
-            "Advanced shaping: on (curve editors replace sensitivity)".to_string()
-        } else {
-            "Advanced shaping: off (simple sensitivity controls)".to_string()
-        };
+    pub fn toggle_shaping(&mut self, axis: shaping::Axis) {
+        self.shaping_toggles.toggle(axis);
+        self.status = format!(
+            "{}: {}",
+            shaping::toggle_label(axis),
+            if self.shaping_toggles.get(axis) { "curve editor" } else { "sensitivity" }
+        );
         self.reload();
+    }
+
+    /// Flip the shaping toggle for the axis the selected row belongs to
+    /// (the 'a' shortcut): works on an axis's toggle row and on any of its
+    /// sensitivity/deadzone/curve rows; a row with no axis does nothing.
+    pub fn toggle_selected_axis(&mut self) {
+        let Some(axis) = self
+            .selected()
+            .and_then(|r| shaping::toggle_axis(r.attr).or_else(|| shaping::axis(r.attr)))
+        else {
+            return;
+        };
+        self.toggle_shaping(axis);
     }
 
     fn led_row(&self, attr: &'static str, label: &'static str) -> Row {
@@ -413,10 +440,10 @@ impl<S: SysfsIo> App<S> {
             Some(row) => (row.attr, row.label),
             None => return,
         };
-        // The Advanced shaping row is view state, not a device attribute:
+        // A per-axis shaping row is view state, not a device attribute:
         // Enter flips it in place (same as the 'a' shortcut), no editor.
-        if attr == shaping::TOGGLE_ATTR {
-            self.toggle_shaping();
+        if let Some(axis) = shaping::toggle_axis(attr) {
+            self.toggle_shaping(axis);
             return;
         }
         let Some(spec) = Device::<S>::spec(attr) else { return };
@@ -755,9 +782,10 @@ impl<S: SysfsIo> App<S> {
             Char('q') => self.quit = true,
             Char('r') => self.reload(),
             Char('d') => self.toggle_mode(),
-            // Only meaningful on a page that carries the toggle row
-            // (Steering/Pedals); a plain typo elsewhere does nothing.
-            Char('a') if self.has_shaping_toggle() => self.toggle_shaping(),
+            // Only meaningful on a row that belongs to a shaping axis (a
+            // toggle row or one of the axis's own rows); a plain typo
+            // elsewhere does nothing.
+            Char('a') => self.toggle_selected_axis(),
             Up => self.move_row(-1),
             Down => self.move_row(1),
             Left => self.move_cat(-1),
@@ -850,9 +878,9 @@ mod tests {
         fs.set("wheel_throttle_curve", "0/64 points loaded (0 = built-in curve)");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
-        // Curve rows only show in advanced shaping mode (the default is the
-        // simple sensitivity view).
-        a.advanced_shaping = true;
+        // A curve row only shows while its axis's shaping toggle is on (the
+        // default is the simple sensitivity view).
+        a.shaping_toggles.set(shaping::Axis::Throttle, true);
         a.reload();
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_throttle_curve").unwrap();
         a
@@ -1316,13 +1344,21 @@ mod tests {
     }
 
     #[test]
-    fn shaping_toggle_is_the_first_row_of_steering_and_pedals_only() {
+    fn shaping_toggles_head_each_axis_block_on_steering_and_pedals_only() {
+        use shaping::Axis;
         let a = steering_app();
-        assert_eq!(a.rows[0].attr, shaping::TOGGLE_ATTR);
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        // The steering toggle heads the axis block (right before the
+        // sensitivity row), not the whole page.
+        let toggle = attrs.iter().position(|a| *a == shaping::toggle_attr(Axis::Steering)).unwrap();
+        assert_eq!(attrs[toggle + 1], "wheel_sensitivity");
         let mut p = steering_app();
         p.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
         p.reload();
-        assert_eq!(p.rows[0].attr, shaping::TOGGLE_ATTR);
+        let pattrs: Vec<&str> = p.rows.iter().map(|r| r.attr).collect();
+        for ax in [Axis::Throttle, Axis::Brake, Axis::Clutch, Axis::Handbrake] {
+            assert!(pattrs.contains(&shaping::toggle_attr(ax)), "missing {ax:?} toggle");
+        }
         let ffb = app(); // first category, Ffb
         assert!(!ffb.has_shaping_toggle(), "Ffb has no shaping generators");
     }
@@ -1336,46 +1372,48 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_the_toggle_row_switches_to_advanced_without_a_device_write() {
+    fn enter_on_a_toggle_row_switches_its_axis_without_a_device_write() {
         use crossterm::event::KeyCode;
         let mut a = steering_app();
-        a.row_idx = 0;
+        a.row_idx =
+            a.rows.iter().position(|r| r.attr == shaping::toggle_attr(shaping::Axis::Steering)).unwrap();
         a.on_key(KeyCode::Enter);
-        assert!(a.advanced_shaping);
+        assert!(a.shaping_toggles.get(shaping::Axis::Steering));
         assert!(a.edit.is_none(), "no inline editor opens");
         let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
         assert!(attrs.contains(&"wheel_response_curve"));
         assert!(!attrs.contains(&"wheel_sensitivity"));
         // Pure view state: the reserved attr never reaches the device.
-        assert!(a.device.read(shaping::TOGGLE_ATTR).is_err());
+        assert!(a.device.read(shaping::toggle_attr(shaping::Axis::Steering)).is_err());
     }
 
     #[test]
-    fn a_key_toggles_from_anywhere_on_a_shaping_page_and_back() {
+    fn a_key_toggles_the_selected_rows_axis_and_back() {
         use crossterm::event::KeyCode;
         let mut a = steering_app();
-        a.row_idx = a.rows.len() - 1; // not on the toggle row
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_sensitivity").unwrap();
         a.on_key(KeyCode::Char('a'));
-        assert!(a.advanced_shaping);
+        assert!(a.shaping_toggles.get(shaping::Axis::Steering));
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_response_curve").unwrap();
         a.on_key(KeyCode::Char('a'));
-        assert!(!a.advanced_shaping);
+        assert!(!a.shaping_toggles.get(shaping::Axis::Steering));
         let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
-        assert!(attrs.contains(&"wheel_sensitivity"), "back to simple mode");
+        assert!(attrs.contains(&"wheel_sensitivity"), "back to the simple view");
     }
 
     #[test]
-    fn a_key_does_nothing_on_a_page_without_the_toggle() {
+    fn a_key_does_nothing_on_a_row_without_an_axis() {
         use crossterm::event::KeyCode;
         let mut a = app(); // Ffb
         let before: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
         a.on_key(KeyCode::Char('a'));
-        assert!(!a.advanced_shaping);
+        assert_eq!(a.shaping_toggles, shaping::AxisToggles::default());
         let after: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
         assert_eq!(before, after);
     }
 
     #[test]
-    fn advanced_mode_pedals_keeps_deadzones_both_ways() {
+    fn pedal_axes_toggle_independently_and_keep_deadzones() {
         let mut a = steering_app();
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
         a.reload();
@@ -1383,23 +1421,34 @@ mod tests {
         assert!(simple.contains(&"wheel_throttle_deadzone"));
         assert!(simple.contains(&"wheel_throttle_sensitivity"));
         assert!(!simple.contains(&"wheel_throttle_curve"));
-        a.toggle_shaping();
-        let advanced: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
-        assert!(advanced.contains(&"wheel_throttle_deadzone"));
-        assert!(advanced.contains(&"wheel_throttle_curve"));
-        assert!(advanced.contains(&"wheel_handbrake_curve"));
-        assert!(!advanced.iter().any(|a| a.ends_with("_sensitivity")));
+        // Brake to the curve view; the throttle stays on sensitivity.
+        a.toggle_shaping(shaping::Axis::Brake);
+        let mixed: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert!(mixed.contains(&"wheel_brake_curve"));
+        assert!(!mixed.contains(&"wheel_brake_sensitivity"));
+        assert!(mixed.contains(&"wheel_brake_deadzone"));
+        assert!(mixed.contains(&"wheel_throttle_sensitivity"));
+        assert!(!mixed.contains(&"wheel_throttle_curve"));
+        // Every axis on the curve view: no sensitivities remain.
+        for ax in [shaping::Axis::Throttle, shaping::Axis::Clutch, shaping::Axis::Handbrake] {
+            a.toggle_shaping(ax);
+        }
+        let curves: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        assert!(curves.contains(&"wheel_throttle_curve"));
+        assert!(curves.contains(&"wheel_handbrake_curve"));
+        assert!(curves.contains(&"wheel_clutch_deadzone"));
+        assert!(!curves.iter().any(|a| a.ends_with("_sensitivity")));
     }
 
     #[test]
     fn shaping_state_survives_a_category_round_trip() {
         let mut a = steering_app();
-        a.toggle_shaping();
-        assert!(a.advanced_shaping);
+        a.toggle_shaping(shaping::Axis::Steering);
+        assert!(a.shaping_toggles.get(shaping::Axis::Steering));
         a.move_cat(-1); // away to Ffb
         a.move_cat(1); // and back to Steering
         let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
-        assert!(attrs.contains(&"wheel_response_curve"), "still advanced after navigation");
+        assert!(attrs.contains(&"wheel_response_curve"), "still the curve view after navigation");
     }
 
     #[test]

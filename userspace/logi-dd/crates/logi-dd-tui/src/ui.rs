@@ -106,14 +106,11 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
 
                 let (val, mut val_style) = if !row.available {
                     ("(not on this wheel)".to_string(), Style::default().fg(Color::DarkGray))
-                } else if row.attr == shaping::TOGGLE_ATTR {
-                    // The synthetic view toggle (no registry spec): show
-                    // which shaping controls the page currently offers.
-                    let advanced = matches!(row.value, Ok(Value::Bool(true)));
-                    (
-                        (if advanced { "on (curves)" } else { "off (sensitivity)" }).to_string(),
-                        value_style(false, false),
-                    )
+                } else if shaping::toggle_axis(row.attr).is_some() {
+                    // A synthetic per-axis view toggle (no registry spec):
+                    // show which shaping control the axis currently offers.
+                    let curve = matches!(row.value, Ok(Value::Bool(true)));
+                    ((if curve { "curve" } else { "sensitivity" }).to_string(), value_style(false, false))
                 } else if row.attr == "wheel_profile" {
                     // show the profile number with its onboard name
                     let n = match (editing.map(|e| &e.draft), &row.value) {
@@ -207,12 +204,12 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         } else {
             "Enter start/stop monitor   f force feedback sim   t TrueForce texture sim   r rescan   <-/-> category   q quit"
         }
-    } else if app.selected().map(|r| r.attr) == Some(shaping::TOGGLE_ATTR) {
-        // The toggle row's help explains why the page shows only one of
-        // the two shaping controls, same text the GUI row carries.
+    } else if app.selected().is_some_and(|r| shaping::toggle_axis(r.attr).is_some()) {
+        // A toggle row's help explains why each axis shows only one of
+        // the two shaping controls, same text the GUI rows carry.
         shaping::TOGGLE_HELP
     } else if app.has_shaping_toggle() {
-        "up/down select   <-/-> category   Enter edit   a advanced shaping   d desktop/onboard   r refresh   q quit"
+        "up/down select   <-/-> category   Enter edit   a sensitivity/curve for this axis   d desktop/onboard   r refresh   q quit"
     } else {
         "up/down select   <-/-> category   Enter edit   d toggle desktop/onboard   r refresh   q quit"
     };

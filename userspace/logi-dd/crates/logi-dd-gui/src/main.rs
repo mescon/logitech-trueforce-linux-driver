@@ -154,7 +154,7 @@ fn load_rows(
     rows: &[viewmodel::Row],
     profile_names: &[String],
     led_names: &[String],
-    advanced_shaping: bool,
+    shaping_toggles: shaping::AxisToggles,
 ) {
     let mut items = bridge::setting_rows(rows);
     for item in items.iter_mut() {
@@ -167,10 +167,10 @@ fn load_rows(
     // button instead of the registry's raw row-per-attr list.
     let items = bridge::compose_lightsync(items, led_names);
     // A no-op for every category without shaping generators (see
-    // `compose_shaping`'s doc): Steering and Pedals get the Advanced
-    // shaping toggle row on top and show either the sensitivity rows or
-    // the curve rows, never both.
-    let items = bridge::compose_shaping(items, advanced_shaping);
+    // `compose_shaping`'s doc): Steering and Pedals get a per-axis shaping
+    // toggle row heading each axis block, and each axis shows either its
+    // sensitivity row or its curve row, never both.
+    let items = bridge::compose_shaping(items, shaping_toggles);
     let model = app.get_rows();
     if model.row_count() == items.len() {
         for (i, mut item) in items.into_iter().enumerate() {
@@ -656,11 +656,11 @@ fn main() -> Result<(), slint::PlatformError> {
     // the plain "CUSTOM N" fallback.
     let led_slot_names: Arc<Mutex<Vec<String>>> =
         Arc::new(Mutex::new(vec![String::new(); lightsync::CUSTOM_SLOTS]));
-    // The Advanced shaping view toggle: pure per-session view state (never
+    // The per-axis shaping view toggles: pure per-session view state (never
     // persisted, never a sysfs write). Read when composing rows; flipped by
-    // the synthetic `shaping::TOGGLE_ATTR` row's Switch, which `edit-switch`
-    // intercepts below.
-    let advanced_shaping = Arc::new(Mutex::new(false));
+    // the synthetic `shaping::toggle_attr` rows' Switches, which
+    // `edit-switch` intercepts below.
+    let shaping_toggles = Arc::new(Mutex::new(shaping::AxisToggles::default()));
     // The current category's last full (unfiltered) row list, kept so the
     // shaping toggle can re-compose the page locally, without a worker
     // round trip: the visible model only holds the filtered rows, so
@@ -684,7 +684,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let known_values = known_values.clone();
         let led_slot_names = led_slot_names.clone();
         let slot_text_editor = slot_text_editor.clone();
-        let advanced_shaping = advanced_shaping.clone();
+        let shaping_toggles = shaping_toggles.clone();
         let last_rows = last_rows.clone();
         Worker::spawn(move |response| {
             let app_weak = app_weak.clone();
@@ -693,7 +693,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let known_values = known_values.clone();
             let led_slot_names = led_slot_names.clone();
             let slot_text_editor = slot_text_editor.clone();
-            let advanced_shaping = advanced_shaping.clone();
+            let shaping_toggles = shaping_toggles.clone();
             let last_rows = last_rows.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(app) = app_weak.upgrade() else { return };
@@ -742,7 +742,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             &rows,
                             &profile_names(&known_values),
                             &led_names,
-                            get(&advanced_shaping),
+                            get(&shaping_toggles),
                         );
                     }
                     Response::RowUpdated { category, row, error } => {
@@ -926,21 +926,25 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let worker = worker.clone();
         let current_category = current_category.clone();
-        let advanced_shaping = advanced_shaping.clone();
+        let shaping_toggles = shaping_toggles.clone();
         let last_rows = last_rows.clone();
         let known_values = known_values.clone();
         let led_slot_names = led_slot_names.clone();
         let app_weak = app.as_weak();
         app.on_edit_switch(move |attr, value| {
-            // The Advanced shaping row is view state, not a device
-            // attribute: flip the flag and re-compose the current rows
-            // from the unfiltered cache, without a worker round trip.
-            if attr == shaping::TOGGLE_ATTR {
-                set(&advanced_shaping, value);
+            // A per-axis shaping row is view state, not a device attribute:
+            // flip that axis's flag and re-compose the current rows from
+            // the unfiltered cache, without a worker round trip.
+            if let Some(axis) = shaping::toggle_axis(&attr) {
+                let toggles = {
+                    let mut guard = shaping_toggles.lock().unwrap();
+                    guard.set(axis, value);
+                    *guard
+                };
                 let Some(app) = app_weak.upgrade() else { return };
                 let led_names = led_slot_names.lock().unwrap().clone();
                 let rows = last_rows.lock().unwrap();
-                load_rows(&app, &rows, &profile_names(&known_values), &led_names, value);
+                load_rows(&app, &rows, &profile_names(&known_values), &led_names, toggles);
                 return;
             }
             worker.request(Request::Edit {

@@ -52,6 +52,11 @@ pub const KIND_LIGHT_EFFECT: i32 = 12;
 /// opens the slot editor overlay. Never produced by `kind_tag`; the row
 /// does not exist in the registry.
 pub const KIND_LIGHT_SLOT: i32 = 13;
+/// A per-axis shaping toggle row `compose_shaping` inserts: a Switch whose
+/// own label reads "Sensitivity" (off) or "Curve" (on). Never produced by
+/// `kind_tag`; the row does not exist in the registry (its attr is
+/// `shaping::toggle_attr`'s reserved `ui:` name, intercepted in `main.rs`).
+pub const KIND_SHAPING: i32 = 14;
 
 /// The synthetic "Edit slot" row's attr. Not a sysfs attribute: it only
 /// exists so the row can be found in the model (`update_row`'s
@@ -276,21 +281,21 @@ pub fn compose_lightsync(items: Vec<SettingRow>, slot_names: &[String]) -> Vec<S
     out
 }
 
-/// Build the synthetic "Advanced shaping" toggle row `compose_shaping`
-/// prepends. A plain `KIND_TOGGLE` row wearing the reserved
-/// `shaping::TOGGLE_ATTR` attr: the Switch commits through the same
-/// `edit-switch` callback every real toggle uses, and `main.rs` intercepts
-/// that attr there to flip its local view state instead of sending a
-/// worker request (the toggle is pure view state, never a device write).
-fn shaping_toggle_row(advanced: bool) -> SettingRow {
+/// Build one synthetic per-axis shaping toggle row `compose_shaping`
+/// inserts. A `KIND_SHAPING` Switch wearing that axis's reserved
+/// `shaping::toggle_attr` attr: it commits through the same `edit-switch`
+/// callback every real toggle uses, and `main.rs` intercepts those attrs
+/// there to flip its local view state instead of sending a worker request
+/// (the toggles are pure view state, never a device write).
+fn shaping_toggle_row(axis: shaping::Axis, curve: bool) -> SettingRow {
     SettingRow {
-        attr: shaping::TOGGLE_ATTR.into(),
-        label: shaping::TOGGLE_LABEL.into(),
+        attr: shaping::toggle_attr(axis).into(),
+        label: shaping::toggle_label(axis).into(),
         help: shaping::TOGGLE_HELP.into(),
-        kind: KIND_TOGGLE,
+        kind: KIND_SHAPING,
         int_value: 0,
         int_value2: 0,
-        bool_value: advanced,
+        bool_value: curve,
         text_value: slint::SharedString::new(),
         display: slint::SharedString::new(),
         choices: slint::ModelRc::new(slint::VecModel::<slint::SharedString>::default()),
@@ -305,20 +310,32 @@ fn shaping_toggle_row(advanced: bool) -> SettingRow {
     }
 }
 
-/// Compose a category's rows for the advanced-shaping toggle: when any row
+/// Compose a category's rows for the per-axis shaping toggles: when any row
 /// is a shaping generator (a sensitivity or a curve; see `shaping::role`),
-/// prepend the toggle row and keep only the rows `shaping::visible` allows
-/// in the current state (simple hides curves, advanced hides sensitivities,
-/// deadzones and everything else stay). Rows for a category with no shaping
-/// generators pass through untouched, so `load_rows` can call this
-/// unconditionally, same convention as `compose_lightsync`.
-pub fn compose_shaping(items: Vec<SettingRow>, advanced: bool) -> Vec<SettingRow> {
+/// insert each axis's toggle row right before that axis's first row (its
+/// block heading) and keep only the rows `shaping::visible` allows for the
+/// current toggles (an axis on "Sensitivity" hides its curve, an axis on
+/// "Curve" hides its sensitivity, deadzones and everything else stay). Rows
+/// for a category with no shaping generators pass through untouched, so
+/// `load_rows` can call this unconditionally, same convention as
+/// `compose_lightsync`.
+pub fn compose_shaping(items: Vec<SettingRow>, toggles: shaping::AxisToggles) -> Vec<SettingRow> {
     if !items.iter().any(|r| shaping::role(r.attr.as_str()) != ShapingRole::Neutral) {
         return items;
     }
-    let mut out = Vec::with_capacity(items.len() + 1);
-    out.push(shaping_toggle_row(advanced));
-    out.extend(items.into_iter().filter(|r| shaping::visible(r.attr.as_str(), advanced)));
+    let mut out = Vec::with_capacity(items.len() + shaping::Axis::ALL.len());
+    let mut headed: Vec<shaping::Axis> = Vec::new();
+    for item in items {
+        if let Some(ax) = shaping::axis(item.attr.as_str()) {
+            if !headed.contains(&ax) {
+                headed.push(ax);
+                out.push(shaping_toggle_row(ax, toggles.get(ax)));
+            }
+        }
+        if shaping::visible(item.attr.as_str(), toggles) {
+            out.push(item);
+        }
+    }
     out
 }
 
@@ -1259,15 +1276,25 @@ mod tests {
         rows.iter().map(|r| r.attr.to_string()).collect()
     }
 
+    use logi_dd_core::shaping::{Axis, AxisToggles};
+
+    fn all_curves() -> AxisToggles {
+        let mut t = AxisToggles::default();
+        for ax in Axis::ALL {
+            t.set(ax, true);
+        }
+        t
+    }
+
     #[test]
     fn compose_shaping_simple_steering_shows_sensitivity_not_the_curve() {
-        let out = compose_shaping(category_setting_rows(Category::Steering), false);
+        let out = compose_shaping(category_setting_rows(Category::Steering), AxisToggles::default());
         let attrs = attrs_of(&out);
         assert_eq!(
             attrs,
             vec![
-                shaping::TOGGLE_ATTR,
                 "wheel_range",
+                shaping::toggle_attr(Axis::Steering),
                 "wheel_sensitivity",
                 "wheel_range_restore",
                 "wheel_calibrate_here",
@@ -1276,14 +1303,14 @@ mod tests {
     }
 
     #[test]
-    fn compose_shaping_advanced_steering_shows_the_curve_not_sensitivity() {
-        let out = compose_shaping(category_setting_rows(Category::Steering), true);
+    fn compose_shaping_curve_steering_shows_the_curve_not_sensitivity() {
+        let out = compose_shaping(category_setting_rows(Category::Steering), all_curves());
         let attrs = attrs_of(&out);
         assert_eq!(
             attrs,
             vec![
-                shaping::TOGGLE_ATTR,
                 "wheel_range",
+                shaping::toggle_attr(Axis::Steering),
                 "wheel_range_restore",
                 "wheel_response_curve",
                 "wheel_calibrate_here",
@@ -1292,26 +1319,32 @@ mod tests {
     }
 
     #[test]
-    fn compose_shaping_simple_pedals_keeps_deadzones_and_hides_curves() {
-        let out = compose_shaping(category_setting_rows(Category::Pedals), false);
+    fn compose_shaping_simple_pedals_heads_each_block_and_hides_curves() {
+        let out = compose_shaping(category_setting_rows(Category::Pedals), AxisToggles::default());
         let attrs = attrs_of(&out);
-        for kept in [
-            "wheel_throttle_sensitivity",
-            "wheel_throttle_deadzone",
-            "wheel_brake_sensitivity",
-            "wheel_brake_deadzone",
-            "wheel_clutch_sensitivity",
-            "wheel_clutch_deadzone",
-            "wheel_handbrake_sensitivity",
-        ] {
-            assert!(attrs.contains(&kept.to_string()), "missing {kept}");
-        }
-        assert!(!attrs.iter().any(|a| a.ends_with("_curve")), "curves hidden in simple mode: {attrs:?}");
+        assert_eq!(
+            attrs,
+            vec![
+                "wheel_brake_force",
+                "wheel_combined_pedals",
+                shaping::toggle_attr(Axis::Throttle),
+                "wheel_throttle_sensitivity",
+                "wheel_throttle_deadzone",
+                shaping::toggle_attr(Axis::Brake),
+                "wheel_brake_sensitivity",
+                "wheel_brake_deadzone",
+                shaping::toggle_attr(Axis::Clutch),
+                "wheel_clutch_sensitivity",
+                "wheel_clutch_deadzone",
+                shaping::toggle_attr(Axis::Handbrake),
+                "wheel_handbrake_sensitivity",
+            ]
+        );
     }
 
     #[test]
-    fn compose_shaping_advanced_pedals_keeps_deadzones_and_hides_sensitivities() {
-        let out = compose_shaping(category_setting_rows(Category::Pedals), true);
+    fn compose_shaping_curve_pedals_keeps_deadzones_and_hides_sensitivities() {
+        let out = compose_shaping(category_setting_rows(Category::Pedals), all_curves());
         let attrs = attrs_of(&out);
         for kept in [
             "wheel_throttle_deadzone",
@@ -1326,22 +1359,42 @@ mod tests {
         }
         assert!(
             !attrs.iter().any(|a| a.ends_with("_sensitivity")),
-            "sensitivities hidden in advanced mode: {attrs:?}"
+            "sensitivities hidden while every axis shows its curve: {attrs:?}"
         );
     }
 
     #[test]
-    fn compose_shaping_toggle_row_is_a_switch_carrying_the_flag_and_help() {
-        for advanced in [false, true] {
-            let out = compose_shaping(category_setting_rows(Category::Steering), advanced);
-            let toggle = &out[0];
-            assert_eq!(toggle.attr, shaping::TOGGLE_ATTR);
-            assert_eq!(toggle.kind, KIND_TOGGLE);
-            assert_eq!(toggle.bool_value, advanced);
-            assert_eq!(toggle.label, shaping::TOGGLE_LABEL);
-            assert_eq!(toggle.help, shaping::TOGGLE_HELP);
-            assert!(toggle.available && toggle.mode_ok);
-        }
+    fn compose_shaping_mixes_axes_independently() {
+        // The user's own example: throttle on simple sensitivity, brake on
+        // the curve editor, at the same time.
+        let mut toggles = AxisToggles::default();
+        toggles.set(Axis::Brake, true);
+        let out = compose_shaping(category_setting_rows(Category::Pedals), toggles);
+        let attrs = attrs_of(&out);
+        assert!(attrs.contains(&"wheel_throttle_sensitivity".to_string()));
+        assert!(!attrs.contains(&"wheel_throttle_curve".to_string()));
+        assert!(attrs.contains(&"wheel_brake_curve".to_string()));
+        assert!(!attrs.contains(&"wheel_brake_sensitivity".to_string()));
+        // Both blocks keep their deadzones and their own toggle row.
+        assert!(attrs.contains(&"wheel_throttle_deadzone".to_string()));
+        assert!(attrs.contains(&"wheel_brake_deadzone".to_string()));
+        assert!(attrs.contains(&shaping::toggle_attr(Axis::Throttle).to_string()));
+        assert!(attrs.contains(&shaping::toggle_attr(Axis::Brake).to_string()));
+    }
+
+    #[test]
+    fn compose_shaping_toggle_rows_carry_the_axis_flag_and_help() {
+        let mut toggles = AxisToggles::default();
+        toggles.set(Axis::Brake, true);
+        let out = compose_shaping(category_setting_rows(Category::Pedals), toggles);
+        let brake = out.iter().find(|r| r.attr == shaping::toggle_attr(Axis::Brake)).unwrap();
+        assert_eq!(brake.kind, KIND_SHAPING);
+        assert!(brake.bool_value, "brake toggle is on");
+        assert_eq!(brake.label, shaping::toggle_label(Axis::Brake));
+        assert_eq!(brake.help, shaping::TOGGLE_HELP);
+        assert!(brake.available && brake.mode_ok);
+        let throttle = out.iter().find(|r| r.attr == shaping::toggle_attr(Axis::Throttle)).unwrap();
+        assert!(!throttle.bool_value, "throttle toggle is off");
     }
 
     #[test]
@@ -1349,7 +1402,7 @@ mod tests {
         for cat in [Category::Ffb, Category::Leds, Category::Profiles, Category::Info] {
             let items = category_setting_rows(cat);
             let before = attrs_of(&items);
-            let after = attrs_of(&compose_shaping(items, true));
+            let after = attrs_of(&compose_shaping(items, all_curves()));
             assert_eq!(before, after, "{cat:?} must pass through");
         }
     }
