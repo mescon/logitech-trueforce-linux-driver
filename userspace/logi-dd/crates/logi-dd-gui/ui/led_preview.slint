@@ -1,0 +1,132 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { LedColor } from "rgb_strip.slint";
+
+// The LIGHTSYNC page's preview strip: the ACTIVE slot's 10 stored colors
+// (LED1 leftmost), a software-animated direction preview, and the "Try on
+// wheel" button. Sits above the composed Effect row (see `app.slint`'s
+// Leds branch).
+//
+// The animation is purely on-screen: a repeating RPM-style sweep (a fill
+// that grows to full and shrinks back) driven by a `Timer`, following the
+// slot's direction the same way the wheel plays it (left-to-right or
+// right-to-left fills, and the mirrored inside-out / outside-in pairs).
+// The physical strip is RPM-driven and shows a static idle pattern until a
+// game or telemetry bridge feeds it, which the caption says outright.
+//
+// "Try on wheel" is wired through the Rust side's worker (apply the
+// selected effect/slot, hold ~5 s, restore the prior state; LED state
+// only, nothing moves); `try-running` disables the button while a try is
+// in flight and `try-error` surfaces a failed run.
+export component LedPreview inherits Rectangle {
+    // The ACTIVE slot's stored colors, from the same last-known values the
+    // slot editor seeds from (mirrored pairs already collapsed for the
+    // mirrored directions, so this is what the wheel plays).
+    in property <[LedColor]> leds: [];
+    // The slot's `wheel_led_direction` enum value (0 = left to right,
+    // 1 = right to left, 2 = inside-out, 3 = outside-in).
+    in property <int> direction: 0;
+    in property <bool> try-running: false;
+    in property <string> try-error: "";
+
+    callback try-on-wheel();
+
+    // Animation state: `phase` ticks 0..19 and folds into `count`, the
+    // number of lit LEDs (0 -> 10 -> 0, the grow-and-shrink RPM sweep).
+    property <bool> animating: false;
+    property <int> phase: 0;
+    property <int> count: root.phase <= 10 ? root.phase : 20 - root.phase;
+
+    // Whether LED `i` is lit at the sweep's current fill, per direction.
+    // The mirrored directions light symmetric pairs: inside-out from the
+    // center pair (distance to the 4/5 middle), outside-in from the ends.
+    pure function lit(i: int) -> bool {
+        if (!root.animating) {
+            return true;
+        }
+        if (root.direction == 0) {
+            return i < root.count;
+        }
+        if (root.direction == 1) {
+            return i >= root.leds.length - root.count;
+        }
+        if (root.direction == 2) {
+            return 2 * (i <= 4 ? 4 - i : i - 5) < root.count;
+        }
+        return 2 * min(i, root.leds.length - 1 - i) < root.count;
+    }
+
+    Timer {
+        interval: 120ms;
+        running: root.animating;
+        triggered() => {
+            root.phase = root.phase >= 19 ? 0 : root.phase + 1;
+        }
+    }
+
+    background: Theme.panel-background;
+    border-radius: Theme.panel-radius;
+    border-width: 1px;
+    border-color: Theme.panel-border;
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+
+        Text {
+            text: "Strip preview (active slot)";
+            font-size: 13px;
+            font-weight: 700;
+            color: Theme.text-color;
+        }
+
+        HorizontalLayout {
+            alignment: start;
+            spacing: 4px;
+
+            for led[i] in root.leds: Rectangle {
+                width: 26px;
+                height: 26px;
+                border-radius: 5px;
+                border-width: 1px;
+                border-color: Theme.panel-border;
+                background: rgb(led.r, led.g, led.b);
+                // The sweep dims the unlit LEDs instead of blanking them,
+                // so the stored colors stay readable through the preview.
+                opacity: root.lit(i) ? 1.0 : 0.18;
+            }
+        }
+
+        HorizontalLayout {
+            alignment: start;
+            spacing: 8px;
+
+            Button {
+                text: root.animating ? "Stop preview" : "Preview animation";
+                clicked => {
+                    root.phase = 0;
+                    root.animating = !root.animating;
+                }
+            }
+            Button {
+                text: root.try-running ? "Trying..." : "Try on wheel";
+                enabled: !root.try-running;
+                clicked => { root.try-on-wheel(); }
+            }
+            if root.try-error != "": Text {
+                text: root.try-error;
+                font-size: 12px;
+                vertical-alignment: center;
+                color: Theme.error-color;
+                wrap: word-wrap;
+            }
+        }
+
+        Text {
+            text: "On-screen preview only: the physical strip is a rev-light display, RPM-driven by a game or telemetry bridge, and shows a static idle pattern otherwise. \"Try on wheel\" shows the selected effect on the wheel for 5 seconds, then restores the previous state.";
+            font-size: 11px;
+            color: Theme.muted-text-color;
+            wrap: word-wrap;
+        }
+    }
+}

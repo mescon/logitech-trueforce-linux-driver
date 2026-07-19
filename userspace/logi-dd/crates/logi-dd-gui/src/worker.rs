@@ -40,6 +40,13 @@ use crate::viewmodel::{Row, ViewModel, WidgetInput};
 /// request in flight is never delayed by the watcher.
 const DRIFT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
+/// How long a "Try on wheel" run leaves the chosen LIGHTSYNC state on the
+/// physical strip before restoring what was there. The hold runs on this
+/// worker thread, so queued requests (and the drift watcher) wait it out;
+/// that is deliberate: the UI disables the button while the try runs, and
+/// nothing else should rewrite LED state mid-try anyway.
+const LED_TRY_HOLD: Duration = Duration::from_secs(5);
+
 /// A request from the UI thread. Every variant that touches the device
 /// blocks on sysfs I/O; that is the whole reason this thread exists.
 pub enum Request {
@@ -66,6 +73,12 @@ pub enum Request {
     ProfileApply(String),
     /// Delete computer profile `name`. Replied with `Response::Profiles`.
     ProfileDelete(String),
+    /// The LIGHTSYNC page's "Try on wheel": apply `effect` (+ `slot` when
+    /// the effect is the custom 5) to the physical strip for
+    /// [`LED_TRY_HOLD`], then restore the prior effect+slot state. Only
+    /// LED state is written (nothing moves). Replied with
+    /// `Response::LedTryDone`.
+    LedTry { effect: u8, slot: u8 },
 }
 
 /// What the worker sends back.
@@ -99,6 +112,10 @@ pub enum Response {
     /// after every profile request and alongside every Profiles-category
     /// `Rows` reply.
     Profiles { names: Vec<String>, status: String, error: bool },
+    /// A `Request::LedTry` finished (the hold elapsed and the prior state
+    /// was written back). `error` carries the first failure, if any; the
+    /// restore is attempted even after a failed apply.
+    LedTryDone { error: Option<String> },
 }
 
 /// Handle to the worker thread. Cheap to clone (it is just a channel
@@ -219,8 +236,42 @@ fn request_category(req: &Request) -> Option<Category> {
         Request::ProfileSave(_) | Request::ProfileApply(_) | Request::ProfileDelete(_) => {
             Some(Category::Profiles)
         }
+        Request::LedTry { .. } => Some(Category::Leds),
         Request::SetMode(_) | Request::Discover => None,
     }
+}
+
+/// Run one "Try on wheel": remember the current effect+slot, write the
+/// chosen ones (the slot first, then the effect: the driver re-applies the
+/// slot's stored config on the transition to the custom effect), hold for
+/// `hold`, then write the prior state back. The restore runs even when the
+/// apply failed (a half-applied try must not stick); the first error wins.
+/// Everything goes through the same `ViewModel::edit` path the settings
+/// widgets use, so validation and mode gating apply as usual. Pulled out
+/// of `handle` so tests can pass a zero hold.
+fn led_try_on_wheel<S: SysfsIo>(
+    vm: &ViewModel<S>,
+    effect: u8,
+    slot: u8,
+    hold: Duration,
+) -> Result<(), Error> {
+    let prior_effect = match vm.device_read("wheel_led_effect")? {
+        Value::Int(n) => n.clamp(1, 9),
+        _ => return Err(Error::Invalid),
+    };
+    let prior_slot = match vm.device_read("wheel_led_slot") {
+        Ok(Value::Int(n)) => n.clamp(0, 4),
+        _ => 0,
+    };
+    let applied = vm
+        .edit("wheel_led_slot", WidgetInput::Slider(i64::from(slot)))
+        .and_then(|()| vm.edit("wheel_led_effect", WidgetInput::Slider(i64::from(effect))));
+    if applied.is_ok() {
+        thread::sleep(hold);
+    }
+    let restored_slot = vm.edit("wheel_led_slot", WidgetInput::Slider(i64::from(prior_slot)));
+    let restored_effect = vm.edit("wheel_led_effect", WidgetInput::Slider(i64::from(prior_effect)));
+    applied.and(restored_slot).and(restored_effect)
 }
 
 /// One idle-tick external-change check. When the profile or mode moved
@@ -396,6 +447,10 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
                 on_response(Response::Info(info));
             }
         }
+        Request::LedTry { effect, slot } => {
+            let error = led_try_on_wheel(vm, effect, slot, LED_TRY_HOLD).err().map(|e| e.to_string());
+            on_response(Response::LedTryDone { error });
+        }
         // Handled in `spawn`'s loop before `handle` is ever called, so that
         // it can replace `vm` itself; `handle` only ever borrows it.
         Request::Discover => unreachable!("Discover is intercepted before handle()"),
@@ -446,9 +501,7 @@ mod tests {
                 assert_eq!(info.mode, Mode::Desktop);
             }
             Response::NoWheel(msg) => panic!("expected Info, got NoWheel({msg})"),
-            Response::Rows { .. } => panic!("expected Info, got Rows"),
-            Response::RowUpdated { .. } => panic!("expected Info, got RowUpdated"),
-            Response::Profiles { .. } => panic!("expected Info, got Profiles"),
+            _ => panic!("expected Info"),
         }
     }
 
@@ -879,6 +932,51 @@ mod tests {
             }
             _ => panic!("expected RowUpdated"),
         }
+    }
+
+    // --- the LIGHTSYNC try-on-wheel run ---
+
+    #[test]
+    fn led_try_restores_the_prior_effect_and_slot() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_effect", "1");
+        fs.set("wheel_led_slot", "0");
+        let vm = ViewModel::with_io(fs);
+        // Zero hold: the test only cares about the write/restore contract,
+        // not the 5 s the real request holds the state.
+        led_try_on_wheel(&vm, 5, 2, Duration::ZERO).unwrap();
+        assert_eq!(vm.device_read("wheel_led_effect").unwrap(), Value::Int(1), "effect restored");
+        assert_eq!(vm.device_read("wheel_led_slot").unwrap(), Value::Int(0), "slot restored");
+    }
+
+    #[test]
+    fn led_try_restores_even_when_the_apply_fails() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_effect", "3");
+        fs.set("wheel_led_slot", "0");
+        fs.set_errno("wheel_led_effect", 5); // EIO on the effect write
+        let vm = ViewModel::with_io(fs);
+        let err = led_try_on_wheel(&vm, 5, 2, Duration::ZERO);
+        assert!(err.is_err(), "the apply failure is reported");
+        // The slot write landed before the effect failed; the restore must
+        // still put the prior slot back so nothing half-applied sticks.
+        assert_eq!(vm.device_read("wheel_led_slot").unwrap(), Value::Int(0), "slot restored");
+        assert_eq!(vm.device_read("wheel_led_effect").unwrap(), Value::Int(3), "effect untouched");
+    }
+
+    #[test]
+    fn led_try_with_an_unreadable_effect_writes_nothing() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_led_slot", "0");
+        let vm = ViewModel::with_io(fs);
+        assert!(
+            led_try_on_wheel(&vm, 5, 2, Duration::ZERO).is_err(),
+            "no prior state to restore means no try at all"
+        );
+        assert_eq!(vm.device_read("wheel_led_slot").unwrap(), Value::Int(0), "slot untouched");
     }
 
     // --- the drift watcher ---

@@ -205,8 +205,9 @@ impl<S: SysfsIo> ViewModel<S> {
     #[allow(dead_code)]
     pub fn refresh(&self) {}
 
-    /// Test/debug hook: read a raw attribute back through the wrapped device.
-    #[allow(dead_code)]
+    /// Read a raw attribute back through the wrapped device. Used by the
+    /// worker's LIGHTSYNC try-on-wheel run (to remember the state it must
+    /// restore) and by tests.
     pub fn device_read(&self, attr: &str) -> Result<Value, Error> {
         self.device.read(attr)
     }

@@ -7,6 +7,7 @@ import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
 import { Setup, SetupGame } from "setup.slint";
 import { InfoPage, TestButton, TestAxis, TestCallout } from "info_page.slint";
 import { ComputerProfiles } from "computer_profiles.slint";
+import { LedPreview } from "led_preview.slint";
 export { SettingRow } from "widgets.slint";
 export { SetupGame } from "setup.slint";
 export { TestButton, TestAxis, TestCallout } from "info_page.slint";
@@ -130,6 +131,20 @@ export component App inherits Window {
     // Whether the desktop-mode Profiles layout (Mode row + computer
     // profiles) replaces the plain settings list.
     property <bool> show-computer-profiles: selected-category == profiles-index && !mode-onboard;
+
+    // LIGHTSYNC page extras: the sidebar index of the Leds category (set
+    // once from Rust; -1 until then, same guard as `setup-index`) and the
+    // preview strip's state. `lightsync-leds`/`lightsync-direction` come
+    // from the same last-known LIGHTSYNC values the slot editor seeds
+    // from, pushed on every Leds reload and relevant row update;
+    // `lightsync-try` runs the worker's apply-hold-restore (see
+    // `LedPreview`), with `lightsync-try-running`/`-error` pushed back.
+    in property <int> leds-index: -1;
+    in property <[LedColor]> lightsync-leds: [];
+    in property <int> lightsync-direction: 0;
+    in property <bool> lightsync-try-running: false;
+    in property <string> lightsync-try-error: "";
+    callback lightsync-try();
 
     callback edit-slider(string, int);
     callback edit-choice(string, int);
@@ -453,7 +468,42 @@ export component App inherits Window {
                     }
                 }
 
-                if root.selected-category != root.setup-index && root.selected-category != root.info-index && !root.no-wheel && !root.show-computer-profiles: SettingsList {
+                // The LIGHTSYNC page: the preview strip panel above the
+                // composed settings list (Effect, Brightness, Edit slot).
+                if root.selected-category == root.leds-index && !root.no-wheel: VerticalLayout {
+                    vertical-stretch: 1;
+                    spacing: Theme.gutter;
+
+                    LedPreview {
+                        // Natural height only: the settings list below is
+                        // the page's one stretching child, so the panel's
+                        // rows never drift apart on a tall window.
+                        vertical-stretch: 0;
+                        leds: root.lightsync-leds;
+                        direction: root.lightsync-direction;
+                        try-running: root.lightsync-try-running;
+                        try-error: root.lightsync-try-error;
+                        try-on-wheel() => { root.lightsync-try(); }
+                    }
+
+                    SettingsList {
+                        vertical-stretch: 1;
+                        rows: root.rows;
+                        edit-slider(attr, v) => { root.edit-slider(attr, v); }
+                        edit-choice(attr, v) => { root.edit-choice(attr, v); }
+                        edit-switch(attr, v) => { root.edit-switch(attr, v); }
+                        edit-text(attr, v) => { root.edit-text(attr, v); }
+                        trigger(attr) => { root.trigger(attr); }
+                        edit-pair(attr, is-lower, v) => { root.edit-pair(attr, is-lower, v); }
+                        edit-light-effect(idx) => { root.edit-light-effect(idx); }
+                        edit-curve(attr) => { root.edit-curve(attr); }
+                        edit-rgb(attr) => { root.edit-rgb(attr); }
+                        edit-slot-text(attr) => { root.edit-slot-text(attr); }
+                        switch-mode() => { root.toggle-mode(); }
+                    }
+                }
+
+                if root.selected-category != root.setup-index && root.selected-category != root.info-index && root.selected-category != root.leds-index && !root.no-wheel && !root.show-computer-profiles: SettingsList {
                     // Claim all the vertical space left under the category
                     // title so the list (and its background/scrollbar) reaches
                     // the bottom of the window. Without this the ListView only
