@@ -13,8 +13,10 @@
 //! whole module.
 
 use logi_dd_core::curve::Curve;
+use logi_dd_core::profiles;
 use logi_dd_core::sysfs::SysfsIo;
 use logi_dd_core::{Category, Color, Device, DeviceInfo, Error, Kind, Mode, ModeReq, Value, REGISTRY};
+use std::path::PathBuf;
 
 /// Raw input from a widget, converted to a `Value` per the target setting's
 /// `Kind` in `ViewModel::edit`.
@@ -65,6 +67,9 @@ impl Row {
 /// a GUI widget tree renders and edits.
 pub struct ViewModel<S: SysfsIo> {
     device: Device<S>,
+    /// Where the computer-side profile store lives; resolved once from the
+    /// environment (`profiles::default_dir`), overridable for tests.
+    profiles_dir: PathBuf,
 }
 
 impl<S: SysfsIo> ViewModel<S> {
@@ -73,11 +78,18 @@ impl<S: SysfsIo> ViewModel<S> {
     // hand it a `FakeSysfs`.
     #[allow(dead_code)]
     pub fn with_io(io: S) -> ViewModel<S> {
-        ViewModel { device: Device::with_io(io) }
+        ViewModel::new(Device::with_io(io))
     }
 
     pub fn new(device: Device<S>) -> ViewModel<S> {
-        ViewModel { device }
+        ViewModel { device, profiles_dir: profiles::default_dir() }
+    }
+
+    /// Point the computer-side profile store somewhere else (tests only;
+    /// production always uses `profiles::default_dir`).
+    #[allow(dead_code)]
+    pub fn set_profiles_dir(&mut self, dir: PathBuf) {
+        self.profiles_dir = dir;
     }
 
     /// Rows for one category, in registry order. `mode_ok` is computed
@@ -151,6 +163,27 @@ impl<S: SysfsIo> ViewModel<S> {
             Mode::Desktop => self.device.ensure_desktop_mode(),
             Mode::Onboard => self.device.write("wheel_mode", &Value::Enum(1)),
         }
+    }
+
+    /// The computer-side profile store's saved names, sorted.
+    pub fn profile_list(&self) -> Vec<String> {
+        profiles::list_in(&self.profiles_dir)
+    }
+
+    /// Snapshot the wheel's current settings as computer profile `name`.
+    pub fn profile_save(&self, name: &str) -> Result<(), Error> {
+        profiles::save_in(&self.profiles_dir, name, &self.device)
+    }
+
+    /// Replay computer profile `name` onto the wheel; per-attr failures
+    /// come back as `(attr, message)` pairs (see `profiles::apply_in`).
+    pub fn profile_apply(&self, name: &str) -> Result<Vec<(String, String)>, Error> {
+        profiles::apply_in(&self.profiles_dir, name, &self.device)
+    }
+
+    /// Delete computer profile `name`.
+    pub fn profile_delete(&self, name: &str) -> Result<(), Error> {
+        profiles::delete_in(&self.profiles_dir, name)
     }
 
     /// Rows are read live from the device on every `rows_for` call, so there

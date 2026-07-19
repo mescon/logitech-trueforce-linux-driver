@@ -1,6 +1,7 @@
 use crate::curve_editor::CurveEditor;
 use crate::edit;
 use crate::wheel_test::{SimKind, TestView};
+use logi_dd_core::profiles;
 use logi_dd_core::setting::Access;
 use logi_dd_core::shaping::{self, ShapingRole};
 use logi_dd_core::lightsync;
@@ -10,12 +11,26 @@ use logi_dd_core::{Category, Device, Error, Kind, Mode, Value, REGISTRY};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// One rendered settings row. `attr`/`label` are owned strings rather than
+/// registry `&'static str`s because the desktop Profiles page also renders
+/// synthetic rows for the computer-side profile store, named after the
+/// saved profiles.
 pub struct Row {
-    pub attr: &'static str,
-    pub label: &'static str,
+    pub attr: String,
+    pub label: String,
     pub value: Result<Value, Error>,
     pub available: bool,
 }
+
+/// The prefix the desktop Profiles page's saved-profile rows wear:
+/// `profile:<name>`. Not sysfs attributes; `on_key` intercepts them
+/// (Enter applies, `d` arms a delete) before any editor could open.
+pub const PROFILE_ROW_PREFIX: &str = "profile:";
+
+/// The desktop Profiles page's trailing "Save current as..." row. The
+/// dash (no colon) keeps it distinct from every saved-profile row, even
+/// one literally named "new".
+pub const PROFILE_NEW_ATTR: &str = "profile-new";
 
 /// The LIGHTSYNC effect selector's modal state: left/right cycles `index`
 /// through `labels` (the entries `lightsync::dropdown_labels` builds: the
@@ -104,6 +119,16 @@ pub struct App<S: SysfsIo> {
     /// The Test view's whole state (discovery, live monitor, sims); see
     /// `wheel_test::TestView`.
     pub test: TestView,
+    /// Where the computer-side profile store lives
+    /// (`profiles::default_dir()`); overridable in tests.
+    pub profiles_dir: PathBuf,
+    /// The new-profile name prompt's draft, `Some` while the desktop
+    /// Profiles page's `n` (or the Save row's Enter) is active: type to
+    /// append, Backspace to erase, Enter saves, Esc discards.
+    pub profile_name_edit: Option<String>,
+    /// A profile delete waiting for its y/n confirmation (the profile's
+    /// name); armed by `d` on a saved-profile row.
+    pub profile_delete_confirm: Option<String>,
     /// A shim run queued by `on_key` for the main loop to execute:
     /// `(installer args, verb for the status line)`. The run blocks, so
     /// instead of running inside the key handler, where the "running..."
@@ -134,6 +159,9 @@ impl<S: SysfsIo> App<S> {
             game_idx: 0,
             games_scanned: false,
             test: TestView::default(),
+            profiles_dir: profiles::default_dir(),
+            profile_name_edit: None,
+            profile_delete_confirm: None,
             pending_shim: None,
         };
         a.sdk_valid = steam::sdk_dir_valid(Path::new(&a.sdk_dir));
@@ -179,22 +207,88 @@ impl<S: SysfsIo> App<S> {
         let cat = self.category();
         self.rows = if cat == Category::Leds {
             self.lightsync_rows()
+        } else if cat == Category::Profiles {
+            self.profiles_rows()
         } else {
-            let rows = REGISTRY
-                .iter()
-                .filter(|s| s.category == cat)
-                .map(|s| Row {
-                    attr: s.attr,
-                    label: s.label,
-                    available: self.device.available(s.attr),
-                    value: self.device.read(s.attr),
-                })
-                .collect();
+            let rows = self.registry_rows(cat);
             self.shaping_rows(rows)
         };
         if self.row_idx >= self.rows.len() {
             self.row_idx = self.rows.len().saturating_sub(1);
         }
+    }
+
+    /// One `Row` per registry spec of `cat`, in registry order.
+    fn registry_rows(&self, cat: Category) -> Vec<Row> {
+        REGISTRY
+            .iter()
+            .filter(|s| s.category == cat)
+            .map(|s| Row {
+                attr: s.attr.to_string(),
+                label: s.label.to_string(),
+                available: self.device.available(s.attr),
+                value: self.device.read(s.attr),
+            })
+            .collect()
+    }
+
+    /// The mode-coupled Profiles page. Onboard: the registry rows (Mode,
+    /// the onboard slot picker, the rename editor). Desktop: the Mode row
+    /// followed by the computer-side profile store (one row per saved
+    /// profile: Enter applies, `d` deletes) and the "Save current as..."
+    /// row (`n` or Enter opens the name prompt).
+    fn profiles_rows(&self) -> Vec<Row> {
+        let all = self.registry_rows(Category::Profiles);
+        if matches!(self.device.current_mode(), Ok(Mode::Onboard)) {
+            return all;
+        }
+        let mut rows: Vec<Row> = all.into_iter().filter(|r| r.attr == "wheel_mode").collect();
+        for name in profiles::list_in(&self.profiles_dir) {
+            rows.push(Row {
+                attr: format!("{PROFILE_ROW_PREFIX}{name}"),
+                label: name,
+                available: true,
+                value: Ok(Value::Text("Enter applies   d deletes".into())),
+            });
+        }
+        rows.push(Row {
+            attr: PROFILE_NEW_ATTR.to_string(),
+            label: "Save current as...".to_string(),
+            available: true,
+            value: Ok(Value::Text("Enter or n names a new profile".into())),
+        });
+        rows
+    }
+
+    /// The saved profile the selected row stands for, if any.
+    fn selected_profile_name(&self) -> Option<String> {
+        self.selected().and_then(|r| r.attr.strip_prefix(PROFILE_ROW_PREFIX)).map(str::to_string)
+    }
+
+    /// Snapshot the wheel's settings as computer profile `name` (the name
+    /// prompt's Enter).
+    fn save_profile(&mut self, name: &str) {
+        self.status = match profiles::save_in(&self.profiles_dir, name, &self.device) {
+            Ok(()) => format!("profile '{}' saved", name.trim()),
+            Err(e) => format!("profile save: {e}"),
+        };
+        self.reload();
+    }
+
+    /// Replay computer profile `name` onto the wheel (Enter on its row).
+    fn apply_profile(&mut self, name: &str) {
+        self.status = match profiles::apply_in(&self.profiles_dir, name, &self.device) {
+            Ok(errors) if errors.is_empty() => format!("profile '{name}' applied"),
+            Ok(errors) => {
+                let (attr, msg) = &errors[0];
+                format!(
+                    "profile '{name}' applied, {} setting(s) failed, first: {attr}: {msg}",
+                    errors.len()
+                )
+            }
+            Err(e) => format!("profile '{name}': {e}"),
+        };
+        self.reload();
     }
 
     /// Compose a category's rows for the per-axis shaping toggles: when any
@@ -208,24 +302,24 @@ impl<S: SysfsIo> App<S> {
     /// `reload` can call this unconditionally, matching the GUI's
     /// `compose_shaping`.
     fn shaping_rows(&self, rows: Vec<Row>) -> Vec<Row> {
-        if !rows.iter().any(|r| shaping::role(r.attr) != ShapingRole::Neutral) {
+        if !rows.iter().any(|r| shaping::role(&r.attr) != ShapingRole::Neutral) {
             return rows;
         }
         let mut out = Vec::with_capacity(rows.len() + shaping::Axis::ALL.len());
         let mut headed: Vec<shaping::Axis> = Vec::new();
         for row in rows {
-            if let Some(ax) = shaping::axis(row.attr) {
+            if let Some(ax) = shaping::axis(&row.attr) {
                 if !headed.contains(&ax) {
                     headed.push(ax);
                     out.push(Row {
-                        attr: shaping::toggle_attr(ax),
-                        label: shaping::toggle_label(ax),
+                        attr: shaping::toggle_attr(ax).to_string(),
+                        label: shaping::toggle_label(ax).to_string(),
                         available: true,
                         value: Ok(Value::Bool(self.shaping_toggles.get(ax))),
                     });
                 }
             }
-            if shaping::visible(row.attr, self.shaping_toggles) {
+            if shaping::visible(&row.attr, self.shaping_toggles) {
                 out.push(row);
             }
         }
@@ -235,7 +329,7 @@ impl<S: SysfsIo> App<S> {
     /// Whether the on-screen category carries any shaping toggle rows
     /// (Steering and Pedals do).
     pub fn has_shaping_toggle(&self) -> bool {
-        self.rows.iter().any(|r| shaping::toggle_axis(r.attr).is_some())
+        self.rows.iter().any(|r| shaping::toggle_axis(&r.attr).is_some())
     }
 
     /// Flip one axis's shaping view toggle and re-compose the page. Pure
@@ -256,15 +350,20 @@ impl<S: SysfsIo> App<S> {
     pub fn toggle_selected_axis(&mut self) {
         let Some(axis) = self
             .selected()
-            .and_then(|r| shaping::toggle_axis(r.attr).or_else(|| shaping::axis(r.attr)))
+            .and_then(|r| shaping::toggle_axis(&r.attr).or_else(|| shaping::axis(&r.attr)))
         else {
             return;
         };
         self.toggle_shaping(axis);
     }
 
-    fn led_row(&self, attr: &'static str, label: &'static str) -> Row {
-        Row { attr, label, available: self.device.available(attr), value: self.device.read(attr) }
+    fn led_row(&self, attr: &str, label: &str) -> Row {
+        Row {
+            attr: attr.to_string(),
+            label: label.to_string(),
+            available: self.device.available(attr),
+            value: self.device.read(attr),
+        }
     }
 
     /// The composed LIGHTSYNC page: Effect (the composed selector), the
@@ -430,23 +529,23 @@ impl<S: SysfsIo> App<S> {
 
     pub fn begin_edit(&mut self) {
         let (attr, label) = match self.selected() {
-            Some(row) => (row.attr, row.label),
+            Some(row) => (row.attr.clone(), row.label.clone()),
             None => return,
         };
         // A per-axis shaping row is view state, not a device attribute:
         // Enter flips it in place (same as the 'a' shortcut), no editor.
-        if let Some(axis) = shaping::toggle_axis(attr) {
+        if let Some(axis) = shaping::toggle_axis(&attr) {
             self.toggle_shaping(axis);
             return;
         }
-        let Some(spec) = Device::<S>::spec(attr) else { return };
+        let Some(spec) = Device::<S>::spec(&attr) else { return };
         if spec.access == Access::ReadOnly {
             return;
         }
         // The LIGHTSYNC Effect row cycles the 13 selector entries, not the
         // raw 1-9 value; it gets its own little modal (see `EffectEdit`).
         if attr == "wheel_led_effect" {
-            let effect = match self.device.read(attr) {
+            let effect = match self.device.read(&attr) {
                 Ok(Value::Int(n)) => n.clamp(0, u8::MAX as i32) as u8,
                 _ => {
                     self.status = "cannot edit (value unreadable)".into();
@@ -464,11 +563,24 @@ impl<S: SysfsIo> App<S> {
             return;
         }
         if spec.access == Access::Action {
-            self.status = match self.device.write(attr, &Value::Trigger) {
+            self.status = match self.device.write(&attr, &Value::Trigger) {
                 Ok(()) => format!("{label}: done"),
                 Err(e) => format!("{label}: {e}"),
             };
             self.reload();
+            return;
+        }
+        // The onboard profile picker: only slots 1-5 (profile 0 is the
+        // desktop state, and this row only shows in onboard mode), so the
+        // editor bumps inside that range regardless of the registry's
+        // wider 0-5 kind.
+        if attr == "wheel_profile" {
+            let cur = match self.rows.get(self.row_idx).map(|r| &r.value) {
+                Some(Ok(Value::Int(n))) => Value::Int((*n).max(1)),
+                _ => Value::Int(1),
+            };
+            let kind = Kind::IntRange { min: 1, max: 5, step: 1, unit: "" };
+            self.edit = Some(edit::EditState::start(spec.attr, kind, &cur));
             return;
         }
         let cur = match self.rows.get(self.row_idx).map(|r| &r.value) {
@@ -764,19 +876,78 @@ impl<S: SysfsIo> App<S> {
             }
             return;
         }
+        // A pending profile delete swallows the next key: only 'y'
+        // deletes, anything else cancels.
+        if let Some(name) = self.profile_delete_confirm.take() {
+            if matches!(key, Char('y') | Char('Y')) {
+                self.status = match profiles::delete_in(&self.profiles_dir, &name) {
+                    Ok(()) => format!("profile '{name}' deleted"),
+                    Err(e) => format!("profile '{name}': {e}"),
+                };
+                self.reload();
+            } else {
+                self.status = "delete cancelled".to_string();
+            }
+            return;
+        }
+        // The new-profile name prompt swallows every key while active, so
+        // typing a name cannot trigger the view's shortcuts.
+        if self.profile_name_edit.is_some() {
+            match key {
+                Enter => {
+                    let name = self.profile_name_edit.take().unwrap_or_default();
+                    self.save_profile(&name);
+                }
+                Esc => self.profile_name_edit = None,
+                Backspace => {
+                    if let Some(draft) = self.profile_name_edit.as_mut() {
+                        draft.pop();
+                    }
+                }
+                Char(c) => {
+                    if let Some(draft) = self.profile_name_edit.as_mut() {
+                        draft.push(c);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         match key {
             Char('q') => self.quit = true,
             Char('r') => self.reload(),
-            Char('d') => self.toggle_mode(),
+            // On a saved-profile row 'd' arms its delete; anywhere else it
+            // keeps its usual desktop/onboard meaning.
+            Char('d') => match self.selected_profile_name() {
+                Some(name) => {
+                    self.status =
+                        format!("delete profile '{name}'? y deletes, any other key cancels");
+                    self.profile_delete_confirm = Some(name);
+                }
+                None => self.toggle_mode(),
+            },
             // Only meaningful on a row that belongs to a shaping axis (a
             // toggle row or one of the axis's own rows); a plain typo
             // elsewhere does nothing.
             Char('a') => self.toggle_selected_axis(),
+            // Only on the desktop Profiles page (the row exists nowhere
+            // else): open the new-profile name prompt.
+            Char('n') if self.rows.iter().any(|r| r.attr == PROFILE_NEW_ATTR) => {
+                self.profile_name_edit = Some(String::new());
+            }
             Up => self.move_row(-1),
             Down => self.move_row(1),
             Left => self.move_cat(-1),
             Right => self.move_cat(1),
-            Enter => self.begin_edit(),
+            Enter => {
+                if let Some(name) = self.selected_profile_name() {
+                    self.apply_profile(&name);
+                } else if self.selected().is_some_and(|r| r.attr == PROFILE_NEW_ATTR) {
+                    self.profile_name_edit = Some(String::new());
+                } else {
+                    self.begin_edit();
+                }
+            }
             _ => {}
         }
     }
@@ -1182,14 +1353,14 @@ mod tests {
     #[test]
     fn lightsync_page_hides_the_slot_group_for_builtin_effects() {
         let a = leds_app("3", "0");
-        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert_eq!(attrs, vec!["wheel_led_effect", "wheel_led_brightness"]);
     }
 
     #[test]
     fn lightsync_page_shows_the_indented_slot_group_for_the_custom_effect() {
         let a = leds_app("5", "0");
-        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert_eq!(
             attrs,
             vec![
@@ -1345,7 +1516,7 @@ mod tests {
     fn shaping_toggles_head_each_axis_block_on_steering_and_pedals_only() {
         use shaping::Axis;
         let a = steering_app();
-        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         // The steering toggle heads the axis block (right before the
         // sensitivity row), not the whole page.
         let toggle = attrs.iter().position(|a| *a == shaping::toggle_attr(Axis::Steering)).unwrap();
@@ -1353,7 +1524,7 @@ mod tests {
         let mut p = steering_app();
         p.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
         p.reload();
-        let pattrs: Vec<&str> = p.rows.iter().map(|r| r.attr).collect();
+        let pattrs: Vec<&str> = p.rows.iter().map(|r| r.attr.as_str()).collect();
         for ax in [Axis::Throttle, Axis::Brake, Axis::Clutch, Axis::Handbrake] {
             assert!(pattrs.contains(&shaping::toggle_attr(ax)), "missing {ax:?} toggle");
         }
@@ -1364,7 +1535,7 @@ mod tests {
     #[test]
     fn simple_mode_shows_sensitivity_and_hides_curves() {
         let a = steering_app();
-        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(attrs.contains(&"wheel_sensitivity"));
         assert!(!attrs.contains(&"wheel_response_curve"));
     }
@@ -1378,7 +1549,7 @@ mod tests {
         a.on_key(KeyCode::Enter);
         assert!(a.shaping_toggles.get(shaping::Axis::Steering));
         assert!(a.edit.is_none(), "no inline editor opens");
-        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(attrs.contains(&"wheel_response_curve"));
         assert!(!attrs.contains(&"wheel_sensitivity"));
         // Pure view state: the reserved attr never reaches the device.
@@ -1395,7 +1566,7 @@ mod tests {
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_response_curve").unwrap();
         a.on_key(KeyCode::Char('a'));
         assert!(!a.shaping_toggles.get(shaping::Axis::Steering));
-        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(attrs.contains(&"wheel_sensitivity"), "back to the simple view");
     }
 
@@ -1403,10 +1574,10 @@ mod tests {
     fn a_key_does_nothing_on_a_row_without_an_axis() {
         use crossterm::event::KeyCode;
         let mut a = app(); // Ffb
-        let before: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let before: Vec<String> = a.rows.iter().map(|r| r.attr.clone()).collect();
         a.on_key(KeyCode::Char('a'));
         assert_eq!(a.shaping_toggles, shaping::AxisToggles::default());
-        let after: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let after: Vec<String> = a.rows.iter().map(|r| r.attr.clone()).collect();
         assert_eq!(before, after);
     }
 
@@ -1415,13 +1586,13 @@ mod tests {
         let mut a = steering_app();
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
         a.reload();
-        let simple: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let simple: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(simple.contains(&"wheel_throttle_deadzone"));
         assert!(simple.contains(&"wheel_throttle_sensitivity"));
         assert!(!simple.contains(&"wheel_throttle_curve"));
         // Brake to the curve view; the throttle stays on sensitivity.
         a.toggle_shaping(shaping::Axis::Brake);
-        let mixed: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let mixed: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(mixed.contains(&"wheel_brake_curve"));
         assert!(!mixed.contains(&"wheel_brake_sensitivity"));
         assert!(mixed.contains(&"wheel_brake_deadzone"));
@@ -1431,7 +1602,7 @@ mod tests {
         for ax in [shaping::Axis::Throttle, shaping::Axis::Clutch, shaping::Axis::Handbrake] {
             a.toggle_shaping(ax);
         }
-        let curves: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let curves: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(curves.contains(&"wheel_throttle_curve"));
         assert!(curves.contains(&"wheel_handbrake_curve"));
         assert!(curves.contains(&"wheel_clutch_deadzone"));
@@ -1445,7 +1616,7 @@ mod tests {
         assert!(a.shaping_toggles.get(shaping::Axis::Steering));
         a.move_cat(-1); // away to Ffb
         a.move_cat(1); // and back to Steering
-        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr).collect();
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(attrs.contains(&"wheel_response_curve"), "still the curve view after navigation");
     }
 
@@ -1458,5 +1629,154 @@ mod tests {
         assert_eq!(names.get(&1).map(String::as_str), Some("AC EVO"));
         assert_eq!(names.get(&2).map(String::as_str), Some("GT7"));
         assert_eq!(names.get(&3).map(String::as_str), Some("PROFILE 3"));
+    }
+
+    // --- mode-coupled Profiles page ---
+
+    /// A fresh, unique temp directory per test for the computer-side
+    /// profile store.
+    fn profiles_tempdir() -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "logi-dd-tui-profiles-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn profiles_app(mode: &str) -> App<FakeSysfs> {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", mode);
+        fs.set("wheel_strength", "62");
+        fs.set("wheel_profile", "2");
+        fs.set("wheel_profile_names", "1: AC EVO\n2: GT7");
+        let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.profiles_dir = profiles_tempdir();
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Profiles).unwrap();
+        a.reload();
+        a
+    }
+
+    #[test]
+    fn onboard_profiles_page_shows_the_wheel_slot_rows() {
+        let a = profiles_app("onboard");
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
+        assert_eq!(attrs, vec!["wheel_mode", "wheel_profile", "wheel_profile_names"]);
+    }
+
+    #[test]
+    fn desktop_profiles_page_shows_mode_plus_the_computer_store() {
+        let a = profiles_app("desktop");
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
+        assert_eq!(attrs, vec!["wheel_mode", PROFILE_NEW_ATTR], "empty store: just Mode + Save");
+    }
+
+    #[test]
+    fn mode_toggle_recomposes_the_profiles_page() {
+        use crossterm::event::KeyCode;
+        let mut a = profiles_app("desktop");
+        a.on_key(KeyCode::Char('d')); // Mode row selected: toggles the mode
+        assert_eq!(a.device.current_mode().unwrap(), Mode::Onboard);
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
+        assert_eq!(attrs, vec!["wheel_mode", "wheel_profile", "wheel_profile_names"]);
+        a.on_key(KeyCode::Char('d'));
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
+        assert_eq!(attrs, vec!["wheel_mode", PROFILE_NEW_ATTR]);
+    }
+
+    #[test]
+    fn save_prompt_creates_a_profile_row() {
+        use crossterm::event::KeyCode;
+        let mut a = profiles_app("desktop");
+        // Enter on the Save row opens the name prompt.
+        a.row_idx = a.rows.iter().position(|r| r.attr == PROFILE_NEW_ATTR).unwrap();
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.profile_name_edit.as_deref(), Some(""));
+        for c in "race".chars() {
+            a.on_key(KeyCode::Char(c));
+        }
+        a.on_key(KeyCode::Enter);
+        assert!(a.profile_name_edit.is_none());
+        assert!(a.status.contains("saved"), "status: {}", a.status);
+        let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
+        assert_eq!(attrs, vec!["wheel_mode", "profile:race", PROFILE_NEW_ATTR]);
+        // The file really is a snapshot of the device.
+        let text =
+            std::fs::read_to_string(a.profiles_dir.join("race.profile")).unwrap();
+        assert!(text.contains("wheel_strength=62"));
+    }
+
+    #[test]
+    fn n_opens_the_prompt_and_esc_discards_it() {
+        use crossterm::event::KeyCode;
+        let mut a = profiles_app("desktop");
+        a.on_key(KeyCode::Char('n'));
+        assert!(a.profile_name_edit.is_some());
+        a.on_key(KeyCode::Char('x'));
+        a.on_key(KeyCode::Esc);
+        assert!(a.profile_name_edit.is_none());
+        assert!(!a.rows.iter().any(|r| r.attr.starts_with(PROFILE_ROW_PREFIX)), "nothing saved");
+        // 'n' outside the desktop Profiles page does nothing.
+        let mut b = profiles_app("onboard");
+        b.on_key(KeyCode::Char('n'));
+        assert!(b.profile_name_edit.is_none());
+    }
+
+    #[test]
+    fn enter_on_a_saved_profile_applies_it() {
+        use crossterm::event::KeyCode;
+        let mut a = profiles_app("desktop");
+        profiles::save_in(&a.profiles_dir, "race", &a.device).unwrap();
+        // Drift a setting, then apply the snapshot back.
+        a.device.write("wheel_strength", &Value::Percent(10)).unwrap();
+        a.reload();
+        a.row_idx = a.rows.iter().position(|r| r.attr == "profile:race").unwrap();
+        a.on_key(KeyCode::Enter);
+        assert!(a.status.contains("applied"), "status: {}", a.status);
+        assert_eq!(a.device.read("wheel_strength").unwrap(), Value::Percent(62));
+    }
+
+    #[test]
+    fn d_on_a_profile_row_arms_a_delete_confirm() {
+        use crossterm::event::KeyCode;
+        let mut a = profiles_app("desktop");
+        profiles::save_in(&a.profiles_dir, "race", &a.device).unwrap();
+        a.reload();
+        a.row_idx = a.rows.iter().position(|r| r.attr == "profile:race").unwrap();
+        a.on_key(KeyCode::Char('d'));
+        assert_eq!(a.profile_delete_confirm.as_deref(), Some("race"));
+        assert_eq!(a.device.current_mode().unwrap(), Mode::Desktop, "no mode toggle");
+        // Anything but y cancels.
+        a.on_key(KeyCode::Char('x'));
+        assert!(a.profile_delete_confirm.is_none());
+        assert!(a.rows.iter().any(|r| r.attr == "profile:race"), "still saved");
+        // y really deletes.
+        a.on_key(KeyCode::Char('d'));
+        a.on_key(KeyCode::Char('y'));
+        assert!(!a.rows.iter().any(|r| r.attr == "profile:race"));
+        assert!(a.status.contains("deleted"), "status: {}", a.status);
+    }
+
+    #[test]
+    fn onboard_profile_picker_bumps_within_1_to_5() {
+        use crossterm::event::KeyCode;
+        let mut a = profiles_app("onboard");
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_profile").unwrap();
+        a.on_key(KeyCode::Enter);
+        assert!(a.edit.is_some());
+        a.on_key(KeyCode::Left); // 2 -> 1
+        a.on_key(KeyCode::Left); // clamps at 1, never 0
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.device.read("wheel_profile").unwrap(), Value::Int(1));
+        a.on_key(KeyCode::Enter);
+        for _ in 0..9 {
+            a.on_key(KeyCode::Right); // clamps at 5
+        }
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.device.read("wheel_profile").unwrap(), Value::Int(5));
     }
 }

@@ -6,6 +6,7 @@ import { RgbStrip, LedColor } from "rgb_strip.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
 import { Setup, SetupGame } from "setup.slint";
 import { InfoPage, TestButton, TestAxis } from "info_page.slint";
+import { ComputerProfiles } from "computer_profiles.slint";
 export { SettingRow } from "widgets.slint";
 export { SetupGame } from "setup.slint";
 export { TestButton, TestAxis } from "info_page.slint";
@@ -110,6 +111,22 @@ export component App inherits Window {
     // Content: the selected category's rows, same as Task 4.
     in property <string> category-label: "Force feedback";
     in property <[SettingRow]> rows: [];
+
+    // Mode-coupled Profiles page: while the wheel is in desktop mode the
+    // page shows the computer-side profile store below the Mode row
+    // (onboard mode shows the wheel's own slot picker rows instead).
+    // `profiles-index` is the Profiles category's sidebar index, set once
+    // from Rust (-1 until then, same guard as `setup-index`).
+    in property <int> profiles-index: -1;
+    in property <[string]> computer-profiles: [];
+    in property <string> profiles-status: "";
+    in property <bool> profiles-status-error: false;
+    callback profile-apply(string);
+    callback profile-delete(string);
+    callback profile-save(string);
+    // Whether the desktop-mode Profiles layout (Mode row + computer
+    // profiles) replaces the plain settings list.
+    property <bool> show-computer-profiles: selected-category == profiles-index && !mode-onboard;
 
     callback edit-slider(string, int);
     callback edit-choice(string, int);
@@ -403,7 +420,35 @@ export component App inherits Window {
                     }
                 }
 
-                if root.selected-category != root.setup-index && root.selected-category != root.info-index && !root.no-wheel: SettingsList {
+                // Desktop-mode Profiles: the Mode row (a one-row settings
+                // list) with the computer-side profile store below it.
+                if root.selected-category != root.setup-index && root.selected-category != root.info-index && !root.no-wheel && root.show-computer-profiles: VerticalLayout {
+                    vertical-stretch: 1;
+                    spacing: Theme.gutter;
+
+                    SettingsList {
+                        // Just the Mode row (`compose_profiles` filters the
+                        // rest away in desktop mode): a fixed height a hair
+                        // above `Theme.row-height` so the row shows in full
+                        // and the profile store gets the remaining space.
+                        height: 76px;
+                        rows: root.rows;
+                        edit-choice(attr, v) => { root.edit-choice(attr, v); }
+                        switch-mode() => { root.toggle-mode(); }
+                    }
+
+                    ComputerProfiles {
+                        vertical-stretch: 1;
+                        profiles: root.computer-profiles;
+                        status: root.profiles-status;
+                        status-error: root.profiles-status-error;
+                        apply-profile(name) => { root.profile-apply(name); }
+                        delete-profile(name) => { root.profile-delete(name); }
+                        save-profile(name) => { root.profile-save(name); }
+                    }
+                }
+
+                if root.selected-category != root.setup-index && root.selected-category != root.info-index && !root.no-wheel && !root.show-computer-profiles: SettingsList {
                     // Claim all the vertical space left under the category
                     // title so the list (and its background/scrollbar) reaches
                     // the bottom of the window. Without this the ListView only

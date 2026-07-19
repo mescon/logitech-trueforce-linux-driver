@@ -129,17 +129,42 @@ fn draw_settings<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
             .iter()
             .enumerate()
             .map(|(i, row)| {
-                let spec = Device::<S>::spec(row.attr);
+                let spec = Device::<S>::spec(&row.attr);
                 // the edit state, only for the row being edited
                 let editing = app.edit.as_ref().filter(|_| i == app.row_idx);
 
                 let (mut val, mut val_style) = if !row.available {
                     ("(not on this wheel)".to_string(), Style::default().fg(Color::DarkGray))
-                } else if shaping::toggle_axis(row.attr).is_some() {
+                } else if shaping::toggle_axis(&row.attr).is_some() {
                     // A synthetic per-axis view toggle (no registry spec):
                     // show which shaping control the axis currently offers.
                     let curve = matches!(row.value, Ok(Value::Bool(true)));
                     ((if curve { "curve" } else { "sensitivity" }).to_string(), value_style(false, false))
+                } else if row.attr == crate::app::PROFILE_NEW_ATTR {
+                    // The desktop Profiles page's Save row: the name
+                    // prompt's draft while it is open, the key hint at
+                    // rest.
+                    match &app.profile_name_edit {
+                        Some(draft) => (
+                            format!("{draft}_"),
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        ),
+                        None => (
+                            match &row.value {
+                                Ok(Value::Text(s)) => s.clone(),
+                                _ => String::new(),
+                            },
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    }
+                } else if row.attr.starts_with(crate::app::PROFILE_ROW_PREFIX) {
+                    // A saved computer profile: the value column is the
+                    // key hint (no registry spec behind these rows).
+                    let hint = match &row.value {
+                        Ok(Value::Text(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    (hint, Style::default().fg(Color::DarkGray))
                 } else if row.attr == "wheel_profile" {
                     // show the profile number with its onboard name
                     let n = match (editing.map(|e| &e.draft), &row.value) {
@@ -241,6 +266,10 @@ fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         "effect:  <-/->  choose    Enter  apply    Esc  cancel"
     } else if app.edit.is_some() {
         "editing:  <-/->  adjust    type  text    Enter  commit    Esc  cancel"
+    } else if app.profile_name_edit.is_some() {
+        "profile name:  type name   Backspace erase   Enter save   Esc cancel"
+    } else if app.profile_delete_confirm.is_some() {
+        "confirm:  y delete   any other key cancels"
     } else if app.is_setup() {
         if app.sdk_edit.is_some() {
             "SDK folder:  type path   Backspace erase   Enter save   Esc cancel"
@@ -253,10 +282,13 @@ fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         } else {
             "f force feedback sim   t TrueForce texture sim   r rescan   d desktop/onboard   <-/-> category   q quit"
         }
-    } else if app.selected().is_some_and(|r| shaping::toggle_axis(r.attr).is_some()) {
+    } else if app.selected().is_some_and(|r| shaping::toggle_axis(&r.attr).is_some()) {
         // A toggle row's help explains why each axis shows only one of
         // the two shaping controls, same text the GUI rows carry.
         shaping::TOGGLE_HELP
+    } else if app.rows.iter().any(|r| r.attr == crate::app::PROFILE_NEW_ATTR) {
+        // The desktop Profiles page: the computer-side profile store.
+        "up/down select   Enter apply/save   n new profile   d delete profile (or desktop/onboard on Mode)   <-/-> category   q quit"
     } else if app.has_shaping_toggle() {
         "up/down select   <-/-> category   Enter edit   a sensitivity/curve for this axis   d desktop/onboard   r refresh   q quit"
     } else {

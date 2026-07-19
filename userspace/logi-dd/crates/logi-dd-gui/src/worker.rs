@@ -42,6 +42,15 @@ pub enum Request {
     /// (Re-)attempt `Device::discover()`. Sent once implicitly at startup
     /// and again whenever the no-wheel screen's Retry button is pressed.
     Discover,
+    /// Save the wheel's current settings as computer profile `name`
+    /// (desktop-mode Profiles page). Replied with `Response::Profiles`.
+    ProfileSave(String),
+    /// Replay computer profile `name` onto the wheel. Replied with
+    /// `Response::Profiles`, then fresh `Rows` for the Profiles category
+    /// plus `Info` (an apply rewrites settings device-wide).
+    ProfileApply(String),
+    /// Delete computer profile `name`. Replied with `Response::Profiles`.
+    ProfileDelete(String),
 }
 
 /// What the worker sends back.
@@ -68,6 +77,13 @@ pub enum Response {
     /// No device reachable right now (discovery failed, or has not been
     /// retried since the last failure). Carries the error text for display.
     NoWheel(String),
+    /// The computer-side profile store's state: the saved names (sorted)
+    /// plus the outcome line of the request that triggered this reply
+    /// ("" for a plain page load). `error` says whether `status` reports
+    /// a failure, so the UI can color it without string-sniffing. Sent
+    /// after every profile request and alongside every Profiles-category
+    /// `Rows` reply.
+    Profiles { names: Vec<String>, status: String, error: bool },
 }
 
 /// Handle to the worker thread. Cheap to clone (it is just a channel
@@ -157,13 +173,27 @@ fn dispatch<S: SysfsIo>(
     }
 }
 
+/// The `Response::Profiles` a plain Profiles-category load carries: the
+/// list with no status line.
+fn profiles_state<S: SysfsIo>(vm: &ViewModel<S>) -> Response {
+    Response::Profiles { names: vm.profile_list(), status: String::new(), error: false }
+}
+
 fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Response)) {
     match req {
         Request::LoadCategory(category) => {
             on_response(Response::Rows { category, rows: vm.rows_for(category) });
+            // The Profiles page also renders the computer-side store;
+            // ship its list with every page load so it is never stale.
+            if category == Category::Profiles {
+                on_response(profiles_state(vm));
+            }
         }
         Request::Refresh(category) => {
             on_response(Response::Rows { category, rows: vm.rows_for(category) });
+            if category == Category::Profiles {
+                on_response(profiles_state(vm));
+            }
             if let Ok(info) = vm.info() {
                 on_response(Response::Info(info));
             }
@@ -221,6 +251,46 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
                 on_response(Response::Info(info));
             }
         }
+        Request::ProfileSave(name) => {
+            let (status, error) = match vm.profile_save(&name) {
+                Ok(()) => (format!("Saved '{}'.", name.trim()), false),
+                Err(e) => (format!("Save failed: {e}"), true),
+            };
+            on_response(Response::Profiles { names: vm.profile_list(), status, error });
+        }
+        Request::ProfileDelete(name) => {
+            let (status, error) = match vm.profile_delete(&name) {
+                Ok(()) => (format!("Deleted '{name}'."), false),
+                Err(e) => (format!("Delete failed: {e}"), true),
+            };
+            on_response(Response::Profiles { names: vm.profile_list(), status, error });
+        }
+        Request::ProfileApply(name) => {
+            let (status, error) = match vm.profile_apply(&name) {
+                Ok(errors) if errors.is_empty() => (format!("Applied '{name}'."), false),
+                Ok(errors) => {
+                    let (attr, msg) = &errors[0];
+                    (
+                        format!(
+                            "Applied '{name}' with {} failed setting(s), first: {attr}: {msg}",
+                            errors.len()
+                        ),
+                        true,
+                    )
+                }
+                Err(e) => (format!("Apply failed: {e}"), true),
+            };
+            on_response(Response::Profiles { names: vm.profile_list(), status, error });
+            // An apply rewrites settings device-wide (possibly the mode
+            // too); refresh what the Profiles page shows plus the header.
+            on_response(Response::Rows {
+                category: Category::Profiles,
+                rows: vm.rows_for(Category::Profiles),
+            });
+            if let Ok(info) = vm.info() {
+                on_response(Response::Info(info));
+            }
+        }
         // Handled in `spawn`'s loop before `handle` is ever called, so that
         // it can replace `vm` itself; `handle` only ever borrows it.
         Request::Discover => unreachable!("Discover is intercepted before handle()"),
@@ -273,6 +343,7 @@ mod tests {
             Response::NoWheel(msg) => panic!("expected Info, got NoWheel({msg})"),
             Response::Rows { .. } => panic!("expected Info, got Rows"),
             Response::RowUpdated { .. } => panic!("expected Info, got RowUpdated"),
+            Response::Profiles { .. } => panic!("expected Info, got Profiles"),
         }
     }
 
@@ -510,6 +581,118 @@ mod tests {
             Response::RowUpdated { row, .. } => assert_eq!(row.attr, "wheel_led_brightness"),
             _ => panic!("expected RowUpdated"),
         }
+    }
+
+    // --- the computer-side profile store ---
+
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A fresh, unique temp directory per test.
+    fn tempdir() -> PathBuf {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "logi-dd-gui-worker-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn profile_vm(dir: &std::path::Path) -> ViewModel<FakeSysfs> {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_strength", "80");
+        fs.set("wheel_profile", "0");
+        fs.set("wheel_profile_names", "1: A");
+        let mut vm = ViewModel::with_io(fs);
+        vm.set_profiles_dir(dir.to_path_buf());
+        vm
+    }
+
+    #[test]
+    fn loading_the_profiles_category_also_ships_the_computer_profile_list() {
+        let dir = tempdir();
+        let vm = profile_vm(&dir);
+        vm.profile_save("race").unwrap();
+        let replies =
+            responses(|on_response| handle(&vm, Request::LoadCategory(Category::Profiles), on_response));
+        assert_eq!(replies.len(), 2);
+        assert!(matches!(&replies[0], Response::Rows { .. }));
+        match &replies[1] {
+            Response::Profiles { names, status, error } => {
+                assert_eq!(names, &vec!["race".to_string()]);
+                assert_eq!(status, "");
+                assert!(!error);
+            }
+            _ => panic!("expected Profiles second"),
+        }
+        // Other categories do not grow a Profiles reply.
+        let other = responses(|on_response| handle(&vm, Request::LoadCategory(Category::Ffb), on_response));
+        assert_eq!(other.len(), 1);
+    }
+
+    #[test]
+    fn profile_save_and_delete_reply_with_the_fresh_list() {
+        let dir = tempdir();
+        let vm = profile_vm(&dir);
+        let responses = responses(|on_response| {
+            handle(&vm, Request::ProfileSave("race".to_string()), on_response);
+            handle(&vm, Request::ProfileSave("".to_string()), on_response);
+            handle(&vm, Request::ProfileDelete("race".to_string()), on_response);
+        });
+        assert_eq!(responses.len(), 3);
+        match &responses[0] {
+            Response::Profiles { names, status, error } => {
+                assert_eq!(names, &vec!["race".to_string()]);
+                assert!(status.contains("Saved"), "status: {status}");
+                assert!(!error);
+            }
+            _ => panic!("expected Profiles"),
+        }
+        match &responses[1] {
+            Response::Profiles { names, status, error } => {
+                assert_eq!(names, &vec!["race".to_string()], "invalid name saved nothing");
+                assert!(status.contains("failed"), "status: {status}");
+                assert!(error);
+            }
+            _ => panic!("expected Profiles"),
+        }
+        match &responses[2] {
+            Response::Profiles { names, error, .. } => {
+                assert!(names.is_empty());
+                assert!(!error);
+            }
+            _ => panic!("expected Profiles"),
+        }
+    }
+
+    #[test]
+    fn profile_apply_follows_up_with_rows_and_info() {
+        let dir = tempdir();
+        let vm = profile_vm(&dir);
+        vm.profile_save("race").unwrap();
+        // Drift a setting so the apply has something to restore.
+        vm.edit("wheel_strength", WidgetInput::Slider(10)).unwrap();
+        let responses = responses(|on_response| {
+            handle(&vm, Request::ProfileApply("race".to_string()), on_response)
+        });
+        assert_eq!(responses.len(), 3);
+        match &responses[0] {
+            Response::Profiles { status, error, .. } => {
+                assert!(status.contains("Applied"), "status: {status}");
+                assert!(!error);
+            }
+            _ => panic!("expected Profiles first"),
+        }
+        match &responses[1] {
+            Response::Rows { category, .. } => assert_eq!(*category, Category::Profiles),
+            _ => panic!("expected Rows second"),
+        }
+        assert!(matches!(&responses[2], Response::Info(_)));
+        assert_eq!(vm.device_read("wheel_strength").unwrap(), Value::Percent(80));
     }
 
     #[test]

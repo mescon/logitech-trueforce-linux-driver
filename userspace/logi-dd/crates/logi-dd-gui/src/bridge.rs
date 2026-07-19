@@ -169,15 +169,15 @@ pub fn to_setting_row(row: &Row) -> SettingRow {
     }
 }
 
-/// Build the 6 dropdown labels for the `wheel_profile` row: index 0 is
-/// always "0: Desktop"; index `i` (1..=5) is "`i`: `name`" using
-/// `names[i - 1]` when present and non-empty, else a "Profile `i`"
-/// placeholder. `names` is `wheel_profile_names`'s live value (one entry per
-/// onboard slot); a short or empty list (unread yet, or no wheel attached)
-/// still yields all 6 labels via the placeholder.
+/// Build the 5 dropdown labels for the `wheel_profile` row in onboard
+/// mode: index `i - 1` is "`i`: `name`" (slots 1..=5) using `names[i - 1]`
+/// when present and non-empty, else a "Profile `i`" placeholder. There is
+/// no entry for profile 0: that is the desktop (host-driven) state, and
+/// the picker only shows while the wheel is in onboard mode. `names` is
+/// `wheel_profile_names`'s live value; a short or empty list (unread yet)
+/// still yields all 5 labels via the placeholder.
 pub fn profile_choice_labels(names: &[String]) -> Vec<slint::SharedString> {
-    let mut labels = Vec::with_capacity(6);
-    labels.push(slint::SharedString::from("0: Desktop"));
+    let mut labels = Vec::with_capacity(5);
     for i in 1..=5usize {
         let name = names.get(i - 1).filter(|n| !n.is_empty());
         let label = match name {
@@ -190,14 +190,46 @@ pub fn profile_choice_labels(names: &[String]) -> Vec<slint::SharedString> {
 }
 
 /// Rewrite `sr` (already built by `to_setting_row` for the `wheel_profile`
-/// row) into the profile dropdown: tags it `KIND_PROFILE` and installs
-/// `profile_choice_labels(names)` as its choices. `sr.int_value` (the active
-/// profile number) is left untouched, so the ComboBox's `current-index`
-/// still lands on the right entry. Only meaningful for `wheel_profile`;
-/// callers guard on `attr` before calling this.
+/// row) into the onboard profile dropdown: tags it `KIND_PROFILE`,
+/// installs `profile_choice_labels(names)` as its choices, and maps
+/// `sr.int_value` from the profile number (1-5) to the dropdown index
+/// (0-4; the list has no profile-0 entry). A device still reporting
+/// profile 0 maps to -1, i.e. no selection. The Slint side commits the
+/// index plus one back, undoing the shift. Only meaningful for
+/// `wheel_profile`; callers guard on `attr` before calling this.
 pub fn apply_profile_choices(sr: &mut SettingRow, names: &[String]) {
     sr.kind = KIND_PROFILE;
+    sr.int_value -= 1;
     sr.choices = slint::ModelRc::new(slint::VecModel::from(profile_choice_labels(names)));
+}
+
+/// Compose the Profiles page for the wheel's current mode, read off the
+/// rows' own `wheel_mode` value (self-consistent with this very reload; a
+/// cached mode could be one response behind). Onboard: the Mode row, the
+/// onboard profile picker (rewritten via `apply_profile_choices`) and the
+/// rename editor row. Desktop: only the Mode row survives; the
+/// computer-side profile store takes over below the list (see
+/// `ComputerProfiles` in `ui/computer_profiles.slint`), so the wheel-slot
+/// picker and the rename editor disappear. Rows for any other category
+/// (no `wheel_profile` present) pass through untouched, so `load_rows`
+/// can call this unconditionally, same convention as `compose_lightsync`.
+pub fn compose_profiles(items: Vec<SettingRow>, names: &[String]) -> Vec<SettingRow> {
+    if !items.iter().any(|r| r.attr == "wheel_profile") {
+        return items;
+    }
+    let onboard =
+        items.iter().find(|r| r.attr == "wheel_mode").map(|r| r.int_value == 1).unwrap_or(false);
+    items
+        .into_iter()
+        .filter_map(|mut item| match item.attr.as_str() {
+            "wheel_profile" => onboard.then(|| {
+                apply_profile_choices(&mut item, names);
+                item
+            }),
+            "wheel_profile_names" => onboard.then_some(item),
+            _ => Some(item),
+        })
+        .collect()
 }
 
 /// The effect-selector labels as Slint strings, in
@@ -1179,12 +1211,21 @@ mod tests {
         assert_eq!(names, vec!["A".to_string()]);
     }
 
-    // --- profile dropdown conversion ---
+    // --- profile dropdown conversion / mode-coupled composition ---
+
+    fn profiles_setting_rows(mode: &str, profile: &str) -> Vec<SettingRow> {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", mode);
+        fs.set("wheel_profile", profile);
+        fs.set("wheel_profile_names", "1: AC EVO\n2: GT7");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        setting_rows(&vm.rows_for(Category::Profiles))
+    }
 
     #[test]
-    fn apply_profile_choices_rewrites_kind_and_choices_but_keeps_int_value() {
+    fn apply_profile_choices_rewrites_kind_choices_and_shifts_the_index() {
         let fs = FakeSysfs::new();
-        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_mode", "onboard");
         fs.set("wheel_profile", "2");
         let vm = crate::viewmodel::ViewModel::with_io(fs);
         let row = vm
@@ -1200,12 +1241,45 @@ mod tests {
         apply_profile_choices(&mut sr, &names);
 
         assert_eq!(sr.kind, KIND_PROFILE);
-        assert_eq!(sr.int_value, 2);
+        assert_eq!(sr.int_value, 1, "profile 2 = dropdown index 1 (no profile-0 entry)");
         let choices: Vec<String> = sr.choices.iter().map(|s| s.to_string()).collect();
         assert_eq!(
             choices,
-            vec!["0: Desktop", "1: AC EVO", "2: GT7", "3: Profile 3", "4: Profile 4", "5: Profile 5"]
+            vec!["1: AC EVO", "2: GT7", "3: Profile 3", "4: Profile 4", "5: Profile 5"]
         );
+    }
+
+    #[test]
+    fn compose_profiles_onboard_keeps_the_picker_and_rename_rows() {
+        let names = vec!["AC EVO".to_string()];
+        let out = compose_profiles(profiles_setting_rows("onboard", "3"), &names);
+        let attrs = attrs_of(&out);
+        assert_eq!(attrs, vec!["wheel_mode", "wheel_profile", "wheel_profile_names"]);
+        let picker = out.iter().find(|r| r.attr == "wheel_profile").unwrap();
+        assert_eq!(picker.kind, KIND_PROFILE);
+        assert_eq!(picker.int_value, 2, "profile 3 = dropdown index 2");
+        let choices: Vec<String> = picker.choices.iter().map(|s| s.to_string()).collect();
+        assert_eq!(choices[0], "1: AC EVO");
+        assert_eq!(choices.len(), 5, "no profile-0 entry in onboard mode");
+    }
+
+    #[test]
+    fn compose_profiles_desktop_keeps_only_the_mode_row() {
+        let out = compose_profiles(profiles_setting_rows("desktop", "0"), &[]);
+        let attrs = attrs_of(&out);
+        assert_eq!(attrs, vec!["wheel_mode"]);
+    }
+
+    #[test]
+    fn compose_profiles_leaves_other_categories_untouched() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_strength", "80");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let items = setting_rows(&vm.rows_for(Category::Ffb));
+        let before = attrs_of(&items);
+        let after = attrs_of(&compose_profiles(items, &[]));
+        assert_eq!(before, after);
     }
 
     // --- LIGHTSYNC page composition ---

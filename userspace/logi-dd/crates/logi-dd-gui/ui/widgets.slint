@@ -17,8 +17,8 @@ import { Theme } from "theme.slint";
 //   9 = slot text (Button that opens the slot-text editor overlay, fires
 //                  `edit-slot-text`)
 //   10 = pair (two SpinBoxes, lower/upper, e.g. a deadzone)
-//   11 = profile (ComboBox of profile names; commits the chosen index via
-//                 edit-slider)
+//   11 = profile (ComboBox of the onboard slot names 1-5; commits the
+//                 chosen index + 1, the profile number, via edit-slider)
 //   12 = LIGHTSYNC effect (ComboBox over the 13 selector labels; commits
 //                 the chosen index via edit-light-effect, which resolves
 //                 it to one or two attr writes on the Rust side)
@@ -242,9 +242,11 @@ export component SettingsList inherits ListView {
                         selected(v) => { edit-choice(row.attr, self.current-index); }
                     }
 
-                    // `wheel_profile` is an IntRange in core (0=desktop,
-                    // 1-5 onboard), so the chosen index IS the profile
-                    // number: commits via `edit-slider`, not `edit-choice`.
+                    // The onboard profile picker: `wheel_profile` is an
+                    // IntRange in core, but the dropdown lists only the
+                    // onboard slots 1-5 (no profile-0 entry), so the
+                    // chosen index + 1 is the profile number; commits via
+                    // `edit-slider`, not `edit-choice`.
                     if row.kind == 11: ComboBox {
                         width: 220px;
                         model: row.choices;
@@ -254,7 +256,7 @@ export component SettingsList inherits ListView {
                         // `SettingRow.revision`.
                         property <int> rev: row.revision;
                         changed rev => { self.current-index = row.int-value; }
-                        selected(v) => { edit-slider(row.attr, self.current-index); }
+                        selected(v) => { edit-slider(row.attr, self.current-index + 1); }
                     }
 
                     // The LIGHTSYNC effect selector: the chosen index is a

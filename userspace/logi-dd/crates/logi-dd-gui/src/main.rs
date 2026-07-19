@@ -164,12 +164,12 @@ fn load_rows(
     led_names: &[String],
     shaping_toggles: shaping::AxisToggles,
 ) {
-    let mut items = bridge::setting_rows(rows);
-    for item in items.iter_mut() {
-        if item.attr == "wheel_profile" {
-            bridge::apply_profile_choices(item, profile_names);
-        }
-    }
+    let items = bridge::setting_rows(rows);
+    // A no-op for every category but Profiles (see `compose_profiles`'s
+    // doc): onboard mode shows the slot picker + rename rows, desktop mode
+    // keeps only the Mode row (the computer-side profile store renders
+    // below the list instead).
+    let items = bridge::compose_profiles(items, profile_names);
     // A no-op for every category but Leds (see `compose_lightsync`'s doc):
     // the LIGHTSYNC page renders three composed rows plus the Edit slot
     // button instead of the registry's raw row-per-attr list.
@@ -595,6 +595,9 @@ fn main() -> Result<(), slint::PlatformError> {
     // selecting it starts the evdev reader, leaving it stops it.
     let info_index = bridge::index_of(Category::Info);
     app.set_info_index(info_index);
+    // The Profiles category swaps in the computer-side profile store while
+    // the wheel is in desktop mode (see `show-computer-profiles`).
+    app.set_profiles_index(bridge::index_of(Category::Profiles));
     app.set_project_url(logi_dd_core::PROJECT_URL.into());
     app.on_open_url(|url| open_in_browser(&url));
 
@@ -847,6 +850,13 @@ fn main() -> Result<(), slint::PlatformError> {
                         // back to its "-" placeholders.
                         app.set_info_serial("".into());
                         app.set_info_firmware("".into());
+                    }
+                    Response::Profiles { names, status, error } => {
+                        let items: Vec<slint::SharedString> =
+                            names.iter().map(|n| slint::SharedString::from(n.as_str())).collect();
+                        app.set_computer_profiles(slint::ModelRc::new(slint::VecModel::from(items)));
+                        app.set_profiles_status(status.into());
+                        app.set_profiles_status_error(error);
                     }
                 }
             });
@@ -1454,6 +1464,29 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(app) = app_weak.upgrade() {
                 app.set_slot_text_editor_open(false);
             }
+        });
+    }
+
+    // Profiles page (desktop mode): the computer-side profile store. All
+    // three run on the worker thread (file + sysfs I/O), which replies with
+    // `Response::Profiles` (fresh list + status line); an apply also
+    // triggers the Rows/Info refresh the settings need.
+    {
+        let worker = worker.clone();
+        app.on_profile_save(move |name| {
+            worker.request(Request::ProfileSave(name.to_string()));
+        });
+    }
+    {
+        let worker = worker.clone();
+        app.on_profile_apply(move |name| {
+            worker.request(Request::ProfileApply(name.to_string()));
+        });
+    }
+    {
+        let worker = worker.clone();
+        app.on_profile_delete(move |name| {
+            worker.request(Request::ProfileDelete(name.to_string()));
         });
     }
 
