@@ -18,6 +18,7 @@ pub mod helpers;
 pub mod profiles;
 pub mod shaping;
 pub mod steam;
+pub mod tfsim;
 pub mod device;
 pub use device::{Device, DeviceInfo};
 

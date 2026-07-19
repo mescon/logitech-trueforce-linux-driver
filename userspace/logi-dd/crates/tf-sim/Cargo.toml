@@ -12,3 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# Test-only: pins the front-ends' format-compatible tf-sim.conf
+# reader/writer (logi_dd_core::tfsim) against this crate's own writer;
+# see tests/frontend_compat.rs.
+logi-dd-core = { path = "../logi-dd-core" }

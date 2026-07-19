@@ -5009,6 +5009,7 @@ name = "tf-sim"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "logi-dd-core",
 ]
 
 [[package]]

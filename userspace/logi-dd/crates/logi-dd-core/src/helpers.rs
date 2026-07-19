@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 /// The FFB proxy's binary name.
 pub const FFB_BIN: &str = "logi-ffb";
 
+/// The simulated-TrueForce daemon's binary name.
+pub const TF_SIM_BIN: &str = "logi-tf-sim";
+
 /// The shim installer's candidate names, preferred order: the packaged
 /// name first, the repo script's name second (some setups put `tools/` on
 /// `PATH`).
@@ -36,15 +39,29 @@ fn find_on_path(bin: &str, path_var: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(paths).map(|dir| dir.join(bin)).find(|p| p.is_file())
 }
 
-/// Resolve `logi-ffb`: `$PATH` first, else next to the running executable
-/// (`cargo build` drops `logi-ffb` and the front-ends into the same
-/// `target/<profile>` directory). `path_var` is the `PATH` value and `exe`
-/// the current executable's path; both parameterized for tests.
-pub fn resolve_ffb(path_var: Option<&OsStr>, exe: Option<&Path>) -> Option<PathBuf> {
-    find_on_path(FFB_BIN, path_var).or_else(|| {
-        let sibling = exe?.parent()?.join(FFB_BIN);
+/// Resolve a helper that is built into the same target directory as the
+/// front-ends: `$PATH` first (the packaged install), else next to the
+/// running executable. `path_var` is the `PATH` value and `exe` the
+/// current executable's path; both parameterized for tests.
+fn resolve_sibling(bin: &str, path_var: Option<&OsStr>, exe: Option<&Path>) -> Option<PathBuf> {
+    find_on_path(bin, path_var).or_else(|| {
+        let sibling = exe?.parent()?.join(bin);
         sibling.is_file().then_some(sibling)
     })
+}
+
+/// Resolve `logi-ffb`: `$PATH` first, else next to the running executable
+/// (`cargo build` drops `logi-ffb` and the front-ends into the same
+/// `target/<profile>` directory).
+pub fn resolve_ffb(path_var: Option<&OsStr>, exe: Option<&Path>) -> Option<PathBuf> {
+    resolve_sibling(FFB_BIN, path_var, exe)
+}
+
+/// Resolve `logi-tf-sim`, the simulated-TrueForce daemon: same rule as
+/// [`resolve_ffb`] (`$PATH`, else the sibling next to the running
+/// executable, where a workspace build drops it).
+pub fn resolve_tf_sim(path_var: Option<&OsStr>, exe: Option<&Path>) -> Option<PathBuf> {
+    resolve_sibling(TF_SIM_BIN, path_var, exe)
 }
 
 /// Resolve the TrueForce SDK shim installer: each candidate name on
@@ -75,6 +92,11 @@ pub fn ffb_path() -> Option<PathBuf> {
 /// [`resolve_installer`] over the real process environment.
 pub fn installer_path() -> Option<PathBuf> {
     resolve_installer(std::env::var_os("PATH").as_deref(), std::env::current_exe().ok().as_deref())
+}
+
+/// [`resolve_tf_sim`] over the real process environment.
+pub fn tf_sim_path() -> Option<PathBuf> {
+    resolve_tf_sim(std::env::var_os("PATH").as_deref(), std::env::current_exe().ok().as_deref())
 }
 
 #[cfg(test)]
@@ -165,6 +187,23 @@ mod tests {
         let (_repo, exe) = checkout(&tree);
         assert_eq!(resolve_ffb(Some(&path_var(&[&empty])), Some(&exe)), None);
         assert_eq!(resolve_ffb(None, None), None, "no PATH and no exe never panics");
+    }
+
+    #[test]
+    fn tf_sim_resolves_like_ffb() {
+        let tree = TempTree::new();
+        let bindir = tree.path().join("bin");
+        touch(&bindir.join(TF_SIM_BIN));
+        let (_repo, exe) = checkout(&tree);
+        let sibling = exe.parent().unwrap().join(TF_SIM_BIN);
+        touch(&sibling);
+        let found = resolve_tf_sim(Some(&path_var(&[&bindir])), Some(&exe)).unwrap();
+        assert_eq!(found, bindir.join(TF_SIM_BIN), "PATH wins over the sibling");
+        let empty = tree.path().join("empty-bin");
+        fs::create_dir_all(&empty).unwrap();
+        let found = resolve_tf_sim(Some(&path_var(&[&empty])), Some(&exe)).unwrap();
+        assert_eq!(found, sibling, "sibling fallback");
+        assert_eq!(resolve_tf_sim(None, None), None, "nothing found never panics");
     }
 
     #[test]
