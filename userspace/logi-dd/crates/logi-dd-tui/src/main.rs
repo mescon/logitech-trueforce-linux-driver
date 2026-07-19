@@ -2,6 +2,7 @@ mod app;
 mod curve_editor;
 mod edit;
 mod ui;
+mod wheel_test;
 
 use app::App;
 use crossterm::event::{self, Event};
@@ -46,10 +47,27 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = term.draw(|f| ui::draw(f, &app)) {
             break Err(e.into());
         }
-        match event::read() {
-            Ok(Event::Key(k)) if k.kind == event::KeyEventKind::Press => app.on_key(k.code),
-            Ok(_) => {}
-            Err(e) => break Err(e.into()),
+        // While the Test view's monitor is live, poll with a short
+        // timeout (so the loop keeps redrawing at ~30 Hz) and drain the
+        // wheel's pending evdev events each tick; everywhere else, block
+        // on the next key as before.
+        let key_ready = if app.test_polling() {
+            match event::poll(std::time::Duration::from_millis(33)) {
+                Ok(ready) => ready,
+                Err(e) => break Err(e.into()),
+            }
+        } else {
+            true
+        };
+        if key_ready {
+            match event::read() {
+                Ok(Event::Key(k)) if k.kind == event::KeyEventKind::Press => app.on_key(k.code),
+                Ok(_) => {}
+                Err(e) => break Err(e.into()),
+            }
+        }
+        if app.test_polling() && !app.test.tick() {
+            app.status = "test: wheel disconnected".to_string();
         }
         // A queued shim run blocks, so show a status line first, run,
         // rescan the games list (the row's shim status just changed),

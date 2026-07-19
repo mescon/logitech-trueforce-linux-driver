@@ -76,6 +76,13 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
     } else {
         Style::default().fg(Color::Cyan)
     }));
+    // The second synthetic entry: the live input tester + force sims
+    // (`app::TEST_INDEX`), also not a real `Category`.
+    cats.push(ListItem::new("Test").style(if app.is_test() {
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    }));
     f.render_widget(
         List::new(cats).block(Block::default().borders(Borders::ALL).title("Category")),
         body[0],
@@ -83,6 +90,8 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
 
     if app.is_setup() {
         draw_setup(f, app, body[1]);
+    } else if app.is_test() {
+        draw_test(f, app, body[1]);
     } else {
         // settings in the selected category
         let names = app.profile_names();
@@ -191,6 +200,12 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
             "SDK folder:  type path   Backspace erase   Enter save   Esc cancel"
         } else {
             "up/down select game   i install shim   u remove shim   r rescan   s SDK folder   <-/-> category   q quit"
+        }
+    } else if app.is_test() {
+        if app.test.confirm.is_some() {
+            "confirm:  y continue   any other key cancels"
+        } else {
+            "Enter start/stop monitor   f force feedback sim   t TrueForce texture sim   r rescan   <-/-> category   q quit"
         }
     } else if app.selected().map(|r| r.attr) == Some(shaping::TOGGLE_ATTR) {
         // The toggle row's help explains why the page shows only one of
@@ -360,6 +375,147 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
             .wrap(Wrap { trim: false })
             .block(Block::default().borders(Borders::ALL).title("Game compatibility")),
         rows[2],
+    );
+}
+
+/// A `#`-filled 0..65535 gauge, `width` cells wide.
+fn fill_bar(value: i32, width: usize) -> String {
+    let filled = (value.clamp(0, 65535) as usize * width) / 65535;
+    format!("{}{}", "#".repeat(filled), "-".repeat(width.saturating_sub(filled)))
+}
+
+/// A 0..65535 position gauge (for the centered steering axis): a `|`
+/// marker on a `-` track, center marked when idle.
+fn position_bar(value: i32, width: usize) -> String {
+    let width = width.max(3);
+    let pos = (value.clamp(0, 65535) as usize * (width - 1)) / 65535;
+    (0..width).map(|i| if i == pos { '|' } else { '-' }).collect()
+}
+
+/// Render the Test view body: the live steering/pedal state read off the
+/// wheel's evdev node, the light-up button list, and the sim status.
+/// Mirrors the GUI's Test page in text form.
+fn draw_test<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+    use logi_dd_core::evtest;
+
+    let t = &app.test;
+    let Some(dev) = &t.dev else {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                if t.scanned { "No wheel found" } else { "Scanning for the wheel..." },
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("Connect the wheel to this machine, then press r to rescan."),
+            Line::from(
+                "The tester reads the wheel's /dev/input event device, so your user \
+                 needs read access to it (the project's udev rule sets this up).",
+            ),
+        ];
+        f.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::default().borders(Borders::ALL).title("Test")),
+            area,
+        );
+        return;
+    };
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(13), Constraint::Min(3)])
+        .split(area);
+
+    let deg = t.degrees();
+    let bar_w = (rows[0].width.saturating_sub(14)).clamp(10, 50) as usize;
+    let mut top = vec![
+        Line::from(vec![
+            Span::raw("Device: "),
+            Span::styled(dev.name.clone(), Style::default().fg(Color::Cyan)),
+            Span::raw(format!("  ({})", dev.event_path)),
+        ]),
+        Line::from(vec![
+            Span::raw("Monitor: "),
+            if t.monitoring() {
+                Span::styled("on", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+            } else {
+                Span::styled("off (press Enter to start)", Style::default().fg(Color::Yellow))
+            },
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("Steering  "),
+            Span::styled(
+                format!("{deg:+8.1} deg"),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(
+                "   (range {} deg: {} to +{})",
+                t.range,
+                -(t.range as i32) / 2,
+                t.range / 2
+            )),
+        ]),
+        Line::from(format!("          [{}]", position_bar(t.steering_raw, bar_w))),
+        Line::from(""),
+    ];
+    for (label, value) in
+        [("Throttle", t.axes[0]), ("Brake", t.axes[1]), ("Clutch", t.axes[2]), ("Handbrake", t.axes[3])]
+    {
+        top.push(Line::from(vec![
+            Span::styled(format!("{label:<9} "), Style::default().fg(Color::Gray)),
+            Span::raw(format!("[{}] ", fill_bar(value, bar_w))),
+            Span::styled(format!("{value:>5}"), Style::default().fg(Color::Gray)),
+        ]));
+    }
+    top.push(Line::from(vec![
+        Span::styled(format!("{:<9} ", "D-pad"), Style::default().fg(Color::Gray)),
+        Span::styled(
+            evtest::hat_label(t.hat.0, t.hat.1).to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    if t.sim_running() {
+        top.push(Line::from(Span::styled(
+            "force playing... (25%, 2 s; f/t are disabled meanwhile)",
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        )));
+    }
+    if let Some(err) = &t.open_error {
+        top.push(Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red))));
+    }
+    f.render_widget(
+        Paragraph::new(top)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title("Test")),
+        rows[0],
+    );
+
+    // The button tester: every wheel button, reverse-video while held,
+    // with the recent-press history on top.
+    let recent = if t.recent.is_empty() {
+        "-".to_string()
+    } else {
+        t.recent.iter().map(|c| evtest::button_name(*c)).collect::<Vec<_>>().join(", ")
+    };
+    let mut items: Vec<ListItem> = vec![ListItem::new(Line::from(vec![
+        Span::styled("Last pressed: ", Style::default().fg(Color::Gray)),
+        Span::raw(recent),
+    ]))];
+    items.extend(evtest::WHEEL_BUTTONS.iter().map(|(code, label)| {
+        let held = t.pressed.contains(code);
+        let mut item = ListItem::new(format!("  {label:<18}"));
+        if held {
+            item = item.style(Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD));
+        }
+        item
+    }));
+    f.render_widget(
+        List::new(items).block(
+            Block::default().borders(Borders::ALL).title("Buttons (highlighted while held)"),
+        ),
+        rows[1],
     );
 }
 
