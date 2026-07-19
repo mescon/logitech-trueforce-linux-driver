@@ -34,11 +34,13 @@ pub fn sweep_at(t: f32) -> (f32, f32) {
 /// (falling back to the default if it is set to 0, so the test is always
 /// feelable), then exit. `stop` aborts early; the stream teardown clears
 /// any queued force either way.
-pub fn run(cfg: &Config, stop: &AtomicBool) -> Result<()> {
+pub fn run(cfg: &Config, pitch_override_pct: Option<u8>, stop: &AtomicBool) -> Result<()> {
     let intensity_pct = if cfg.intensity == 0 { DEFAULT_INTENSITY } else { cfg.intensity };
     let intensity = f32::from(intensity_pct) / 100.0;
+    let pitch_pct = pitch_override_pct.unwrap_or(cfg.pitch_pct);
+    let pitch = f32::from(pitch_pct) / 100.0;
 
-    eprintln!("logi-tf-sim: sweep: {SWEEP_SECS} s synthetic RPM sweep at intensity {intensity_pct}%");
+    eprintln!("logi-tf-sim: sweep: {SWEEP_SECS} s synthetic RPM sweep at intensity {intensity_pct}%, pitch {pitch_pct}%");
     eprintln!("logi-tf-sim: sweep: the wheel WILL produce haptic force; hold the rim");
     for n in (1..=3u32).rev() {
         if stop.load(Ordering::SeqCst) {
@@ -60,7 +62,7 @@ pub fn run(cfg: &Config, stop: &AtomicBool) -> Result<()> {
         let t = (i * CHUNK_MS) as f32 / 1000.0;
         let (rpm, throttle) = sweep_at(t);
         samples.clear();
-        synth.generate(rpm, throttle, intensity, CHUNK_MS, &mut samples);
+        synth.generate(rpm, throttle, intensity, pitch, CHUNK_MS, &mut samples);
         stream.push(&samples)?;
         thread::sleep(Duration::from_millis(CHUNK_MS as u64));
     }

@@ -14,7 +14,8 @@ through the wheel's TrueForce audio path, for games without native
 TrueForce support.
 
 usage: logi-tf-sim             run the daemon (listens for telemetry)
-       logi-tf-sim --sweep     play a 6 s synthetic RPM sweep and exit
+       logi-tf-sim --sweep [pitch%]   play a 6 s synthetic RPM sweep and exit
+                               (pitch 10-200 overrides the config, default 100)
        logi-tf-sim -h|--help   show this help
 
 The daemon listens passively on UDP for Codemasters/EA telemetry
@@ -33,7 +34,7 @@ config: ~/.config/logi-dd/tf-sim.conf (key=value)
 #[derive(Debug, PartialEq, Eq)]
 enum Mode {
     Daemon,
-    Sweep,
+    Sweep(Option<u8>),
     Help,
     Unknown(String),
 }
@@ -43,7 +44,13 @@ fn parse(args: &[String]) -> Mode {
     match args.get(1).map(String::as_str) {
         None => Mode::Daemon,
         Some("-h") | Some("--help") => Mode::Help,
-        Some("--sweep") => Mode::Sweep,
+        Some("--sweep") => match args.get(2) {
+            None => Mode::Sweep(None),
+            Some(p) => match p.parse::<u8>() {
+                Ok(v) if (10..=200u16).contains(&u16::from(v)) => Mode::Sweep(Some(v)),
+                _ => Mode::Unknown(p.clone()),
+            },
+        },
         Some(other) => Mode::Unknown(other.to_string()),
     }
 }
@@ -60,8 +67,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         Mode::Daemon => daemon::run(&Config::load()),
-        Mode::Sweep => daemon::install_signal_handlers()
-            .and_then(|()| sweep::run(&Config::load(), &daemon::STOP)),
+        Mode::Sweep(pitch) => daemon::install_signal_handlers()
+            .and_then(|()| sweep::run(&Config::load(), pitch, &daemon::STOP)),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -87,7 +94,9 @@ mod tests {
 
     #[test]
     fn sweep_flag_parses() {
-        assert_eq!(parse(&argv(&["logi-tf-sim", "--sweep"])), Mode::Sweep);
+        assert_eq!(parse(&argv(&["logi-tf-sim", "--sweep"])), Mode::Sweep(None));
+        assert_eq!(parse(&argv(&["logi-tf-sim", "--sweep", "50"])), Mode::Sweep(Some(50)));
+        assert!(matches!(parse(&argv(&["logi-tf-sim", "--sweep", "999"])), Mode::Unknown(_)));
     }
 
     #[test]

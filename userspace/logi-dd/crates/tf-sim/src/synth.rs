@@ -49,10 +49,13 @@ impl EngineSynth {
     /// `throttle` (0..1) sets the amplitude above [`IDLE_FLOOR`], and
     /// `intensity` (0..1) scales the result. Intensity 0 emits exact
     /// silence. Out-of-range inputs are clamped.
-    pub fn generate(&mut self, rpm: f32, throttle: f32, intensity: f32, count: usize, out: &mut Vec<f32>) {
+    /// `pitch_scale` (0.1..2.0) scales the felt rev rate: 1.0 puts the
+    /// fundamental at the crank rate (rpm/60 Hz); 0.5 halves it for a
+    /// slower, heavier engine feel. Tunable via the config's `pitch` key.
+    pub fn generate(&mut self, rpm: f32, throttle: f32, intensity: f32, pitch_scale: f32, count: usize, out: &mut Vec<f32>) {
         let intensity = intensity.clamp(0.0, 1.0);
         let throttle = throttle.clamp(0.0, 1.0);
-        let freq = (rpm.max(0.0) / 60.0).min(SAMPLE_RATE_HZ * 0.45);
+        let freq = (rpm.max(0.0) / 60.0 * pitch_scale.clamp(0.1, 2.0)).min(SAMPLE_RATE_HZ * 0.45);
         let amplitude = (IDLE_FLOOR + THROTTLE_GAIN * throttle) * intensity;
         let step = freq / SAMPLE_RATE_HZ;
 
@@ -84,7 +87,7 @@ mod tests {
     fn buffer(rpm: f32, throttle: f32, intensity: f32, count: usize) -> Vec<f32> {
         let mut synth = EngineSynth::new();
         let mut out = Vec::new();
-        synth.generate(rpm, throttle, intensity, count, &mut out);
+        synth.generate(rpm, throttle, intensity, 1.0, count, &mut out);
         out
     }
 
@@ -145,7 +148,7 @@ mod tests {
         let mut synth = EngineSynth::new();
         let mut joined = Vec::new();
         for _ in 0..10 {
-            synth.generate(3000.0, 1.0, 1.0, 100, &mut joined);
+            synth.generate(3000.0, 1.0, 1.0, 1.0, 100, &mut joined);
         }
         // Same crossing count as one contiguous second: no phase resets.
         let crossings = zero_crossings(&joined);

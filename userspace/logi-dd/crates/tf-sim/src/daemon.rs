@@ -193,9 +193,10 @@ pub fn run(cfg: &Config) -> Result<()> {
                         a.last_gen + Duration::from_millis(count)
                     };
                     let intensity = cfg.effective_intensity(a.game);
+                    let pitch = f32::from(cfg.pitch_pct) / 100.0;
                     let rpm = a.tel.rpm.min(a.tel.max_rpm * 1.05);
                     a.samples.clear();
-                    a.synth.generate(rpm, a.tel.throttle, intensity, count as usize, &mut a.samples);
+                    a.synth.generate(rpm, a.tel.throttle, intensity, pitch, count as usize, &mut a.samples);
                     if let Err(e) = a.stream.push(&a.samples) {
                         stop_reason = Some(format!("stream push failed: {e}"));
                     }

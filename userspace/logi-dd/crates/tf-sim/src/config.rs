@@ -51,6 +51,9 @@ pub struct Config {
     pub enabled: bool,
     /// Master intensity, 0-100.
     pub intensity: u8,
+    /// Felt rev-rate scale in percent (10-200; 100 = fundamental at the
+    /// crank rate rpm/60 Hz, 50 = half for a slower engine feel).
+    pub pitch_pct: u8,
     /// Codemasters/EA family listen port.
     pub codemasters_port: u16,
     /// PCARS2/AMS2 listen port.
@@ -64,6 +67,7 @@ impl Default for Config {
         Config {
             enabled: true,
             intensity: DEFAULT_INTENSITY,
+            pitch_pct: 100,
             codemasters_port: codemasters::DEFAULT_PORT,
             pcars_port: pcars::DEFAULT_PORT,
             games: BTreeMap::new(),
@@ -125,6 +129,13 @@ impl Config {
                         cfg.intensity = v;
                     }
                 }
+                "pitch" => {
+                    if let Ok(v) = raw.parse::<u8>() {
+                        if (10..=200u16).contains(&u16::from(v)) {
+                            cfg.pitch_pct = v;
+                        }
+                    }
+                }
                 "port.codemasters" => {
                     if let Ok(v) = raw.parse::<u16>() {
                         cfg.codemasters_port = v;
@@ -171,6 +182,7 @@ impl Config {
         out.push('\n');
         out.push_str(&format!("enabled={}\n", u8::from(self.enabled)));
         out.push_str(&format!("intensity={}\n", self.intensity));
+        out.push_str(&format!("pitch={}\n", self.pitch_pct));
         out.push_str(&format!("port.codemasters={}\n", self.codemasters_port));
         out.push_str(&format!("port.pcars={}\n", self.pcars_port));
         for (id, game) in &self.games {
@@ -227,7 +239,7 @@ mod tests {
     #[test]
     fn save_load_round_trips() {
         let path = tempdir().join(FILE_NAME);
-        let mut cfg = Config { enabled: false, intensity: 42, codemasters_port: 30500, pcars_port: 5607, games: BTreeMap::new() };
+        let mut cfg = Config { enabled: false, intensity: 42, pitch_pct: 50, codemasters_port: 30500, pcars_port: 5607, games: BTreeMap::new() };
         cfg.games.insert("dirt-rally-2".into(), GameConfig { enabled: true, intensity: 80 });
         cfg.games.insert("ams2-pcars2".into(), GameConfig { enabled: false, intensity: 100 });
         cfg.save_to(&path).unwrap();
