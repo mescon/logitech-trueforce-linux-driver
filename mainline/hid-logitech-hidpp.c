@@ -4509,7 +4509,7 @@ struct hidpp_dd_ff_data {
 	u8 rev_target;			/* newest requested level, WRITE_ONCE/READ_ONCE */
 	unsigned long rev_last_write;	/* jiffies of last level-pair attempt (rev_lock) */
 	u8 idx_profile;			/* Feature index for Profile switching */
-	u8 idx_profile_notify;		/* Feature index for 0x80D0 (dual-purpose: profile-change broadcasts AND the combined-pedals get/set fn0/fn1) */
+	u8 idx_profile_notify;		/* Feature index for 0x80D0 (dual-purpose: fn1 profile-change broadcasts AND the combined-pedals get/set fn0/fn1, whose changes the wheel echoes as fn0 sw0 events carrying the VALUE, not a profile) */
 	u8 idx_sync;			/* Feature index for sync/prepare (0x1BC0) */
 	u8 idx_calibrate;		/* Feature index for centre calibration (G Pro sub-device 0x05, page 0x812C) */
 	u8 calibrate_dev_idx;		/* HID++ device index used for calibrate sends (0x05 on G Pro) */
@@ -6636,21 +6636,40 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 		return 0;
 
 	/*
-	 * Profile-changed: <rep> <dev> <idx_profile_notify> <fn|sw> <new> ...
+	 * 0x80D0 events: <rep> <dev> <idx_profile_notify> <fn|sw> <value> ...
 	 *
-	 * Earlier analysis on RS50 expected fn=1, but fresh G Pro captures
-	 * (issue #15, 2026-04-19) show fn=0 for every profile broadcast.
-	 * The discriminator is really sw_id == 0 (unsolicited), not the
-	 * function number: our own requests always carry sw_id=1 and G Hub
-	 * uses 0xa/0xb, so any sw_id==0 packet on this feature is a device
-	 * broadcast.
+	 * The feature is dual-purpose. Profile-change broadcasts carry fn=1
+	 * (`<idx> 0x10 <new_profile> 0x01 ...`); toggling combined pedals
+	 * (fn1 SET, by us or G Hub) makes the wheel emit an unsolicited fn=0
+	 * packet carrying the new VALUE instead (`12 ff 0e 00 01` on /
+	 * `... 00 00` off; dev/captures/2026-07-14_combined_pedals.pcapng).
+	 *
+	 * A 2026-04-19 change relaxed the fn gate here to "any sw_id==0"
+	 * because fresh G Pro captures showed fn=0 profile broadcasts - but
+	 * those rode the Profile feature itself (0x8137, idx 0x15 on the
+	 * G Pro), not 0x80D0, and the 0x8137 handler below already re-queries
+	 * on them. With the relaxed gate, every combined-pedals toggle was
+	 * misparsed as "profile <value>": enabling (value 1) flipped the
+	 * cached mode to onboard until the queued settings re-query repaired
+	 * it, so a front-end re-reading wheel_mode right after its combined
+	 * write saw a bogus "onboard" and re-gated its desktop-only rows
+	 * ("Wrong mode"). Only fn=1 flips the cache now; fn=0 is consumed as
+	 * the combined-pedals notification it is (nothing is cached for it:
+	 * wheel_combined_pedals reads query the device).
 	 */
 	if (ff->idx_profile_notify != HIDPP_DD_FEATURE_NOT_FOUND &&
 	    data[2] == ff->idx_profile_notify &&
 	    (data[3] & 0x0F) == 0x00) {
+		u8 fn = data[3] >> 4;
 		u8 profile = data[4];
 
-		if (profile <= 5) {
+		if (fn == 0x00) {
+			dd_dbg(hidpp->hid_dev,
+				"Combined pedals change notification (%u)\n",
+				profile);
+			return 1;
+		}
+		if (fn == 0x01 && profile <= 5) {
 			WRITE_ONCE(ff->current_profile, profile);
 			WRITE_ONCE(ff->current_mode, (profile == 0) ? 0 : 1);
 			/* An unsolicited broadcast is authoritative: the wheel
