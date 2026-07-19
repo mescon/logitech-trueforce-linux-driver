@@ -3,9 +3,11 @@ use crate::edit;
 use logi_dd_core::setting::Access;
 use logi_dd_core::shaping::{self, ShapingRole};
 use logi_dd_core::lightsync;
+use logi_dd_core::steam::{self, SteamGame};
 use logi_dd_core::sysfs::SysfsIo;
 use logi_dd_core::{Category, Device, Error, Kind, Mode, Value, REGISTRY};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 pub struct Row {
     pub attr: &'static str,
@@ -50,6 +52,21 @@ fn resolve_shim_binary() -> Option<&'static str> {
     ["logitech-trueforce-install-shim", "install-tf-shim.sh"].into_iter().find(|bin| found_on_path(bin))
 }
 
+/// Resolve the SDK folder the Setup view starts with:
+/// `$LOGITECH_TRUEFORCE_SDK_DIR` when set, else
+/// `~/.local/share/logitech-trueforce/sdk` (the installer script's own
+/// default). Editable in the view (the `s` key); whatever it holds is
+/// passed as `--sdk-dir` to every install run.
+fn resolve_sdk_dir() -> String {
+    if let Some(dir) = std::env::var_os("LOGITECH_TRUEFORCE_SDK_DIR") {
+        if !dir.is_empty() {
+            return dir.to_string_lossy().into_owned();
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join(".local/share/logitech-trueforce/sdk").to_string_lossy().into_owned()
+}
+
 pub struct App<S: SysfsIo> {
     pub device: Device<S>,
     pub cat_idx: usize,
@@ -75,13 +92,31 @@ pub struct App<S: SysfsIo> {
     /// Rendered as a synthetic first row (`shaping::TOGGLE_ATTR`) on those
     /// pages; Enter on that row or 'a' anywhere on the page flips it.
     pub advanced_shaping: bool,
+    /// The SDK folder every per-game install passes as `--sdk-dir`; see
+    /// `resolve_sdk_dir` for the startup value, `s` in the Setup view to
+    /// edit it.
+    pub sdk_dir: String,
+    /// Whether `sdk_dir` holds the marker DLL (`steam::sdk_dir_valid`),
+    /// re-checked whenever the dir changes.
+    pub sdk_valid: bool,
+    /// The SDK-dir line editor's draft, `Some` while the Setup view's `s`
+    /// edit is active: type to append, Backspace to erase, Enter commits
+    /// (re-checking `sdk_valid`), Esc discards.
+    pub sdk_edit: Option<String>,
+    /// The installed Proton games the Setup view lists, `scan_games`'s
+    /// last result; `game_idx` is the selected row.
+    pub games: Vec<SteamGame>,
+    pub game_idx: usize,
+    /// Whether `scan_games` ran at least once, so the view can tell "no
+    /// Steam games found" apart from "not scanned yet" (the scan is lazy:
+    /// it first runs when the Setup view is entered).
+    pub games_scanned: bool,
     /// A shim run queued by `on_key` for the main loop to execute:
-    /// `(installer arg, verb for the status line)`. The run blocks (an
-    /// `--all-steam` Proton-prefix scan can take a while), so instead of
-    /// running inside the key handler, where the "running..." status could
-    /// never be drawn first, the loop takes this via `take_pending_shim`,
-    /// draws once, then calls `run_shim`.
-    pending_shim: Option<(&'static str, &'static str)>,
+    /// `(installer args, verb for the status line)`. The run blocks, so
+    /// instead of running inside the key handler, where the "running..."
+    /// status could never be drawn first, the loop takes this via
+    /// `take_pending_shim`, draws once, then calls `run_shim`.
+    pending_shim: Option<(Vec<String>, &'static str)>,
 }
 
 impl<S: SysfsIo> App<S> {
@@ -99,8 +134,15 @@ impl<S: SysfsIo> App<S> {
             advanced_shaping: false,
             ffb_found: found_on_path("logi-ffb"),
             shim_binary: resolve_shim_binary(),
+            sdk_dir: resolve_sdk_dir(),
+            sdk_valid: false,
+            sdk_edit: None,
+            games: Vec::new(),
+            game_idx: 0,
+            games_scanned: false,
             pending_shim: None,
         };
+        a.sdk_valid = steam::sdk_dir_valid(Path::new(&a.sdk_dir));
         a.reload();
         a
     }
@@ -246,28 +288,53 @@ impl<S: SysfsIo> App<S> {
         let n = (Category::ALL.len() + 1) as i32;
         self.cat_idx = ((self.cat_idx as i32 + d).rem_euclid(n)) as usize;
         self.row_idx = 0;
+        // First visit to the Setup view scans the Steam libraries; later
+        // visits keep the last scan (r rescans on demand).
+        if self.is_setup() && !self.games_scanned {
+            self.scan_games();
+        }
         self.reload();
+    }
+
+    /// Rescan the Steam libraries for installed Proton games (the Setup
+    /// view's list). Blocking, like every other fs access in this
+    /// synchronous TUI; a scan is a handful of small file reads.
+    pub fn scan_games(&mut self) {
+        self.games = match std::env::var_os("HOME") {
+            Some(home) => steam::installed_games(&steam::library_roots(Path::new(&home))),
+            None => Vec::new(),
+        };
+        self.games_scanned = true;
+        if self.game_idx >= self.games.len() {
+            self.game_idx = self.games.len().saturating_sub(1);
+        }
+    }
+
+    /// The Setup view's selected game, if the list has any.
+    pub fn selected_game(&self) -> Option<&SteamGame> {
+        self.games.get(self.game_idx)
     }
 
     /// Take the shim run the last key press queued, if any; see
     /// `pending_shim`.
-    pub fn take_pending_shim(&mut self) -> Option<(&'static str, &'static str)> {
+    pub fn take_pending_shim(&mut self) -> Option<(Vec<String>, &'static str)> {
         self.pending_shim.take()
     }
 
-    /// Run the TrueForce SDK shim installer with `arg` (`--all-steam` or
-    /// `--uninstall`), blocking: the TUI's event loop is synchronous, so
+    /// Run the TrueForce SDK shim installer with `args` (a per-game
+    /// `--prefix <pfx> --sdk-dir <dir>` install or `--uninstall-prefix
+    /// <pfx>` remove), blocking: the TUI's event loop is synchronous, so
     /// there is no worker thread to hand this off to. The main loop calls
     /// this via the `pending_shim` queue so a "running..." status gets
-    /// drawn first (an `--all-steam` Proton-prefix scan can take a while).
-    /// Never sudo. A missing binary or a spawn failure lands in the status
-    /// line instead of taking the TUI down.
-    pub fn run_shim(&mut self, arg: &'static str, verb: &str) {
+    /// drawn first, then rescans the games list so the row's shim status
+    /// updates. Never sudo. A missing binary or a spawn failure lands in
+    /// the status line instead of taking the TUI down.
+    pub fn run_shim(&mut self, args: &[String], verb: &str) {
         let Some(bin) = self.shim_binary else {
             self.status = "shim: installer not found on PATH".to_string();
             return;
         };
-        match std::process::Command::new(bin).arg(arg).output() {
+        match std::process::Command::new(bin).args(args).output() {
             Ok(out) if out.status.success() => {
                 self.status = format!("shim {verb}: ok");
             }
@@ -513,14 +580,65 @@ impl<S: SysfsIo> App<S> {
             return;
         }
         if self.is_setup() {
+            // The SDK-dir line editor swallows every key while active, so
+            // typing a path cannot trigger the view's shortcuts.
+            if let Some(draft) = self.sdk_edit.as_mut() {
+                match key {
+                    Enter => {
+                        self.sdk_dir = self.sdk_edit.take().unwrap_or_default();
+                        self.sdk_valid = steam::sdk_dir_valid(Path::new(&self.sdk_dir));
+                        self.status = if self.sdk_valid {
+                            "SDK folder set (DLLs found)".to_string()
+                        } else {
+                            format!("SDK folder set, but no trueforce_sdk_x64.dll under {}/Logi/...", self.sdk_dir)
+                        };
+                    }
+                    Esc => self.sdk_edit = None,
+                    Backspace => {
+                        draft.pop();
+                    }
+                    Char(c) => draft.push(c),
+                    _ => {}
+                }
+                return;
+            }
             match key {
                 Char('q') => self.quit = true,
                 Left => self.move_cat(-1),
                 Right => self.move_cat(1),
+                Up => self.game_idx = self.game_idx.saturating_sub(1),
+                Down => {
+                    if self.game_idx + 1 < self.games.len() {
+                        self.game_idx += 1;
+                    }
+                }
+                Char('r') => {
+                    self.scan_games();
+                    self.status = format!("rescanned: {} Proton game(s)", self.games.len());
+                }
+                Char('s') => self.sdk_edit = Some(self.sdk_dir.clone()),
                 // Queued, not run here: the main loop draws a "running..."
                 // status line before the blocking run (see `pending_shim`).
-                Char('i') => self.pending_shim = Some(("--all-steam", "install")),
-                Char('u') => self.pending_shim = Some(("--uninstall", "uninstall")),
+                Char('i') => match self.selected_game() {
+                    Some(game) => {
+                        let pfx = game.prefix.to_string_lossy().into_owned();
+                        let args = vec![
+                            "--prefix".to_string(),
+                            pfx,
+                            "--sdk-dir".to_string(),
+                            self.sdk_dir.clone(),
+                        ];
+                        self.pending_shim = Some((args, "install"));
+                    }
+                    None => self.status = "shim install: no game selected".to_string(),
+                },
+                Char('u') => match self.selected_game() {
+                    Some(game) => {
+                        let pfx = game.prefix.to_string_lossy().into_owned();
+                        self.pending_shim = Some((vec!["--uninstall-prefix".to_string(), pfx], "uninstall"));
+                    }
+                    None => self.status = "shim uninstall: no game selected".to_string(),
+                },
                 _ => {}
             }
             return;
@@ -709,27 +827,118 @@ mod tests {
         assert!(a.curve_edit.is_none());
     }
 
-    #[test]
-    fn setup_keys_queue_the_shim_run_instead_of_running_it() {
-        use crossterm::event::KeyCode;
+    /// A Setup-view app with two fake games in the list (no real Steam
+    /// scan results are asserted on; the scan the view entry triggers is
+    /// simply overwritten).
+    fn setup_app() -> App<FakeSysfs> {
         let mut a = app();
         for _ in 0..Category::ALL.len() {
             a.move_cat(1);
         }
         assert!(a.is_setup());
+        a.games = vec![
+            SteamGame {
+                appid: 100,
+                name: "ACC".to_string(),
+                prefix: PathBuf::from("/lib/steamapps/compatdata/100/pfx"),
+                shim_installed: false,
+            },
+            SteamGame {
+                appid: 400,
+                name: "LMU".to_string(),
+                prefix: PathBuf::from("/lib/steamapps/compatdata/400/pfx"),
+                shim_installed: true,
+            },
+        ];
+        a.game_idx = 0;
+        a.games_scanned = true;
+        a
+    }
+
+    #[test]
+    fn setup_keys_queue_a_per_game_shim_run_instead_of_running_it() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.sdk_dir = "/sdk".to_string();
         a.on_key(KeyCode::Char('i'));
-        assert_eq!(a.take_pending_shim(), Some(("--all-steam", "install")));
+        assert_eq!(
+            a.take_pending_shim(),
+            Some((
+                vec![
+                    "--prefix".to_string(),
+                    "/lib/steamapps/compatdata/100/pfx".to_string(),
+                    "--sdk-dir".to_string(),
+                    "/sdk".to_string(),
+                ],
+                "install"
+            ))
+        );
         // Taken once; a second take finds nothing queued.
         assert_eq!(a.take_pending_shim(), None);
+        a.on_key(KeyCode::Down); // select the second game
         a.on_key(KeyCode::Char('u'));
-        assert_eq!(a.take_pending_shim(), Some(("--uninstall", "uninstall")));
+        assert_eq!(
+            a.take_pending_shim(),
+            Some((
+                vec!["--uninstall-prefix".to_string(), "/lib/steamapps/compatdata/400/pfx".to_string()],
+                "uninstall"
+            ))
+        );
+    }
+
+    #[test]
+    fn setup_game_selection_clamps_at_both_ends() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.on_key(KeyCode::Up);
+        assert_eq!(a.game_idx, 0, "up from the first game stays");
+        a.on_key(KeyCode::Down);
+        assert_eq!(a.game_idx, 1);
+        a.on_key(KeyCode::Down);
+        assert_eq!(a.game_idx, 1, "down from the last game stays");
+    }
+
+    #[test]
+    fn setup_with_no_games_reports_instead_of_queueing() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.games.clear();
+        a.game_idx = 0;
+        a.on_key(KeyCode::Char('i'));
+        assert_eq!(a.take_pending_shim(), None);
+        assert!(a.status.contains("no game selected"), "status: {}", a.status);
+    }
+
+    #[test]
+    fn sdk_dir_edit_commits_on_enter_and_discards_on_esc() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.sdk_dir = "/old".to_string();
+        a.on_key(KeyCode::Char('s'));
+        assert_eq!(a.sdk_edit.as_deref(), Some("/old"));
+        // While editing, view shortcuts are plain characters.
+        for _ in 0.."/old".len() {
+            a.on_key(KeyCode::Backspace);
+        }
+        for c in "/new".chars() {
+            a.on_key(KeyCode::Char(c));
+        }
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.sdk_dir, "/new");
+        assert!(a.sdk_edit.is_none());
+        assert!(!a.sdk_valid, "no marker DLL under /new");
+        a.on_key(KeyCode::Char('s'));
+        a.on_key(KeyCode::Char('x'));
+        a.on_key(KeyCode::Esc);
+        assert_eq!(a.sdk_dir, "/new", "Esc keeps the committed dir");
+        assert!(a.sdk_edit.is_none());
     }
 
     #[test]
     fn run_shim_reports_missing_binary_without_spawning() {
         let mut a = app();
         a.shim_binary = None;
-        a.run_shim("--all-steam", "install");
+        a.run_shim(&["--prefix".to_string(), "/x".to_string()], "install");
         assert!(a.status.contains("not found"), "status: {}", a.status);
     }
 
@@ -737,7 +946,7 @@ mod tests {
     fn run_shim_reports_success() {
         let mut a = app();
         a.shim_binary = Some("true"); // exists on PATH, exits 0, ignores args
-        a.run_shim("--all-steam", "install");
+        a.run_shim(&["--prefix".to_string(), "/x".to_string()], "install");
         assert_eq!(a.status, "shim install: ok");
     }
 
@@ -745,7 +954,7 @@ mod tests {
     fn run_shim_reports_failure_without_crashing() {
         let mut a = app();
         a.shim_binary = Some("false"); // exists on PATH, exits non-zero
-        a.run_shim("--uninstall", "uninstall");
+        a.run_shim(&["--uninstall-prefix".to_string(), "/x".to_string()], "uninstall");
         assert!(a.status.starts_with("shim uninstall:"), "status: {}", a.status);
         assert_ne!(a.status, "shim uninstall: ok");
     }
@@ -754,7 +963,7 @@ mod tests {
     fn run_shim_reports_spawn_failure_without_crashing() {
         let mut a = app();
         a.shim_binary = Some("this-binary-does-not-exist-anywhere");
-        a.run_shim("--all-steam", "install");
+        a.run_shim(&["--prefix".to_string(), "/x".to_string()], "install");
         assert!(a.status.contains("failed to run"), "status: {}", a.status);
     }
 

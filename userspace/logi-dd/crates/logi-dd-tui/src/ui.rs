@@ -187,7 +187,11 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
     } else if app.edit.is_some() {
         "editing:  <-/->  adjust    type  text    Enter  commit    Esc  cancel"
     } else if app.is_setup() {
-        "<-/-> category   i install shim (all Steam)   u uninstall shim   q quit"
+        if app.sdk_edit.is_some() {
+            "SDK folder:  type path   Backspace erase   Enter save   Esc cancel"
+        } else {
+            "up/down select game   i install shim   u remove shim   r rescan   s SDK folder   <-/-> category   q quit"
+        }
     } else if app.selected().map(|r| r.attr) == Some(shaping::TOGGLE_ATTR) {
         // The toggle row's help explains why the page shows only one of
         // the two shaping controls, same text the GUI row carries.
@@ -210,8 +214,9 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
     f.render_widget(Paragraph::new(lines), root[2]);
 }
 
-/// Render the Setup body: the two game helpers (logi-ffb, the TrueForce SDK
-/// shim), each with a status line and the action a user can take from here.
+/// Render the Setup body: the logi-ffb helper, the SDK folder line (edited
+/// via `s`; see `App::sdk_edit`), the per-game shim manager (the selectable
+/// Proton games list), and the static compatibility table at the bottom.
 /// Shown instead of the settings list whenever `app.is_setup()`, mirroring
 /// the GUI's Setup page in text form.
 fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
@@ -223,8 +228,29 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         }
     };
 
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(11), Constraint::Min(3), Constraint::Length(12)])
+        .split(area);
+
+    // Top: logi-ffb + the SDK folder line (with the libtrueforce note).
     let shim_found = app.shim_binary.is_some();
-    let lines = vec![
+    let sdk_line = match &app.sdk_edit {
+        Some(draft) => Line::from(vec![
+            Span::raw("SDK folder: "),
+            Span::styled(format!("{draft}_"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]),
+        None => Line::from(vec![
+            Span::raw("SDK folder: "),
+            Span::raw(app.sdk_dir.clone()),
+            Span::raw("  "),
+            Span::styled(
+                if app.sdk_valid { "SDK DLLs found" } else { "trueforce_sdk_x64.dll not found" },
+                found_style(app.sdk_valid),
+            ),
+        ]),
+    };
+    let top = vec![
         Line::from(Span::styled(
             "Force feedback in games (logi-ffb)",
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
@@ -240,22 +266,14 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
                 if app.ffb_found { "found on PATH" } else { "not found on PATH" },
                 found_style(app.ffb_found),
             ),
+            Span::raw("    launch options: "),
+            Span::styled("logi-ffb %command%", Style::default().fg(Color::Yellow)),
         ]),
-        Line::from("Add to the game's Steam launch options:"),
-        Line::from(Span::styled(
-            "  logi-ffb %command%",
-            Style::default().fg(Color::Yellow),
-        )),
         Line::from(""),
         Line::from(Span::styled(
-            "TrueForce in SDK games (shim)",
+            "TrueForce SDK shim",
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         )),
-        Line::from(
-            "Installs Logitech's signed TrueForce/Wheel SDK DLLs into Steam Proton \
-             prefixes so SDK sims (ACC, AC EVO) get TrueForce. Uses the real DLLs, no \
-             injection.",
-        ),
         Line::from(vec![
             Span::raw("Installer: "),
             Span::styled(
@@ -263,13 +281,85 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
                 found_style(shim_found),
             ),
         ]),
-        Line::from("Press [i] to install into all Steam games, [u] to uninstall."),
+        sdk_line,
+        Line::from(
+            "Native Linux apps can drive TrueForce through this repo's libtrueforce \
+             library. The SDK DLLs come from Logitech's G HUB on Windows and are never \
+             redistributed; see the project README for how to copy them.",
+        ),
     ];
     f.render_widget(
-        Paragraph::new(lines)
+        Paragraph::new(top)
             .wrap(Wrap { trim: false })
             .block(Block::default().borders(Borders::ALL).title("Setup")),
-        area,
+        rows[0],
+    );
+
+    // Middle: the installed Proton games, one selectable row each.
+    let games: Vec<ListItem> = if app.games.is_empty() {
+        vec![ListItem::new(if app.games_scanned {
+            "No Steam installation with Proton games found (r to rescan)"
+        } else {
+            "Scanning Steam libraries..."
+        })
+        .style(Style::default().fg(Color::DarkGray))]
+    } else {
+        app.games
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                let status = if g.shim_installed {
+                    Span::styled("shim installed", Style::default().fg(Color::Green))
+                } else {
+                    Span::styled("-", Style::default().fg(Color::DarkGray))
+                };
+                let mut item = ListItem::new(Line::from(vec![
+                    Span::raw(format!("{:<40}", g.name)),
+                    Span::raw(" "),
+                    status,
+                ]));
+                if i == app.game_idx {
+                    item = item.style(Style::default().add_modifier(Modifier::REVERSED));
+                }
+                item
+            })
+            .collect()
+    };
+    f.render_widget(
+        List::new(games).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Proton games (i install shim, u remove shim)"),
+        ),
+        rows[1],
+    );
+
+    // Bottom: the static compatibility table.
+    let compat_rows: [(&str, &str); 8] = [
+        ("ACC", "TrueForce (shim)"),
+        ("AC EVO", "TrueForce (shim)"),
+        ("iRacing", "FFB (native)"),
+        ("Le Mans Ultimate", "FFB (logi-ffb)"),
+        ("Automobilista 2", "FFB (logi-ffb)"),
+        ("rFactor 2", "FFB (logi-ffb)"),
+        ("Dirt Rally 2.0", "FFB (native)"),
+        ("BeamNG.drive", "FFB (native)"),
+    ];
+    let mut compat = vec![Line::from(Span::styled(
+        "\"FFB (logi-ffb)\" means launch with logi-ffb %command%.",
+        Style::default().fg(Color::DarkGray),
+    ))];
+    compat.extend(compat_rows.iter().map(|(game, how)| {
+        Line::from(vec![
+            Span::raw(format!("{game:<20}")),
+            Span::styled(*how, Style::default().fg(Color::Gray)),
+        ])
+    }));
+    f.render_widget(
+        Paragraph::new(compat)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title("Game compatibility")),
+        rows[2],
     );
 }
 

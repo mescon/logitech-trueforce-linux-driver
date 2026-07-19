@@ -51,16 +51,18 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
             Ok(_) => {}
             Err(e) => break Err(e.into()),
         }
-        // A queued shim run blocks (an --all-steam Proton-prefix scan can
-        // take a while), so show a status line first, run, then drop any
-        // keypresses that queued up meanwhile: a buffered second 'i' would
-        // otherwise re-trigger the installer the moment it finished.
-        if let Some((arg, verb)) = app.take_pending_shim() {
+        // A queued shim run blocks, so show a status line first, run,
+        // rescan the games list (the row's shim status just changed),
+        // then drop any keypresses that queued up meanwhile: a buffered
+        // second 'i' would otherwise re-trigger the installer the moment
+        // it finished.
+        if let Some((args, verb)) = app.take_pending_shim() {
             app.status = format!("shim {verb}: running...");
             if let Err(e) = term.draw(|f| ui::draw(f, &app)) {
                 break Err(e.into());
             }
-            app.run_shim(arg, verb);
+            app.run_shim(&args, verb);
+            app.scan_games();
             while let Ok(true) = event::poll(std::time::Duration::ZERO) {
                 if event::read().is_err() {
                     break;
