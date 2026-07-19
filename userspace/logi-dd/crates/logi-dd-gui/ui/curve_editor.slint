@@ -112,6 +112,15 @@ export component CurveEditor inherits Rectangle {
             VerticalLayout {
                 spacing: 2px;
 
+                // The y-axis title is horizontal: rotated text rasterizes
+                // illegibly on scaled desktop renderers (user screenshots,
+                // 2026-07-20), so it sits above the axis, charting-style.
+                Text {
+                    text: "Output %";
+                    font-size: 11px;
+                    color: Theme.muted-text-color;
+                }
+
                 HorizontalLayout {
                     spacing: 4px;
 
@@ -125,24 +134,6 @@ export component CurveEditor inherits Rectangle {
                             color: Theme.muted-text-color;
                             x: parent.width - self.width;
                             y: 0;
-                        }
-                        Text {
-                            text: "Output %";
-                            // 10px muted text rasterized through the
-                            // rotation transform lost hinting and was
-                            // barely legible; bigger, bolder and full
-                            // text color survives the transform.
-                            font-size: 12px;
-                            font-weight: 600;
-                            color: Theme.text-color;
-                            // Rotated to run along the axis. Positioned by
-                            // hand inside this fixed-width gutter because a
-                            // rotated element still occupies its unrotated
-                            // bounds in layout, which would blow the column
-                            // out to the text's full width.
-                            transform-rotation: -90deg;
-                            x: (parent.width - self.width) / 2;
-                            y: (parent.height - self.height) / 2;
                         }
                         Text {
                             text: "0";
