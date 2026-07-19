@@ -165,6 +165,20 @@ impl<S: SysfsIo> ViewModel<S> {
         }
     }
 
+    /// What the worker's drift watcher compares between idle polls: the
+    /// active onboard profile slot (`None` on a wheel that does not expose
+    /// `wheel_profile`, which is then simply never watched) and the current
+    /// mode. An `Err` means an attribute that was there cannot be read any
+    /// more, i.e. the wheel is gone.
+    pub fn drift_snapshot(&self) -> Result<(Option<Value>, Mode), Error> {
+        let profile = if self.device.available("wheel_profile") {
+            Some(self.device.read("wheel_profile")?)
+        } else {
+            None
+        };
+        Ok((profile, self.device.current_mode()?))
+    }
+
     /// The computer-side profile store's saved names, sorted.
     pub fn profile_list(&self) -> Vec<String> {
         profiles::list_in(&self.profiles_dir)

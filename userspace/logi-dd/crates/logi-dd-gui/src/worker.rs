@@ -16,14 +16,29 @@
 //! requests sent meanwhile (the sidebar stays navigable) are answered with
 //! a fresh `NoWheel` rather than silently dropped, so the banner's message
 //! never goes stale.
+//!
+//! While the request channel is idle the thread doubles as a drift watcher:
+//! every `DRIFT_POLL_INTERVAL` it re-reads `wheel_profile`/`wheel_mode` and,
+//! when either moved underneath the app (the wheel's physical profile
+//! button, another tool writing sysfs), refreshes the page exactly like a
+//! manual Refresh would; see `check_drift`.
 
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use logi_dd_core::sysfs::SysfsIo;
-use logi_dd_core::{Category, Device, DeviceInfo, Error, Mode};
+use logi_dd_core::{Category, Device, DeviceInfo, Error, Mode, Value};
 
 use crate::viewmodel::{Row, ViewModel, WidgetInput};
+
+/// How long the worker waits for the next request before running one
+/// external-change check (`check_drift`). The wheel's physical profile
+/// button (and any other tool writing sysfs) changes settings without any
+/// request passing through here; this is what keeps the pages honest about
+/// it. Two sysfs reads per tick, and only while the channel is idle, so a
+/// request in flight is never delayed by the watcher.
+const DRIFT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// A request from the UI thread. Every variant that touches the device
 /// blocks on sysfs I/O; that is the whole reason this thread exists.
@@ -103,15 +118,39 @@ impl Worker {
             let (mut vm, resp) = discover_outcome(Device::discover());
             let mut no_wheel_msg = no_wheel_message(&resp);
             on_response(resp);
-            for req in rx {
+            // What the drift watcher needs between requests: the category
+            // the UI is looking at (tracked from the requests themselves,
+            // starting at the UI's own startup default) and the last-seen
+            // profile/mode pair.
+            let mut on_screen = Category::ALL[0];
+            let mut last_seen = drift_baseline(&vm);
+            loop {
+                let req = match rx.recv_timeout(DRIFT_POLL_INTERVAL) {
+                    Ok(req) => req,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        // Idle: nothing is in flight, so the watcher's two
+                        // sysfs reads cannot delay a reply the UI awaits.
+                        check_drift(&mut vm, &mut no_wheel_msg, &mut last_seen, on_screen, &on_response);
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
                 if matches!(req, Request::Discover) {
                     let (new_vm, resp) = discover_outcome(Device::discover());
                     vm = new_vm;
                     no_wheel_msg = no_wheel_message(&resp);
                     on_response(resp);
+                    last_seen = drift_baseline(&vm);
                     continue;
                 }
+                if let Some(cat) = request_category(&req) {
+                    on_screen = cat;
+                }
                 dispatch(&vm, &no_wheel_msg, req, &on_response);
+                // The request itself may have moved the profile or mode (an
+                // edit, a SetMode, a profile apply); resync the baseline so
+                // the user's own change never reads as drift a tick later.
+                last_seen = drift_baseline(&vm);
             }
         });
         Worker { tx }
@@ -154,6 +193,72 @@ fn no_wheel_message(resp: &Response) -> String {
     match resp {
         Response::NoWheel(msg) => msg.clone(),
         _ => String::new(),
+    }
+}
+
+/// One drift observation: the active onboard profile slot (`None` on a
+/// wheel without `wheel_profile`) and the current mode. See
+/// `ViewModel::drift_snapshot` for the read semantics.
+type DriftSnapshot = (Option<Value>, Mode);
+
+/// The watcher's baseline right after a request settled (or discovery
+/// ran): what the device reports now, or `None` when there is no device
+/// (or it failed to answer, in which case the next idle tick's own read
+/// decides what happens).
+fn drift_baseline<S: SysfsIo>(vm: &Option<ViewModel<S>>) -> Option<DriftSnapshot> {
+    vm.as_ref().and_then(|v| v.drift_snapshot().ok())
+}
+
+/// The category a request is about, for the drift watcher's notion of what
+/// is on screen. `SetMode`/`Discover` carry none (and the UI keeps its own
+/// category across both), so they leave the tracked value alone.
+fn request_category(req: &Request) -> Option<Category> {
+    match req {
+        Request::LoadCategory(c) | Request::Refresh(c) => Some(*c),
+        Request::Edit { category, .. } => Some(*category),
+        Request::ProfileSave(_) | Request::ProfileApply(_) | Request::ProfileDelete(_) => {
+            Some(Category::Profiles)
+        }
+        Request::SetMode(_) | Request::Discover => None,
+    }
+}
+
+/// One idle-tick external-change check. When the profile or mode moved
+/// underneath the app (the wheel's profile button, another tool), reply
+/// with the same fresh `Rows` (+ the Profiles list on that page) + `Info`
+/// a manual `Refresh` would have produced, so no page keeps stale values.
+/// A read error means the wheel went away between polls: drop the view
+/// model and answer through the same no-wheel path a failed discovery
+/// takes, so the banner shows and Retry works.
+fn check_drift<S: SysfsIo>(
+    vm: &mut Option<ViewModel<S>>,
+    no_wheel_msg: &mut String,
+    last_seen: &mut Option<DriftSnapshot>,
+    category: Category,
+    on_response: &dyn Fn(Response),
+) {
+    let Some(v) = vm.as_ref() else { return };
+    match v.drift_snapshot() {
+        Ok(snap) => {
+            let drifted = last_seen.as_ref().is_some_and(|last| *last != snap);
+            *last_seen = Some(snap);
+            if !drifted {
+                return;
+            }
+            on_response(Response::Rows { category, rows: v.rows_for(category) });
+            if category == Category::Profiles {
+                on_response(profiles_state(v));
+            }
+            if let Ok(info) = v.info() {
+                on_response(Response::Info(info));
+            }
+        }
+        Err(e) => {
+            *vm = None;
+            *no_wheel_msg = e.to_string();
+            *last_seen = None;
+            on_response(Response::NoWheel(no_wheel_msg.clone()));
+        }
     }
 }
 
@@ -208,7 +313,12 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
             // would make the UI rebuild every row's widget for a one-field
             // edit (see `Response::RowUpdated`'s doc comment).
             let error = vm.edit(&attr, input).err().map(|e| e.to_string());
-            let mode_changed = attr == "wheel_mode" && error.is_none();
+            // A successful mode OR active-profile edit changes more than its
+            // own row: a mode flip re-gates every mode-gated row (and the
+            // header label), and an onboard profile switch rewrites the
+            // effective settings across categories. Both follow up with the
+            // fresh rows-plus-info a Refresh would have produced.
+            let device_wide = matches!(attr.as_str(), "wheel_mode" | "wheel_profile") && error.is_none();
             // A slot rename's reply gets the active slot's row from the
             // SAME read sent ahead of it: the UI attributes the re-read
             // name to its per-slot cache via the last-known slot, and a
@@ -230,15 +340,10 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
             if let Some(row) = edited_row {
                 on_response(Response::RowUpdated { category, row, error });
             }
-            // A successful mode edit through the settings row changes more
-            // than its own row: every mode-gated row's state and the
-            // header's mode label. Follow up with the same fresh
-            // rows-plus-info a SetMode/Refresh pair would have produced, so
-            // the header toggle never computes its target from a stale
-            // mode. Only on success: a failed edit left the mode alone, and
-            // a Rows reload here would wipe the error message the
-            // RowUpdated above just attached.
-            if mode_changed {
+            // Only on success: a failed edit left the device alone, and a
+            // Rows reload here would wipe the error message the RowUpdated
+            // above just attached.
+            if device_wide {
                 on_response(Response::Rows { category, rows: vm.rows_for(category) });
                 if let Ok(info) = vm.info() {
                     on_response(Response::Info(info));
@@ -502,6 +607,62 @@ mod tests {
     }
 
     #[test]
+    fn wheel_profile_edit_also_refreshes_rows_and_info() {
+        // An onboard profile switch rewrites effective settings across
+        // categories, so a successful wheel_profile edit follows up the
+        // same way a wheel_mode edit does.
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "onboard");
+        fs.set("wheel_profile", "1");
+        let vm = ViewModel::with_io(fs);
+
+        let req = Request::Edit {
+            category: Category::Profiles,
+            attr: "wheel_profile".to_string(),
+            input: WidgetInput::Slider(3),
+        };
+        let responses = responses(|on_response| handle(&vm, req, on_response));
+        assert_eq!(responses.len(), 3);
+        match &responses[0] {
+            Response::RowUpdated { row, error, .. } => {
+                assert_eq!(row.attr, "wheel_profile");
+                assert!(error.is_none());
+                assert_eq!(row.value, Some(Value::Int(3)));
+            }
+            _ => panic!("expected RowUpdated first"),
+        }
+        match &responses[1] {
+            Response::Rows { category, .. } => assert_eq!(*category, Category::Profiles),
+            _ => panic!("expected Rows second"),
+        }
+        assert!(matches!(&responses[2], Response::Info(_)));
+    }
+
+    #[test]
+    fn failed_wheel_profile_edit_sends_only_the_row_update() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "onboard");
+        fs.set("wheel_profile", "1");
+        let vm = ViewModel::with_io(fs);
+
+        let req = Request::Edit {
+            category: Category::Profiles,
+            attr: "wheel_profile".to_string(),
+            input: WidgetInput::Slider(9), // out of the 0-5 slot range
+        };
+        let responses = responses(|on_response| handle(&vm, req, on_response));
+        assert_eq!(responses.len(), 1, "a failed profile edit must not follow up with Rows/Info");
+        match &responses[0] {
+            Response::RowUpdated { row, error, .. } => {
+                assert_eq!(row.attr, "wheel_profile");
+                assert!(error.is_some());
+                assert_eq!(row.value, Some(Value::Int(1)), "the rejected write must not land");
+            }
+            _ => panic!("expected RowUpdated"),
+        }
+    }
+
+    #[test]
     fn failed_wheel_mode_edit_sends_only_the_row_update() {
         let fs = FakeSysfs::new();
         fs.set("wheel_mode", "desktop");
@@ -718,5 +879,130 @@ mod tests {
             }
             _ => panic!("expected RowUpdated"),
         }
+    }
+
+    // --- the drift watcher ---
+
+    use std::rc::Rc;
+
+    /// A view model plus a second handle to its `FakeSysfs`, so a test can
+    /// mutate attributes behind the vm's back (what the wheel's physical
+    /// profile button looks like from here).
+    fn drift_vm() -> (Rc<FakeSysfs>, Option<ViewModel<Rc<FakeSysfs>>>) {
+        let fs = Rc::new(FakeSysfs::new());
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_profile", "1");
+        fs.set("wheel_strength", "80");
+        let vm = Some(ViewModel::with_io(fs.clone()));
+        (fs, vm)
+    }
+
+    #[test]
+    fn drift_tick_without_changes_stays_silent() {
+        let (_fs, mut vm) = drift_vm();
+        let mut msg = String::new();
+        let mut last = drift_baseline(&vm);
+        let replies = responses(|on_response| {
+            check_drift(&mut vm, &mut msg, &mut last, Category::Ffb, on_response);
+            check_drift(&mut vm, &mut msg, &mut last, Category::Ffb, on_response);
+        });
+        assert!(replies.is_empty(), "no drift, no responses");
+        assert!(vm.is_some());
+    }
+
+    #[test]
+    fn profile_drift_refreshes_rows_and_info_once() {
+        let (fs, mut vm) = drift_vm();
+        let mut msg = String::new();
+        let mut last = drift_baseline(&vm);
+        // The wheel's profile button fired: the slot AND an effective
+        // setting move without any request passing through the worker.
+        fs.set("wheel_profile", "3");
+        fs.set("wheel_strength", "40");
+        let replies = responses(|on_response| {
+            check_drift(&mut vm, &mut msg, &mut last, Category::Ffb, on_response);
+        });
+        assert_eq!(replies.len(), 2);
+        match &replies[0] {
+            Response::Rows { category, rows } => {
+                assert_eq!(*category, Category::Ffb);
+                let strength = rows.iter().find(|r| r.attr == "wheel_strength").unwrap();
+                assert_eq!(strength.value, Some(Value::Percent(40)), "rows must be re-read, not stale");
+            }
+            _ => panic!("expected Rows first"),
+        }
+        assert!(matches!(&replies[1], Response::Info(_)));
+        // The baseline advanced with the emit: the next tick is quiet again.
+        let more = responses(|on_response| {
+            check_drift(&mut vm, &mut msg, &mut last, Category::Ffb, on_response);
+        });
+        assert!(more.is_empty());
+    }
+
+    #[test]
+    fn mode_drift_on_the_profiles_page_recomposes_it_with_the_store_list() {
+        let (fs, mut vm) = drift_vm();
+        let mut msg = String::new();
+        let mut last = drift_baseline(&vm);
+        fs.set("wheel_mode", "onboard");
+        let replies = responses(|on_response| {
+            check_drift(&mut vm, &mut msg, &mut last, Category::Profiles, on_response);
+        });
+        // Same shape as a manual Refresh of the Profiles page: rows, the
+        // computer-side store list, then the header info (whose new mode is
+        // what makes the composed page recompose).
+        assert_eq!(replies.len(), 3);
+        assert!(matches!(&replies[0], Response::Rows { category: Category::Profiles, .. }));
+        assert!(matches!(&replies[1], Response::Profiles { .. }));
+        match &replies[2] {
+            Response::Info(info) => assert_eq!(info.mode, Mode::Onboard),
+            _ => panic!("expected Info third"),
+        }
+    }
+
+    #[test]
+    fn drift_read_error_routes_through_the_no_wheel_path() {
+        let (fs, mut vm) = drift_vm();
+        let mut msg = String::new();
+        let mut last = drift_baseline(&vm);
+        // The wheel is gone: every attribute read now fails.
+        fs.set_absent("wheel_mode");
+        fs.set_absent("wheel_profile");
+        fs.set_absent("wheel_strength");
+        let replies = responses(|on_response| {
+            check_drift(&mut vm, &mut msg, &mut last, Category::Ffb, on_response);
+        });
+        assert_eq!(replies.len(), 1);
+        assert!(matches!(&replies[0], Response::NoWheel(_)));
+        assert!(vm.is_none(), "the vm is dropped so requests answer NoWheel until a retry");
+        assert!(!msg.is_empty(), "later requests re-answer with this message");
+    }
+
+    #[test]
+    fn drift_tick_without_a_wheel_is_a_no_op() {
+        let mut vm: Option<ViewModel<FakeSysfs>> = None;
+        let mut msg = "no wheel bound".to_string();
+        let mut last = None;
+        let replies = responses(|on_response| {
+            check_drift(&mut vm, &mut msg, &mut last, Category::Ffb, on_response);
+        });
+        assert!(replies.is_empty(), "retry is user-driven; the watcher never spams NoWheel");
+    }
+
+    #[test]
+    fn request_category_tracks_what_is_on_screen() {
+        assert_eq!(request_category(&Request::LoadCategory(Category::Leds)), Some(Category::Leds));
+        assert_eq!(request_category(&Request::Refresh(Category::Ffb)), Some(Category::Ffb));
+        assert_eq!(
+            request_category(&Request::Edit {
+                category: Category::Steering,
+                attr: "wheel_range".to_string(),
+                input: WidgetInput::Slider(540),
+            }),
+            Some(Category::Steering)
+        );
+        assert_eq!(request_category(&Request::ProfileSave("x".into())), Some(Category::Profiles));
+        assert_eq!(request_category(&Request::SetMode(Mode::Desktop)), None);
+        assert_eq!(request_category(&Request::Discover), None);
     }
 }
