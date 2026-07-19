@@ -139,6 +139,11 @@ pub struct App<S: SysfsIo> {
     /// status could never be drawn first, the loop takes this via
     /// `take_pending_shim`, draws once, then calls `run_shim`.
     pending_shim: Option<(Vec<String>, &'static str)>,
+    /// A LIGHTSYNC try-on-wheel queued by `t` on the Leds page for the
+    /// main loop to execute (the 5 s hold blocks, same reason as
+    /// `pending_shim`); taken via `take_pending_led_try`, run by
+    /// `run_led_try`.
+    pending_led_try: bool,
     /// Whether the wrapped device probes as absent (no registry attribute
     /// readable): the shell stays up with empty device categories and a
     /// red header note, Setup and the Info monitor keep working, and `r`
@@ -192,6 +197,7 @@ impl<S: SysfsIo> App<S> {
             profile_name_edit: None,
             profile_delete_confirm: None,
             pending_shim: None,
+            pending_led_try: false,
             no_wheel: false,
             retry_requested: false,
             last_drift: None,
@@ -521,6 +527,71 @@ impl<S: SysfsIo> App<S> {
             }
         }
         names
+    }
+
+    /// The ACTIVE slot's stored strip colors for the LIGHTSYNC view's
+    /// preview line, mirrored into their played pairs (left half wins)
+    /// when the slot's direction is inside-out/outside-in, so the line
+    /// shows what the wheel plays. `None` while the colors are unreadable
+    /// (no wheel, or a wheel without LIGHTSYNC).
+    pub fn led_preview_colors(&self) -> Option<Vec<logi_dd_core::Color>> {
+        let mut colors = match self.device.read("wheel_led_colors") {
+            Ok(Value::Rgb(cs)) => cs,
+            _ => return None,
+        };
+        if let Ok(Value::Enum(direction)) = self.device.read("wheel_led_direction") {
+            if lightsync::mirrored(direction) {
+                lightsync::mirror_left_half(&mut colors);
+            }
+        }
+        Some(colors)
+    }
+
+    /// Take the try-on-wheel run the last key press queued, if any; see
+    /// `pending_led_try`.
+    pub fn take_pending_led_try(&mut self) -> bool {
+        std::mem::take(&mut self.pending_led_try)
+    }
+
+    /// Run one LIGHTSYNC "try on wheel": show the currently selected
+    /// effect/slot on the physical strip for `hold`, then restore the
+    /// previous state. The selection commits immediately in this TUI, so
+    /// the device's current effect+slot IS the selection; re-applying it
+    /// (slot first, then the effect: the driver re-applies the slot's
+    /// stored config on that transition) makes the wheel visibly play it,
+    /// and the restore writes the same pair back. Only LED state is
+    /// written, nothing moves. Blocking, like the shim runs: the main
+    /// loop draws a status line first via the `pending_led_try` queue.
+    pub fn run_led_try(&mut self, hold: std::time::Duration) {
+        let effect = match self.device.read("wheel_led_effect") {
+            Ok(Value::Int(n)) => n.clamp(1, 9),
+            _ => {
+                self.status = "try on wheel: effect unreadable".to_string();
+                return;
+            }
+        };
+        let slot = match self.device.read("wheel_led_slot") {
+            Ok(Value::Int(n)) => n.clamp(0, lightsync::CUSTOM_SLOTS as i32 - 1),
+            _ => 0,
+        };
+        let applied = self
+            .device
+            .write("wheel_led_slot", &Value::Int(slot))
+            .and_then(|()| self.device.write("wheel_led_effect", &Value::Int(effect)));
+        if applied.is_ok() {
+            std::thread::sleep(hold);
+        }
+        // Restore even after a failed apply, so nothing half-applied
+        // sticks; the first error wins.
+        let restored = self
+            .device
+            .write("wheel_led_slot", &Value::Int(slot))
+            .and_then(|()| self.device.write("wheel_led_effect", &Value::Int(effect)));
+        self.status = match applied.and(restored) {
+            Ok(()) => "try on wheel: done, previous state restored".to_string(),
+            Err(e) => format!("try on wheel: {e}"),
+        };
+        self.reload();
     }
 
     /// The selector label for the device's current effect (+ slot when the
@@ -1064,6 +1135,12 @@ impl<S: SysfsIo> App<S> {
             // toggle row or one of the axis's own rows); a plain typo
             // elsewhere does nothing.
             Char('a') => self.toggle_selected_axis(),
+            // LIGHTSYNC only: queue a try-on-wheel (the 5 s hold blocks,
+            // so the main loop draws a status line first, same pattern as
+            // the shim runs).
+            Char('t') if self.category() == Category::Leds && !self.no_wheel => {
+                self.pending_led_try = true;
+            }
             // Only on the desktop Profiles page (the row exists nowhere
             // else): open the new-profile name prompt.
             Char('n') if self.rows.iter().any(|r| r.attr == PROFILE_NEW_ATTR) => {
@@ -1593,6 +1670,56 @@ mod tests {
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Leds).unwrap();
         a.reload();
         a
+    }
+
+    #[test]
+    fn t_on_the_lightsync_page_queues_a_try_on_wheel() {
+        use crossterm::event::KeyCode;
+        let mut a = leds_app("5", "0");
+        a.on_key(KeyCode::Char('t'));
+        assert!(a.take_pending_led_try(), "t queues the blocking run for the main loop");
+        assert!(!a.take_pending_led_try(), "taken once");
+    }
+
+    #[test]
+    fn t_outside_the_lightsync_page_queues_nothing() {
+        use crossterm::event::KeyCode;
+        let mut a = app(); // the Ffb page
+        a.on_key(KeyCode::Char('t'));
+        assert!(!a.take_pending_led_try());
+    }
+
+    #[test]
+    fn run_led_try_restores_the_state_and_reports() {
+        let mut a = leds_app("5", "0");
+        // Zero hold: the test pins the write/restore contract, not the
+        // real 5 s the queued run holds the state for.
+        a.run_led_try(std::time::Duration::ZERO);
+        assert_eq!(a.device.read("wheel_led_effect").unwrap(), Value::Int(5), "effect restored");
+        assert_eq!(a.device.read("wheel_led_slot").unwrap(), Value::Int(0), "slot restored");
+        assert!(a.status.contains("restored"), "status: {}", a.status);
+    }
+
+    #[test]
+    fn led_preview_colors_mirror_only_for_mirrored_directions() {
+        // Direction 2 (inside-out) plays the strip as pairs: the preview
+        // mirrors the left half onto the right, left half winning.
+        let a = leds_app("5", "2");
+        let colors = a.led_preview_colors().unwrap();
+        assert_eq!(colors.len(), 10);
+        assert_eq!(colors[9], colors[0]);
+        assert_eq!(colors[5], colors[4]);
+        // A plain left-to-right sweep shows the stored colors as they are.
+        let a = leds_app("5", "0");
+        let colors = a.led_preview_colors().unwrap();
+        assert_eq!(colors[0].to_hex(), "ff0000");
+        assert_eq!(colors[9].to_hex(), "000000");
+    }
+
+    #[test]
+    fn led_preview_colors_none_without_readable_colors() {
+        let a = app(); // no LIGHTSYNC attrs in this fixture
+        assert!(a.led_preview_colors().is_none());
     }
 
     #[test]

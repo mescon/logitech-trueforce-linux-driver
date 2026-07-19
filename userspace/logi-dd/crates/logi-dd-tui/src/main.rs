@@ -119,6 +119,21 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        // A queued LIGHTSYNC try-on-wheel blocks for its 5 s hold, so it
+        // runs here (after a draw showed the status line), then drops any
+        // keypresses buffered meanwhile, same reasoning as the shim runs.
+        if app.take_pending_led_try() {
+            app.status = "try on wheel: showing the selected lighting for 5 s...".to_string();
+            if let Err(e) = term.draw(|f| ui::draw(f, &app)) {
+                break Err(e.into());
+            }
+            app.run_led_try(Duration::from_secs(5));
+            while let Ok(true) = event::poll(std::time::Duration::ZERO) {
+                if event::read().is_err() {
+                    break;
+                }
+            }
+        }
         if app.quit {
             break Ok(());
         }
