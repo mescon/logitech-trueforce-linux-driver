@@ -1003,6 +1003,14 @@ direction setting for the built-in sweep effects.
 > next level write, and writing `wheel_led_effect` restores the normal
 > idle pattern. This makes a live RPM rev display possible on the RS50
 > today without knowing G HUB's own feed format.
+>
+> **The arm burst stomps the active effect (hardware-verified
+> 2026-07-20):** the burst's "fn3 param 0x02" is a plain SET_EFFECT, so
+> arming force-switches the wheel to effect 2 (Outside-In) - post-arm
+> fills always animated edges-in regardless of the user's effect, since
+> fills render with whatever effect is currently active. The driver
+> therefore re-asserts the pre-arm effect (and, in Custom mode, re-applies
+> the active slot) immediately after the one-time burst.
 
 ### 9.1 Physical LED Layout
 
