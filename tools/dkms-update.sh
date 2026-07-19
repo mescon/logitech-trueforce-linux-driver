@@ -22,6 +22,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_SRC="$REPO_ROOT/mainline"
 UDEV_SRC="$REPO_ROOT/udev/70-logitech-trueforce.rules"
 UDEV_DST="/etc/udev/rules.d/70-logitech-trueforce.rules"
+UDEV_FFB_SRC="$REPO_ROOT/udev/71-logi-ffb-uhid.rules"
+UDEV_FFB_DST="/etc/udev/rules.d/71-logi-ffb-uhid.rules"
 
 if [ "$EUID" -ne 0 ]; then
 	echo "error: run as root (sudo $0)" >&2
@@ -79,6 +81,19 @@ if [ -f "$UDEV_SRC" ]; then
 		udevadm trigger --subsystem-match=hidraw
 	else
 		echo "udev rule up to date ($UDEV_DST)"
+	fi
+fi
+
+# Same for the logi-ffb rule, which opens /dev/uhid to the "input" group
+# so the DirectInput FFB proxy can create its virtual wheel without sudo.
+if [ -f "$UDEV_FFB_SRC" ]; then
+	if ! cmp -s "$UDEV_FFB_SRC" "$UDEV_FFB_DST" 2>/dev/null; then
+		echo "== installing udev rule to $UDEV_FFB_DST =="
+		install -m 0644 "$UDEV_FFB_SRC" "$UDEV_FFB_DST"
+		udevadm control --reload
+		udevadm trigger --subsystem-match=misc
+	else
+		echo "udev rule up to date ($UDEV_FFB_DST)"
 	fi
 fi
 

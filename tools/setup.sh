@@ -23,6 +23,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # the user's Logitech mice/keyboards). Removed during migration below.
 OLD_BLACKLIST_FILE="/etc/modprobe.d/blacklist-hid-logitech-hidpp.conf"
 UDEV_DST="/etc/udev/rules.d/70-logitech-trueforce.rules"
+UDEV_FFB_DST="/etc/udev/rules.d/71-logi-ffb-uhid.rules"
 WHEEL_PIDS="c276 c272 c268"
 # Steam appids of the Logitech-SDK sims for launch-option checks:
 #   ACC, AC EVO, AC, AMS2, Le Mans Ultimate, rFactor 2
@@ -118,6 +119,11 @@ doctor() {
 		ok "udev rule installed"
 	else
 		wrn "udev rule missing - settings need sudo (run: sudo ./tools/setup.sh)"
+	fi
+	if [ -f "$UDEV_FFB_DST" ]; then
+		ok "logi-ffb uhid udev rule installed"
+	else
+		wrn "logi-ffb uhid udev rule missing - logi-ffb needs sudo for /dev/uhid (run: sudo ./tools/setup.sh)"
 	fi
 	if [ -n "$W" ]; then
 		if [ -w "$W/wheel_range" ] && [ -w "$W/range" ]; then
