@@ -128,8 +128,13 @@ export component CurveEditor inherits Rectangle {
                         }
                         Text {
                             text: "Output %";
-                            font-size: 10px;
-                            color: Theme.muted-text-color;
+                            // 10px muted text rasterized through the
+                            // rotation transform lost hinting and was
+                            // barely legible; bigger, bolder and full
+                            // text color survives the transform.
+                            font-size: 12px;
+                            font-weight: 600;
+                            color: Theme.text-color;
                             // Rotated to run along the axis. Positioned by
                             // hand inside this fixed-width gutter because a
                             // rotated element still occupies its unrotated
