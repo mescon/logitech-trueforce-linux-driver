@@ -1,0 +1,4 @@
+# udev rules: hand the wheel's sysfs + hidraw nodes, and /dev/uhid for the
+# logi-ffb virtual-device proxy, to the input group.
+udev/70-logitech-trueforce.rules usr/lib/udev/rules.d/
+udev/71-logi-ffb-uhid.rules usr/lib/udev/rules.d/

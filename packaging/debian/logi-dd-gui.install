@@ -1,0 +1,3 @@
+userspace/logi-dd/target/release/logi-dd-gui usr/bin/
+desktop/logi-dd-gui.desktop usr/share/applications/
+desktop/logi-dd-gui.svg usr/share/icons/hicolor/scalable/apps/

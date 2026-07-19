@@ -9,18 +9,13 @@ Homepage: https://github.com/mescon/logitech-trueforce-linux-driver
 Rules-Requires-Root: no
 
 Package: logitech-trueforce-dkms
-Architecture: any
-Depends: ${misc:Depends}, ${shlibs:Depends}, dkms
-Suggests: oversteer, wine
-# logi-dd-gui (Slint GUI) is only present in this build when the building
-# host's rustc met Slint's MSRV (>= 1.92); see debian/rules. Its runtime
-# stack (windowing/input/GL) is therefore a Recommends, not a hard Depends,
-# so the package still installs cleanly on hosts where the GUI was omitted.
-# Derived from `ldd`/`strings` on the built binary (Slint dlopen's the
-# wayland/X11/GL bits rather than linking them, so ldd alone misses them).
-Recommends: libwayland-client0, libwayland-egl1, libxkbcommon0,
- libxkbcommon-x11-0, libx11-6, libx11-xcb1, libxcb1, libxcursor1, libxi6,
- libxrender1, libegl1, libgl1, libfontconfig1, libfreetype6
+Architecture: all
+Depends: ${misc:Depends}, dkms
+# The pre-split logitech-trueforce-dkms shipped the userspace tools too;
+# recommending logi-dd keeps upgrades (and "install the driver, get the
+# ecosystem") whole while still allowing a lean module-only install.
+Recommends: logi-dd
+Suggests: oversteer
 Description: DKMS kernel driver for Logitech TrueForce direct-drive wheels
  Force feedback, TrueForce texture routing, and G HUB-equivalent settings
  exposed through sysfs for the Logitech RS50 and G PRO direct-drive racing
@@ -33,13 +28,40 @@ Description: DKMS kernel driver for Logitech TrueForce direct-drive wheels
  which continues to serve every other Logitech device, so no blacklist is
  needed.
  .
- Also installs userspace companions built from the repo's Rust workspace:
- logi-ffb, a DirectInput force-feedback proxy, logi-dd, a terminal
- settings UI, logi-tf-sim, a simulated-TrueForce daemon driven by game
- telemetry, and logi-dd-gui, a graphical settings app (GPL-3.0-or-later;
- see debian/copyright, with a desktop menu entry), built when the
- toolchain's rustc supports it.
+ Ships both udev rules: wheel sysfs/hidraw access for the "input" group,
+ and /dev/uhid access for the logi-ffb proxy from the logi-dd package.
+
+Package: logi-dd
+Section: utils
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}, logitech-trueforce-dkms
+# python3: the shim installer edits the wine prefix registry with it.
+Recommends: python3
+Suggests: wine
+Description: Terminal tools for Logitech TrueForce direct-drive wheels
+ The complete headless toolset for the logitech-trueforce driver: logi-dd,
+ a terminal settings UI, logi-ffb, a DirectInput force-feedback proxy,
+ logi-tf-sim, a simulated-TrueForce daemon driven by game telemetry, and
+ logitech-trueforce-install-shim, the TrueForce SDK shim installer for
+ Proton prefixes.
  .
  TrueForce in Proton sims additionally needs Logitech's proprietary signed
- SDK DLLs, which are not shipped by this package; see the bundled Getting
- Started guide.
+ SDK DLLs, which are not shipped by this package; see the driver package's
+ Getting Started guide.
+
+Package: logi-dd-gui
+Section: utils
+Architecture: any
+# The Slint GUI dlopen's its windowing/input/GL stack at runtime rather
+# than linking it, so ${shlibs:Depends} alone would miss those libraries
+# (derived from `ldd`/`strings` on the built binary). fontconfig/freetype
+# are linked and covered by ${shlibs:Depends}, but stay listed for clarity.
+Depends: ${misc:Depends}, ${shlibs:Depends}, logi-dd,
+ libwayland-client0, libwayland-egl1, libxkbcommon0,
+ libxkbcommon-x11-0, libx11-6, libx11-xcb1, libxcb1, libxcursor1, libxi6,
+ libxrender1, libegl1, libgl1, libfontconfig1, libfreetype6
+Description: Graphical settings app for Logitech TrueForce wheels
+ logi-dd-gui, a graphical settings app (GPL-3.0-or-later; see
+ debian/copyright) for the logitech-trueforce driver, with a desktop menu
+ entry. Covers wheel settings, LIGHTSYNC, response curves, the game-helper
+ setup pages, and a test section.

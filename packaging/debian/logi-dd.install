@@ -1,0 +1,5 @@
+# The headless toolset. The shim installer is renamed on install and
+# therefore handled in debian/rules override_dh_install.
+userspace/logi-dd/target/release/logi-dd usr/bin/
+userspace/logi-dd/target/release/logi-ffb usr/bin/
+userspace/logi-dd/target/release/logi-tf-sim usr/bin/
