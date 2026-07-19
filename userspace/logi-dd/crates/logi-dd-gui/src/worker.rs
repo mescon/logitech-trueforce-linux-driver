@@ -990,6 +990,69 @@ mod tests {
     }
 
     #[test]
+    fn combined_pedals_edit_after_mode_switch_keeps_mode_ok() {
+        // The "Wrong mode" trap: wheel starts onboard (Combined pedals is
+        // DesktopOnly, so its row is gated), the user presses the row's
+        // Switch mode button (Request::SetMode + Refresh, exactly what the
+        // GUI sends), then toggles Combined pedals ON. The edit's
+        // RowUpdated must carry mode_ok=true: the device is in desktop
+        // mode and the write landed.
+        //
+        // Guards the whole request pipeline against ever re-gating a row
+        // whose write just succeeded. The live bug this pins down was NOT
+        // in this pipeline: the kernel driver misparsed the wheel's
+        // combined-pedals change notification (0x80D0, fn0 sw0, value in
+        // the profile byte) as "profile 1 -> onboard", so wheel_mode
+        // transiently READ as onboard right after the write and this
+        // pipeline faithfully reported it. Fixed at the source in
+        // mainline/hid-logitech-hidpp.c (fn gate restored); this test
+        // keeps the front-end half of the contract honest.
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "onboard");
+        fs.set("wheel_combined_pedals", "0");
+        let vm = ViewModel::with_io(fs);
+
+        // Onboard: the row is correctly gated.
+        let gated = vm
+            .rows_for(Category::Pedals)
+            .into_iter()
+            .find(|r| r.attr == "wheel_combined_pedals")
+            .unwrap();
+        assert!(!gated.mode_ok, "onboard: the DesktopOnly row must be gated");
+
+        // The Switch mode button's path: SetMode then a Refresh.
+        let replies = responses(|on_response| {
+            handle(&vm, Request::SetMode(Mode::Desktop), on_response);
+            handle(&vm, Request::Refresh(Category::Pedals), on_response);
+        });
+        match &replies[0] {
+            Response::Info(info) => assert_eq!(info.mode, Mode::Desktop),
+            _ => panic!("expected Info from SetMode"),
+        }
+
+        // Toggle Combined pedals ON.
+        let req = Request::Edit {
+            category: Category::Pedals,
+            attr: "wheel_combined_pedals".to_string(),
+            input: WidgetInput::Switch(true),
+        };
+        let replies = responses(|on_response| handle(&vm, req, on_response));
+        assert_eq!(replies.len(), 1);
+        match &replies[0] {
+            Response::RowUpdated { row, error, .. } => {
+                assert_eq!(row.attr, "wheel_combined_pedals");
+                assert!(error.is_none(), "the write must succeed in desktop mode: {error:?}");
+                assert_eq!(row.value, Some(Value::Bool(true)));
+                assert!(
+                    row.mode_ok,
+                    "desktop mode holds after the edit; the row must not re-gate itself"
+                );
+            }
+            _ => panic!("expected RowUpdated"),
+        }
+    }
+
+    #[test]
     fn request_category_tracks_what_is_on_screen() {
         assert_eq!(request_category(&Request::LoadCategory(Category::Leds)), Some(Category::Leds));
         assert_eq!(request_category(&Request::Refresh(Category::Ffb)), Some(Category::Ffb));
