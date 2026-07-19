@@ -7,6 +7,7 @@ use logi_dd_core::shaping::{self, ShapingRole};
 use logi_dd_core::lightsync;
 use logi_dd_core::steam::{self, SteamGame};
 use logi_dd_core::sysfs::SysfsIo;
+use logi_dd_core::tfsim;
 use logi_dd_core::{Category, Device, Error, Kind, Mode, Value, REGISTRY};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -120,6 +121,40 @@ pub struct App<S: SysfsIo> {
     /// Steam games found" apart from "not scanned yet" (the scan is lazy:
     /// it first runs when the Setup view is entered).
     pub games_scanned: bool,
+    /// `logi-tf-sim`'s resolved path (`PATH`, else next to this
+    /// executable), or `None` if it was not found at startup. The Setup
+    /// body's Simulated TrueForce block shows the path; start/test do
+    /// nothing without it.
+    pub tf_bin: Option<PathBuf>,
+    /// Where tf-sim.conf lives (`tfsim::default_path()`); overridable in
+    /// tests. Every edit writes ONE key here (preserving the rest of the
+    /// file) and reloads `tf_cfg`.
+    pub tf_conf: PathBuf,
+    /// The last-loaded tf-sim configuration: the Setup view's master
+    /// line and the per-game cells render from this.
+    pub tf_cfg: tfsim::Config,
+    /// The proc root the daemon probe scans (`/proc`); overridable in
+    /// tests.
+    pub proc_root: PathBuf,
+    /// Whether the logi-tf-sim daemon probed as running; refreshed on
+    /// every Setup entry and after start/stop (the `d` key there).
+    pub tf_daemon: bool,
+    /// The master-intensity line editor's draft, `Some` while the Setup
+    /// view's `e` edit is active (digits, Backspace, Enter commits 0-100,
+    /// Esc discards).
+    pub tf_intensity_edit: Option<String>,
+    /// The pitch line editor's draft, same lifecycle as
+    /// `tf_intensity_edit` (the `p` key; commits 10-200).
+    pub tf_pitch_edit: Option<String>,
+    /// A test sweep waiting for its y/n confirmation (armed by `t` in the
+    /// Setup view). Nothing plays without the explicit `y`: the sweep
+    /// drives the wheel with real haptic force.
+    pub tf_sweep_confirm: bool,
+    /// The running `logi-tf-sim --sweep` child, `None` while no sweep
+    /// plays. Spawned non-blocking (unlike the shim runs, it must stay
+    /// stoppable); the main loop reaps it via `tick_tf_sweep`, and `s`
+    /// SIGTERMs it early (clean stop packets).
+    tf_sweep: Option<std::process::Child>,
     /// The Test view's whole state (discovery, live monitor, sims); see
     /// `wheel_test::TestView`.
     pub test: TestView,
@@ -192,6 +227,15 @@ impl<S: SysfsIo> App<S> {
             games: Vec::new(),
             game_idx: 0,
             games_scanned: false,
+            tf_bin: logi_dd_core::helpers::tf_sim_path(),
+            tf_conf: tfsim::default_path(),
+            tf_cfg: tfsim::Config::load(),
+            proc_root: PathBuf::from("/proc"),
+            tf_daemon: false,
+            tf_intensity_edit: None,
+            tf_pitch_edit: None,
+            tf_sweep_confirm: false,
+            tf_sweep: None,
             test: TestView::default(),
             profiles_dir: profiles::default_dir(),
             profile_name_edit: None,
@@ -321,6 +365,9 @@ impl<S: SysfsIo> App<S> {
             || self.profile_name_edit.is_some()
             || self.profile_delete_confirm.is_some()
             || self.test.confirm.is_some()
+            || self.tf_intensity_edit.is_some()
+            || self.tf_pitch_edit.is_some()
+            || self.tf_sweep_confirm
         {
             return false;
         }
@@ -618,9 +665,13 @@ impl<S: SysfsIo> App<S> {
         self.cat_idx = ((self.cat_idx as i32 + d).rem_euclid(n)) as usize;
         self.row_idx = 0;
         // First visit to the Setup view scans the Steam libraries; later
-        // visits keep the last scan (r rescans on demand).
-        if self.is_setup() && !self.games_scanned {
-            self.scan_games();
+        // visits keep the last scan (r rescans on demand). The daemon
+        // probe is cheap, so every entry refreshes it.
+        if self.is_setup() {
+            if !self.games_scanned {
+                self.scan_games();
+            }
+            self.tf_probe();
         }
         // Every entry to the Info view re-runs the (cheap) evdev discovery
         // and auto-starts the live monitor when a wheel input is found;
@@ -702,6 +753,243 @@ impl<S: SysfsIo> App<S> {
             Err(e) => {
                 self.status = format!("shim {verb}: failed to run {}: {e}", bin.display());
             }
+        }
+    }
+
+    /// Reload tf-sim.conf into `tf_cfg` (after every write; tests that
+    /// point `tf_conf` elsewhere call it directly).
+    pub fn tf_reload(&mut self) {
+        self.tf_cfg = tfsim::Config::load_from(&self.tf_conf);
+    }
+
+    /// Re-probe whether the logi-tf-sim daemon is running (a proc comm
+    /// scan; the core probe skips zombies). Run on every Setup entry and
+    /// after the `d` start/stop.
+    pub fn tf_probe(&mut self) {
+        self.tf_daemon =
+            !tfsim::pids_by_comm_in(&self.proc_root, tfsim::DAEMON_COMM).is_empty();
+    }
+
+    /// Whether a test sweep child is alive (spawned and not yet reaped).
+    pub fn tf_sweep_active(&self) -> bool {
+        self.tf_sweep.is_some()
+    }
+
+    /// Reap the test sweep once it exits; run by the main loop's ticks
+    /// (the sweep is the TUI's only non-blocking child, so the loop polls
+    /// with a short timeout while it plays). A failed run surfaces its
+    /// stderr tail in the status line.
+    pub fn tick_tf_sweep(&mut self) {
+        let Some(child) = self.tf_sweep.as_mut() else { return };
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                self.status = "test sweep: finished".to_string();
+                self.tf_sweep = None;
+            }
+            Ok(Some(status)) => {
+                let mut err = String::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    use std::io::Read as _;
+                    let _ = pipe.read_to_string(&mut err);
+                }
+                let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+                self.status = if last.is_empty() {
+                    format!("test sweep: {status}")
+                } else {
+                    format!("test sweep: {status}: {last}")
+                };
+                self.tf_sweep = None;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                self.status = format!("test sweep: {e}");
+                self.tf_sweep = None;
+            }
+        }
+    }
+
+    /// SIGTERM the playing test sweep (the daemon's handler sends the
+    /// wheel clean stop packets on the way out, which a hard kill would
+    /// skip); the main loop's `tick_tf_sweep` reaps it. Returns whether a
+    /// sweep was playing.
+    pub fn tf_stop_sweep(&mut self) -> bool {
+        let Some(child) = self.tf_sweep.as_ref() else { return false };
+        unsafe {
+            libc::kill(child.id() as i32, libc::SIGTERM);
+        }
+        self.status = "test sweep: stopping...".to_string();
+        true
+    }
+
+    /// A tf-sim.conf write's aftermath: reload the config on success (the
+    /// view renders from `tf_cfg`), surface the error otherwise.
+    fn tf_report(&mut self, what: &str, result: Result<(), logi_dd_core::Error>) {
+        self.status = match result {
+            Ok(()) => {
+                self.tf_reload();
+                format!("simulated TF: {what}")
+            }
+            Err(e) => format!("simulated TF: {e}"),
+        };
+    }
+
+    /// Flip tf-sim's master switch (the Setup view's `m`).
+    fn tf_toggle_master(&mut self) {
+        let target = !self.tf_cfg.enabled;
+        let outcome = tfsim::set_enabled_in(&self.tf_conf, target);
+        self.tf_report(if target { "master on" } else { "master off" }, outcome);
+    }
+
+    /// Flip the selected game's simulated-TF switch (the Setup view's
+    /// `g`), for games whose title maps to a tf-sim id; anything else
+    /// gets a status explanation instead of a silent no-op.
+    fn tf_toggle_selected_game(&mut self) {
+        let Some(game) = self.selected_game() else {
+            self.status = "simulated TF: no game selected".to_string();
+            return;
+        };
+        let name = game.name.clone();
+        match tfsim::game_id_for_title(&name) {
+            Some(id) => {
+                let target = !self.tf_cfg.game(id).enabled;
+                let outcome = tfsim::set_game_enabled_in(&self.tf_conf, id, target);
+                self.tf_report(
+                    &format!("{name}: {}", if target { "on" } else { "off" }),
+                    outcome,
+                );
+            }
+            None => {
+                self.status =
+                    format!("simulated TF: no per-game support for {name} yet (planned)");
+            }
+        }
+    }
+
+    /// Poll the daemon probe (up to ~1.2 s) until it reports `expected`,
+    /// so a just-issued start/stop settles before the status line claims
+    /// anything: a daemon needs a moment to appear, and SIGTERM handling
+    /// (clean stop packets) takes a beat too. Blocking, like the shim
+    /// runs; the wait ends early the moment the scan agrees.
+    fn tf_settle(&mut self, expected: bool) {
+        for _ in 0..8 {
+            self.tf_probe();
+            if self.tf_daemon == expected {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        self.tf_probe();
+    }
+
+    /// Start or stop the logi-tf-sim daemon (the Setup view's `d`): a
+    /// running daemon gets SIGTERM, otherwise the resolved binary is
+    /// spawned detached (and reaped by a parked thread so it never
+    /// lingers as a zombie). Both paths settle the probe before
+    /// reporting.
+    fn tf_toggle_daemon(&mut self) {
+        if let Some(pid) =
+            tfsim::pids_by_comm_in(&self.proc_root, tfsim::DAEMON_COMM).into_iter().next()
+        {
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+            self.tf_settle(false);
+            self.status = if self.tf_daemon {
+                "daemon: still running".to_string()
+            } else {
+                "daemon: stopped".to_string()
+            };
+            return;
+        }
+        let Some(bin) = self.tf_bin.clone() else {
+            self.status = "daemon: logi-tf-sim not found (PATH or next to logi-dd)".to_string();
+            return;
+        };
+        match std::process::Command::new(&bin)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                self.tf_settle(true);
+                self.status = format!("daemon: started ({})", bin.display());
+            }
+            Err(e) => self.status = format!("daemon: failed to start {}: {e}", bin.display()),
+        }
+    }
+
+    /// Spawn `logi-tf-sim --sweep` (already consented to via the y/n
+    /// step): non-blocking, unlike the shim runs, so `s` can stop it
+    /// mid-play; stderr is piped for the failure path's status line.
+    fn tf_spawn_sweep(&mut self) {
+        let Some(bin) = self.tf_bin.clone() else {
+            self.status =
+                "test sweep: logi-tf-sim not found (PATH or next to logi-dd)".to_string();
+            return;
+        };
+        match std::process::Command::new(&bin)
+            .arg("--sweep")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => {
+                self.tf_sweep = Some(child);
+                self.status = "test sweep: playing (about 6 s; s stops it)".to_string();
+            }
+            Err(e) => self.status = format!("test sweep: failed to run {}: {e}", bin.display()),
+        }
+    }
+
+    /// The intensity/pitch line editors' key handling (exactly one of the
+    /// two drafts is active when this is called): digits build the value,
+    /// Enter commits it into tf-sim.conf when it parses inside the
+    /// field's range, Esc discards.
+    fn tf_edit_key(&mut self, key: crossterm::event::KeyCode) {
+        use crossterm::event::KeyCode::*;
+        let is_intensity = self.tf_intensity_edit.is_some();
+        let Some(draft) =
+            self.tf_intensity_edit.as_mut().or(self.tf_pitch_edit.as_mut())
+        else {
+            return;
+        };
+        match key {
+            Enter => {
+                let text = draft.clone();
+                self.tf_intensity_edit = None;
+                self.tf_pitch_edit = None;
+                match text.trim().parse::<u16>() {
+                    Ok(v) if is_intensity && v <= 100 => {
+                        let outcome = tfsim::set_intensity_in(&self.tf_conf, v as u8);
+                        self.tf_report(&format!("intensity {v}%"), outcome);
+                    }
+                    Ok(v) if !is_intensity && (10..=200).contains(&v) => {
+                        let outcome = tfsim::set_pitch_in(&self.tf_conf, v as u8);
+                        self.tf_report(&format!("pitch {v}%"), outcome);
+                    }
+                    _ => {
+                        self.status = if is_intensity {
+                            "intensity: enter 0-100".to_string()
+                        } else {
+                            "pitch: enter 10-200".to_string()
+                        };
+                    }
+                }
+            }
+            Esc => {
+                self.tf_intensity_edit = None;
+                self.tf_pitch_edit = None;
+            }
+            Backspace => {
+                draft.pop();
+            }
+            Char(c) if c.is_ascii_digit() => draft.push(c),
+            _ => {}
         }
     }
 
@@ -1011,6 +1299,24 @@ impl<S: SysfsIo> App<S> {
             return;
         }
         if self.is_setup() {
+            // The intensity/pitch line editors swallow every key while
+            // active, same rule as the SDK-dir editor below.
+            if self.tf_intensity_edit.is_some() || self.tf_pitch_edit.is_some() {
+                self.tf_edit_key(key);
+                return;
+            }
+            // A pending sweep confirmation swallows the next key: only
+            // 'y' plays (the wheel produces real haptic force), anything
+            // else cancels. Nothing ever plays without this explicit step.
+            if self.tf_sweep_confirm {
+                self.tf_sweep_confirm = false;
+                if matches!(key, Char('y') | Char('Y')) {
+                    self.tf_spawn_sweep();
+                } else {
+                    self.status = "test sweep: cancelled".to_string();
+                }
+                return;
+            }
             // The SDK-dir line editor swallows every key while active, so
             // typing a path cannot trigger the view's shortcuts.
             if let Some(draft) = self.sdk_edit.as_mut() {
@@ -1044,9 +1350,38 @@ impl<S: SysfsIo> App<S> {
                 }
                 Char('r') => {
                     self.scan_games();
+                    self.tf_probe();
                     self.status = format!("rescanned: {} Proton game(s)", self.games.len());
                 }
-                Char('s') => self.sdk_edit = Some(self.sdk_dir.clone()),
+                // While a sweep plays, s stops it; otherwise it opens the
+                // SDK folder editor as before.
+                Char('s') => {
+                    if !self.tf_stop_sweep() {
+                        self.sdk_edit = Some(self.sdk_dir.clone());
+                    }
+                }
+                Char('m') => self.tf_toggle_master(),
+                Char('e') => {
+                    self.tf_intensity_edit = Some(self.tf_cfg.intensity.to_string());
+                }
+                Char('p') => {
+                    self.tf_pitch_edit = Some(self.tf_cfg.pitch_pct.to_string());
+                }
+                Char('d') => self.tf_toggle_daemon(),
+                Char('g') => self.tf_toggle_selected_game(),
+                // Arm the consent step; `t` never plays anything itself.
+                Char('t') => {
+                    if self.tf_sweep.is_some() {
+                        self.status = "test sweep: already playing (s stops it)".to_string();
+                    } else if self.tf_bin.is_none() {
+                        self.status =
+                            "test sweep: logi-tf-sim not found (PATH or next to logi-dd)"
+                                .to_string();
+                    } else {
+                        self.tf_sweep_confirm = true;
+                        self.status = "Test simulated TrueForce: the wheel WILL produce haptic force for about 6 seconds. Keep hands relaxed. y continues, any other key cancels".to_string();
+                    }
+                }
                 // Queued, not run here: the main loop draws a "running..."
                 // status line before the blocking run (see `pending_shim`).
                 Char('i') => match self.selected_game() {
@@ -2001,6 +2336,216 @@ mod tests {
         assert_eq!(names.get(&1).map(String::as_str), Some("AC EVO"));
         assert_eq!(names.get(&2).map(String::as_str), Some("GT7"));
         assert_eq!(names.get(&3).map(String::as_str), Some("PROFILE 3"));
+    }
+
+    // --- Simulated TrueForce (Setup view) ---
+
+    /// A fresh, unique tf-sim.conf path per test.
+    fn tf_conf_tempfile() -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "logi-dd-tui-tfsim-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("tf-sim.conf")
+    }
+
+    /// `setup_app` with the tf-sim state pointed away from the real
+    /// machine: a temp conf and no resolved binary.
+    fn tf_setup_app() -> App<FakeSysfs> {
+        let mut a = setup_app();
+        a.tf_conf = tf_conf_tempfile();
+        a.tf_reload();
+        a.tf_bin = None;
+        a
+    }
+
+    #[test]
+    fn setup_m_toggles_the_tf_master_switch() {
+        use crossterm::event::KeyCode;
+        let mut a = tf_setup_app();
+        assert!(a.tf_cfg.enabled, "defaults on");
+        a.on_key(KeyCode::Char('m'));
+        assert!(!a.tf_cfg.enabled);
+        let text = std::fs::read_to_string(&a.tf_conf).unwrap();
+        assert!(text.contains("enabled=0"), "conf written: {text}");
+        a.on_key(KeyCode::Char('m'));
+        assert!(a.tf_cfg.enabled);
+    }
+
+    #[test]
+    fn setup_e_edits_the_master_intensity_with_range_check() {
+        use crossterm::event::KeyCode;
+        let mut a = tf_setup_app();
+        a.on_key(KeyCode::Char('e'));
+        assert_eq!(a.tf_intensity_edit.as_deref(), Some("60"), "draft seeds from the value");
+        a.on_key(KeyCode::Backspace);
+        a.on_key(KeyCode::Backspace);
+        a.on_key(KeyCode::Char('4'));
+        a.on_key(KeyCode::Char('5'));
+        a.on_key(KeyCode::Enter);
+        assert!(a.tf_intensity_edit.is_none());
+        assert_eq!(a.tf_cfg.intensity, 45);
+        // Out of range never writes; the draft's letters never register.
+        a.on_key(KeyCode::Char('e'));
+        a.on_key(KeyCode::Char('x'));
+        a.on_key(KeyCode::Char('9'));
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.tf_cfg.intensity, 45, "459 is out of range, nothing written");
+        assert!(a.status.contains("0-100"), "status: {}", a.status);
+        // Esc discards.
+        a.on_key(KeyCode::Char('e'));
+        a.on_key(KeyCode::Esc);
+        assert!(a.tf_intensity_edit.is_none());
+        assert_eq!(a.tf_cfg.intensity, 45);
+    }
+
+    #[test]
+    fn setup_p_edits_pitch_with_its_own_range() {
+        use crossterm::event::KeyCode;
+        let mut a = tf_setup_app();
+        a.on_key(KeyCode::Char('p'));
+        assert_eq!(a.tf_pitch_edit.as_deref(), Some("100"));
+        for _ in 0..3 {
+            a.on_key(KeyCode::Backspace);
+        }
+        a.on_key(KeyCode::Char('5'));
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.tf_cfg.pitch_pct, 100, "5 is below the 10-200 range");
+        assert!(a.status.contains("10-200"), "status: {}", a.status);
+        a.on_key(KeyCode::Char('p'));
+        for _ in 0..3 {
+            a.on_key(KeyCode::Backspace);
+        }
+        for c in "150".chars() {
+            a.on_key(KeyCode::Char(c));
+        }
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.tf_cfg.pitch_pct, 150);
+    }
+
+    #[test]
+    fn setup_g_toggles_only_games_with_a_daemon_id() {
+        use crossterm::event::KeyCode;
+        let mut a = tf_setup_app();
+        // The selected fixture game (ACC) has no tf-sim id.
+        a.on_key(KeyCode::Char('g'));
+        assert!(a.status.contains("no per-game support"), "status: {}", a.status);
+        assert!(a.tf_cfg.games.is_empty(), "nothing written");
+        // A mapped title (Steam's own casing) toggles its daemon id.
+        a.games.push(SteamGame {
+            appid: 690790,
+            name: "DiRT Rally 2.0".to_string(),
+            prefix: PathBuf::from("/lib/steamapps/compatdata/690790/pfx"),
+            shim_installed: false,
+        });
+        a.game_idx = 2;
+        a.on_key(KeyCode::Char('g'));
+        assert!(!a.tf_cfg.game("dirt-rally-2").enabled);
+        let text = std::fs::read_to_string(&a.tf_conf).unwrap();
+        assert!(text.contains("game.dirt-rally-2.enabled=0"), "conf written: {text}");
+        a.on_key(KeyCode::Char('g'));
+        assert!(a.tf_cfg.game("dirt-rally-2").enabled);
+    }
+
+    #[test]
+    fn setup_t_arms_consent_and_only_y_plays() {
+        use crossterm::event::KeyCode;
+        let mut a = tf_setup_app();
+        // No binary: nothing arms.
+        a.on_key(KeyCode::Char('t'));
+        assert!(!a.tf_sweep_confirm);
+        assert!(a.status.contains("not found"), "status: {}", a.status);
+        // A harmless stand-in binary (never the real logi-tf-sim in a
+        // unit test): /bin/true takes the --sweep argument and exits 0.
+        a.tf_bin = Some(PathBuf::from("/bin/true"));
+        a.on_key(KeyCode::Char('t'));
+        assert!(a.tf_sweep_confirm);
+        assert!(
+            a.status.contains("WILL produce haptic force"),
+            "safety text shown: {}",
+            a.status
+        );
+        // Anything but y cancels; nothing spawns.
+        a.on_key(KeyCode::Char('n'));
+        assert!(!a.tf_sweep_confirm);
+        assert!(!a.tf_sweep_active(), "nothing played");
+        assert!(a.status.contains("cancelled"), "status: {}", a.status);
+        // y plays; the main loop's tick reaps the exit.
+        a.on_key(KeyCode::Char('t'));
+        a.on_key(KeyCode::Char('y'));
+        assert!(a.tf_sweep_active());
+        for _ in 0..100 {
+            a.tick_tf_sweep();
+            if !a.tf_sweep_active() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!a.tf_sweep_active(), "the exited sweep is reaped");
+        assert!(a.status.contains("finished"), "status: {}", a.status);
+    }
+
+    #[test]
+    fn setup_s_stops_a_playing_sweep_and_edits_the_sdk_dir_otherwise() {
+        use crossterm::event::KeyCode;
+        let mut a = tf_setup_app();
+        // A stub that ignores nothing: exits 0 on SIGTERM, like the real
+        // daemon's clean-stop path. Runs ~30 s if never signalled, so the
+        // reap below only passes when the stop really landed.
+        let stub = a.tf_conf.with_file_name("logi-tf-sim-stub");
+        std::fs::write(&stub, "#!/bin/sh\ntrap 'exit 0' TERM\nsleep 30 &\nwait $!\n").unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        a.tf_bin = Some(stub);
+        a.on_key(KeyCode::Char('t'));
+        a.on_key(KeyCode::Char('y'));
+        assert!(a.tf_sweep_active());
+        // s goes to the sweep, not the SDK editor, while one plays.
+        a.on_key(KeyCode::Char('s'));
+        assert!(a.sdk_edit.is_none());
+        for _ in 0..200 {
+            a.tick_tf_sweep();
+            if !a.tf_sweep_active() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!a.tf_sweep_active(), "SIGTERM stopped the stub");
+        // With no sweep playing, s opens the SDK folder editor as before.
+        a.on_key(KeyCode::Char('s'));
+        assert!(a.sdk_edit.is_some());
+    }
+
+    #[test]
+    fn tf_probe_scans_the_configured_proc_root() {
+        let mut a = tf_setup_app();
+        let proc_root = tf_conf_tempfile().parent().unwrap().to_path_buf();
+        a.proc_root = proc_root.clone();
+        a.tf_probe();
+        assert!(!a.tf_daemon, "empty proc root: not running");
+        let pid_dir = proc_root.join("4242");
+        std::fs::create_dir_all(&pid_dir).unwrap();
+        std::fs::write(pid_dir.join("stat"), "4242 (logi-tf-sim) S 1 4242").unwrap();
+        a.tf_probe();
+        assert!(a.tf_daemon);
+    }
+
+    #[test]
+    fn tf_edit_and_confirm_states_pause_the_drift_watcher() {
+        let mut a = tf_setup_app();
+        a.tf_sweep_confirm = true;
+        assert!(!a.check_drift(), "a pending consent never races a reload");
+        a.tf_sweep_confirm = false;
+        a.tf_intensity_edit = Some("6".to_string());
+        assert!(!a.check_drift());
+        a.tf_intensity_edit = None;
+        a.tf_pitch_edit = Some("1".to_string());
+        assert!(!a.check_drift());
     }
 
     // --- mode-coupled Profiles page ---

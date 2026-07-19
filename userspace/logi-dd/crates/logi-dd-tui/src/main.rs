@@ -69,6 +69,10 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
         // profile/mode changes instead of blocking on the next key forever.
         let timeout = if app.test_polling() {
             Duration::from_millis(33)
+        } else if app.tf_sweep_active() {
+            // A test sweep is playing: poll fast enough that its
+            // completion (reaped below) shows up promptly.
+            Duration::from_millis(250)
         } else {
             DRIFT_POLL_TIMEOUT
         };
@@ -86,6 +90,8 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
         if app.test_polling() && !app.test.tick() {
             app.status = "test: wheel disconnected".to_string();
         }
+        // Reap a finished test sweep (a no-op while none plays).
+        app.tick_tf_sweep();
         // An idle tick (no key): check for external profile/mode drift, at
         // most once per `DRIFT_POLL_TIMEOUT` even while the monitor's 33ms
         // tick is driving the loop.

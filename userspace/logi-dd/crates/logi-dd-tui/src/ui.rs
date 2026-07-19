@@ -319,8 +319,16 @@ fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     } else if app.is_setup() {
         if app.sdk_edit.is_some() {
             "SDK folder:  type path   Backspace erase   Enter save   Esc cancel"
+        } else if app.tf_intensity_edit.is_some() {
+            "TF intensity (0-100):  type digits   Backspace erase   Enter save   Esc cancel"
+        } else if app.tf_pitch_edit.is_some() {
+            "TF pitch (10-200; felt rev rate, 100 = crank speed):  type digits   Backspace erase   Enter save   Esc cancel"
+        } else if app.tf_sweep_confirm {
+            "confirm:  y plays the ~6 s sweep on the wheel   any other key cancels"
+        } else if app.tf_sweep_active() {
+            "s stop sweep   up/down game   i/u shim   g game sim TF   m TF on/off   e intensity   p pitch   d daemon   r rescan   q quit"
         } else {
-            "up/down select game   i install shim   u remove shim   r rescan   s SDK folder   <-/-> category   q quit"
+            "up/down game   i/u shim   g game sim TF   m TF on/off   e intensity   p pitch   d daemon start/stop   t test sweep   s SDK folder   r rescan   <-/-> category   q quit"
         }
     } else if app.is_info() {
         if app.test.confirm.is_some() {
@@ -376,8 +384,14 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        // 18 = the 14 compat rows + note + header + the block's 2 borders.
-        .constraints([Constraint::Length(11), Constraint::Min(3), Constraint::Length(18)])
+        // 18 = the 14 compat rows + note + header + the block's 2 borders;
+        // 5 = the Simulated TrueForce block's 3 lines + its 2 borders.
+        .constraints([
+            Constraint::Length(11),
+            Constraint::Length(5),
+            Constraint::Min(3),
+            Constraint::Length(18),
+        ])
         .split(area);
 
     // Top: logi-ffb + the SDK folder line (with the libtrueforce note).
@@ -456,6 +470,65 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         rows[0],
     );
 
+    // Simulated TrueForce: the daemon block (its per-game cells live in
+    // the games list and the compatibility table below).
+    let tf = vec![
+        Line::from(
+            "Synthesizes TrueForce engine haptics from a game's UDP telemetry, for \
+             titles without native TrueForce.",
+        ),
+        // The daemon line: the resolved binary and whether it is running.
+        Line::from(vec![
+            Span::raw("logi-tf-sim: "),
+            Span::styled(
+                match &app.tf_bin {
+                    Some(p) => format!("found: {}", p.display()),
+                    None => "not found (PATH or next to logi-dd)".to_string(),
+                },
+                found_style(app.tf_bin.is_some()),
+            ),
+            Span::raw("    daemon: "),
+            if app.tf_daemon {
+                Span::styled("running", Style::default().fg(Color::Green))
+            } else {
+                Span::styled("stopped", Style::default().fg(Color::DarkGray))
+            },
+        ]),
+        // The master line, with whichever value editor is active shown as
+        // its yellow draft.
+        Line::from(vec![
+            Span::raw("master: "),
+            Span::styled(
+                if app.tf_cfg.enabled { "on" } else { "off" },
+                found_style(app.tf_cfg.enabled),
+            ),
+            Span::raw("   intensity: "),
+            match &app.tf_intensity_edit {
+                Some(draft) => Span::styled(
+                    format!("{draft}_"),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+                None => Span::raw(format!("{}%", app.tf_cfg.intensity)),
+            },
+            Span::raw("   pitch (felt rev rate; 100 = crank speed): "),
+            match &app.tf_pitch_edit {
+                Some(draft) => Span::styled(
+                    format!("{draft}_"),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+                None => Span::raw(format!("{}%", app.tf_cfg.pitch_pct)),
+            },
+        ]),
+    ];
+    f.render_widget(
+        Paragraph::new(tf).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Simulated TrueForce (m on/off, e intensity, p pitch, d daemon, t test sweep)"),
+        ),
+        rows[1],
+    );
+
     // Middle: the installed Proton games, one selectable row each.
     let games: Vec<ListItem> = if app.games.is_empty() {
         vec![ListItem::new(if app.games_scanned {
@@ -474,10 +547,27 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
                 } else {
                     Span::styled("-", Style::default().fg(Color::DarkGray))
                 };
+                // Games the tf-sim daemon can identify show their live
+                // per-game state (g toggles it); others show nothing.
+                let sim = match logi_dd_core::tfsim::game_id_for_title(&g.name) {
+                    Some(id) => {
+                        let game = app.tf_cfg.game(id);
+                        if game.enabled {
+                            Span::styled(
+                                format!("   sim TF: on {}%", game.intensity),
+                                Style::default().fg(Color::Green),
+                            )
+                        } else {
+                            Span::styled("   sim TF: off", Style::default().fg(Color::DarkGray))
+                        }
+                    }
+                    None => Span::raw(""),
+                };
                 let mut item = ListItem::new(Line::from(vec![
                     Span::raw(format!("{:<40}", g.name)),
                     Span::raw(" "),
                     status,
+                    sim,
                 ]));
                 if i == app.game_idx {
                     item = item.style(Style::default().add_modifier(Modifier::REVERSED));
@@ -490,16 +580,17 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         List::new(games).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Proton games (i install shim, u remove shim)"),
+                .title("Proton games (i install shim, u remove shim, g simulated TF)"),
         ),
-        rows[1],
+        rows[2],
     );
 
-    // Bottom: the static compatibility table. "expected" marks titles not
-    // verified on this driver yet; the third column is the upcoming
-    // per-game "Simulate TrueForce" option ("planned" for FFB-only titles,
-    // "n/a (native)" where the shim already delivers real TrueForce).
-    // Mirrors the GUI Setup page's `compat-rows`.
+    // Bottom: the compatibility table. "expected" marks titles not
+    // verified on this driver yet; the third column is the per-game
+    // "Simulated TF" state (live where the daemon can identify the title,
+    // "planned" for the other FFB-only titles, "n/a (native)" where the
+    // shim already delivers real TrueForce). Mirrors the GUI Setup page's
+    // `compat_rows`.
     let compat_rows: [(&str, &str, &str); 14] = [
         ("ACC", "TrueForce (shim)", "n/a (native)"),
         ("AC EVO", "TrueForce (shim)", "n/a (native)"),
@@ -518,7 +609,7 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     ];
     let mut compat = vec![
         Line::from(Span::styled(
-            "\"FFB (logi-ffb)\" = launch with logi-ffb %command%. \"Simulated TF\" = upcoming per-game option; n/a (native) titles get real TrueForce via the shim.",
+            "\"FFB (logi-ffb)\" = launch with logi-ffb %command%. \"Simulated TF\" = engine haptics synthesized from telemetry (logi-tf-sim): live per-game values where the daemon can identify the title; n/a (native) titles get real TrueForce via the shim.",
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(Span::styled(
@@ -527,17 +618,34 @@ fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
         )),
     ];
     compat.extend(compat_rows.iter().map(|(game, how, tf)| {
+        // Titles with a tf-sim game id show that game's live tf-sim.conf
+        // state instead of the static text (both AMS2 and Project CARS 2
+        // share one id, so they always agree).
+        let cell = match logi_dd_core::tfsim::game_id_for_title(game) {
+            Some(id) => {
+                let sim = app.tf_cfg.game(id);
+                if sim.enabled {
+                    Span::styled(
+                        format!("on {}%", sim.intensity),
+                        Style::default().fg(Color::Green),
+                    )
+                } else {
+                    Span::styled("off".to_string(), Style::default().fg(Color::DarkGray))
+                }
+            }
+            None => Span::styled((*tf).to_string(), Style::default().fg(Color::DarkGray)),
+        };
         Line::from(vec![
             Span::raw(format!("{game:<26}")),
             Span::styled(format!("{how:<26}"), Style::default().fg(Color::Gray)),
-            Span::styled(*tf, Style::default().fg(Color::DarkGray)),
+            cell,
         ])
     }));
     f.render_widget(
         Paragraph::new(compat)
             .wrap(Wrap { trim: false })
             .block(Block::default().borders(Borders::ALL).title("Game compatibility")),
-        rows[2],
+        rows[3],
     );
 }
 
