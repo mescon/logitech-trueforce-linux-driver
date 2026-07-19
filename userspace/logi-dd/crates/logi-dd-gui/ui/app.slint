@@ -188,6 +188,9 @@ export component App inherits Window {
     // callback below round-trips through Rust before the overlay redraws.
     in property <bool> curve-editor-open: false;
     in property <string> curve-label: "";
+    // The editor's x-axis caption, named for the axis being shaped
+    // ("Throttle input %", ...); set alongside curve-label on open.
+    in property <string> curve-x-label: "Input %";
     in property <string> curve-plot-commands: "";
     in property <[CurvePoint]> curve-control-points: [];
     in property <int> curve-lower-deadzone: 0;
@@ -576,6 +579,7 @@ export component App inherits Window {
         width: root.width;
         height: root.height;
         curve-label: root.curve-label;
+        x-axis-label: root.curve-x-label;
         plot-commands: root.curve-plot-commands;
         control-points: root.curve-control-points;
         lower-deadzone: root.curve-lower-deadzone;

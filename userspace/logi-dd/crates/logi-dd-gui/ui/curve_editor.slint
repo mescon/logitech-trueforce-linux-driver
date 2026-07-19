@@ -24,6 +24,10 @@ export struct CurvePoint {
 // overlay from the Rust side (`curve-editor-open` in app.slint).
 export component CurveEditor inherits Rectangle {
     in property <string> curve-label: "Curve";
+    // The x-axis caption under the plot, named for the axis being shaped
+    // ("Throttle input %", "Steering input %", ...); the Rust side derives
+    // it from the attribute the editor was opened for.
+    in property <string> x-axis-label: "Input %";
     in property <string> plot-commands: "";
     in property <[CurvePoint]> control-points: [];
     in property <int> lower-deadzone: 0;
@@ -73,7 +77,7 @@ export component CurveEditor inherits Rectangle {
         // Clamped so the panel's border never leaves the window at the
         // app's minimum height; the internal stretch spacer absorbs the
         // difference.
-        height: min(500px, root.height - 16px);
+        height: min(520px, root.height - 16px);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.panel-background;
@@ -99,73 +103,146 @@ export component CurveEditor inherits Rectangle {
                 wrap: word-wrap;
             }
 
-            plot-area := Rectangle {
-                height: 220px;
-                background: Palette.background;
-                border-width: 1px;
-                border-color: Theme.panel-border;
+            // The plot with its axis legends: a vertical "Output %" gutter
+            // (with its 0/100 corner ticks) on the left, the input caption
+            // (with its own 0/100 ticks) underneath. Only chrome AROUND the
+            // plot: `plot-area` itself is untouched, so the fraction <->
+            // pixel mapping its TouchArea and the Rust hit-test share stays
+            // exactly as it was.
+            VerticalLayout {
+                spacing: 2px;
 
-                Path {
-                    viewbox-width: 1;
-                    viewbox-height: 1;
-                    // `fill`, not the default `contain`: the viewbox must map
-                    // linearly onto the plot's full width and height (the
-                    // same mapping the control-point handles below use), not
-                    // be scaled uniformly into a square corner of it.
-                    fit: fill;
-                    stroke: Palette.accent-background;
-                    stroke-width: 2px;
-                    commands: root.plot-commands;
-                }
+                HorizontalLayout {
+                    spacing: 4px;
 
-                // Pure visuals: the single TouchArea below owns every
-                // pointer event, so these never carry their own TouchArea
-                // (a per-point TouchArea would move out from under the
-                // pointer mid-drag, since moving it is exactly what dragging
-                // does; see the module-level history for the bug this
-                // replaced).
-                for p[i] in root.control-points: Rectangle {
-                    width: i == root.selected ? 14px : 10px;
-                    height: i == root.selected ? 14px : 10px;
-                    border-radius: self.width / 2;
-                    background: i == root.selected ? Palette.accent-background : Palette.control-background;
-                    border-width: 1px;
-                    border-color: Palette.accent-background;
-                    x: p.x * plot-area.width - self.width / 2;
-                    y: p.y * plot-area.height - self.height / 2;
-                }
-
-                // The one fixed-frame interaction layer for the whole plot.
-                // Because it never moves, it keeps tracking the pointer for
-                // the entire gesture, unlike a TouchArea riding on the point
-                // being dragged.
-                TouchArea {
-                    pointer-event(ev) => {
-                        if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
-                            root.press-x = self.mouse-x;
-                            root.press-y = self.mouse-y;
-                            root.grabbed = root.grab-point(
-                                self.mouse-x / plot-area.width,
-                                self.mouse-y / plot-area.height,
-                                plot-area.width / plot-area.height,
-                            );
-                            if (root.grabbed >= 0) {
-                                root.selected = root.grabbed;
-                            }
-                        } else if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.up) {
-                            if (root.grabbed < 0 && abs(self.mouse-x - root.press-x) < 4px && abs(self.mouse-y - root.press-y) < 4px) {
-                                root.add-point(self.mouse-x / plot-area.width);
-                            }
-                            root.grabbed = -1;
+                    Rectangle {
+                        width: 26px;
+                        // Screen top is full output, bottom is zero; the
+                        // ticks make that direction explicit.
+                        Text {
+                            text: "100";
+                            font-size: 9px;
+                            color: Theme.muted-text-color;
+                            x: parent.width - self.width;
+                            y: 0;
+                        }
+                        Text {
+                            text: "Output %";
+                            font-size: 10px;
+                            color: Theme.muted-text-color;
+                            // Rotated to run along the axis. Positioned by
+                            // hand inside this fixed-width gutter because a
+                            // rotated element still occupies its unrotated
+                            // bounds in layout, which would blow the column
+                            // out to the text's full width.
+                            transform-rotation: -90deg;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: "0";
+                            font-size: 9px;
+                            color: Theme.muted-text-color;
+                            x: parent.width - self.width;
+                            y: parent.height - self.height;
                         }
                     }
-                    moved => {
-                        if (self.pressed && root.grabbed >= 0) {
-                            root.move-point(
-                                root.grabbed,
-                                clamp(self.mouse-x / plot-area.width, 0, 1),
-                                clamp(self.mouse-y / plot-area.height, 0, 1),
-                            );
+
+                    plot-area := Rectangle {
+                        height: 220px;
+                        background: Palette.background;
+                        border-width: 1px;
+                        border-color: Theme.panel-border;
+
+                        Path {
+                            viewbox-width: 1;
+                            viewbox-height: 1;
+                            // `fill`, not the default `contain`: the viewbox must map
+                            // linearly onto the plot's full width and height (the
+                            // same mapping the control-point handles below use), not
+                            // be scaled uniformly into a square corner of it.
+                            fit: fill;
+                            stroke: Palette.accent-background;
+                            stroke-width: 2px;
+                            commands: root.plot-commands;
+                        }
+
+                        // Pure visuals: the single TouchArea below owns every
+                        // pointer event, so these never carry their own TouchArea
+                        // (a per-point TouchArea would move out from under the
+                        // pointer mid-drag, since moving it is exactly what dragging
+                        // does; see the module-level history for the bug this
+                        // replaced).
+                        for p[i] in root.control-points: Rectangle {
+                            width: i == root.selected ? 14px : 10px;
+                            height: i == root.selected ? 14px : 10px;
+                            border-radius: self.width / 2;
+                            background: i == root.selected ? Palette.accent-background : Palette.control-background;
+                            border-width: 1px;
+                            border-color: Palette.accent-background;
+                            x: p.x * plot-area.width - self.width / 2;
+                            y: p.y * plot-area.height - self.height / 2;
+                        }
+
+                        // The one fixed-frame interaction layer for the whole plot.
+                        // Because it never moves, it keeps tracking the pointer for
+                        // the entire gesture, unlike a TouchArea riding on the point
+                        // being dragged.
+                        TouchArea {
+                            pointer-event(ev) => {
+                                if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
+                                    root.press-x = self.mouse-x;
+                                    root.press-y = self.mouse-y;
+                                    root.grabbed = root.grab-point(
+                                        self.mouse-x / plot-area.width,
+                                        self.mouse-y / plot-area.height,
+                                        plot-area.width / plot-area.height,
+                                    );
+                                    if (root.grabbed >= 0) {
+                                        root.selected = root.grabbed;
+                                    }
+                                } else if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.up) {
+                                    if (root.grabbed < 0 && abs(self.mouse-x - root.press-x) < 4px && abs(self.mouse-y - root.press-y) < 4px) {
+                                        root.add-point(self.mouse-x / plot-area.width);
+                                    }
+                                    root.grabbed = -1;
+                                }
+                            }
+                            moved => {
+                                if (self.pressed && root.grabbed >= 0) {
+                                    root.move-point(
+                                        root.grabbed,
+                                        clamp(self.mouse-x / plot-area.width, 0, 1),
+                                        clamp(self.mouse-y / plot-area.height, 0, 1),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+                    // A spacer the width of the y-axis gutter, so the 0/100
+                    // ticks line up under the plot's own left/right edges.
+                    Rectangle { width: 26px; }
+                    HorizontalLayout {
+                        Text {
+                            text: "0";
+                            font-size: 9px;
+                            color: Theme.muted-text-color;
+                        }
+                        Text {
+                            text: root.x-axis-label;
+                            font-size: 10px;
+                            color: Theme.muted-text-color;
+                            horizontal-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: "100";
+                            font-size: 9px;
+                            color: Theme.muted-text-color;
                         }
                     }
                 }

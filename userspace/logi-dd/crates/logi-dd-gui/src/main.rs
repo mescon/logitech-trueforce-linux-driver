@@ -1332,6 +1332,17 @@ fn main() -> Result<(), slint::PlatformError> {
             push_curve_editor(&app, &curve);
             let label = REGISTRY.iter().find(|s| s.attr == attr).map(|s| s.label).unwrap_or(attr.as_str());
             app.set_curve_label(label.into());
+            // The plot's x-axis caption, named for the axis this attribute
+            // shapes (the y-axis is always "Output %").
+            let x_label = match attr.as_str() {
+                "wheel_response_curve" => "Steering input %",
+                "wheel_throttle_curve" => "Throttle input %",
+                "wheel_brake_curve" => "Brake input %",
+                "wheel_clutch_curve" => "Clutch input %",
+                "wheel_handbrake_curve" => "Handbrake input %",
+                _ => "Input %",
+            };
+            app.set_curve_x_label(x_label.into());
             app.set_curve_editor_open(true);
             *curve_editor.lock().unwrap() = Some(CurveEditorState { attr, category: get(&current_category), curve });
         });
