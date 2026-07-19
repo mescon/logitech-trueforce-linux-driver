@@ -12,6 +12,10 @@ jobs:
         working-directory: userspace/logi-dd
     steps:
       - uses: actions/checkout@v4
+      - name: Install system dependencies (logi-dd-gui)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig-dev
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component clippy
       - name: Build
