@@ -193,6 +193,8 @@ const SIM_LEVEL: i16 = 0x2000;
 const SIM_DURATION_MS: u16 = 2000;
 /// The sine texture's period (25 ms = 40 Hz, a gritty rumble).
 const SIM_PERIOD_MS: u16 = 25;
+/// How often the playback wait re-checks the cancel flag.
+const SIM_CANCEL_POLL: Duration = Duration::from_millis(10);
 
 const EV_FF: u16 = 0x15;
 const FF_PERIODIC: u16 = 0x51;
@@ -282,11 +284,37 @@ fn device_gone(e: &std::io::Error) -> bool {
     matches!(e.raw_os_error(), Some(libc::ENODEV))
 }
 
+/// How a playback wait ended: the effect ran its full 2 s, or the user
+/// pressed Stop and `cancel` flipped mid-play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitOutcome {
+    Completed,
+    Cancelled,
+}
+
+/// Sleep out `duration` in [`SIM_CANCEL_POLL`] ticks, returning early as
+/// soon as `cancel` flips. This is the sim's whole cancel state machine:
+/// both outcomes fall through to the same single cleanup site in
+/// [`run_simulation`], so complete-then-stop and cancel-then-stop clean
+/// up exactly once each.
+fn wait_out(duration: Duration, cancel: &AtomicBool) -> WaitOutcome {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        if cancel.load(Ordering::Relaxed) {
+            return WaitOutcome::Cancelled;
+        }
+        std::thread::sleep(SIM_CANCEL_POLL.min(duration));
+    }
+    WaitOutcome::Completed
+}
+
 /// Play `kind` on the wheel at `path`: upload, play, wait out the 2 s
-/// duration, then always stop and erase the effect (also on every error
-/// path). Blocking; callers run it on its own thread. A device that
-/// disappears mid-sim returns `Ok` (nothing left to clean up).
-pub fn run_simulation(path: &str, kind: SimKind) -> Result<(), String> {
+/// duration (or until `cancel` flips), then always stop and erase the
+/// effect (also on every error path). Blocking; callers run it on its
+/// own thread and cancel by setting the shared flag. A device that
+/// disappears mid-sim returns `Ok` (nothing left to clean up); a
+/// cancelled run is also `Ok` (the user asked for the stop).
+pub fn run_simulation(path: &str, kind: SimKind, cancel: &AtomicBool) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -312,9 +340,15 @@ pub fn run_simulation(path: &str, kind: SimKind) -> Result<(), String> {
     }
     let id = effect.id;
 
-    let outcome = play_and_wait(&mut file, id);
+    // Play, then wait for completion or cancellation; either way control
+    // falls through to the one cleanup site below.
+    let outcome = write_event(&mut file, id as u16, 1);
+    if outcome.is_ok() {
+        wait_out(Duration::from_millis(u64::from(SIM_DURATION_MS)), cancel);
+    }
 
-    // Unconditional cleanup: stop, then erase, whatever happened above.
+    // Unconditional cleanup: stop, then erase, whatever happened above
+    // (full 2 s, cancel, or a failed play write).
     let _ = write_event(&mut file, id as u16, 0);
     // SAFETY: same fd; EVIOCRMFF takes the effect id by value.
     let _ = unsafe { libc::ioctl(fd, EVIOCRMFF, id as libc::c_ulong) };
@@ -324,13 +358,6 @@ pub fn run_simulation(path: &str, kind: SimKind) -> Result<(), String> {
         Err(e) if device_gone(&e) => Ok(()),
         Err(e) => Err(format!("play effect: {e}")),
     }
-}
-
-/// Start effect `id` and sleep out its fixed duration.
-fn play_and_wait(file: &mut std::fs::File, id: i16) -> std::io::Result<()> {
-    write_event(file, id as u16, 1)?;
-    std::thread::sleep(Duration::from_millis(u64::from(SIM_DURATION_MS)));
-    Ok(())
 }
 
 /// Write one `EV_FF` event (play/stop/gain) to the device.
@@ -374,6 +401,36 @@ mod tests {
         assert_eq!(u16::from_le_bytes([t.u.0[0], t.u.0[1]]), FF_SINE);
         assert_eq!(i16::from_le_bytes([t.u.0[4], t.u.0[5]]), 0x2000, "~25% magnitude");
         assert_eq!(t.replay_length, 2000);
+    }
+
+    #[test]
+    fn wait_out_completes_when_never_cancelled() {
+        let cancel = AtomicBool::new(false);
+        let start = Instant::now();
+        assert_eq!(wait_out(Duration::from_millis(30), &cancel), WaitOutcome::Completed);
+        assert!(start.elapsed() >= Duration::from_millis(30), "waits the full duration");
+    }
+
+    #[test]
+    fn wait_out_returns_early_on_a_preset_cancel() {
+        let cancel = AtomicBool::new(true);
+        let start = Instant::now();
+        assert_eq!(wait_out(Duration::from_secs(10), &cancel), WaitOutcome::Cancelled);
+        assert!(start.elapsed() < Duration::from_secs(1), "does not sleep out the duration");
+    }
+
+    #[test]
+    fn wait_out_reacts_to_a_mid_play_cancel() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread_cancel = cancel.clone();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            thread_cancel.store(true, Ordering::Relaxed);
+        });
+        let start = Instant::now();
+        assert_eq!(wait_out(Duration::from_secs(10), &cancel), WaitOutcome::Cancelled);
+        assert!(start.elapsed() < Duration::from_secs(1), "cancel cuts the wait short");
+        stopper.join().unwrap();
     }
 
     #[test]

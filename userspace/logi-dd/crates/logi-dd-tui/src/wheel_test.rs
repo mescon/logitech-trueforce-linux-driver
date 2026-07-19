@@ -67,6 +67,10 @@ pub struct TestView {
     pub confirm: Option<SimKind>,
     /// Set while a sim thread plays; cleared by the thread itself.
     sim_running: Arc<AtomicBool>,
+    /// Set by `stop_sim` ('s' while playing); the sim thread polls it and
+    /// stops + erases the effect early. Re-armed (cleared) by the next
+    /// `spawn_sim`.
+    sim_cancel: Arc<AtomicBool>,
 }
 
 impl Default for TestView {
@@ -84,6 +88,7 @@ impl Default for TestView {
             axes: [0; 4],
             confirm: None,
             sim_running: Arc::new(AtomicBool::new(false)),
+            sim_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -220,20 +225,34 @@ impl TestView {
     /// Spawn the confirmed simulation on its own thread (the TUI's event
     /// loop must keep drawing while the 2 s effect plays) and return the
     /// status line to show. The thread stops + erases the effect on
-    /// every path; a device that vanished mid-sim cleans up silently.
+    /// every path (full duration, `stop_sim`, errors); a device that
+    /// vanished mid-sim cleans up silently.
     pub fn spawn_sim(&mut self, kind: SimKind) -> String {
         let Some(dev) = &self.dev else { return "test: no wheel".to_string() };
         if self.sim_running() {
-            return "test: a simulation is already playing".to_string();
+            return "test: a simulation is already playing (s to stop)".to_string();
         }
         self.sim_running.store(true, Ordering::Relaxed);
+        self.sim_cancel.store(false, Ordering::Relaxed);
         let path = dev.event_path.clone();
         let running = self.sim_running.clone();
+        let cancel = self.sim_cancel.clone();
         std::thread::spawn(move || {
-            let _ = run_simulation(&path, kind);
+            let _ = run_simulation(&path, kind, &cancel);
             running.store(false, Ordering::Relaxed);
         });
-        format!("test: playing {} (25%, 2 s)...", kind.label())
+        format!("test: playing {} (25%, 2 s; s to stop)...", kind.label())
+    }
+
+    /// Stop the playing simulation ('s' in the Info view): flag the sim
+    /// thread, which stops + erases the effect within its poll tick.
+    /// True when something was playing, false for a no-op.
+    pub fn stop_sim(&self) -> bool {
+        if !self.sim_running() {
+            return false;
+        }
+        self.sim_cancel.store(true, Ordering::Relaxed);
+        true
     }
 }
 
@@ -246,6 +265,8 @@ const SIM_LEVEL: i16 = 0x2000;
 const SIM_DURATION_MS: u16 = 2000;
 /// The sine texture's period (25 ms = 40 Hz).
 const SIM_PERIOD_MS: u16 = 25;
+/// How often the playback wait re-checks the cancel flag.
+const SIM_CANCEL_POLL: Duration = Duration::from_millis(10);
 
 const EV_FF: u16 = 0x15;
 const FF_PERIODIC: u16 = 0x51;
@@ -321,11 +342,35 @@ fn write_event(file: &mut std::fs::File, code: u16, value: i32) -> std::io::Resu
     file.write_all(&encode_ff_event(code, value))
 }
 
-/// Play `kind` on the wheel at `path`: upload, play, wait the fixed 2 s,
-/// then always stop and erase (also on every error path). Blocking; the
-/// caller runs it on a thread. A device that disappears mid-sim
-/// (`ENODEV`) is a silent cleanup, not an error.
-fn run_simulation(path: &str, kind: SimKind) -> Result<(), String> {
+/// How a playback wait ended: the effect ran its full 2 s, or the user
+/// pressed 's' and `cancel` flipped mid-play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitOutcome {
+    Completed,
+    Cancelled,
+}
+
+/// Sleep out `duration` in [`SIM_CANCEL_POLL`] ticks, returning early as
+/// soon as `cancel` flips. Both outcomes fall through to the same single
+/// cleanup site in [`run_simulation`], so complete-then-stop and
+/// cancel-then-stop clean up exactly once each.
+fn wait_out(duration: Duration, cancel: &AtomicBool) -> WaitOutcome {
+    let deadline = std::time::Instant::now() + duration;
+    while std::time::Instant::now() < deadline {
+        if cancel.load(Ordering::Relaxed) {
+            return WaitOutcome::Cancelled;
+        }
+        std::thread::sleep(SIM_CANCEL_POLL.min(duration));
+    }
+    WaitOutcome::Completed
+}
+
+/// Play `kind` on the wheel at `path`: upload, play, wait the fixed 2 s
+/// (or until `cancel` flips), then always stop and erase (also on every
+/// error path). Blocking; the caller runs it on a thread. A device that
+/// disappears mid-sim (`ENODEV`) is a silent cleanup, not an error; a
+/// cancelled run is `Ok` too (the user asked for the stop).
+fn run_simulation(path: &str, kind: SimKind, cancel: &AtomicBool) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -355,7 +400,7 @@ fn run_simulation(path: &str, kind: SimKind) -> Result<(), String> {
 
     let outcome = write_event(&mut file, id as u16, 1);
     if outcome.is_ok() {
-        std::thread::sleep(Duration::from_millis(u64::from(SIM_DURATION_MS)));
+        wait_out(Duration::from_millis(u64::from(SIM_DURATION_MS)), cancel);
     }
 
     // Unconditional cleanup: stop, then erase, whatever happened above.
@@ -440,6 +485,35 @@ mod tests {
         let status = v.spawn_sim(SimKind::ConstantForce);
         assert!(status.contains("no wheel"), "status: {status}");
         assert!(!v.sim_running());
+    }
+
+    #[test]
+    fn stop_sim_is_a_no_op_while_nothing_plays() {
+        let v = TestView::default();
+        assert!(!v.stop_sim());
+        assert!(!v.sim_cancel.load(Ordering::Relaxed), "flag stays unarmed");
+    }
+
+    #[test]
+    fn stop_sim_flags_a_playing_sim() {
+        let v = TestView::default();
+        v.sim_running.store(true, Ordering::Relaxed);
+        assert!(v.stop_sim());
+        assert!(v.sim_cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn wait_out_completes_when_never_cancelled() {
+        let cancel = AtomicBool::new(false);
+        assert_eq!(wait_out(Duration::from_millis(30), &cancel), WaitOutcome::Completed);
+    }
+
+    #[test]
+    fn wait_out_returns_early_on_cancel() {
+        let cancel = AtomicBool::new(true);
+        let start = std::time::Instant::now();
+        assert_eq!(wait_out(Duration::from_secs(10), &cancel), WaitOutcome::Cancelled);
+        assert!(start.elapsed() < Duration::from_secs(1), "does not sleep out the duration");
     }
 
     #[test]

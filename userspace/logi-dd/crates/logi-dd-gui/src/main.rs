@@ -587,6 +587,12 @@ fn start_test_monitor(
     });
 }
 
+/// The playing simulation's cancel flag, `None` while no sim runs. The
+/// Stop button sets the flag through this cell; the runner thread (which
+/// holds its own clone) wakes within its poll tick, stops + erases the
+/// effect through its single cleanup site, then clears the cell.
+type SimCancelCell = Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>;
+
 /// Run one confirmed force simulation against the discovered wheel, off
 /// the UI thread, pushing completion (and any error) back into the Test
 /// page's properties. A missing device is a silent no-op: the buttons
@@ -594,6 +600,7 @@ fn start_test_monitor(
 fn run_test_sim(
     app_weak: slint::Weak<App>,
     device_cell: &Arc<Mutex<Option<evtest::WheelInput>>>,
+    cancel_cell: &SimCancelCell,
     kind: testio::SimKind,
 ) {
     let Some(app) = app_weak.upgrade() else { return };
@@ -603,9 +610,16 @@ fn run_test_sim(
     }
     app.set_test_sim_running(true);
     app.set_test_sim_error("".into());
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *cancel_cell.lock().unwrap() = Some(cancel.clone());
+    let cancel_cell = cancel_cell.clone();
     let weak = app.as_weak();
     std::thread::spawn(move || {
-        let result = testio::run_simulation(&wheel.event_path, kind);
+        // Completion and cancellation both come back through here (the
+        // cancel flag only shortens the wait inside run_simulation, which
+        // cleans up on every path), so the UI state resets exactly once.
+        let result = testio::run_simulation(&wheel.event_path, kind, &cancel);
+        *cancel_cell.lock().unwrap() = None;
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = weak.upgrade() else { return };
             app.set_test_sim_running(false);
@@ -901,9 +915,11 @@ fn main() -> Result<(), slint::PlatformError> {
     };
 
     // The Test page's reader thread (`None` while the page is closed or no
-    // wheel was found) and the evdev node the sim buttons play against.
+    // wheel was found), the evdev node the sim buttons play against, and
+    // the playing sim's cancel flag (see `SimCancelCell`).
     let test_reader: Arc<Mutex<Option<testio::Reader>>> = Arc::new(Mutex::new(None));
     let test_device: Arc<Mutex<Option<evtest::WheelInput>>> = Arc::new(Mutex::new(None));
+    let test_sim_cancel: SimCancelCell = Arc::new(Mutex::new(None));
 
     {
         let worker = worker.clone();
@@ -1588,15 +1604,29 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let app_weak = app.as_weak();
         let test_device = test_device.clone();
+        let test_sim_cancel = test_sim_cancel.clone();
         app.on_test_sim_constant(move || {
-            run_test_sim(app_weak.clone(), &test_device, testio::SimKind::ConstantForce);
+            run_test_sim(app_weak.clone(), &test_device, &test_sim_cancel, testio::SimKind::ConstantForce);
         });
     }
     {
         let app_weak = app.as_weak();
         let test_device = test_device.clone();
+        let test_sim_cancel = test_sim_cancel.clone();
         app.on_test_sim_texture(move || {
-            run_test_sim(app_weak.clone(), &test_device, testio::SimKind::Texture);
+            run_test_sim(app_weak.clone(), &test_device, &test_sim_cancel, testio::SimKind::Texture);
+        });
+    }
+    {
+        // The Stop button: flag the runner thread, which stops + erases
+        // the effect within its poll tick and then resets the UI state
+        // itself (its completion path). A stray click after the runner
+        // already finished finds the cell empty and does nothing.
+        let test_sim_cancel = test_sim_cancel.clone();
+        app.on_test_sim_stop(move || {
+            if let Some(cancel) = test_sim_cancel.lock().unwrap().as_ref() {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
         });
     }
 

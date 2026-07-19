@@ -302,6 +302,8 @@ fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     } else if app.is_info() {
         if app.test.confirm.is_some() {
             "confirm:  y continue   any other key cancels"
+        } else if app.test.sim_running() {
+            "s stop sim   r rescan   d desktop/onboard   <-/-> category   q quit"
         } else {
             "f force feedback sim   t TrueForce texture sim   r rescan   d desktop/onboard   <-/-> category   q quit"
         }
@@ -587,7 +589,7 @@ fn draw_monitor<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     ]));
     if t.sim_running() {
         top.push(Line::from(Span::styled(
-            "force playing... (25%, 2 s; f/t are disabled meanwhile)",
+            "force playing... (25%, 2 s; s to stop)",
             Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         )));
     }

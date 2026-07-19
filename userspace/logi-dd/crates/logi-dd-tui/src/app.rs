@@ -861,6 +861,10 @@ impl<S: SysfsIo> App<S> {
                 }
                 Char('f') => self.request_sim(SimKind::ConstantForce),
                 Char('t') => self.request_sim(SimKind::Texture),
+                // Stop the playing sim; a no-op while nothing plays.
+                Char('s') if self.test.stop_sim() => {
+                    self.status = "test: simulation stopped".to_string();
+                }
                 _ => {}
             }
             return;
