@@ -147,6 +147,13 @@ pub struct App<S: SysfsIo> {
     /// only exists for the real sysfs type) and hands any find back via
     /// `adopt_device`.
     retry_requested: bool,
+    /// The last `(wheel_profile, wheel_mode)` observation, for external-
+    /// change detection: the wheel's physical profile button (or another
+    /// tool writing sysfs) changes settings without any key passing through
+    /// `on_key`, and `check_drift` (run by the main loop's idle ticks)
+    /// reloads the view when this pair moves. Resynced by every `reload`,
+    /// so the app's own edits never read as drift.
+    last_drift: Option<(Option<Value>, Option<Value>)>,
 }
 
 /// Whether `device` looks like a real wheel: at least one registry
@@ -185,6 +192,7 @@ impl<S: SysfsIo> App<S> {
             pending_shim: None,
             no_wheel: false,
             retry_requested: false,
+            last_drift: None,
         };
         a.no_wheel = !wheel_present(&a.device);
         a.sdk_valid = steam::sdk_dir_valid(Path::new(&a.sdk_dir));
@@ -244,6 +252,10 @@ impl<S: SysfsIo> App<S> {
     }
 
     pub fn reload(&mut self) {
+        // Every reload resyncs the drift baseline: the values on screen are
+        // (about to be) exactly what the device reports now, so only a LATER
+        // external write should count as drift.
+        self.last_drift = Some(self.drift_observation());
         if self.is_setup() {
             self.rows.clear();
             return;
@@ -267,6 +279,52 @@ impl<S: SysfsIo> App<S> {
         if self.row_idx >= self.rows.len() {
             self.row_idx = self.rows.len().saturating_sub(1);
         }
+    }
+
+    /// One drift observation: what `wheel_profile`/`wheel_mode` read right
+    /// now, an unreadable one as `None` (absent on this wheel, or the wheel
+    /// is gone).
+    fn drift_observation(&self) -> (Option<Value>, Option<Value>) {
+        (self.device.read("wheel_profile").ok(), self.device.read("wheel_mode").ok())
+    }
+
+    /// External-change detection, run by the main loop's idle ticks: when
+    /// `wheel_profile`/`wheel_mode` moved since the last observation (the
+    /// wheel's physical profile button, another tool writing sysfs), reload
+    /// the current view exactly like the refresh key would (the header re-
+    /// reads the mode on every draw already) and say so in the status line.
+    /// Skipped while any editor, prompt or confirmation is open, so a
+    /// reload can never yank state from under one; the check right after it
+    /// closes still catches up. Returns whether a refresh happened.
+    pub fn check_drift(&mut self) -> bool {
+        if self.no_wheel
+            || self.edit.is_some()
+            || self.curve_edit.is_some()
+            || self.effect_edit.is_some()
+            || self.sdk_edit.is_some()
+            || self.profile_name_edit.is_some()
+            || self.profile_delete_confirm.is_some()
+            || self.test.confirm.is_some()
+        {
+            return false;
+        }
+        let seen = self.drift_observation();
+        let drifted = self.last_drift.as_ref().is_some_and(|last| *last != seen);
+        self.last_drift = Some(seen);
+        if !drifted {
+            return false;
+        }
+        // The wheel may have gone away entirely (both reads turned None):
+        // re-probe so the shell flips to its no-wheel state, same as
+        // `adopt_device`, instead of showing rows that can no longer be read.
+        self.no_wheel = !wheel_present(&self.device);
+        self.reload();
+        self.status = if self.no_wheel {
+            "wheel disconnected (r to retry)".to_string()
+        } else {
+            "profile/mode changed on the wheel; view refreshed".to_string()
+        };
+        true
     }
 
     /// One `Row` per registry spec of `cat`, in registry order.
@@ -1095,6 +1153,97 @@ mod tests {
         assert_eq!(a.device.current_mode().unwrap(), Mode::Onboard);
         a.on_key(KeyCode::Char('d'));
         assert_eq!(a.device.current_mode().unwrap(), Mode::Desktop);
+    }
+
+    // --- external-change (drift) detection ---
+
+    use std::rc::Rc;
+
+    /// An app plus a second handle to its `FakeSysfs`, so a test can mutate
+    /// attributes behind the app's back (what the wheel's physical profile
+    /// button looks like from here).
+    fn drift_app() -> (Rc<FakeSysfs>, App<Rc<FakeSysfs>>) {
+        let fs = Rc::new(FakeSysfs::new());
+        fs.set("wheel_range", "900");
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_profile", "1");
+        fs.set("wheel_strength", "62");
+        let app = App::new(logi_dd_core::Device::with_io(fs.clone()));
+        (fs, app)
+    }
+
+    #[test]
+    fn check_drift_without_changes_does_nothing() {
+        let (_fs, mut a) = drift_app();
+        a.status.clear();
+        assert!(!a.check_drift());
+        assert!(!a.check_drift());
+        assert!(a.status.is_empty());
+    }
+
+    #[test]
+    fn profile_drift_reloads_the_rows_and_reports() {
+        let (fs, mut a) = drift_app();
+        // The wheel's profile button fired: the slot AND an effective
+        // setting move without any key passing through the app.
+        fs.set("wheel_profile", "3");
+        fs.set("wheel_strength", "30");
+        assert!(a.check_drift());
+        let strength = a.rows.iter().find(|r| r.attr == "wheel_strength").unwrap();
+        assert_eq!(
+            strength.value.as_ref().unwrap(),
+            &Value::Percent(30),
+            "the visible rows must be re-read, not stale"
+        );
+        assert!(a.status.contains("changed"), "status: {}", a.status);
+        // The baseline advanced with the reload: the next tick is quiet.
+        assert!(!a.check_drift());
+    }
+
+    #[test]
+    fn mode_drift_recomposes_the_profiles_page() {
+        let (fs, mut a) = drift_app();
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Profiles).unwrap();
+        a.reload();
+        // Desktop mode composes the computer-side store rows.
+        assert!(a.rows.iter().any(|r| r.attr == PROFILE_NEW_ATTR));
+        fs.set("wheel_mode", "onboard");
+        assert!(a.check_drift());
+        // Onboard mode shows the registry rows (slot picker etc.) instead.
+        assert!(!a.rows.iter().any(|r| r.attr == PROFILE_NEW_ATTR));
+        assert!(a.rows.iter().any(|r| r.attr == "wheel_profile"));
+    }
+
+    #[test]
+    fn drift_check_is_skipped_while_an_editor_is_open() {
+        let (fs, mut a) = drift_app();
+        a.profile_name_edit = Some(String::new());
+        fs.set("wheel_profile", "4");
+        assert!(!a.check_drift(), "a reload must not yank state from under an open prompt");
+        a.profile_name_edit = None;
+        assert!(a.check_drift(), "the first check after the prompt closes catches up");
+    }
+
+    #[test]
+    fn own_edits_never_read_as_drift() {
+        let (_fs, mut a) = drift_app();
+        a.toggle_mode(); // writes wheel_mode and reloads, resyncing the baseline
+        assert!(!a.check_drift());
+    }
+
+    #[test]
+    fn drift_to_an_unreadable_wheel_flips_the_no_wheel_shell() {
+        let (fs, mut a) = drift_app();
+        fs.set_absent("wheel_range");
+        fs.set_absent("wheel_mode");
+        fs.set_absent("wheel_profile");
+        fs.set_absent("wheel_strength");
+        assert!(a.check_drift());
+        assert!(a.no_wheel);
+        assert!(a.rows.is_empty());
+        assert!(a.status.contains("disconnected"), "status: {}", a.status);
+        // With no wheel there is nothing to watch; `r` retries discovery.
+        assert!(!a.check_drift());
     }
 
     fn pedal_app() -> App<FakeSysfs> {
