@@ -23,6 +23,7 @@
 #   ./tools/install-tf-shim.sh --all-steam              Install in every Steam prefix
 #   ./tools/install-tf-shim.sh --prefix <path>          Install in one prefix
 #   ./tools/install-tf-shim.sh --uninstall              Remove from all Steam prefixes
+#   ./tools/install-tf-shim.sh --uninstall-prefix <path>  Remove from one prefix
 #
 # Run as the user that owns the wine prefix (do NOT sudo). Idempotent.
 
@@ -84,6 +85,7 @@ Usage:
                                library (including libraries on other drives)
   $0 --prefix <path>           Install into a single wine prefix (the .../pfx directory)
   $0 --uninstall               Remove from all Steam prefixes
+  $0 --uninstall-prefix <path> Remove from a single wine prefix (the .../pfx directory)
 
 Options:
   --sdk-dir <path>             Directory holding your Logitech SDK DLLs
@@ -296,8 +298,8 @@ while [ $# -gt 0 ]; do
 	--all-steam|--uninstall)
 		MODE="$1"
 		;;
-	--prefix)
-		MODE="--prefix"
+	--prefix|--uninstall-prefix)
+		MODE="$1"
 		PREFIX_ARG="${2:-}"
 		[ -n "$PREFIX_ARG" ] || usage
 		shift
@@ -339,6 +341,9 @@ case "$MODE" in
 	while IFS= read -r pfx; do
 		[ -n "$pfx" ] && uninstall_in_prefix "$pfx"
 	done < <(steam_prefixes)
+	;;
+--uninstall-prefix)
+	uninstall_in_prefix "$PREFIX_ARG"
 	;;
 *) usage ;;
 esac
