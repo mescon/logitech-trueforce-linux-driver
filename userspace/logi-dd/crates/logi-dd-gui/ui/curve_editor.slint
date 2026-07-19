@@ -1,0 +1,306 @@
+import { Button, Slider, SpinBox, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// One draggable curve control point, in screen-fraction space: `x` is the
+// input fraction (0 = min input, 1 = max input); `y` is the output fraction
+// *as drawn on screen* (0 = top / full output, 1 = bottom / zero output),
+// the same space `plot-commands` uses. The Rust side
+// (`bridge::curve_plot_commands` / `bridge::curve_control_points`) does the
+// input/output <-> screen-fraction conversion, so this component only ever
+// deals in plain 0..1 coordinates and never touches a raw curve value.
+export struct CurvePoint {
+    x: float,
+    y: float,
+}
+
+// A modal overlay that edits one `logi_dd_core::curve::Curve`: a plot of the
+// composed output-vs-input curve, draggable control points (add by clicking
+// empty plot space, remove via the selected point's "Remove point" button),
+// a numeric editor for the selected point's exact input/output, and
+// lower/upper deadzone sliders. Every edit fires a callback; the Rust side
+// owns the `Curve`, applies the edit, recomputes `compose()`, and pushes
+// fresh `plot-commands`/`control-points` back so the plot redraws (the live
+// preview). Commit writes the curve; Cancel discards it. Either closes the
+// overlay from the Rust side (`curve-editor-open` in app.slint).
+export component CurveEditor inherits Rectangle {
+    in property <string> curve-label: "Curve";
+    in property <string> plot-commands: "";
+    in property <[CurvePoint]> control-points: [];
+    in property <int> lower-deadzone: 0;
+    in property <int> upper-deadzone: 0;
+
+    // Index of the control point currently under a drag, or -1 between
+    // drags. Set by `grab-point` on press and cleared on release.
+    property <int> grabbed: -1;
+    // Index of the control point last picked (by a press that grabbed one),
+    // kept after release so the numeric editor row below stays showing it.
+    // -1 means no point is selected.
+    property <int> selected: -1;
+    // Where the current press started, in plot-area-local pixels: lets
+    // pointer-up tell a click (add a point) apart from the end of a drag
+    // that grabbed nothing (neither adds nor moves anything).
+    property <length> press-x;
+    property <length> press-y;
+
+    callback move-point(int, float, float);
+    callback add-point(float);
+    callback remove-point(int);
+    // (x-frac, y-frac, aspect): `aspect` is the plot's width/height ratio so
+    // the Rust-side hit-test can use the same pixel radius in both axes.
+    callback grab-point(float, float, float) -> int;
+    callback set-lower-deadzone(int);
+    callback set-upper-deadzone(int);
+    callback commit();
+    callback cancel();
+
+    // Dim the rest of the window so the overlay reads as modal. Kept a
+    // fixed translucent black regardless of style/theme: see `Theme`'s own
+    // doc comment for why a backdrop dimmer is not a themed "surface".
+    background: Theme.scrim;
+
+    // Modal input barrier: a plain Rectangle never hit-tests, so without
+    // this TouchArea every click or scroll outside the panel would land on
+    // the shell underneath the scrim (switching categories, firing edits,
+    // opening a second overlay). Declared before the panel so the panel's
+    // own controls still win; deliberately does not close the overlay, so
+    // a stray click cannot discard an edit in progress.
+    TouchArea {
+        scroll-event(event) => { EventResult.accept }
+    }
+
+    Rectangle {
+        width: 460px;
+        // Clamped so the panel's border never leaves the window at the
+        // app's minimum height; the internal stretch spacer absorbs the
+        // difference.
+        height: min(500px, root.height - 16px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.panel-background;
+        border-radius: Theme.panel-radius;
+        border-width: 1px;
+        border-color: Theme.panel-border;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: root.curve-label;
+                font-size: 16px;
+                font-weight: 700;
+                color: Theme.text-color;
+            }
+
+            Text {
+                text: "Click empty space to add a point. Drag a point to shape the curve. Select a point to set its exact values or remove it.";
+                font-size: 11px;
+                color: Theme.muted-text-color;
+                wrap: word-wrap;
+            }
+
+            plot-area := Rectangle {
+                height: 220px;
+                background: Palette.background;
+                border-width: 1px;
+                border-color: Theme.panel-border;
+
+                Path {
+                    viewbox-width: 1;
+                    viewbox-height: 1;
+                    // `fill`, not the default `contain`: the viewbox must map
+                    // linearly onto the plot's full width and height (the
+                    // same mapping the control-point handles below use), not
+                    // be scaled uniformly into a square corner of it.
+                    fit: fill;
+                    stroke: Palette.accent-background;
+                    stroke-width: 2px;
+                    commands: root.plot-commands;
+                }
+
+                // Pure visuals: the single TouchArea below owns every
+                // pointer event, so these never carry their own TouchArea
+                // (a per-point TouchArea would move out from under the
+                // pointer mid-drag, since moving it is exactly what dragging
+                // does; see the module-level history for the bug this
+                // replaced).
+                for p[i] in root.control-points: Rectangle {
+                    width: i == root.selected ? 14px : 10px;
+                    height: i == root.selected ? 14px : 10px;
+                    border-radius: self.width / 2;
+                    background: i == root.selected ? Palette.accent-background : Palette.control-background;
+                    border-width: 1px;
+                    border-color: Palette.accent-background;
+                    x: p.x * plot-area.width - self.width / 2;
+                    y: p.y * plot-area.height - self.height / 2;
+                }
+
+                // The one fixed-frame interaction layer for the whole plot.
+                // Because it never moves, it keeps tracking the pointer for
+                // the entire gesture, unlike a TouchArea riding on the point
+                // being dragged.
+                TouchArea {
+                    pointer-event(ev) => {
+                        if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
+                            root.press-x = self.mouse-x;
+                            root.press-y = self.mouse-y;
+                            root.grabbed = root.grab-point(
+                                self.mouse-x / plot-area.width,
+                                self.mouse-y / plot-area.height,
+                                plot-area.width / plot-area.height,
+                            );
+                            if (root.grabbed >= 0) {
+                                root.selected = root.grabbed;
+                            }
+                        } else if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.up) {
+                            if (root.grabbed < 0 && abs(self.mouse-x - root.press-x) < 4px && abs(self.mouse-y - root.press-y) < 4px) {
+                                root.add-point(self.mouse-x / plot-area.width);
+                            }
+                            root.grabbed = -1;
+                        }
+                    }
+                    moved => {
+                        if (self.pressed && root.grabbed >= 0) {
+                            root.move-point(
+                                root.grabbed,
+                                clamp(self.mouse-x / plot-area.width, 0, 1),
+                                clamp(self.mouse-y / plot-area.height, 0, 1),
+                            );
+                        }
+                    }
+                }
+            }
+
+            if root.selected >= 0 && root.selected < root.control-points.length: point-editor := HorizontalLayout {
+                spacing: 12px;
+
+                // The selected point's coordinates as the SpinBoxes should
+                // show them. A SpinBox severs its own `value` binding the
+                // first time the user edits it, so pushed model changes stop
+                // reaching the widget on their own; these stay bound here
+                // (never assigned) and the change callbacks push them back
+                // into the widgets whenever the selection or the selected
+                // point's coordinates change.
+                property <int> sel-input: round(root.control-points[root.selected].x * 100);
+                property <int> sel-output: round((1 - root.control-points[root.selected].y) * 100);
+                changed sel-input => { input-sb.value = self.sel-input; }
+                changed sel-output => { output-sb.value = self.sel-output; }
+
+                VerticalLayout {
+                    spacing: 2px;
+                    Text {
+                        text: "Input";
+                        font-size: 11px;
+                        color: Theme.muted-text-color;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        input-sb := SpinBox {
+                            width: 90px;
+                            minimum: 0;
+                            maximum: 100;
+                            value: point-editor.sel-input;
+                            edited(v) => {
+                                root.move-point(root.selected, v / 100, root.control-points[root.selected].y);
+                                // move-point clamps against the neighbours;
+                                // the callback round-trips synchronously, so
+                                // re-reading the model here snaps a clamped
+                                // edit back to what the curve actually kept.
+                                self.value = point-editor.sel-input;
+                            }
+                        }
+                        Text {
+                            text: "%";
+                            vertical-alignment: center;
+                            color: Theme.muted-text-color;
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 2px;
+                    Text {
+                        text: "Output";
+                        font-size: 11px;
+                        color: Theme.muted-text-color;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        output-sb := SpinBox {
+                            width: 90px;
+                            minimum: 0;
+                            maximum: 100;
+                            value: point-editor.sel-output;
+                            edited(v) => {
+                                root.move-point(root.selected, root.control-points[root.selected].x, 1 - v / 100);
+                                // Same synchronous snap-back as the input
+                                // SpinBox above.
+                                self.value = point-editor.sel-output;
+                            }
+                        }
+                        Text {
+                            text: "%";
+                            vertical-alignment: center;
+                            color: Theme.muted-text-color;
+                        }
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                Button {
+                    text: "Remove point";
+                    clicked => {
+                        root.remove-point(root.selected);
+                        root.selected = -1;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: "Lower deadzone"; vertical-alignment: center; color: Theme.text-color; }
+                Slider {
+                    width: 160px;
+                    minimum: 0;
+                    maximum: 99;
+                    value: root.lower-deadzone;
+                    released(v) => {
+                        root.set-lower-deadzone(round(v));
+                        // The curve clamps lower+upper to at most 99 and the
+                        // callback round-trips synchronously; snap the knob
+                        // to whatever value the curve actually kept.
+                        self.value = root.lower-deadzone;
+                    }
+                }
+                Text { text: "\{root.lower-deadzone}%"; vertical-alignment: center; color: Theme.text-color; }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: "Upper deadzone"; vertical-alignment: center; color: Theme.text-color; }
+                Slider {
+                    width: 160px;
+                    minimum: 0;
+                    maximum: 99;
+                    value: root.upper-deadzone;
+                    released(v) => {
+                        root.set-upper-deadzone(round(v));
+                        // Same clamp snap-back as the lower slider above.
+                        self.value = root.upper-deadzone;
+                    }
+                }
+                Text { text: "\{root.upper-deadzone}%"; vertical-alignment: center; color: Theme.text-color; }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button { text: "Cancel"; clicked => { root.cancel(); } }
+                Button { text: "Commit"; clicked => { root.commit(); } }
+            }
+        }
+    }
+}

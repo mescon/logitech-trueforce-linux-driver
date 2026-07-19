@@ -1,11 +1,11 @@
 use crate::app::App;
 use crate::curve_editor::CurveEditor;
 use logi_dd_core::sysfs::SysfsIo;
-use logi_dd_core::{Category, Device, Mode, Value};
+use logi_dd_core::{shaping, Category, Device, Mode, Value};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::collections::BTreeMap;
 
@@ -31,11 +31,9 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
                     " logi-dd",
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    format!("   serial {}   fw {}   ", i.serial, i.firmware),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::raw("mode: "),
+                // Serial and firmware live in the Info category, not the
+                // header. Keep the header to the app name and current mode.
+                Span::raw("   mode: "),
                 Span::styled(
                     mode_str,
                     Style::default().fg(mode_col).add_modifier(Modifier::BOLD),
@@ -57,8 +55,11 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         .constraints([Constraint::Length(20), Constraint::Min(1)])
         .split(root[1]);
 
-    // categories
-    let cats: Vec<ListItem> = Category::ALL
+    // categories, plus a trailing synthetic "Setup" entry (index
+    // `Category::ALL.len()`, i.e. `app::SETUP_INDEX`) that is not a real
+    // `Category`: it shows the game helpers (logi-ffb, the TrueForce SDK
+    // shim) instead of a settings list.
+    let mut cats: Vec<ListItem> = Category::ALL
         .iter()
         .enumerate()
         .map(|(i, c)| {
@@ -70,65 +71,117 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
             ListItem::new(c.label()).style(style)
         })
         .collect();
+    cats.push(ListItem::new("Setup").style(if app.is_setup() {
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    }));
+    // The second synthetic entry: the live input tester + force sims
+    // (`app::TEST_INDEX`), also not a real `Category`.
+    cats.push(ListItem::new("Test").style(if app.is_test() {
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    }));
     f.render_widget(
         List::new(cats).block(Block::default().borders(Borders::ALL).title("Category")),
         body[0],
     );
 
-    // settings in the selected category
-    let names = app.profile_names();
-    let rows: Vec<ListItem> = app
-        .rows
-        .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            let spec = Device::<S>::spec(row.attr);
-            // the edit state, only for the row being edited
-            let editing = app.edit.as_ref().filter(|_| i == app.row_idx);
+    if app.is_setup() {
+        draw_setup(f, app, body[1]);
+    } else if app.is_test() {
+        draw_test(f, app, body[1]);
+    } else {
+        // settings in the selected category
+        let names = app.profile_names();
+        let mut rows: Vec<ListItem> = app
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let spec = Device::<S>::spec(row.attr);
+                // the edit state, only for the row being edited
+                let editing = app.edit.as_ref().filter(|_| i == app.row_idx);
 
-            let (val, mut val_style) = if !row.available {
-                ("(not on this wheel)".to_string(), Style::default().fg(Color::DarkGray))
-            } else if row.attr == "wheel_profile" {
-                // show the profile number with its onboard name
-                let n = match (editing.map(|e| &e.draft), &row.value) {
-                    (Some(Value::Int(n)), _) => *n,
-                    (_, Ok(Value::Int(n))) => *n,
-                    _ => -1,
-                };
-                (profile_label(n, &names), value_style(editing.is_some(), false))
-            } else {
-                match (&row.value, spec) {
-                    (Ok(v), Some(s)) => {
-                        let text = match editing {
-                            Some(ed) => ed.display(),
-                            None => s.kind.display(v),
-                        };
-                        (text, value_style(editing.is_some(), false))
+                let (val, mut val_style) = if !row.available {
+                    ("(not on this wheel)".to_string(), Style::default().fg(Color::DarkGray))
+                } else if row.attr == shaping::TOGGLE_ATTR {
+                    // The synthetic view toggle (no registry spec): show
+                    // which shaping controls the page currently offers.
+                    let advanced = matches!(row.value, Ok(Value::Bool(true)));
+                    (
+                        (if advanced { "on (curves)" } else { "off (sensitivity)" }).to_string(),
+                        value_style(false, false),
+                    )
+                } else if row.attr == "wheel_profile" {
+                    // show the profile number with its onboard name
+                    let n = match (editing.map(|e| &e.draft), &row.value) {
+                        (Some(Value::Int(n)), _) => *n,
+                        (_, Ok(Value::Int(n))) => *n,
+                        _ => -1,
+                    };
+                    (profile_label(n, &names), value_style(editing.is_some(), false))
+                } else if row.attr == "wheel_led_effect" {
+                    // The LIGHTSYNC effect selector: show the current (or
+                    // the cycled, while its modal is active) entry's label
+                    // instead of the raw 1-9 number.
+                    let cycling = app.effect_edit.as_ref().filter(|_| i == app.row_idx);
+                    let text = match cycling {
+                        Some(fe) => {
+                            fe.labels.get(fe.index).cloned().unwrap_or_else(|| "?".to_string())
+                        }
+                        None => app.lightsync_effect_label(),
+                    };
+                    let mut style = value_style(cycling.is_some(), false);
+                    if cycling.is_some() {
+                        style = style.add_modifier(Modifier::BOLD);
                     }
-                    (Err(e), _) => (format!("<{e}>"), value_style(false, true)),
-                    _ => ("?".to_string(), Style::default()),
+                    (text, style)
+                } else {
+                    match (&row.value, spec) {
+                        (Ok(v), Some(s)) => {
+                            let text = match editing {
+                                Some(ed) => ed.display(),
+                                None => s.kind.display(v),
+                            };
+                            (text, value_style(editing.is_some(), false))
+                        }
+                        (Err(e), _) => (format!("<{e}>"), value_style(false, true)),
+                        _ => ("?".to_string(), Style::default()),
+                    }
+                };
+                if editing.is_some() {
+                    val_style = val_style.add_modifier(Modifier::BOLD);
                 }
-            };
-            if editing.is_some() {
-                val_style = val_style.add_modifier(Modifier::BOLD);
-            }
 
-            let line = Line::from(vec![
-                Span::styled(format!("{:<24}", row.label), Style::default().fg(Color::Gray)),
+                let line = Line::from(vec![
+                    Span::styled(format!("{:<24}", row.label), Style::default().fg(Color::Gray)),
+                    Span::raw(" "),
+                    Span::styled(val, val_style),
+                ]);
+                let mut item = ListItem::new(line);
+                if i == app.row_idx {
+                    item = item.style(Style::default().add_modifier(Modifier::REVERSED));
+                }
+                item
+            })
+            .collect();
+        // On the Info category, append the project link so users know where
+        // to find docs and source (a terminal cannot open it, but it is
+        // copyable).
+        if app.category() == Category::Info {
+            rows.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("{:<24}", "Documentation"), Style::default().fg(Color::Gray)),
                 Span::raw(" "),
-                Span::styled(val, val_style),
-            ]);
-            let mut item = ListItem::new(line);
-            if i == app.row_idx {
-                item = item.style(Style::default().add_modifier(Modifier::REVERSED));
-            }
-            item
-        })
-        .collect();
-    f.render_widget(
-        List::new(rows).block(Block::default().borders(Borders::ALL).title("Settings")),
-        body[1],
-    );
+                Span::styled(logi_dd_core::PROJECT_URL, Style::default().fg(Color::Cyan)),
+            ])));
+        }
+        f.render_widget(
+            List::new(rows).block(Block::default().borders(Borders::ALL).title("Settings")),
+            body[1],
+        );
+    }
 
     // The curve editor takes over the body area as a modal when active.
     if let Some(ce) = &app.curve_edit {
@@ -138,8 +191,28 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
     // status line (green on success, red on trouble) + a dim help line
     let help = if app.curve_edit.is_some() {
         "curve:  up/down field   <-/-> adjust   + add point   - delete   Enter save   Esc cancel"
+    } else if app.effect_edit.is_some() {
+        "effect:  <-/->  choose    Enter  apply    Esc  cancel"
     } else if app.edit.is_some() {
         "editing:  <-/->  adjust    type  text    Enter  commit    Esc  cancel"
+    } else if app.is_setup() {
+        if app.sdk_edit.is_some() {
+            "SDK folder:  type path   Backspace erase   Enter save   Esc cancel"
+        } else {
+            "up/down select game   i install shim   u remove shim   r rescan   s SDK folder   <-/-> category   q quit"
+        }
+    } else if app.is_test() {
+        if app.test.confirm.is_some() {
+            "confirm:  y continue   any other key cancels"
+        } else {
+            "Enter start/stop monitor   f force feedback sim   t TrueForce texture sim   r rescan   <-/-> category   q quit"
+        }
+    } else if app.selected().map(|r| r.attr) == Some(shaping::TOGGLE_ATTR) {
+        // The toggle row's help explains why the page shows only one of
+        // the two shaping controls, same text the GUI row carries.
+        shaping::TOGGLE_HELP
+    } else if app.has_shaping_toggle() {
+        "up/down select   <-/-> category   Enter edit   a advanced shaping   d desktop/onboard   r refresh   q quit"
     } else {
         "up/down select   <-/-> category   Enter edit   d toggle desktop/onboard   r refresh   q quit"
     };
@@ -154,6 +227,296 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         )),
     ];
     f.render_widget(Paragraph::new(lines), root[2]);
+}
+
+/// Render the Setup body: the logi-ffb helper, the SDK folder line (edited
+/// via `s`; see `App::sdk_edit`), the per-game shim manager (the selectable
+/// Proton games list), and the static compatibility table at the bottom.
+/// Shown instead of the settings list whenever `app.is_setup()`, mirroring
+/// the GUI's Setup page in text form.
+fn draw_setup<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+    let found_style = |found: bool| {
+        if found {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::Red)
+        }
+    };
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(11), Constraint::Min(3), Constraint::Length(12)])
+        .split(area);
+
+    // Top: logi-ffb + the SDK folder line (with the libtrueforce note).
+    let shim_found = app.shim_binary.is_some();
+    let sdk_line = match &app.sdk_edit {
+        Some(draft) => Line::from(vec![
+            Span::raw("SDK folder: "),
+            Span::styled(format!("{draft}_"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]),
+        None => Line::from(vec![
+            Span::raw("SDK folder: "),
+            Span::raw(app.sdk_dir.clone()),
+            Span::raw("  "),
+            Span::styled(
+                if app.sdk_valid { "SDK DLLs found" } else { "trueforce_sdk_x64.dll not found" },
+                found_style(app.sdk_valid),
+            ),
+        ]),
+    };
+    let top = vec![
+        Line::from(Span::styled(
+            "Force feedback in games (logi-ffb)",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(
+            "DirectInput sims run through Proton (for example Le Mans Ultimate) get no \
+             force feedback by default. Running the game through logi-ffb gives them FFB \
+             via a virtual wheel.",
+        ),
+        Line::from(vec![
+            Span::raw("logi-ffb: "),
+            Span::styled(
+                if app.ffb_found { "found on PATH" } else { "not found on PATH" },
+                found_style(app.ffb_found),
+            ),
+            Span::raw("    launch options: "),
+            Span::styled("logi-ffb %command%", Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "TrueForce SDK shim",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::raw("Installer: "),
+            Span::styled(
+                if shim_found { "found on PATH" } else { "not found on PATH" },
+                found_style(shim_found),
+            ),
+        ]),
+        sdk_line,
+        Line::from(
+            "Native Linux apps can drive TrueForce through this repo's libtrueforce \
+             library. The SDK DLLs come from Logitech's G HUB on Windows and are never \
+             redistributed; see the project README for how to copy them.",
+        ),
+    ];
+    f.render_widget(
+        Paragraph::new(top)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title("Setup")),
+        rows[0],
+    );
+
+    // Middle: the installed Proton games, one selectable row each.
+    let games: Vec<ListItem> = if app.games.is_empty() {
+        vec![ListItem::new(if app.games_scanned {
+            "No Steam installation with Proton games found (r to rescan)"
+        } else {
+            "Scanning Steam libraries..."
+        })
+        .style(Style::default().fg(Color::DarkGray))]
+    } else {
+        app.games
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                let status = if g.shim_installed {
+                    Span::styled("shim installed", Style::default().fg(Color::Green))
+                } else {
+                    Span::styled("-", Style::default().fg(Color::DarkGray))
+                };
+                let mut item = ListItem::new(Line::from(vec![
+                    Span::raw(format!("{:<40}", g.name)),
+                    Span::raw(" "),
+                    status,
+                ]));
+                if i == app.game_idx {
+                    item = item.style(Style::default().add_modifier(Modifier::REVERSED));
+                }
+                item
+            })
+            .collect()
+    };
+    f.render_widget(
+        List::new(games).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Proton games (i install shim, u remove shim)"),
+        ),
+        rows[1],
+    );
+
+    // Bottom: the static compatibility table.
+    let compat_rows: [(&str, &str); 8] = [
+        ("ACC", "TrueForce (shim)"),
+        ("AC EVO", "TrueForce (shim)"),
+        ("iRacing", "FFB (native)"),
+        ("Le Mans Ultimate", "FFB (logi-ffb)"),
+        ("Automobilista 2", "FFB (logi-ffb)"),
+        ("rFactor 2", "FFB (logi-ffb)"),
+        ("Dirt Rally 2.0", "FFB (native)"),
+        ("BeamNG.drive", "FFB (native)"),
+    ];
+    let mut compat = vec![Line::from(Span::styled(
+        "\"FFB (logi-ffb)\" means launch with logi-ffb %command%.",
+        Style::default().fg(Color::DarkGray),
+    ))];
+    compat.extend(compat_rows.iter().map(|(game, how)| {
+        Line::from(vec![
+            Span::raw(format!("{game:<20}")),
+            Span::styled(*how, Style::default().fg(Color::Gray)),
+        ])
+    }));
+    f.render_widget(
+        Paragraph::new(compat)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title("Game compatibility")),
+        rows[2],
+    );
+}
+
+/// A `#`-filled 0..65535 gauge, `width` cells wide.
+fn fill_bar(value: i32, width: usize) -> String {
+    let filled = (value.clamp(0, 65535) as usize * width) / 65535;
+    format!("{}{}", "#".repeat(filled), "-".repeat(width.saturating_sub(filled)))
+}
+
+/// A 0..65535 position gauge (for the centered steering axis): a `|`
+/// marker on a `-` track, center marked when idle.
+fn position_bar(value: i32, width: usize) -> String {
+    let width = width.max(3);
+    let pos = (value.clamp(0, 65535) as usize * (width - 1)) / 65535;
+    (0..width).map(|i| if i == pos { '|' } else { '-' }).collect()
+}
+
+/// Render the Test view body: the live steering/pedal state read off the
+/// wheel's evdev node, the light-up button list, and the sim status.
+/// Mirrors the GUI's Test page in text form.
+fn draw_test<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+    use logi_dd_core::evtest;
+
+    let t = &app.test;
+    let Some(dev) = &t.dev else {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                if t.scanned { "No wheel found" } else { "Scanning for the wheel..." },
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("Connect the wheel to this machine, then press r to rescan."),
+            Line::from(
+                "The tester reads the wheel's /dev/input event device, so your user \
+                 needs read access to it (the project's udev rule sets this up).",
+            ),
+        ];
+        f.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::default().borders(Borders::ALL).title("Test")),
+            area,
+        );
+        return;
+    };
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(13), Constraint::Min(3)])
+        .split(area);
+
+    let deg = t.degrees();
+    let bar_w = (rows[0].width.saturating_sub(14)).clamp(10, 50) as usize;
+    let mut top = vec![
+        Line::from(vec![
+            Span::raw("Device: "),
+            Span::styled(dev.name.clone(), Style::default().fg(Color::Cyan)),
+            Span::raw(format!("  ({})", dev.event_path)),
+        ]),
+        Line::from(vec![
+            Span::raw("Monitor: "),
+            if t.monitoring() {
+                Span::styled("on", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+            } else {
+                Span::styled("off (press Enter to start)", Style::default().fg(Color::Yellow))
+            },
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("Steering  "),
+            Span::styled(
+                format!("{deg:+8.1} deg"),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(
+                "   (range {} deg: {} to +{})",
+                t.range,
+                -(t.range as i32) / 2,
+                t.range / 2
+            )),
+        ]),
+        Line::from(format!("          [{}]", position_bar(t.steering_raw, bar_w))),
+        Line::from(""),
+    ];
+    for (label, value) in
+        [("Throttle", t.axes[0]), ("Brake", t.axes[1]), ("Clutch", t.axes[2]), ("Handbrake", t.axes[3])]
+    {
+        top.push(Line::from(vec![
+            Span::styled(format!("{label:<9} "), Style::default().fg(Color::Gray)),
+            Span::raw(format!("[{}] ", fill_bar(value, bar_w))),
+            Span::styled(format!("{value:>5}"), Style::default().fg(Color::Gray)),
+        ]));
+    }
+    top.push(Line::from(vec![
+        Span::styled(format!("{:<9} ", "D-pad"), Style::default().fg(Color::Gray)),
+        Span::styled(
+            evtest::hat_label(t.hat.0, t.hat.1).to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    if t.sim_running() {
+        top.push(Line::from(Span::styled(
+            "force playing... (25%, 2 s; f/t are disabled meanwhile)",
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        )));
+    }
+    if let Some(err) = &t.open_error {
+        top.push(Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red))));
+    }
+    f.render_widget(
+        Paragraph::new(top)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title("Test")),
+        rows[0],
+    );
+
+    // The button tester: every wheel button, reverse-video while held,
+    // with the recent-press history on top.
+    let recent = if t.recent.is_empty() {
+        "-".to_string()
+    } else {
+        t.recent.iter().map(|c| evtest::button_name(*c)).collect::<Vec<_>>().join(", ")
+    };
+    let mut items: Vec<ListItem> = vec![ListItem::new(Line::from(vec![
+        Span::styled("Last pressed: ", Style::default().fg(Color::Gray)),
+        Span::raw(recent),
+    ]))];
+    items.extend(evtest::WHEEL_BUTTONS.iter().map(|(code, label)| {
+        let held = t.pressed.contains(code);
+        let mut item = ListItem::new(format!("  {label:<18}"));
+        if held {
+            item = item.style(Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD));
+        }
+        item
+    }));
+    f.render_widget(
+        List::new(items).block(
+            Block::default().borders(Borders::ALL).title("Buttons (highlighted while held)"),
+        ),
+        rows[1],
+    );
 }
 
 /// Render the modal curve editor over `area`: a left field panel and a right

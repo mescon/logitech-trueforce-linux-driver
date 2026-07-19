@@ -1,16 +1,16 @@
 //! A G HUB-style point-list curve editor for the pedal/steering response
-//! curves. The user edits control points (input/output percent) plus lower and
-//! upper deadzones; `compose` turns those into the `in:out` point list the
-//! driver's 0x80A4 uploader takes, and `render` draws a live ASCII preview.
+//! curves. The user edits control points (input/output percent) plus lower
+//! and upper deadzones; the composed curve is what the driver's 0x80A4
+//! uploader takes, and `render` draws a live ASCII preview.
 //!
-//! The wheel does not report a loaded curve's points back (only the count), so
-//! this authors curves rather than round-tripping them: an editor opened on an
-//! already-shaped axis starts from the value it was handed, defaulting to
-//! linear.
+//! The point-list model and its composition into a driver-valid curve live in
+//! `logi_dd_core::curve::Curve`, shared with any other frontend; this module
+//! only adds the field-navigation state (which field the arrow keys act on,
+//! and which point is selected) that is specific to the TUI.
 
+use logi_dd_core::curve::{interp, to_pct, Curve, FULL};
 use logi_dd_core::Value;
 
-const FULL: u16 = 65535;
 /// One percent of full scale, the step for input/output nudges.
 const PCT: i32 = 655;
 
@@ -40,71 +40,24 @@ impl Field {
 
 pub struct CurveEditor {
     pub attr: &'static str,
-    /// Control points, always sorted by input with `pts[0].0 == 0` and
-    /// `pts[last].0 == FULL`; outputs non-decreasing.
-    pub pts: Vec<(u16, u16)>,
-    pub lower_dz: u8,
-    pub upper_dz: u8,
+    curve: Curve,
     pub sel: usize,
     pub field: Field,
 }
 
-/// Round a 0..=65535 value to a whole percent for display.
-pub fn to_pct(v: u16) -> u32 {
-    (v as u32 * 100 + (FULL as u32 / 2)) / FULL as u32
-}
-
 impl CurveEditor {
-    /// Seed from a value. A non-empty curve loads its points; anything else
-    /// (built-in / empty) starts from linear. Deadzones start at zero since the
-    /// device does not report them back.
+    /// Seed from a value; see `Curve::from_value`.
     pub fn from_value(attr: &'static str, v: &Value) -> CurveEditor {
-        let pts = match v {
-            Value::Curve(p) if p.len() >= 2 => p.clone(),
-            _ => vec![(0, 0), (FULL, FULL)],
-        };
-        CurveEditor { attr, pts, lower_dz: 0, upper_dz: 0, sel: 0, field: Field::Point }
+        CurveEditor { attr, curve: Curve::from_value(attr, v), sel: 0, field: Field::Point }
     }
 
     pub fn point_count(&self) -> usize {
-        self.pts.len()
+        self.curve.points().len()
     }
 
-    /// Compose the final `in:out` curve for upload: the control points remapped
-    /// into the live input band `[lower, 100-upper]`, with flat dead/saturated
-    /// segments outside it. Always returns a driver-valid curve (strictly
-    /// increasing inputs, non-decreasing outputs, pinned 0:0 and FULL:FULL).
+    /// Compose the final `in:out` curve for upload; see `Curve::compose`.
     pub fn compose(&self) -> Vec<(u16, u16)> {
-        let lo = (self.lower_dz as u32 * FULL as u32 / 100) as u16;
-        let hi = ((100 - self.upper_dz as u32) * FULL as u32 / 100) as u16;
-        let span = hi.saturating_sub(lo) as u32;
-
-        let mut out: Vec<(u16, u16)> = Vec::with_capacity(self.pts.len() + 2);
-        if self.lower_dz > 0 {
-            push_pt(&mut out, 0, 0);
-        }
-        for &(inp, outp) in &self.pts {
-            let mapped = lo as u32 + (inp as u32 * span / FULL as u32);
-            push_pt(&mut out, mapped as u16, outp);
-        }
-        if self.upper_dz > 0 {
-            push_pt(&mut out, FULL, FULL);
-        }
-
-        // Guarantee the pinned endpoints the uploader demands: it rejects any
-        // curve not starting exactly 0:0 and ending FULL:FULL. Pin both the
-        // inputs and the outputs, defensively, so a stray control point can
-        // never produce a curve the driver refuses.
-        if out.first().map(|p| p.0) != Some(0) {
-            out.insert(0, (0, 0));
-        }
-        if out.last().map(|p| p.0) != Some(FULL) {
-            push_pt(&mut out, FULL, FULL);
-        }
-        out[0].1 = 0;
-        let n = out.len() - 1;
-        out[n].1 = FULL;
-        out
+        self.curve.compose()
     }
 
     pub fn to_value(&self) -> Value {
@@ -125,92 +78,79 @@ impl CurveEditor {
     pub fn adjust(&mut self, d: i32) {
         match self.field {
             Field::Point => {
-                let n = self.pts.len() as i32;
+                let n = self.curve.points().len() as i32;
                 self.sel = (self.sel as i32 + d).clamp(0, n - 1) as usize;
             }
             Field::Input => self.move_input(d * PCT),
             Field::Output => self.move_output(d * PCT),
             Field::Lower => {
-                self.lower_dz = (self.lower_dz as i32 + d)
-                    .clamp(0, 99 - self.upper_dz as i32) as u8;
+                let cur = self.curve.lower_deadzone() as i32;
+                let v = (cur + d).clamp(0, 99) as u8;
+                self.curve.set_lower_deadzone(v);
             }
             Field::Upper => {
-                self.upper_dz = (self.upper_dz as i32 + d)
-                    .clamp(0, 99 - self.lower_dz as i32) as u8;
+                let cur = self.curve.upper_deadzone() as i32;
+                let v = (cur + d).clamp(0, 99) as u8;
+                self.curve.set_upper_deadzone(v);
             }
         }
     }
 
     /// Move the selected point's input, clamped strictly between its
-    /// neighbours. The two endpoints' inputs are pinned (0 and FULL).
+    /// neighbours. The two endpoints' inputs are pinned (0 and FULL); the
+    /// model (`Curve::move_point`) enforces that.
     fn move_input(&mut self, delta: i32) {
-        let last = self.pts.len() - 1;
-        if self.sel == 0 || self.sel == last {
-            return;
-        }
-        let lo = self.pts[self.sel - 1].0 as i32 + 1;
-        let hi = self.pts[self.sel + 1].0 as i32 - 1;
-        if lo > hi {
-            return;
-        }
-        let cur = self.pts[self.sel].0 as i32;
-        self.pts[self.sel].0 = (cur + delta).clamp(lo, hi) as u16;
+        let (cur_in, cur_out) = self.curve.points()[self.sel];
+        let candidate = (cur_in as i32 + delta).clamp(0, FULL as i32) as u16;
+        self.curve.move_point(self.sel, candidate, cur_out);
     }
 
-    /// Move the selected point's output, clamped so outputs stay non-decreasing.
-    /// The endpoint outputs are pinned (first at 0, last at FULL), like their
+    /// Move the selected point's output, clamped so outputs stay
+    /// non-decreasing. The endpoint outputs are pinned too, like their
     /// inputs: the driver's uploader requires the curve to start 0:0 and end
     /// FULL:FULL, and the deadzones handle any dead/saturated ends.
     fn move_output(&mut self, delta: i32) {
-        let last = self.pts.len() - 1;
-        if self.sel == 0 || self.sel == last {
-            return;
-        }
-        let lo = self.pts[self.sel - 1].1 as i32;
-        let hi = self.pts[self.sel + 1].1 as i32;
-        let cur = self.pts[self.sel].1 as i32;
-        self.pts[self.sel].1 = (cur + delta).clamp(lo, hi) as u16;
+        let (cur_in, cur_out) = self.curve.points()[self.sel];
+        let candidate = (cur_out as i32 + delta).clamp(0, FULL as i32) as u16;
+        self.curve.move_point(self.sel, cur_in, candidate);
     }
 
     /// Insert a point midway between the selected point and the next one, and
-    /// select it. No-op on the last point (nothing to bisect toward).
+    /// select it. No-op on the last point (nothing to bisect toward), or when
+    /// there is no room for a distinct input between them.
     pub fn add_point(&mut self) {
-        let last = self.pts.len() - 1;
+        let last = self.curve.points().len() - 1;
         if self.sel >= last {
             return;
         }
-        let (ai, ao) = self.pts[self.sel];
-        let (bi, bo) = self.pts[self.sel + 1];
+        let (ai, _) = self.curve.points()[self.sel];
+        let (bi, _) = self.curve.points()[self.sel + 1];
         if bi - ai < 2 {
             return; // no room for a distinct input between them
         }
         let mid = ((ai as u32 + bi as u32) / 2) as u16;
-        let mout = ((ao as u32 + bo as u32) / 2) as u16;
-        self.pts.insert(self.sel + 1, (mid, mout));
+        self.curve.add_point(mid);
         self.sel += 1;
         self.field = Field::Input;
     }
 
     /// Delete the selected point. Endpoints cannot be deleted.
     pub fn delete_point(&mut self) {
-        let last = self.pts.len() - 1;
-        if self.sel == 0 || self.sel == last || self.pts.len() <= 2 {
-            return;
-        }
-        self.pts.remove(self.sel);
-        if self.sel > self.pts.len() - 1 {
-            self.sel = self.pts.len() - 1;
+        self.curve.remove_point(self.sel);
+        let last = self.curve.points().len() - 1;
+        if self.sel > last {
+            self.sel = last;
         }
     }
 
     /// Value shown for any field (for rendering the whole panel).
     pub fn value_of(&self, f: Field) -> String {
         match f {
-            Field::Point => format!("{} / {}", self.sel + 1, self.pts.len()),
-            Field::Input => format!("{}%", to_pct(self.pts[self.sel].0)),
-            Field::Output => format!("{}%", to_pct(self.pts[self.sel].1)),
-            Field::Lower => format!("{}%", self.lower_dz),
-            Field::Upper => format!("{}%", self.upper_dz),
+            Field::Point => format!("{} / {}", self.sel + 1, self.curve.points().len()),
+            Field::Input => format!("{}%", to_pct(self.curve.points()[self.sel].0)),
+            Field::Output => format!("{}%", to_pct(self.curve.points()[self.sel].1)),
+            Field::Lower => format!("{}%", self.curve.lower_deadzone()),
+            Field::Upper => format!("{}%", self.curve.upper_deadzone()),
         }
     }
 
@@ -223,7 +163,7 @@ impl CurveEditor {
         let w = w.max(8);
         let h = h.max(4);
         let mut grid = vec![vec![b' '; w]; h];
-        let curve = self.compose();
+        let curve = self.curve.compose();
 
         let col = |inp: u16| ((inp as usize * (w - 1)) / FULL as usize).min(w - 1);
         let row = |outp: u16| (h - 1) - ((outp as usize * (h - 1)) / FULL as usize).min(h - 1);
@@ -238,52 +178,15 @@ impl CurveEditor {
             grid[y][x] = b'*';
         }
         // Mark the selected control point (mapped through the deadzones).
-        let (si, so) = self.pts[self.sel];
-        let lo = (self.lower_dz as u32 * FULL as u32 / 100) as u16;
-        let hi = ((100 - self.upper_dz as u32) * FULL as u32 / 100) as u16;
+        let (si, so) = self.curve.points()[self.sel];
+        let lo = (self.curve.lower_deadzone() as u32 * FULL as u32 / 100) as u16;
+        let hi = ((100 - self.curve.upper_deadzone() as u32) * FULL as u32 / 100) as u16;
         let span = hi.saturating_sub(lo) as u32;
         let mapped = lo as u32 + (si as u32 * span / FULL as u32);
         grid[row(so)][col(mapped as u16)] = b'@';
 
         grid.into_iter().map(|r| String::from_utf8(r).unwrap()).collect()
     }
-}
-
-/// Append `(inp, outp)`, keeping inputs strictly increasing. A collision means
-/// the deadzone remap folded two control points onto one input, so keep the
-/// higher output rather than emitting a duplicate the uploader would reject.
-fn push_pt(out: &mut Vec<(u16, u16)>, inp: u16, outp: u16) {
-    match out.last() {
-        Some(&(pi, po)) if pi >= inp => {
-            if outp > po {
-                let n = out.len() - 1;
-                out[n] = (pi, outp);
-            }
-        }
-        _ => out.push((inp, outp)),
-    }
-}
-
-/// Linear interpolation of a sorted `in:out` curve at input `x`.
-fn interp(curve: &[(u16, u16)], x: u16) -> u16 {
-    if curve.is_empty() {
-        return x;
-    }
-    if x <= curve[0].0 {
-        return curve[0].1;
-    }
-    for w in curve.windows(2) {
-        let (x0, y0) = w[0];
-        let (x1, y1) = w[1];
-        if x <= x1 {
-            if x1 == x0 {
-                return y1;
-            }
-            let t = (x as u32 - x0 as u32) * (y1 as u32 - y0 as u32) / (x1 as u32 - x0 as u32);
-            return (y0 as u32 + t) as u16;
-        }
-    }
-    curve.last().unwrap().1
 }
 
 #[cfg(test)]
@@ -305,19 +208,12 @@ mod tests {
     }
 
     #[test]
-    fn default_is_linear_two_points() {
-        let e = linear();
-        assert_eq!(e.pts, vec![(0, 0), (FULL, FULL)]);
-        is_valid(&e.compose());
-    }
-
-    #[test]
     fn add_point_bisects_and_selects() {
         let mut e = linear();
         e.add_point();
-        assert_eq!(e.pts.len(), 3);
+        assert_eq!(e.curve.points().len(), 3);
         assert_eq!(e.sel, 1);
-        assert_eq!(e.pts[1], (FULL / 2, FULL / 2));
+        assert_eq!(e.curve.points()[1], (FULL / 2, FULL / 2));
         is_valid(&e.compose());
     }
 
@@ -327,10 +223,10 @@ mod tests {
         e.sel = 0;
         e.field = Field::Input;
         e.adjust(10);
-        assert_eq!(e.pts[0].0, 0, "first input stays 0");
+        assert_eq!(e.curve.points()[0].0, 0, "first input stays 0");
         e.sel = 1;
         e.adjust(-10);
-        assert_eq!(e.pts[1].0, FULL, "last input stays FULL");
+        assert_eq!(e.curve.points()[1].0, FULL, "last input stays FULL");
     }
 
     #[test]
@@ -341,10 +237,10 @@ mod tests {
         e.field = Field::Output;
         e.sel = 0;
         e.adjust(5); // try to lift (0,0) -> (0, >0)
-        assert_eq!(e.pts[0].1, 0, "first output stays 0");
+        assert_eq!(e.curve.points()[0].1, 0, "first output stays 0");
         e.sel = 1;
         e.adjust(-5); // try to drop (FULL,FULL) -> (FULL, <FULL)
-        assert_eq!(e.pts[1].1, FULL, "last output stays FULL");
+        assert_eq!(e.curve.points()[1].1, FULL, "last output stays FULL");
         is_valid(&e.compose());
     }
 
@@ -355,8 +251,8 @@ mod tests {
         e.field = Field::Input;
         // shove far right: cannot pass the last point's input
         e.adjust(1000);
-        assert!(e.pts[1].0 < FULL);
-        assert!(e.pts[1].0 > e.pts[0].0);
+        assert!(e.curve.points()[1].0 < FULL);
+        assert!(e.curve.points()[1].0 > e.curve.points()[0].0);
         is_valid(&e.compose());
     }
 
@@ -374,38 +270,16 @@ mod tests {
     fn delete_removes_middle_only() {
         let mut e = linear();
         e.add_point();
-        assert_eq!(e.pts.len(), 3);
+        assert_eq!(e.curve.points().len(), 3);
         e.sel = 1;
         e.delete_point();
-        assert_eq!(e.pts.len(), 2);
+        assert_eq!(e.curve.points().len(), 2);
         // endpoints can't be deleted
         e.sel = 0;
         e.delete_point();
         e.sel = 1;
         e.delete_point();
-        assert_eq!(e.pts.len(), 2);
-    }
-
-    #[test]
-    fn lower_deadzone_holds_output_zero() {
-        let mut e = linear();
-        e.lower_dz = 20;
-        let c = e.compose();
-        is_valid(&c);
-        // at 10% input (below the 20% deadzone) output must still be 0
-        assert_eq!(interp(&c, (FULL as u32 / 10) as u16), 0);
-        // at 60% input output should be well above 0
-        assert!(interp(&c, (FULL as u32 * 6 / 10) as u16) > 0);
-    }
-
-    #[test]
-    fn upper_deadzone_saturates_early() {
-        let mut e = linear();
-        e.upper_dz = 20;
-        let c = e.compose();
-        is_valid(&c);
-        // by 85% input (past the 80% saturation point) output is full
-        assert_eq!(interp(&c, (FULL as u32 * 85 / 100) as u16), FULL);
+        assert_eq!(e.curve.points().len(), 2);
     }
 
     #[test]
@@ -415,10 +289,10 @@ mod tests {
         for _ in 0..200 {
             e.adjust(1);
         }
-        assert_eq!(e.lower_dz, 99);
+        assert_eq!(e.curve.lower_deadzone(), 99);
         e.field = Field::Upper;
         e.adjust(1);
-        assert_eq!(e.upper_dz, 0, "upper cannot grow while lower is 99");
+        assert_eq!(e.curve.upper_deadzone(), 0, "upper cannot grow while lower is 99");
     }
 
     #[test]

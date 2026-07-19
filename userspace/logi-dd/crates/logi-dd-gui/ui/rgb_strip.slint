@@ -1,0 +1,457 @@
+import { Button, Slider, LineEdit, ComboBox, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// One LED swatch color, as plain 0..255 channel ints so this file can build
+// its background with Slint's builtin `rgb()` function without ever
+// touching `logi_dd_core::Color` itself (that conversion lives in
+// `bridge.rs`, the same pattern `CurvePoint` uses for the curve editor).
+export struct LedColor {
+    r: int,
+    g: int,
+    b: int,
+}
+
+// The LIGHTSYNC slot editor: a modal overlay editing the ACTIVE custom
+// slot. Top to bottom: the slot's name (committed to the device on
+// enter), its brightness (committed on slider release), its animation
+// direction (staged), and the 10-LED color strip with a picker (HSV
+// square, hue bar, r/g/b sliders, a hex field, "apply to all") for
+// whichever swatch is selected. The Rust side owns the in-flight
+// `Vec<Color>` and the staged direction; every color edit fires a
+// callback, Rust applies it (mirroring the pair swatch when the staged
+// direction is inside-out/outside-in) and pushes the updated swatches
+// (plus the selected swatch's hex text) back so the strip and picker
+// redraw from the same state `commit` writes (colors + direction, then
+// the slot apply trigger). Cancel discards the staged colors/direction;
+// either closes the overlay from the Rust side (`rgb-editor-open` in
+// app.slint).
+export component RgbStrip inherits Rectangle {
+    in property <string> strip-label: "CUSTOM 1";
+    in property <[LedColor]> leds: [];
+    in property <string> selected-hex: "";
+    in property <string> slot-name: "";
+    in property <int> slot-brightness: 100;
+    // The staged `wheel_led_direction` enum value (0 = left to right,
+    // 1 = right to left, 2 = inside-out, 3 = outside-in), pushed by Rust
+    // on open and after every set-direction round-trip.
+    in property <int> direction: 0;
+
+    // Whether the staged direction collapses the strip into mirrored
+    // pairs (i with 9-i); drives the paired-swatch highlight below. The
+    // actual pair painting happens on the Rust side, which owns the
+    // colors.
+    property <bool> mirrored: root.direction == 2 || root.direction == 3;
+
+    // Which swatch the picker below is showing; -1 = none selected yet.
+    // Purely a display concern (which slider values/preview to draw), so it
+    // stays local rather than round-tripping through Rust like `leds` does.
+    property <int> current-index: -1;
+
+    // Hue/saturation/value backing the visual picker below. Local (not
+    // round-tripped through Rust) for the same reason `current-index` is:
+    // they only drive where the picker draws its cursors and what color it
+    // emits through the existing `set-color` callback. Seeded from the
+    // selected swatch's rgb whenever that swatch changes or one of the
+    // other controls (sliders, hex) edits it, so every control stays in
+    // sync with a single source of truth (`leds`, owned by Rust).
+    property <float> hue;
+    property <float> sat;
+    property <float> val;
+
+    callback select-led(int);
+    callback set-color(int, int, int, int);
+    callback set-hex(int, string);
+    callback apply-to-all(int, int, int);
+    // Commits the slot's new name to the device immediately (the name is
+    // not staged; a rejected rename is pushed back by the Rust side).
+    callback set-name(string);
+    // Commits the slot's brightness to the device immediately, on slider
+    // release.
+    callback set-slot-brightness(int);
+    // Stages the direction on the Rust side (written on commit); a switch
+    // into a mirrored direction also mirrors the staged colors.
+    callback set-direction(int);
+    callback commit();
+    callback cancel();
+
+    // Recompute hue/sat/val from the current hsv fields and push the
+    // resulting rgb through the same `set-color` path the sliders and hex
+    // field use, so Rust ownership/preview/commit keep working unchanged.
+    function emit-hsv-color() {
+        let c = hsv(root.hue, root.sat, root.val);
+        root.set-color(root.current-index, c.red, c.green, c.blue);
+    }
+
+    // Dim the rest of the window so the overlay reads as modal. Kept a
+    // fixed translucent black regardless of style/theme: see `Theme`'s own
+    // doc comment for why a backdrop dimmer is not a themed "surface".
+    background: Theme.scrim;
+
+    // Modal input barrier; see the curve editor's scrim TouchArea for why
+    // a plain scrim Rectangle is not enough.
+    TouchArea {
+        scroll-event(event) => { EventResult.accept }
+    }
+
+    Rectangle {
+        width: 440px;
+        // Clamped so the panel's border never leaves the window at the
+        // app's minimum height; the internal stretch spacer absorbs the
+        // difference.
+        height: min(640px, root.height - 16px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.panel-background;
+        border-radius: Theme.panel-radius;
+        border-width: 1px;
+        border-color: Theme.panel-border;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: root.strip-label;
+                font-size: 16px;
+                font-weight: 700;
+                color: Theme.text-color;
+            }
+
+            // Slot name: committed straight to the device on enter (the
+            // wheel stores it uppercased; the Rust side pushes the
+            // device's canonical form back through `slot-name`).
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Name";
+                    width: 76px;
+                    vertical-alignment: center;
+                    color: Theme.text-color;
+                }
+                LineEdit {
+                    width: 140px;
+                    text: root.slot-name;
+                    // Typing severs the `text:` binding above; re-seed
+                    // whenever the Rust side pushes the device's
+                    // authoritative name (open, rename round-trip).
+                    property <string> model-name: root.slot-name;
+                    changed model-name => { self.text = self.model-name; }
+                    accepted(t) => { root.set-name(t); }
+                }
+                Text {
+                    text: "max 8 chars, press enter";
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    color: Theme.muted-text-color;
+                }
+            }
+
+            // Slot brightness: committed on release, same rule as the
+            // settings sliders (a per-pixel commit would flood the worker).
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Brightness";
+                    width: 76px;
+                    vertical-alignment: center;
+                    color: Theme.text-color;
+                }
+                sb-slider := Slider {
+                    width: 200px;
+                    minimum: 0;
+                    maximum: 100;
+                    value: root.slot-brightness;
+                    // Re-seed after the device's round-trip; the `value:`
+                    // binding is severed by the first drag.
+                    property <int> model-sb: root.slot-brightness;
+                    changed model-sb => { self.value = self.model-sb; }
+                    released(v) => { root.set-slot-brightness(round(v)); }
+                }
+                Text {
+                    text: round(sb-slider.value) + "%";
+                    width: 40px;
+                    vertical-alignment: center;
+                    color: Theme.muted-text-color;
+                }
+            }
+
+            // Direction: staged on the Rust side, written on commit. The
+            // entries are the wheel_led_direction enum in value order.
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Direction";
+                    width: 76px;
+                    vertical-alignment: center;
+                    color: Theme.text-color;
+                }
+                ComboBox {
+                    width: 160px;
+                    model: ["Left to right", "Right to left", "Inside out", "Outside in"];
+                    current-index: root.direction;
+                    // Re-seed on every push; selecting severs the binding.
+                    property <int> model-dir: root.direction;
+                    changed model-dir => { self.current-index = self.model-dir; }
+                    selected(v) => { root.set-direction(self.current-index); }
+                }
+            }
+
+            Text {
+                text: root.mirrored
+                    ? "Mirrored direction: the LEDs pair up (1+10, 2+9, ...); painting a swatch paints its pair too."
+                    : "Click a swatch to edit its color.";
+                font-size: 11px;
+                color: Theme.muted-text-color;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                spacing: 4px;
+                for led[i] in root.leds: Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 4px;
+                    // In a mirrored direction the selected swatch's pair
+                    // highlights with it: both get painted together.
+                    property <bool> selected: i == root.current-index
+                        || (root.mirrored && root.current-index >= 0 && i == root.leds.length - 1 - root.current-index);
+                    border-width: self.selected ? 2px : 1px;
+                    border-color: self.selected ? Palette.accent-background : Theme.panel-border;
+                    background: rgb(led.r, led.g, led.b);
+
+                    TouchArea {
+                        clicked => {
+                            root.current-index = i;
+                            let hsv-of = rgb(led.r, led.g, led.b).to-hsv();
+                            root.hue = hsv-of.hue;
+                            root.sat = hsv-of.saturation;
+                            root.val = hsv-of.value;
+                            root.select-led(i);
+                        }
+                    }
+                }
+            }
+
+            if root.current-index >= 0: VerticalLayout {
+                spacing: 6px;
+
+                // Saturation/value square: the base fill is the selected hue
+                // at full saturation/value, with a white->transparent
+                // gradient (left = desaturated, right = saturated) and a
+                // black->transparent gradient (bottom = dark, top = bright)
+                // layered on top. Click or drag to set sat/val from the
+                // cursor position.
+                sv-square := Rectangle {
+                    width: 200px;
+                    height: 140px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.panel-border;
+                    background: hsv(root.hue, 1, 1);
+
+                    Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        background: @linear-gradient(90deg, white 0%, transparent 100%);
+                    }
+                    Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        background: @linear-gradient(0deg, black 0%, transparent 100%);
+                    }
+
+                    Rectangle {
+                        width: 12px;
+                        height: 12px;
+                        x: root.sat * sv-square.width - self.width / 2;
+                        y: (1 - root.val) * sv-square.height - self.height / 2;
+                        border-radius: self.width / 2;
+                        border-width: 2px;
+                        border-color: white;
+                        background: transparent;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.sat = clamp(self.mouse-x / sv-square.width, 0, 1);
+                            root.val = clamp(1 - self.mouse-y / sv-square.height, 0, 1);
+                            root.emit-hsv-color();
+                        }
+                        moved => {
+                            if (self.pressed) {
+                                root.sat = clamp(self.mouse-x / sv-square.width, 0, 1);
+                                root.val = clamp(1 - self.mouse-y / sv-square.height, 0, 1);
+                                root.emit-hsv-color();
+                            }
+                        }
+                    }
+                }
+
+                // Hue bar: the full hue wheel with a thin cursor indicator.
+                // The square above always renders at this hue, full
+                // saturation/value.
+                hue-bar := Rectangle {
+                    height: 16px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.panel-border;
+                    background: @linear-gradient(90deg, #ff0000 0%, #ffff00 17%, #00ff00 33%, #00ffff 50%, #0000ff 67%, #ff00ff 83%, #ff0000 100%);
+
+                    Rectangle {
+                        width: 3px;
+                        height: parent.height;
+                        x: root.hue / 360 * hue-bar.width - self.width / 2;
+                        background: white;
+                        border-width: 1px;
+                        border-color: Theme.panel-border;
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.hue = clamp(self.mouse-x / hue-bar.width, 0, 1) * 360;
+                            root.emit-hsv-color();
+                        }
+                        moved => {
+                            if (self.pressed) {
+                                root.hue = clamp(self.mouse-x / hue-bar.width, 0, 1) * 360;
+                                root.emit-hsv-color();
+                            }
+                        }
+                    }
+                }
+
+                // Channel sliders. Each commits on `released`, not
+                // `changed`: per-pixel commits rebuilt the whole swatch
+                // model on every mouse move (the same per-pixel-write
+                // pattern the settings sliders avoid); the drag still
+                // previews live through the local hue/sat/val state. Each
+                // slider also re-seeds itself when the selected swatch's
+                // channel changes (swatch click, hex edit, apply-to-all):
+                // its `value:` binding is severed by the first drag, and
+                // without the re-seed a later drag would write the previous
+                // swatch's stale channels onto the newly selected LED.
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "R"; color: Theme.text-color; vertical-alignment: center; width: 16px; }
+                    r-slider := Slider {
+                        width: 200px;
+                        minimum: 0;
+                        maximum: 255;
+                        value: root.leds[root.current-index].r;
+                        property <int> model-r: root.leds[root.current-index].r;
+                        changed model-r => { self.value = self.model-r; }
+                        changed(v) => {
+                            let hsv-of = rgb(round(v), root.leds[root.current-index].g, root.leds[root.current-index].b).to-hsv();
+                            root.hue = hsv-of.hue;
+                            root.sat = hsv-of.saturation;
+                            root.val = hsv-of.value;
+                        }
+                        released(v) => {
+                            root.set-color(root.current-index, round(v), root.leds[root.current-index].g, root.leds[root.current-index].b);
+                        }
+                    }
+                    Text { text: round(r-slider.value); color: Theme.text-color; vertical-alignment: center; width: 32px; }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "G"; color: Theme.text-color; vertical-alignment: center; width: 16px; }
+                    g-slider := Slider {
+                        width: 200px;
+                        minimum: 0;
+                        maximum: 255;
+                        value: root.leds[root.current-index].g;
+                        property <int> model-g: root.leds[root.current-index].g;
+                        changed model-g => { self.value = self.model-g; }
+                        changed(v) => {
+                            let hsv-of = rgb(root.leds[root.current-index].r, round(v), root.leds[root.current-index].b).to-hsv();
+                            root.hue = hsv-of.hue;
+                            root.sat = hsv-of.saturation;
+                            root.val = hsv-of.value;
+                        }
+                        released(v) => {
+                            root.set-color(root.current-index, root.leds[root.current-index].r, round(v), root.leds[root.current-index].b);
+                        }
+                    }
+                    Text { text: round(g-slider.value); color: Theme.text-color; vertical-alignment: center; width: 32px; }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "B"; color: Theme.text-color; vertical-alignment: center; width: 16px; }
+                    b-slider := Slider {
+                        width: 200px;
+                        minimum: 0;
+                        maximum: 255;
+                        value: root.leds[root.current-index].b;
+                        property <int> model-b: root.leds[root.current-index].b;
+                        changed model-b => { self.value = self.model-b; }
+                        changed(v) => {
+                            let hsv-of = rgb(root.leds[root.current-index].r, root.leds[root.current-index].g, round(v)).to-hsv();
+                            root.hue = hsv-of.hue;
+                            root.sat = hsv-of.saturation;
+                            root.val = hsv-of.value;
+                        }
+                        released(v) => {
+                            root.set-color(root.current-index, root.leds[root.current-index].r, root.leds[root.current-index].g, round(v));
+                        }
+                    }
+                    Text { text: round(b-slider.value); color: Theme.text-color; vertical-alignment: center; width: 32px; }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Hex"; color: Theme.text-color; vertical-alignment: center; }
+                    LineEdit {
+                        width: 90px;
+                        text: root.selected-hex;
+                        // Typing severs the `text:` binding above; re-seed
+                        // whenever the Rust side pushes a new hex (swatch
+                        // selection, slider commit, apply-to-all).
+                        property <string> model-hex: root.selected-hex;
+                        changed model-hex => { self.text = self.model-hex; }
+                        accepted(t) => {
+                            root.set-hex(root.current-index, t);
+                            // A rejected hex string leaves the model
+                            // untouched, and the callback round-trips
+                            // synchronously: snap the field back to the
+                            // model's canonical hex either way.
+                            self.text = root.selected-hex;
+                            let hsv-of = rgb(root.leds[root.current-index].r, root.leds[root.current-index].g, root.leds[root.current-index].b).to-hsv();
+                            root.hue = hsv-of.hue;
+                            root.sat = hsv-of.saturation;
+                            root.val = hsv-of.value;
+                        }
+                    }
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: Theme.panel-border;
+                        // Bound to the local hsv state (not the committed
+                        // model) so the preview tracks a slider drag live;
+                        // every commit path re-seeds hue/sat/val, so at rest
+                        // this always equals the selected swatch's color.
+                        background: hsv(root.hue, root.sat, root.val);
+                    }
+                    Button {
+                        text: "Apply to all";
+                        clicked => {
+                            root.apply-to-all(root.leds[root.current-index].r, root.leds[root.current-index].g, root.leds[root.current-index].b);
+                        }
+                    }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button { text: "Cancel"; clicked => { root.cancel(); } }
+                // Writes the staged colors + direction, then triggers the
+                // slot apply so the wheel adopts the new config.
+                Button { text: "Apply to wheel"; clicked => { root.commit(); } }
+            }
+        }
+    }
+}

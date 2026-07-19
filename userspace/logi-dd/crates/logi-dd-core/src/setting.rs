@@ -28,7 +28,7 @@ impl Category {
             // the one steering axis.
             Category::Steering => "Steering",
             Category::Pedals => "Pedals",
-            Category::Leds => "LEDs",
+            Category::Leds => "LIGHTSYNC",
             Category::Profiles => "Profiles / mode",
             Category::Info => "Info",
         }

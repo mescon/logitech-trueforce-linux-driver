@@ -1,0 +1,433 @@
+import { ListView, Slider, SpinBox, ComboBox, Switch, LineEdit, Button, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// One rendered setting. `kind` is a stable numeric tag the Rust side and this
+// file agree on (see `bridge::KIND_*` in `src/bridge.rs`):
+//   0 = percent   (Slider, 0-100, "%" suffix)
+//   1 = int range (Slider, `min`..`max`, `unit` suffix)
+//   2 = enum      (ComboBox over `choices`, `int-value` is the index)
+//   3 = toggle    (Switch, `bool-value`)
+//   4 = text      (LineEdit, `text-value`)
+//   5 = action    (Button, no value, fires `trigger`)
+//   6 = readonly  (plain Text showing `display`)
+//   7 = curve     (Button that opens the curve editor overlay, fires
+//                  `edit-curve`)
+//   8 = rgb strip (Button that opens the RGB strip editor overlay, fires
+//                  `edit-rgb`)
+//   9 = slot text (Button that opens the slot-text editor overlay, fires
+//                  `edit-slot-text`)
+//   10 = pair (two SpinBoxes, lower/upper, e.g. a deadzone)
+//   11 = profile (ComboBox of profile names; commits the chosen index via
+//                 edit-slider)
+//   12 = LIGHTSYNC effect (ComboBox over the 13 selector labels; commits
+//                 the chosen index via edit-light-effect, which resolves
+//                 it to one or two attr writes on the Rust side)
+//   13 = LIGHTSYNC edit-slot button (opens the slot editor overlay via
+//                 edit-rgb; enabled only while `bool-value` says a CUSTOM
+//                 effect is active)
+export struct SettingRow {
+    attr: string,
+    label: string,
+    help: string,
+    kind: int,
+    int-value: int,
+    int-value2: int,
+    bool-value: bool,
+    text-value: string,
+    display: string,
+    choices: [string],
+    min: int,
+    max: int,
+    step: int,
+    unit: string,
+    available: bool,
+    mode-ok: bool,
+    error: string,
+    // Bumped by the Rust side on every in-place push of this row
+    // (`update_row`, `load_rows`' same-length path). Slint severs a
+    // widget's own `value:`/`checked:`/`text:`/`current-index:` binding
+    // the first time the widget assigns that property internally (any
+    // user interaction), after which pushed model updates stop reaching
+    // it; each editable control below watches this counter with a
+    // `changed` callback and re-asserts its display property from the
+    // row. A plain `changed row.int-value` would miss the case where an
+    // edit is rejected and the fresh read equals the old value (the
+    // exact revert-on-error case), so the counter changes on every push
+    // unconditionally.
+    revision: int,
+}
+
+export component SettingsList inherits ListView {
+    in property <[SettingRow]> rows;
+
+    callback edit-slider(string, int);
+    callback edit-choice(string, int);
+    callback edit-switch(string, bool);
+    callback edit-text(string, string);
+    callback trigger(string);
+    // Fired by a curve row's "Edit curve" button (kind 7); the app opens the
+    // curve editor overlay for `attr`, seeded from that row's current value.
+    callback edit-curve(string);
+    // Fired by an RGB strip row's "Edit colors" button (kind 8); the app
+    // opens the RGB strip editor overlay for `attr`, seeded from that row's
+    // current value.
+    callback edit-rgb(string);
+    // Fired by a slot-text row's "Edit slot names" button (kind 9); the app
+    // opens the slot-text editor overlay for `attr`, seeded from that row's
+    // current value.
+    callback edit-slot-text(string);
+    // Fired by the LIGHTSYNC effect selector (kind 12) with the chosen
+    // selector index (0-12). The Rust side resolves it: a sweep/numbered
+    // entry writes wheel_led_effect; a CUSTOM entry writes wheel_led_slot
+    // then wheel_led_effect=5.
+    callback edit-light-effect(int);
+    // Fired by a pair row's (kind 10, a pedal deadzone) SpinBoxes: `attr`,
+    // whether the lower half was the one edited, and its new value. Only
+    // the touched side is reported; the Rust side reads the other half
+    // fresh from the device at write time, so an edit can never clobber
+    // the partner field's still-in-flight commit with a stale row value.
+    callback edit-pair(string, bool, int);
+    // Fired by the per-row "Switch mode" button, shown on a row whose
+    // `mode-ok` is false. It does not say which mode: with exactly two
+    // modes, whichever one the wheel is not currently in is the one this
+    // row needs, so this just asks the app to flip it (same action as the
+    // header's mode toggle).
+    callback switch-mode();
+
+    // Every row uses the same layout skeleton regardless of `kind`: a fixed
+    // label column, a control area that stretches to fill the window, a
+    // fixed value/status column so a control's x position never depends on
+    // what the row next to it is showing (fixes controls jumping around
+    // between rows), all inside a row box sized to `Theme.row-height` so
+    // the drawn content and the row's own box always match (a plain
+    // `height`, not `min-height`, since inside a `ListView` a `min-height`
+    // let the allocated slot and the painted content disagree).
+    for row in rows: Rectangle {
+        width: parent.width;
+        height: Theme.row-height;
+        // Never let an unusually long (wrapped) help line paint over the row
+        // below it; at worst it is trimmed at the row boundary. ComboBox
+        // popups render in a separate overlay, so this does not clip them.
+        clip: true;
+
+        HorizontalLayout {
+            padding: Theme.gutter;
+            spacing: Theme.gutter;
+
+            // Column 1: label (bold) plus a smaller muted help line. Fixed
+            // width so labels/controls line up across rows.
+            VerticalLayout {
+                width: Theme.label-column-width;
+                alignment: center;
+                spacing: 2px;
+
+                Text {
+                    text: row.label;
+                    font-weight: 600;
+                    color: Theme.text-color;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: row.help;
+                    font-size: 11px;
+                    color: Theme.muted-text-color;
+                    wrap: word-wrap;
+                }
+            }
+
+            // Columns 2+3: control, then its value/manual-entry slot. Kinds
+            // 0/1 (sliders) and every other kind are mutually exclusive `if`
+            // branches so each one pairs its control with a value slot of
+            // the same `Theme.value-column-width` (empty for non-sliders);
+            // that keeps the status column below always starting at the
+            // same x, independent of which kind a row renders.
+            if row.kind == 0 || row.kind == 1: HorizontalLayout {
+                horizontal-stretch: 1;
+                spacing: 8px;
+
+                // Committed on `released`, not `changed`: writing on every
+                // drag pixel used to trigger a full-category reload that
+                // replaced this very model, destroying and recreating the
+                // slider mid-drag (it would visually snap back and stop
+                // tracking the pointer). `released` fires once, when the
+                // drag/interaction ends. `horizontal-stretch` makes it fill
+                // whatever width the row has to spare instead of a fixed
+                // 190px, so it grows and shrinks with the window.
+                slider := Slider {
+                    horizontal-stretch: 1;
+                    minimum: row.min;
+                    maximum: row.max;
+                    value: row.int-value;
+                    enabled: row.available && row.mode-ok;
+                    // Re-assert on every model push: the `value:` binding
+                    // above is severed after the first drag (see
+                    // `SettingRow.revision`).
+                    property <int> rev: row.revision;
+                    changed rev => { self.value = row.int-value; }
+                    released(v) => { edit-slider(row.attr, round(v)); }
+                }
+
+                HorizontalLayout {
+                    width: Theme.value-column-width;
+                    spacing: 6px;
+                    alignment: end;
+
+                    // Exact numeric entry: type a value and press enter, or
+                    // nudge with the +/- arrows. The widget clamps to
+                    // `minimum`/`maximum` itself, so out-of-range typing can
+                    // never reach the device. Chosen over a LineEdit because
+                    // std-widgets' LineEdit paints a clear ("x") icon
+                    // whenever it holds text, which crowds out and clips a
+                    // short number in a narrow field (it rendered "6x" for
+                    // 62). `edited` fires for both the arrows and enter, and
+                    // commits through the same `edit-slider` path the
+                    // slider's `released` uses; the resulting `RowUpdated`
+                    // bumps `row.revision`, and the change callback below
+                    // refreshes `value` to whatever the device accepted
+                    // (the binding itself is severed by the first edit).
+                    SpinBox {
+                        horizontal-stretch: 1;
+                        minimum: row.min;
+                        maximum: row.max;
+                        step-size: max(1, row.step);
+                        value: row.int-value;
+                        enabled: row.available && row.mode-ok;
+                        property <int> rev: row.revision;
+                        changed rev => { self.value = row.int-value; }
+                        edited(v) => { edit-slider(row.attr, v); }
+                    }
+                    Text {
+                        text: row.kind == 0 ? "%" : row.unit;
+                        vertical-alignment: center;
+                        color: Theme.muted-text-color;
+                    }
+                }
+            }
+
+            if row.kind != 0 && row.kind != 1: HorizontalLayout {
+                horizontal-stretch: 1;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    alignment: start;
+
+                    if row.kind == 2: ComboBox {
+                        width: 220px;
+                        model: row.choices;
+                        current-index: row.int-value;
+                        enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.current-index = row.int-value; }
+                        selected(v) => { edit-choice(row.attr, self.current-index); }
+                    }
+
+                    // `wheel_profile` is an IntRange in core (0=desktop,
+                    // 1-5 onboard), so the chosen index IS the profile
+                    // number: commits via `edit-slider`, not `edit-choice`.
+                    if row.kind == 11: ComboBox {
+                        width: 220px;
+                        model: row.choices;
+                        current-index: row.int-value;
+                        enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.current-index = row.int-value; }
+                        selected(v) => { edit-slider(row.attr, self.current-index); }
+                    }
+
+                    // The LIGHTSYNC effect selector: the chosen index is a
+                    // selector position, not a value, so it commits through
+                    // its own callback (see `edit-light-effect`'s doc).
+                    if row.kind == 12: ComboBox {
+                        width: 220px;
+                        model: row.choices;
+                        current-index: row.int-value;
+                        enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.current-index = row.int-value; }
+                        selected(v) => { edit-light-effect(self.current-index); }
+                    }
+
+                    if row.kind == 3: Switch {
+                        checked: row.bool-value;
+                        enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.checked = row.bool-value; }
+                        toggled => { edit-switch(row.attr, self.checked); }
+                    }
+
+                    if row.kind == 4: LineEdit {
+                        width: 220px;
+                        text: row.text-value;
+                        enabled: row.available && row.mode-ok;
+                        // Re-assert on every model push; see
+                        // `SettingRow.revision`.
+                        property <int> rev: row.revision;
+                        changed rev => { self.text = row.text-value; }
+                        accepted(t) => { edit-text(row.attr, t); }
+                    }
+
+                    if row.kind == 5: Button {
+                        text: row.label;
+                        enabled: row.available && row.mode-ok;
+                        clicked => { trigger(row.attr); }
+                    }
+
+                    if row.kind == 6: Text {
+                        text: row.display;
+                        vertical-alignment: center;
+                        color: Theme.text-color;
+                    }
+
+                    if row.kind == 7: Button {
+                        text: "Edit curve (" + row.display + ")";
+                        enabled: row.available && row.mode-ok;
+                        clicked => { edit-curve(row.attr); }
+                    }
+
+                    if row.kind == 8: Button {
+                        text: "Edit colors (" + row.display + ")";
+                        enabled: row.available && row.mode-ok;
+                        clicked => { edit-rgb(row.attr); }
+                    }
+
+                    if row.kind == 9: Button {
+                        text: "Edit slot names";
+                        enabled: row.available && row.mode-ok;
+                        clicked => { edit-slot-text(row.attr); }
+                    }
+
+                    // The LIGHTSYNC "Edit slot" button: opens the slot
+                    // editor overlay (same edit-rgb path a kind-8 row
+                    // uses; the Rust side ignores the attr and seeds the
+                    // editor from the LIGHTSYNC attrs). `bool-value` is
+                    // "a CUSTOM effect is active": disabled otherwise,
+                    // since the editor writes the ACTIVE slot only.
+                    if row.kind == 13: Button {
+                        text: "Edit slot...";
+                        enabled: row.available && row.mode-ok && row.bool-value;
+                        clicked => { edit-rgb(row.attr); }
+                    }
+
+                    // Two SpinBoxes, same styling as the slider rows' exact-
+                    // entry SpinBox above: lower deadzone first, then upper.
+                    // Each fires `edit-pair` with only its own side; see the
+                    // callback's doc above for why the partner value is not
+                    // read off the row here.
+                    if row.kind == 10: HorizontalLayout {
+                        spacing: 12px;
+
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text {
+                                text: "Lower";
+                                font-size: 11px;
+                                color: Theme.muted-text-color;
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                SpinBox {
+                                    width: 90px;
+                                    minimum: 0;
+                                    maximum: row.max;
+                                    value: row.int-value;
+                                    enabled: row.available && row.mode-ok;
+                                    // Re-assert on every model push; see
+                                    // `SettingRow.revision`.
+                                    property <int> rev: row.revision;
+                                    changed rev => { self.value = row.int-value; }
+                                    edited(v) => { edit-pair(row.attr, true, v); }
+                                }
+                                Text {
+                                    text: "%";
+                                    vertical-alignment: center;
+                                    color: Theme.muted-text-color;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text {
+                                text: "Upper";
+                                font-size: 11px;
+                                color: Theme.muted-text-color;
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                SpinBox {
+                                    width: 90px;
+                                    minimum: 0;
+                                    maximum: row.max;
+                                    value: row.int-value2;
+                                    enabled: row.available && row.mode-ok;
+                                    // Re-assert on every model push; see
+                                    // `SettingRow.revision`.
+                                    property <int> rev: row.revision;
+                                    changed rev => { self.value = row.int-value2; }
+                                    edited(v) => { edit-pair(row.attr, false, v); }
+                                }
+                                Text {
+                                    text: "%";
+                                    vertical-alignment: center;
+                                    color: Theme.muted-text-color;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Same-width empty placeholder as the slider rows' value
+                // slot, so the status column always starts at the same x.
+                Rectangle {
+                    width: Theme.value-column-width;
+                }
+            }
+
+            // Status slot (error / unavailable / wrong-mode plus the
+            // "Switch mode" button). Always instantiated, even when showing
+            // nothing, at a position now fixed by the value slot/placeholder
+            // before it rather than by its own width.
+            HorizontalLayout {
+                alignment: start;
+                spacing: 8px;
+
+                if row.error != "": Text {
+                    text: row.error;
+                    color: Theme.error-color;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+                if row.error == "" && !row.available: Text {
+                    text: "Unavailable on this wheel";
+                    color: Theme.faint-text-color;
+                    vertical-alignment: center;
+                }
+                if row.error == "" && row.available && !row.mode-ok: Text {
+                    text: "Wrong mode";
+                    color: Theme.faint-text-color;
+                    vertical-alignment: center;
+                }
+                if row.available && !row.mode-ok: Button {
+                    text: "Switch mode";
+                    clicked => { switch-mode(); }
+                }
+            }
+        }
+
+        Rectangle {
+            y: parent.height - 1px;
+            width: parent.width;
+            height: 1px;
+            background: Palette.border;
+        }
+    }
+}

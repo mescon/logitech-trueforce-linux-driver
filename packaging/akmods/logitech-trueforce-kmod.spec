@@ -35,6 +35,11 @@ BuildRequires:  kmodtool
 BuildRequires:  gcc, make, kernel-rpm-macros
 # Userspace companions (logi-ffb, logi-dd) built alongside the module.
 BuildRequires:  cargo, rust
+# logi-dd-gui's yeslogic-fontconfig-sys dependency links fontconfig/freetype
+# at build time (build.rs calls pkg_config::find_library, no dlopen), so the
+# devel package and pkg-config must be present or `cargo build` panics and
+# aborts the whole %build. pkgconfig(fontconfig) pulls both on Fedora.
+BuildRequires:  pkgconfig(fontconfig)
 
 # Two build modes from one spec, selected by whether `kernels` is defined:
 #   * kernels defined      -> compile per-kernel kmod-%%{kmod_name}-<kver>
@@ -75,19 +80,43 @@ wheel_* sysfs attributes and hidraw nodes, so settings do not need root.
 # Userspace companions are ordinary compiled binaries (arch-specific, not
 # tied to a kernel version), so they get their own subpackage rather than
 # joining the noarch -common package or the per-kernel kmod packages.
+# logi-ffb/logi-dd are GPL-2.0-only (the kmod_name-kmod package's license);
+# logi-dd-gui is GPL-3.0-or-later, so this subpackage carries both.
 %package -n %{kmod_name}-tools
 Summary:        Userspace tools for the %{kmod_name} direct-drive wheel driver
+License:        GPL-2.0-only AND GPL-3.0-or-later
 BuildRequires:  cargo, rust
+# logi-dd-gui (Slint GUI) runtime stack: windowing (Wayland/X11), input
+# (xkbcommon), and GL/EGL rendering. Derived from `ldd`/`strings` on the
+# built binary; Slint dlopen's the wayland/X11/GL bits at runtime rather
+# than linking them, so ldd alone would miss them. Fedora tracks current
+# Rust, so logi-dd-gui's MSRV (1.92, from Slint 1.17.1) always builds here;
+# no version guard needed (contrast packaging/debian/rules).
+Requires:       wayland
+Requires:       libxkbcommon
+Requires:       libxkbcommon-x11
+Requires:       libX11
+Requires:       libX11-xcb
+Requires:       libxcb
+Requires:       libXcursor
+Requires:       libXi
+Requires:       libXrender
+Requires:       mesa-libEGL
+Requires:       mesa-libGL
+Requires:       fontconfig
+Requires:       freetype
 
 %description -n %{kmod_name}-tools
-logi-ffb, a DirectInput force-feedback proxy, and logi-dd, a terminal
-settings UI, for the Logitech direct-drive wheel driver. Includes the udev
-rule granting the "input" group access to /dev/uhid, which logi-ffb needs
-to create its virtual force-feedback device.
+logi-ffb, a DirectInput force-feedback proxy, logi-dd, a terminal settings
+UI, and logi-dd-gui, a graphical settings app (GPL-3.0-or-later), for the
+Logitech direct-drive wheel driver. Includes the udev rule granting the
+"input" group access to /dev/uhid, which logi-ffb needs to create its
+virtual force-feedback device.
 
 %files -n %{kmod_name}-tools
 %{_bindir}/logi-ffb
 %{_bindir}/logi-dd
+%{_bindir}/logi-dd-gui
 %{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
 
 %prep
@@ -103,7 +132,9 @@ for kver in %{?kernel_versions}; do
     make -C "${kver##*___}" M="$PWD/_kmod_build_${kver%%___*}" modules
 done
 # Userspace companions: not kernel-specific, built once regardless of the
-# akmod-vs-static-kmod mode selected above.
+# akmod-vs-static-kmod mode selected above. This also builds logi-dd-gui
+# (the Slint GUI): Fedora's rustc is always new enough for its MSRV, so
+# unlike packaging/debian/rules no version guard is needed here.
 # cargo fetches crate dependencies over the network at build time (nothing
 # is vendored); enable networking for the COPR project or the build.
 cargo build --release --manifest-path userspace/logi-dd/Cargo.toml
@@ -124,14 +155,18 @@ install -D -m 0755 userspace/logi-dd/target/release/logi-ffb \
     "%{buildroot}%{_bindir}/logi-ffb"
 install -D -m 0755 userspace/logi-dd/target/release/logi-dd \
     "%{buildroot}%{_bindir}/logi-dd"
+install -D -m 0755 userspace/logi-dd/target/release/logi-dd-gui \
+    "%{buildroot}%{_bindir}/logi-dd-gui"
 install -D -m 0644 udev/71-logi-ffb-uhid.rules \
     "%{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules"
 
 %changelog
 * Sat Jul 18 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.15.0-1
 - Add a logitech-trueforce-tools subpackage with logi-ffb (DirectInput
-  force-feedback proxy) and logi-dd (settings TUI), built from the
-  userspace/logi-dd Rust workspace, plus the udev rule for /dev/uhid access.
+  force-feedback proxy), logi-dd (settings TUI), and logi-dd-gui (graphical
+  settings app, GPL-3.0-or-later), built from the userspace/logi-dd Rust
+  workspace, plus the udev rule for /dev/uhid access and the GUI's
+  windowing/rendering runtime dependencies.
 
 * Thu Jul 09 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.12.1-1
 - kmod package for atomic distros (Bazzite/Silverblue/Kinoite). Verified on

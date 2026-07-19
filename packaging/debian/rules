@@ -16,8 +16,20 @@ SRC  := $(PKG)/usr/src/$(NAME)-$(VER)
 override_dh_auto_build:
 	dh_auto_build
 	# logi-ffb (DirectInput FFB proxy) and logi-dd (settings TUI), the
-	# userspace companions to the kernel module.
-	cargo build --release --manifest-path userspace/logi-dd/Cargo.toml
+	# userspace companions to the kernel module. Built by package name
+	# (ffb-proxy, logi-dd-tui), not by their binary names.
+	cargo build --release --manifest-path userspace/logi-dd/Cargo.toml \
+		-p ffb-proxy -p logi-dd-tui
+	# logi-dd-gui (Slint settings GUI, GPL-3.0-or-later) needs Rust >= 1.92
+	# (Slint 1.17.1's MSRV), far newer than the rest of the workspace's
+	# 1.74. Debian/Ubuntu stable can ship an older rustc than that, so
+	# build it as a separate, tolerated-failure step: a too-old rustc must
+	# not fail the package build, it must just omit the GUI.
+	# override_dh_install below only installs the binary if this step
+	# actually produced it.
+	cargo build --release --manifest-path userspace/logi-dd/Cargo.toml \
+		-p logi-dd-gui \
+	|| echo "logi-dd-gui: not built (needs Rust >= 1.92 and fontconfig/pkg-config); skipping"
 
 override_dh_install:
 	# Module source DKMS compiles in /usr/src (the .c keeps its historical
@@ -38,6 +50,12 @@ override_dh_install:
 		$(PKG)/usr/bin/logi-ffb
 	install -D -m 0755 userspace/logi-dd/target/release/logi-dd \
 		$(PKG)/usr/bin/logi-dd
+	# logi-dd-gui: only ship it if override_dh_auto_build actually produced
+	# it (its MSRV guard omits it on a too-old rustc).
+	if [ -f userspace/logi-dd/target/release/logi-dd-gui ]; then \
+		install -D -m 0755 userspace/logi-dd/target/release/logi-dd-gui \
+			$(PKG)/usr/bin/logi-dd-gui; \
+	fi
 	# TrueForce-in-Proton shim installer (no-op unless the user stages the
 	# proprietary SDK DLLs; resolves the SDK dir via --sdk-dir /
 	# $$LOGITECH_TRUEFORCE_SDK_DIR / ~/.local/share/logitech-trueforce/sdk).

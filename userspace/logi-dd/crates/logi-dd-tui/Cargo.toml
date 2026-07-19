@@ -13,3 +13,6 @@ path = "src/main.rs"
 logi-dd-core = { path = "../logi-dd-core" }
 ratatui = "0.28"
 crossterm = "0.28"
+# Only for the Test view's evdev force-feedback ioctls (EVIOCSFF/EVIOCRMFF)
+# and the non-blocking open flag; already present in the workspace tree.
+libc = "0.2"

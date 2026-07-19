@@ -1,0 +1,105 @@
+import { Button, LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// One onboard slot's editable name: 1-based `slot` alongside its current
+// `name`, the same "index paired with value" shape `LedColor` uses for the
+// RGB strip editor.
+export struct SlotNameRow {
+    slot: int,
+    name: string,
+}
+
+// A modal overlay that edits one `Kind::SlotText` row: one line per onboard
+// slot, each showing its slot number and an editable name field. Unlike the
+// curve/RGB editors there is no local "whole value" to stage and commit as a
+// unit: `Kind::SlotText` writes one slot at a time (`Value::SlotName`), so
+// each field applies immediately when the user presses enter, the same way a
+// plain `TextField` row's `LineEdit` does (see `edit-text` in
+// `widgets.slint`). `slot-names` is pushed by the Rust side optimistically
+// at apply time and again from the write's `RowUpdated` reply (the
+// worker-response closure in `main.rs`), so the fields settle on whatever
+// the device actually holds: a rejected rename visibly reverts, an accepted
+// one shows the wheel's uppercased form, and `error` carries the last
+// write's failure message for display inside the overlay. `close` just
+// dismisses the overlay; there is nothing staged left to discard.
+export component SlotTextEditor inherits Rectangle {
+    in property <string> slot-text-label: "Profile names";
+    in property <[SlotNameRow]> slot-names: [];
+    in property <int> max-len: 9;
+    // The last slot write's error message, or "" (cleared on open and on
+    // every new edit by the Rust side).
+    in property <string> error: "";
+
+    callback set-slot-name(int, string);
+    callback close();
+
+    // Dim the rest of the window so the overlay reads as modal. Kept a
+    // fixed translucent black regardless of style/theme: see `Theme`'s own
+    // doc comment for why a backdrop dimmer is not a themed "surface".
+    background: Theme.scrim;
+
+    // Modal input barrier; see the curve editor's scrim TouchArea for why
+    // a plain scrim Rectangle is not enough.
+    TouchArea {
+        scroll-event(event) => { EventResult.accept }
+    }
+
+    Rectangle {
+        width: 380px;
+        height: 320px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.panel-background;
+        border-radius: Theme.panel-radius;
+        border-width: 1px;
+        border-color: Theme.panel-border;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: root.slot-text-label;
+                font-size: 16px;
+                font-weight: 700;
+                color: Theme.text-color;
+            }
+
+            Text {
+                text: "Rename a slot (max \{root.max-len} chars, uppercased on the wheel).";
+                font-size: 11px;
+                color: Theme.muted-text-color;
+                wrap: word-wrap;
+            }
+
+            if root.error != "": Text {
+                text: root.error;
+                font-size: 11px;
+                color: Theme.error-color;
+                wrap: word-wrap;
+            }
+
+            for row in root.slot-names: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: row.slot;
+                    color: Theme.text-color;
+                    vertical-alignment: center;
+                    width: 20px;
+                }
+                LineEdit {
+                    width: 220px;
+                    text: row.name;
+                    accepted(t) => { root.set-slot-name(row.slot, t); }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                alignment: end;
+                Button { text: "Close"; clicked => { root.close(); } }
+            }
+        }
+    }
+}

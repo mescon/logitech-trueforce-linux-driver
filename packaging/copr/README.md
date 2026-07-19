@@ -16,10 +16,17 @@ and it loads and registers the `logitech-dd` driver.
   `kernels` is undefined (it passes `kmodtool --akmod`); no kernel-devel is
   needed at build time.
 - The same spec also builds a `logitech-trueforce-tools` subpackage with the
-  userspace companions, `logi-ffb` (a DirectInput force-feedback proxy) and
-  `logi-dd` (a terminal settings UI), from the `userspace/logi-dd` Rust
-  workspace. This pulls `cargo`/`rust` into the build dependencies alongside
+  userspace companions, `logi-ffb` (a DirectInput force-feedback proxy),
+  `logi-dd` (a terminal settings UI), and `logi-dd-gui` (a graphical
+  settings app), from the `userspace/logi-dd` Rust workspace. This pulls
+  `cargo`/`rust` into the build dependencies alongside
   `gcc`/`make`/`kernel-rpm-macros`.
+- `logi-dd-gui` is GPL-3.0-or-later (the rest of the driver is
+  GPL-2.0-only), so `logitech-trueforce-tools`' `License` reflects both.
+  Its Slint UI needs a windowing/rendering stack at runtime (Wayland/X11,
+  xkbcommon, GL/EGL); the spec's `Requires` cover it. Fedora always ships a
+  rustc new enough for Slint's MSRV (1.92), so the build needs no version
+  guard (contrast the Debian package, which does).
 - The userspace binaries are built with `cargo`, which needs build-time
   network access to fetch crate dependencies (nothing is vendored), so the
   COPR project must have build networking enabled.
@@ -70,6 +77,6 @@ sudo dnf install akmod-logitech-trueforce logitech-trueforce-tools
 ```
 
 The first `akmods` run builds the module for the running kernel (and every
-kernel installed afterwards). `logitech-trueforce-tools` installs `logi-ffb`
-and `logi-dd` to `/usr/bin`, built from the same repo checkout. See
-`docs/GETTING_STARTED.md` for the full flow.
+kernel installed afterwards). `logitech-trueforce-tools` installs
+`logi-ffb`, `logi-dd`, and `logi-dd-gui` to `/usr/bin`, built from the same
+repo checkout. See `docs/GETTING_STARTED.md` for the full flow.
