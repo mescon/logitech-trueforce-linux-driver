@@ -71,6 +71,9 @@ resolve_sdk_dir() {
 		SDK_DIR="$REPO_ROOT/sdk"
 	else
 		SDK_DIR="$(default_sdk_dir)"
+		# Create the drop directory so the "place the DLLs here" message
+		# below always points at a path that exists.
+		mkdir -p "$SDK_DIR" 2>/dev/null || true
 	fi
 	SRC_TF_X64="$SDK_DIR/Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll"
 	SRC_TF_X86="$SDK_DIR/Logi/Trueforce/1_3_11/trueforce_sdk_x86.dll"
