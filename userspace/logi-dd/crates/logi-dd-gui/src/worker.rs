@@ -40,7 +40,7 @@ use crate::viewmodel::{Row, ViewModel, WidgetInput};
 /// request in flight is never delayed by the watcher.
 const DRIFT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// How long a "Try on wheel" run leaves the chosen LIGHTSYNC state on the
+/// How long a "Preview on wheel" run leaves the chosen LIGHTSYNC state on the
 /// physical strip before restoring what was there. The hold runs on this
 /// worker thread, so queued requests (and the drift watcher) wait it out;
 /// that is deliberate: the UI disables the button while the try runs, and
@@ -85,7 +85,7 @@ pub enum Request {
     ProfileApply(String),
     /// Delete computer profile `name`. Replied with `Response::Profiles`.
     ProfileDelete(String),
-    /// The LIGHTSYNC page's "Try on wheel": apply `effect` (+ `slot` when
+    /// The LIGHTSYNC page's "Preview on wheel": apply `effect` (+ `slot` when
     /// the effect is the custom 5) to the physical strip, show it (a
     /// custom slot plays one animated rev sweep in the slot's colours and
     /// direction; a built-in effect holds for [`LED_TRY_HOLD`]), then
@@ -254,7 +254,7 @@ fn request_category(req: &Request) -> Option<Category> {
     }
 }
 
-/// Run one "Try on wheel": remember the current effect+slot, write the
+/// Run one "Preview on wheel": remember the current effect+slot, write the
 /// chosen ones (the slot first, then the effect: the driver re-applies the
 /// slot's stored config on the transition to the custom effect), show
 /// them (a custom slot plays one [`rev_sweep`] when the wheel exposes

@@ -3,8 +3,8 @@ import { Theme } from "theme.slint";
 import { LedColor } from "rgb_strip.slint";
 
 // The LIGHTSYNC page's preview strip: the ACTIVE slot's 10 stored colors
-// (LED1 leftmost), a software-animated direction preview, and the "Try on
-// wheel" button. Sits above the composed Effect row (see `app.slint`'s
+// (LED1 leftmost), a software-animated direction preview, and the "Preview
+// on wheel" button. Sits above the composed Effect row (see `app.slint`'s
 // Leds branch).
 //
 // The animation is purely on-screen: a repeating RPM-style sweep (a fill
@@ -14,7 +14,7 @@ import { LedColor } from "rgb_strip.slint";
 // The physical strip is RPM-driven and shows a static idle pattern until a
 // game or telemetry bridge feeds it, which the caption says outright.
 //
-// "Try on wheel" is wired through the Rust side's worker (apply the
+// "Preview on wheel" is wired through the Rust side's worker (apply the
 // selected effect/slot, show it, restore the prior state; LED state
 // only, nothing moves). A custom slot's try also plays one animated rev
 // sweep (`wheel_rev_level` 0..10..0) on the physical strip, so the slot's
@@ -112,7 +112,7 @@ export component LedPreview inherits Rectangle {
                 }
             }
             Button {
-                text: root.try-running ? "Trying..." : "Try on wheel";
+                text: root.try-running ? "Previewing..." : "Preview on wheel";
                 enabled: !root.try-running;
                 clicked => { root.try-on-wheel(); }
             }
@@ -126,7 +126,7 @@ export component LedPreview inherits Rectangle {
         }
 
         Text {
-            text: "The physical strip is a rev-light display, RPM-driven by a game or telemetry bridge, and shows a static idle pattern otherwise. \"Try on wheel\" shows the selected effect on the wheel, then restores the previous state; a custom slot also plays one animated rev sweep in its colours and direction (built-in effects hold for 5 seconds).";
+            text: "The physical strip is a rev-light display, RPM-driven by a game or telemetry bridge, and shows a static idle pattern otherwise. \"Preview on wheel\" previews the current selection on the physical strip, then restores the previous state; a custom slot also plays one animated rev sweep in its colours and direction (built-in effects hold for 5 seconds).";
             font-size: 11px;
             color: Theme.muted-text-color;
             wrap: word-wrap;

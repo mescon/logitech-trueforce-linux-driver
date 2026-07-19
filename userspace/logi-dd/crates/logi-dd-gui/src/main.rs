@@ -1298,7 +1298,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     {
-        // The LIGHTSYNC preview's "Try on wheel": apply the currently
+        // The LIGHTSYNC preview's "Preview on wheel": apply the currently
         // selected effect/slot (i.e. the device's last-known state, which
         // the selector commits immediately; re-applying it makes the wheel
         // visibly play it) for ~5 s, then restore. Runs on the worker
