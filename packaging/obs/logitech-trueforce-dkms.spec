@@ -16,8 +16,14 @@ Summary:        DKMS kernel driver for Logitech TrueForce direct-drive wheels (R
 License:        GPL-2.0-only
 URL:            https://github.com/mescon/logitech-trueforce-linux-driver
 Source0:        logitech-trueforce-linux-driver-%{version}.tar.gz
+# Vendored crate dependencies (produced by `cargo vendor` in the publish
+# workflow): OBS builders have no network access, so the Rust workspace
+# builds --offline against this instead of index.crates.io.
+Source1:        logi-dd-vendor-%{version}.tar.zst
 BuildArch:      noarch
 BuildRequires:  cargo, rust
+# Extracts the zstd-compressed vendor tarball (Source1) in %%prep.
+BuildRequires:  zstd
 # logi-tf-sim's build.rs compiles the in-repo libtrueforce.a via make+gcc
 # and links it statically (no runtime dependency).
 BuildRequires:  gcc, make
@@ -125,6 +131,17 @@ LIGHTSYNC, response curves, game-helper setup pages, and a test section.
 
 %prep
 %autosetup -n logitech-trueforce-linux-driver-%{version}
+# Unpack the vendored crates into the Rust workspace and point cargo at
+# them, so %%build resolves every dependency offline.
+tar -xf %{SOURCE1} -C userspace/logi-dd
+mkdir -p userspace/logi-dd/.cargo
+cat > userspace/logi-dd/.cargo/config.toml <<'EOF'
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
+EOF
 
 %build
 # Nothing to compile here for the DKMS package: DKMS builds the module on
@@ -132,9 +149,14 @@ LIGHTSYNC, response curves, game-helper setup pages, and a test section.
 # logi-dd-gui (the Slint GUI): both openSUSE and Fedora ship a rustc new
 # enough for its MSRV, so unlike packaging/debian/rules no version guard
 # is needed.
-# cargo fetches crate dependencies over the network at build time (nothing
-# is vendored), so the OBS project must allow build-time network access.
-cargo build --release --manifest-path userspace/logi-dd/Cargo.toml
+# OBS builders have no network access, so every crate dependency comes
+# from the vendor tarball unpacked in %%prep; --offline --locked makes any
+# accidental network resolution or lockfile drift a hard build error.
+# cargo discovers .cargo/config.toml (which redirects crates.io to the
+# vendor directory) by walking up from the CWD, not from --manifest-path,
+# so build from inside the workspace.
+cd userspace/logi-dd
+cargo build --release --offline --locked
 
 %install
 # Module source DKMS compiles, under /usr/src (the .c keeps its historical
@@ -201,6 +223,12 @@ fi
 dkms remove -m %{module} -v %{modver} --all --rpm_safe_upgrade >/dev/null 2>&1 || true
 
 %changelog
+* Mon Jul 20 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.16.1-1
+- Build the Rust workspace offline against vendored crate dependencies
+  (new Source1 tarball produced by the publish workflow): OBS builders
+  have no network access, so the previous cargo build failed to resolve
+  index.crates.io and the repository kept serving stale binaries.
+
 * Sat Jul 18 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.15.0-1
 - Ship the userspace ecosystem as layered subpackages: logi-dd (settings
   TUI, logi-ffb DirectInput force-feedback proxy, logi-tf-sim

@@ -148,7 +148,10 @@ jobs:
           ref: ${{ env.TAG }}
           fetch-depth: 0
       - name: Install tools
-        run: zypper --non-interactive --gpg-auto-import-keys install -y osc git tar gzip sed
+        # cargo + zstd: the spec builds the Rust workspace offline (OBS
+        # builders have no network), so this job vendors the crate
+        # dependencies into a zstd tarball shipped as Source1.
+        run: zypper --non-interactive --gpg-auto-import-keys install -y osc git tar gzip sed cargo zstd
       - name: Configure osc
         env:
           OSC_CONFIG: ${{ secrets.OSC_CONFIG }}
@@ -178,12 +181,23 @@ jobs:
           tar --exclude=./.git --exclude=./srpm --exclude=./out -cf - . \
             | tar -xf - -C "$stage/$PREFIX"
           tar -czf "/tmp/${PREFIX}.tar.gz" -C "$stage" "$PREFIX"
+          # Vendor the Rust workspace's crate dependencies (Source1). OBS
+          # builders have no network access, so `cargo build` in the spec
+          # cannot resolve index.crates.io; the spec extracts this tarball
+          # and builds --offline against it instead.
+          vendorstage="$(mktemp -d)"
+          cargo vendor --locked \
+            --manifest-path userspace/logi-dd/Cargo.toml \
+            "$vendorstage/vendor"
+          tar --zstd -cf "/tmp/logi-dd-vendor-${VERSION}.tar.zst" \
+            -C "$vendorstage" vendor
           work="$(mktemp -d)"; cd "$work"
           osc checkout home:mescon logitech-trueforce-dkms
           cd home:mescon/logitech-trueforce-dkms
-          rm -f logitech-trueforce-linux-driver-*.tar.gz
+          rm -f logitech-trueforce-linux-driver-*.tar.gz logi-dd-vendor-*.tar.zst
           cp "$GITHUB_WORKSPACE/packaging/obs/logitech-trueforce-dkms.spec" .
           cp "$GITHUB_WORKSPACE/packaging/obs/_service" .
           cp "/tmp/logitech-trueforce-linux-driver-${VERSION}.tar.gz" .
+          cp "/tmp/logi-dd-vendor-${VERSION}.tar.zst" .
           osc addremove
           osc commit -m "logitech-trueforce-dkms ${VERSION} (from tag ${TAG})"
