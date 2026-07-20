@@ -20,7 +20,9 @@ Source0:        logitech-trueforce-linux-driver-%{version}.tar.gz
 # workflow): OBS builders have no network access, so the Rust workspace
 # builds --offline against this instead of index.crates.io.
 Source1:        logi-dd-vendor-%{version}.tar.zst
-BuildArch:      noarch
+# Not noarch: the logi-dd/logi-dd-gui subpackages ship compiled Rust
+# binaries (rpmlint aborts on binaries in noarch packages); the dkms
+# sources riding an arch package is the conventional trade-off.
 BuildRequires:  cargo, rust
 # owns the hicolor icon directories during the post-build filelist check
 BuildRequires:  hicolor-icon-theme
