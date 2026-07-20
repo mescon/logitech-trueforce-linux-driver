@@ -24,6 +24,10 @@ pub struct InputReport {
     pub clutch: u16,
     pub buttons: u32,
     pub hat: u8,
+    /// Raw hat axis states (-1/0/1), tracked so either axis event can
+    /// re-derive the 8-way POV value in `hat`; not serialized.
+    pub hat_x: i8,
+    pub hat_y: i8,
 }
 
 /// The hat switch's centered value. The descriptor declares the hat as
@@ -36,7 +40,7 @@ const HAT_CENTERED: u8 = 0x0F;
 
 impl Default for InputReport {
     fn default() -> Self {
-        InputReport { steering: 0, throttle: 0, brake: 0, clutch: 0, buttons: 0, hat: HAT_CENTERED }
+        InputReport { steering: 0, throttle: 0, brake: 0, clutch: 0, buttons: 0, hat: HAT_CENTERED, hat_x: 0, hat_y: 0 }
     }
 }
 
@@ -197,7 +201,7 @@ mod tests {
 
     #[test]
     fn input_report_serializes_report_id_and_axes_little_endian() {
-        let r = InputReport { steering: 0x1234, throttle: 0x00ff, brake: 0, clutch: 0, buttons: 0b101, hat: 0x08 };
+        let r = InputReport { steering: 0x1234, throttle: 0x00ff, brake: 0, clutch: 0, buttons: 0b101, hat: 0x08, hat_x: 0, hat_y: 0 };
         let b = r.to_bytes();
         assert_eq!(b[0], INPUT_REPORT_ID);          // report id first
         assert_eq!(&b[1..3], &[0x34, 0x12]);         // steering LE

@@ -32,6 +32,9 @@ pub const ABS_RY: u16 = 0x04;
 pub const ABS_RZ: u16 = 0x05;
 
 pub const BTN_TRIGGER: u16 = 0x120;
+pub const BTN_TRIGGER_HAPPY: u16 = 0x2c0;
+pub const ABS_HAT0X: u16 = 0x10;
+pub const ABS_HAT0Y: u16 = 0x11;
 
 // Real-wheel axis assignment, hardware-confirmed on the RS50 (the live
 // input monitor sessions, and issue #50): throttle/brake/clutch arrive on
@@ -94,6 +97,28 @@ fn decode_event(b: &[u8]) -> input_event {
 /// >= 32`) are ignored rather than shifted, which would overflow.
 pub fn map_event(report: &mut InputReport, ev: &input_event) -> bool {
     match ev.type_ {
+        EV_ABS if ev.code == ABS_HAT0X || ev.code == ABS_HAT0Y => {
+            // The wheel's D-pad is a hat: two axes in {-1, 0, 1}. Track
+            // both and re-encode as the descriptor's 8-way POV value
+            // (0 = North, clockwise; 0x0F = centered) - see issue #50,
+            // where the D-pad never reached the virtual wheel.
+            if ev.code == ABS_HAT0X {
+                report.hat_x = ev.value.clamp(-1, 1) as i8;
+            } else {
+                report.hat_y = ev.value.clamp(-1, 1) as i8;
+            }
+            report.hat = match (report.hat_x, report.hat_y) {
+                (0, -1) => 0,
+                (1, -1) => 1,
+                (1, 0) => 2,
+                (1, 1) => 3,
+                (0, 1) => 4,
+                (-1, 1) => 5,
+                (-1, 0) => 6,
+                (-1, -1) => 7,
+                _ => 0x0F,
+            };
+        }
         EV_ABS => {
             let value = ev.value.clamp(0, 0xFFFF) as u16;
             match ev.code {
@@ -105,7 +130,21 @@ pub fn map_event(report: &mut InputReport, ev: &input_event) -> bool {
             }
         }
         EV_KEY if ev.code >= BTN_TRIGGER => {
-            let bit = ev.code - BTN_TRIGGER;
+            // Two button blocks: the joystick range (BTN_TRIGGER..) maps
+            // to bits 0-15, and the wheel's extended controls (encoders,
+            // G1, GL, GR - BTN_TRIGGER_HAPPY range) map to bits 16-31,
+            // so DirectInput sims can bind them too (issue #50).
+            // The wheel's extended block starts at BTN_TRIGGER_HAPPY6
+            // (0x2c5, the first code it actually uses); 0x2c0-0x2c4 are
+            // unused and dropped to avoid an underflow.
+            const EXT_FIRST: u16 = BTN_TRIGGER_HAPPY + 5;
+            let bit = if ev.code >= EXT_FIRST {
+                16 + (ev.code - EXT_FIRST)
+            } else if ev.code < BTN_TRIGGER_HAPPY {
+                ev.code - BTN_TRIGGER
+            } else {
+                32 // unused 0x2c0-0x2c4: outside both blocks
+            };
             if bit < 32 {
                 if ev.value != 0 {
                     report.buttons |= 1 << bit;
@@ -189,6 +228,22 @@ mod tests {
         assert_eq!(r.brake, 222, "brake must map from raw ABS_RY (0x04)");
         assert!(!map_event(&mut r, &ev(EV_ABS, 0x05, 333)));
         assert_eq!(r.clutch, 333, "clutch must map from raw ABS_RZ (0x05)");
+        // D-pad: hat axes re-encode as the 8-way POV (issue #50).
+        assert!(!map_event(&mut r, &ev(EV_ABS, 0x10, 1)));
+        assert_eq!(r.hat, 2, "hat x=+1 alone is East");
+        assert!(!map_event(&mut r, &ev(EV_ABS, 0x11, -1)));
+        assert_eq!(r.hat, 1, "x=+1,y=-1 is North-East");
+        assert!(!map_event(&mut r, &ev(EV_ABS, 0x10, 0)));
+        assert!(!map_event(&mut r, &ev(EV_ABS, 0x11, 0)));
+        assert_eq!(r.hat, 0x0F, "released hat re-centres");
+        // Extended buttons: encoders/G1/GL/GR (0x2c5..) land on bits 16+.
+        assert!(!map_event(&mut r, &ev(EV_KEY, 0x2c5, 1)));
+        assert!(r.buttons & (1 << 16) != 0, "R Encoder CW is bit 16");
+        assert!(!map_event(&mut r, &ev(EV_KEY, 0x2cd, 1)));
+        assert!(r.buttons & (1 << 24) != 0, "GR is bit 24");
+        assert!(!map_event(&mut r, &ev(EV_KEY, 0x2c0, 1)));
+        assert_eq!(r.buttons & 0xFFFF_0000, (1 << 16) | (1 << 24),
+            "unused 0x2c0-0x2c4 codes map to nothing");
         assert_eq!(r.steering, 0x4000);
         assert!(map_event(&mut r, &ev(EV_SYN, SYN_REPORT, 0)));
     }

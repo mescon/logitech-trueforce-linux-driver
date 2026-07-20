@@ -63,6 +63,18 @@ fn event_index(file_name: &str) -> u32 {
 /// read from `device/id/{vendor,product}` and default to `0x046d`/`0xc276`
 /// (the RS50) if those sysfs files are missing or unparsable.
 pub fn discover_wheel() -> Result<WheelPaths> {
+    // LOGI_FFB_DEVICE pins the source to one eventN node explicitly: for
+    // multi-wheel rigs, and for tests that must not race the sort order
+    // against a physically attached wheel. Accepts "eventN" or a full
+    // /dev/input/eventN path.
+    if let Ok(forced) = std::env::var("LOGI_FFB_DEVICE") {
+        let event_name = forced.rsplit('/').next().unwrap_or(&forced).to_string();
+        let device_dir = std::path::Path::new(SYSFS_INPUT).join(&event_name).join("device");
+        if device_dir.exists() {
+            return wheel_paths_for(&event_name, &device_dir);
+        }
+        return Err(Error::WheelNotFound);
+    }
     let mut entries: Vec<_> = fs::read_dir(SYSFS_INPUT)
         .map_err(|e| Error::Io(format!("read {SYSFS_INPUT}"), e))?
         .filter_map(|e| e.ok())
@@ -88,13 +100,21 @@ pub fn discover_wheel() -> Result<WheelPaths> {
             continue;
         }
 
-        let vendor = read_hex_u16(&device_dir.join("id/vendor")).unwrap_or(descriptor::VENDOR);
-        let product = read_hex_u16(&device_dir.join("id/product")).unwrap_or(descriptor::PRODUCT);
-
-        return Ok(WheelPaths { evdev: format!("/dev/input/{event_name}"), vendor, product, name });
+        return wheel_paths_for(&event_name, &device_dir);
     }
 
     Err(Error::WheelNotFound)
+}
+
+/// Build the [`WheelPaths`] for one eventN sysfs entry (shared by normal
+/// discovery and the `LOGI_FFB_DEVICE` override).
+fn wheel_paths_for(event_name: &str, device_dir: &std::path::Path) -> Result<WheelPaths> {
+    let name = fs::read_to_string(device_dir.join("name"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let vendor = read_hex_u16(&device_dir.join("id/vendor")).unwrap_or(descriptor::VENDOR);
+    let product = read_hex_u16(&device_dir.join("id/product")).unwrap_or(descriptor::PRODUCT);
+    Ok(WheelPaths { evdev: format!("/dev/input/{event_name}"), vendor, product, name })
 }
 
 /// Assigns the next PID effect block index and advances `next_block` past
