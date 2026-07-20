@@ -150,15 +150,19 @@ fn settings_height<S: SysfsIo>(app: &App<S>) -> u16 {
     (lines + 2).min(u16::MAX as usize) as u16
 }
 
-/// The Setup view's full content height in lines. Must mirror
-/// `draw_setup`'s stacked blocks (the helper/SDK block, the Simulated
-/// TrueForce block, the games list at its natural height, the
-/// compatibility table), so the scroll offset clamps to what is drawn.
+/// The Setup view's full content height in lines: the section lines plus
+/// the block's two borders. Derived from the same builder that draws, so
+/// the scroll offset always clamps to exactly what is drawn.
 pub(crate) fn setup_content_height<S: SysfsIo>(app: &App<S>) -> u16 {
-    // The games list: one line per game (or the one-line empty state)
-    // plus the block's two borders; `draw_setup` gives it Min(3).
-    let games = (app.games.len().max(1) as u16).saturating_add(2).max(3);
-    11 + 5 + games + 18
+    (setup_sections(app).0.len() as u16).saturating_add(2)
+}
+
+/// Each Setup section's first content line (its header), in content
+/// coordinates: what the section cursor scrolls to.
+pub(crate) fn setup_section_starts<S: SysfsIo>(
+    app: &App<S>,
+) -> [u16; crate::app::SetupSection::ALL.len()] {
+    setup_sections(app).1
 }
 
 /// The Info/Testing view's full content height in lines: the identity
@@ -485,13 +489,36 @@ fn draw_help<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     );
 }
 
-/// Render the Setup body: the logi-ffb helper, the SDK folder line (edited
-/// via `s`; see `App::sdk_edit`), the per-game shim manager (the selectable
-/// Proton games list), and the static compatibility table at the bottom.
-/// Shown instead of the settings list whenever `app.is_setup()`, mirroring
-/// the GUI's Setup page in text form. Renders into `draw_scrolled`'s
-/// buffer: `area` is the view's full content height, not the viewport.
-fn draw_setup<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
+/// One Setup section's header line: the cursor marker, the numbered
+/// label (reverse-video while selected) and, while selected, its key
+/// hints, so every action is discoverable right where it applies.
+fn setup_header(label: &str, selected: bool, hint: &str) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        format!("{}{}", if selected { "> " } else { "  " }, label),
+        if selected {
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Cyan)
+        },
+    )];
+    if selected && !hint.is_empty() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(hint.to_string(), Style::default().fg(Color::DarkGray)));
+    }
+    Line::from(spans)
+}
+
+/// The Setup view's sections as flat lines plus each section's first line
+/// (its header) in content coordinates. The selected section expands to
+/// its full body; the others render compactly (header + one status line),
+/// so the whole page fits typical terminals. One builder feeds the draw,
+/// the content height and the section-cursor scrolling, so they can never
+/// disagree. Lines stay under ~56 columns (pre-wrapped by hand): the
+/// paragraph renders without wrapping so the height stays exact.
+fn setup_sections<S: SysfsIo>(
+    app: &App<S>,
+) -> (Vec<Line<'static>>, [u16; crate::app::SetupSection::ALL.len()]) {
+    use crate::app::SetupSection;
     let found_style = |found: bool| {
         if found {
             Style::default().fg(Color::Green)
@@ -499,267 +526,329 @@ fn draw_setup<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
             Style::default().fg(Color::Red)
         }
     };
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut starts = [0u16; SetupSection::ALL.len()];
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        // 18 = the 14 compat rows + note + header + the block's 2 borders;
-        // 5 = the Simulated TrueForce block's 3 lines + its 2 borders.
-        .constraints([
-            Constraint::Length(11),
-            Constraint::Length(5),
-            Constraint::Min(3),
-            Constraint::Length(18),
-        ])
-        .split(area);
-
-    // Top: logi-ffb + the SDK folder line (with the libtrueforce note).
-    let shim_found = app.shim_binary.is_some();
-    let sdk_line = match &app.sdk_edit {
-        Some(draft) => Line::from(vec![
-            Span::raw("SDK folder: "),
-            Span::styled(format!("{draft}_"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
-        // The concrete resolution outcome next to the field: the resolved
-        // path installs actually use (green), or a red not-found line.
-        None => Line::from(vec![
-            Span::raw("SDK folder: "),
-            Span::raw(app.sdk_dir.clone()),
-            Span::raw("  "),
-            match &app.sdk_resolved {
-                Some(dir) => Span::styled(
-                    format!("SDK DLLs: found at {}", dir.display()),
-                    found_style(true),
-                ),
-                None => Span::styled(
-                    "SDK DLLs: not found - copy them from a Windows G HUB install; see the README",
-                    found_style(false),
-                ),
-            },
-        ]),
-    };
-    let top = vec![
-        Line::from(Span::styled(
-            "Force feedback in games (logi-ffb)",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(
-            "DirectInput sims run through Proton (for example Le Mans Ultimate) get no \
-             force feedback by default. Running the game through logi-ffb gives them FFB \
-             via a virtual wheel.",
-        ),
-        Line::from(vec![
-            Span::raw("logi-ffb: "),
-            Span::styled(
-                match &app.ffb_path {
-                    Some(p) => format!("found: {}", p.display()),
-                    None => "not found (PATH or next to logi-dd)".to_string(),
-                },
-                found_style(app.ffb_path.is_some()),
-            ),
-            Span::raw("    launch options: "),
-            Span::styled("logi-ffb %command%", Style::default().fg(Color::Yellow)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "TrueForce SDK shim",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(vec![
-            Span::raw("Installer: "),
-            Span::styled(
-                match &app.shim_binary {
-                    Some(p) => format!("found: {}", p.display()),
-                    None => "not found (PATH or the repo's tools/)".to_string(),
-                },
-                found_style(shim_found),
-            ),
-        ]),
-        sdk_line,
-        Line::from(
-            "Native Linux apps can drive TrueForce through this repo's libtrueforce \
-             library. The SDK DLLs come from Logitech's G HUB on Windows and are never \
-             redistributed; see the project README for how to copy them.",
-        ),
-    ];
-    Paragraph::new(top)
-        .wrap(Wrap { trim: false })
-        .block(Block::default().borders(Borders::ALL).title("Setup"))
-        .render(rows[0], buf);
-
-    // Simulated TrueForce: the daemon block (its per-game cells live in
-    // the games list and the compatibility table below).
-    let tf = vec![
-        Line::from(
-            "Synthesizes TrueForce engine haptics from a game's UDP telemetry, for \
-             titles without native TrueForce.",
-        ),
-        // The daemon line: the resolved binary and whether it is running.
-        Line::from(vec![
-            Span::raw("logi-tf-sim: "),
-            Span::styled(
-                match &app.tf_bin {
-                    Some(p) => format!("found: {}", p.display()),
-                    None => "not found (PATH or next to logi-dd)".to_string(),
-                },
-                found_style(app.tf_bin.is_some()),
-            ),
-            Span::raw("    daemon: "),
-            if app.tf_daemon {
-                Span::styled("running", Style::default().fg(Color::Green))
-            } else {
-                Span::styled("stopped", Style::default().fg(Color::DarkGray))
-            },
-        ]),
-        // The master line, with whichever value editor is active shown as
-        // its yellow draft.
-        Line::from(vec![
-            Span::raw("master: "),
-            Span::styled(
-                if app.tf_cfg.enabled { "on" } else { "off" },
-                found_style(app.tf_cfg.enabled),
-            ),
-            Span::raw("   intensity: "),
-            match &app.tf_intensity_edit {
-                Some(draft) => Span::styled(
-                    format!("{draft}_"),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ),
-                None => Span::raw(format!("{}%", app.tf_cfg.intensity)),
-            },
-            Span::raw("   pitch (felt rev rate; 100 = crank speed): "),
-            match &app.tf_pitch_edit {
-                Some(draft) => Span::styled(
-                    format!("{draft}_"),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ),
-                None => Span::raw(format!("{}%", app.tf_cfg.pitch_pct)),
-            },
-        ]),
-    ];
-    Paragraph::new(tf)
-        .wrap(Wrap { trim: false })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Simulated TrueForce (m on/off, e intensity, p pitch, d daemon, t test sweep)"),
-        )
-        .render(rows[1], buf);
-
-    // Middle: the installed Proton games, one selectable row each.
-    let games: Vec<ListItem> = if app.games.is_empty() {
-        vec![ListItem::new(if app.games_scanned {
-            "No Steam installation with Proton games found (r to rescan)"
-        } else {
-            "Scanning Steam libraries..."
-        })
-        .style(Style::default().fg(Color::DarkGray))]
-    } else {
-        app.games
-            .iter()
-            .enumerate()
-            .map(|(i, g)| {
-                let status = if g.shim_installed {
-                    Span::styled("shim installed", Style::default().fg(Color::Green))
-                } else {
-                    Span::styled("-", Style::default().fg(Color::DarkGray))
-                };
-                // Games the tf-sim daemon can identify show their live
-                // per-game state (g toggles it); others show nothing.
-                let sim = match logi_dd_core::tfsim::game_id_for_title(&g.name) {
-                    Some(id) => {
-                        let game = app.tf_cfg.game(id);
-                        if game.enabled {
-                            Span::styled(
-                                format!("   sim TF: on {}%", game.intensity),
-                                Style::default().fg(Color::Green),
-                            )
-                        } else {
-                            Span::styled("   sim TF: off", Style::default().fg(Color::DarkGray))
-                        }
+    for (i, section) in SetupSection::ALL.iter().enumerate() {
+        starts[i] = lines.len() as u16;
+        let selected = app.setup_section_idx == i;
+        let inside = selected && app.setup_inside;
+        match section {
+            SetupSection::Ffb => {
+                lines.push(setup_header(section.label(), selected, ""));
+                let ffb_span = Span::styled(
+                    match &app.ffb_path {
+                        Some(p) => format!("found: {}", p.display()),
+                        None => "not found (PATH or next to logi-dd)".to_string(),
+                    },
+                    found_style(app.ffb_path.is_some()),
+                );
+                if selected {
+                    for text in [
+                        "DirectInput sims run through Proton (for example",
+                        "Le Mans Ultimate) get no force feedback by default.",
+                        "Running a game through logi-ffb gives it FFB via a",
+                        "virtual wheel.",
+                    ] {
+                        lines.push(Line::from(format!("  {text}")));
                     }
-                    None => Span::raw(""),
-                };
-                let mut item = ListItem::new(Line::from(vec![
-                    Span::raw(format!("{:<40}", g.name)),
-                    Span::raw(" "),
-                    status,
-                    sim,
-                ]));
-                if i == app.game_idx {
-                    item = item.style(Style::default().add_modifier(Modifier::REVERSED));
-                }
-                item
-            })
-            .collect()
-    };
-    List::new(games)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Proton games (i install shim, u remove shim, g simulated TF)"),
-        )
-        .render(rows[2], buf);
-
-    // Bottom: the compatibility table. "expected" marks titles not
-    // verified on this driver yet; the third column is the per-game
-    // "Simulated TF" state (live where the daemon can identify the title,
-    // "planned" for the other FFB-only titles, "n/a (native)" where the
-    // shim already delivers real TrueForce). Mirrors the GUI Setup page's
-    // `compat_rows`.
-    let compat_rows: [(&str, &str, &str); 14] = [
-        ("ACC", "TrueForce (shim)", "n/a (native)"),
-        ("AC EVO", "TrueForce (shim)", "n/a (native)"),
-        ("iRacing", "FFB (native)", "planned"),
-        ("Le Mans Ultimate", "FFB (logi-ffb)", "planned"),
-        ("Automobilista 2", "FFB (logi-ffb)", "planned"),
-        ("rFactor 2", "FFB (logi-ffb)", "planned"),
-        ("Assetto Corsa", "FFB (logi-ffb, expected)", "planned"),
-        ("Project CARS 2", "FFB (logi-ffb, expected)", "planned"),
-        ("Dirt Rally 2.0", "FFB (native)", "planned"),
-        ("EA SPORTS WRC", "FFB (expected)", "planned"),
-        ("F1 series", "FFB (expected)", "planned"),
-        ("Euro Truck Simulator 2", "FFB (native Linux)", "planned"),
-        ("American Truck Simulator", "FFB (native Linux)", "planned"),
-        ("BeamNG.drive", "FFB (native)", "planned"),
-    ];
-    let mut compat = vec![
-        Line::from(Span::styled(
-            "\"FFB (logi-ffb)\" = launch with logi-ffb %command%. \"Simulated TF\" = engine haptics synthesized from telemetry (logi-tf-sim): live per-game values where the daemon can identify the title; n/a (native) titles get real TrueForce via the shim.",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            format!("{:<26}{:<26}{}", "Game", "Force feedback", "Simulated TF"),
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
-        )),
-    ];
-    compat.extend(compat_rows.iter().map(|(game, how, tf)| {
-        // Titles with a tf-sim game id show that game's live tf-sim.conf
-        // state instead of the static text (both AMS2 and Project CARS 2
-        // share one id, so they always agree).
-        let cell = match logi_dd_core::tfsim::game_id_for_title(game) {
-            Some(id) => {
-                let sim = app.tf_cfg.game(id);
-                if sim.enabled {
-                    Span::styled(
-                        format!("on {}%", sim.intensity),
-                        Style::default().fg(Color::Green),
-                    )
+                    lines.push(Line::from(vec![Span::raw("  logi-ffb: "), ffb_span]));
+                    lines.push(Line::from(vec![
+                        Span::raw("  Steam launch options: "),
+                        Span::styled("logi-ffb %command%", Style::default().fg(Color::Yellow)),
+                    ]));
                 } else {
-                    Span::styled("off".to_string(), Style::default().fg(Color::DarkGray))
+                    lines.push(Line::from(vec![
+                        Span::styled("  logi-ffb: ", dim),
+                        ffb_span,
+                        Span::styled("   launch: logi-ffb %command%", dim),
+                    ]));
                 }
             }
-            None => Span::styled((*tf).to_string(), Style::default().fg(Color::DarkGray)),
-        };
-        Line::from(vec![
-            Span::raw(format!("{game:<26}")),
-            Span::styled(format!("{how:<26}"), Style::default().fg(Color::Gray)),
-            cell,
-        ])
-    }));
-    Paragraph::new(compat)
-        .wrap(Wrap { trim: false })
-        .block(Block::default().borders(Borders::ALL).title("Game compatibility"))
-        .render(rows[3], buf);
+            SetupSection::Sdk => {
+                lines.push(setup_header(
+                    section.label(),
+                    selected,
+                    "[Enter or s edits the SDK folder]",
+                ));
+                let dlls_span = match &app.sdk_resolved {
+                    Some(dir) => Span::styled(
+                        format!("SDK DLLs: found at {}", dir.display()),
+                        found_style(true),
+                    ),
+                    None => Span::styled("SDK DLLs: not found", found_style(false)),
+                };
+                if selected {
+                    lines.push(Line::from(vec![
+                        Span::raw("  Installer: "),
+                        Span::styled(
+                            match &app.shim_binary {
+                                Some(p) => format!("found: {}", p.display()),
+                                None => "not found (PATH or the repo's tools/)".to_string(),
+                            },
+                            found_style(app.shim_binary.is_some()),
+                        ),
+                    ]));
+                    lines.push(match &app.sdk_edit {
+                        Some(draft) => Line::from(vec![
+                            Span::raw("  SDK folder: "),
+                            Span::styled(
+                                format!("{draft}_"),
+                                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                            ),
+                        ]),
+                        None => Line::from(format!("  SDK folder: {}", app.sdk_dir)),
+                    });
+                    lines.push(Line::from(vec![Span::raw("  "), dlls_span]));
+                    for text in [
+                        "The DLLs come from Logitech's G HUB on Windows and",
+                        "are never redistributed; the README says how to copy",
+                        "them. Native Linux apps use libtrueforce instead.",
+                    ] {
+                        lines.push(Line::from(Span::styled(format!("  {text}"), dim)));
+                    }
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled("  installer: ", dim),
+                        Span::styled(
+                            if app.shim_binary.is_some() { "found" } else { "not found" },
+                            found_style(app.shim_binary.is_some()),
+                        ),
+                        Span::styled("   ", dim),
+                        dlls_span,
+                    ]));
+                }
+            }
+            SetupSection::Games => {
+                let hint = if inside {
+                    "[i install  u remove  g sim TF  Esc back]"
+                } else {
+                    "[Enter opens the list]"
+                };
+                lines.push(setup_header(section.label(), selected, hint));
+                if selected {
+                    if app.games.is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            if app.games_scanned {
+                                "  No Steam installation with Proton games found (r rescans)"
+                            } else {
+                                "  Scanning Steam libraries..."
+                            },
+                            dim,
+                        )));
+                    }
+                    for (g_idx, g) in app.games.iter().enumerate() {
+                        let cursor = inside && g_idx == app.game_idx;
+                        let name_style = if cursor {
+                            Style::default().add_modifier(Modifier::REVERSED)
+                        } else {
+                            Style::default()
+                        };
+                        let status = if g.shim_installed {
+                            Span::styled("shim installed", Style::default().fg(Color::Green))
+                        } else {
+                            Span::styled("-", dim)
+                        };
+                        // Games the tf-sim daemon can identify show their
+                        // live per-game state (g toggles it); others show
+                        // nothing.
+                        let sim = match logi_dd_core::tfsim::game_id_for_title(&g.name) {
+                            Some(id) => {
+                                let game = app.tf_cfg.game(id);
+                                if game.enabled {
+                                    Span::styled(
+                                        format!("  sim TF: on {}%", game.intensity),
+                                        Style::default().fg(Color::Green),
+                                    )
+                                } else {
+                                    Span::styled("  sim TF: off".to_string(), dim)
+                                }
+                            }
+                            None => Span::raw(""),
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("  {}{:<34}", if cursor { "> " } else { "  " }, g.name),
+                                name_style,
+                            ),
+                            Span::raw(" "),
+                            status,
+                            sim,
+                        ]));
+                    }
+                } else {
+                    let with_shim = app.games.iter().filter(|g| g.shim_installed).count();
+                    lines.push(Line::from(Span::styled(
+                        if !app.games_scanned {
+                            "  not scanned yet".to_string()
+                        } else if app.games.is_empty() {
+                            "  none found (r rescans)".to_string()
+                        } else {
+                            format!("  {} game(s), {} with the shim", app.games.len(), with_shim)
+                        },
+                        dim,
+                    )));
+                }
+            }
+            SetupSection::Compat => {
+                lines.push(setup_header(section.label(), selected, ""));
+                // "*" marks titles not verified on this driver yet; the
+                // last column is the per-game "Simulated TF" state (live
+                // where the daemon can identify the title, "planned" for
+                // the other FFB-only titles, "native TF" where the shim
+                // already delivers the real thing). Mirrors the GUI Setup
+                // page's `compat_rows`.
+                let compat_rows: [(&str, &str, &str); 14] = [
+                    ("ACC", "TrueForce (shim)", "native TF"),
+                    ("AC EVO", "TrueForce (shim)", "native TF"),
+                    ("iRacing", "FFB (native)", "planned"),
+                    ("Le Mans Ultimate", "FFB (logi-ffb)", "planned"),
+                    ("Automobilista 2", "FFB (logi-ffb)", "planned"),
+                    ("rFactor 2", "FFB (logi-ffb)", "planned"),
+                    ("Assetto Corsa", "FFB (logi-ffb) *", "planned"),
+                    ("Project CARS 2", "FFB (logi-ffb) *", "planned"),
+                    ("Dirt Rally 2.0", "FFB (native)", "planned"),
+                    ("EA SPORTS WRC", "FFB *", "planned"),
+                    ("F1 series", "FFB *", "planned"),
+                    ("Euro Truck Simulator 2", "FFB (native Linux)", "planned"),
+                    ("American Truck Simulator", "FFB (native Linux)", "planned"),
+                    ("BeamNG.drive", "FFB (native)", "planned"),
+                ];
+                if selected {
+                    for text in [
+                        "FFB (logi-ffb) = launch with logi-ffb %command%.",
+                        "Simulated TF = telemetry haptics via logi-tf-sim,",
+                        "live values where the daemon knows the title.",
+                        "native TF = the shim delivers real TrueForce.",
+                        "* = expected to work, not verified on this driver.",
+                    ] {
+                        lines.push(Line::from(Span::styled(format!("  {text}"), dim)));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        format!("  {:<25}{:<19}{}", "Game", "Force feedback", "Simulated TF"),
+                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    )));
+                    for (game, how, tf) in compat_rows {
+                        // Titles with a tf-sim game id show that game's
+                        // live tf-sim.conf state instead of the static text
+                        // (AMS2 and Project CARS 2 share one id, so they
+                        // always agree).
+                        let cell = match logi_dd_core::tfsim::game_id_for_title(game) {
+                            Some(id) => {
+                                let sim = app.tf_cfg.game(id);
+                                if sim.enabled {
+                                    Span::styled(
+                                        format!("on {}%", sim.intensity),
+                                        Style::default().fg(Color::Green),
+                                    )
+                                } else {
+                                    Span::styled("off".to_string(), dim)
+                                }
+                            }
+                            None => Span::styled(tf.to_string(), dim),
+                        };
+                        lines.push(Line::from(vec![
+                            Span::raw(format!("  {game:<25}")),
+                            Span::styled(format!("{how:<19}"), Style::default().fg(Color::Gray)),
+                            cell,
+                        ]));
+                    }
+                } else {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {} known titles", compat_rows.len()),
+                        dim,
+                    )));
+                }
+            }
+            SetupSection::SimTf => {
+                let hint = if inside {
+                    "[m master  e intensity  p pitch  d daemon  t sweep  Esc back]"
+                } else {
+                    "[Enter opens the controls]"
+                };
+                lines.push(setup_header(section.label(), selected, hint));
+                let master_span = Span::styled(
+                    if app.tf_cfg.enabled { "on" } else { "off" },
+                    found_style(app.tf_cfg.enabled),
+                );
+                let daemon_span = if app.tf_daemon {
+                    Span::styled("running", Style::default().fg(Color::Green))
+                } else {
+                    Span::styled("stopped", dim)
+                };
+                if selected {
+                    for text in [
+                        "Synthesizes TrueForce engine haptics from a game's",
+                        "UDP telemetry, for titles without native TrueForce.",
+                    ] {
+                        lines.push(Line::from(format!("  {text}")));
+                    }
+                    lines.push(Line::from(vec![
+                        Span::raw("  logi-tf-sim: "),
+                        Span::styled(
+                            match &app.tf_bin {
+                                Some(p) => format!("found: {}", p.display()),
+                                None => "not found (PATH or next to logi-dd)".to_string(),
+                            },
+                            found_style(app.tf_bin.is_some()),
+                        ),
+                        Span::raw("   daemon: "),
+                        daemon_span,
+                    ]));
+                    // Whichever value editor is active shows as its yellow
+                    // draft.
+                    let draft_or = |draft: &Option<String>, value: String| match draft {
+                        Some(d) => Span::styled(
+                            format!("{d}_"),
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        ),
+                        None => Span::raw(value),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw("  master: "),
+                        master_span,
+                        Span::raw("   intensity: "),
+                        draft_or(&app.tf_intensity_edit, format!("{}%", app.tf_cfg.intensity)),
+                        Span::raw("   pitch: "),
+                        draft_or(&app.tf_pitch_edit, format!("{}%", app.tf_cfg.pitch_pct)),
+                    ]));
+                    lines.push(Line::from(Span::styled(
+                        "  pitch = felt rev rate; 100 = crank speed. Per-game",
+                        dim,
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "  switches live in the Proton games list (g).",
+                        dim,
+                    )));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled("  master: ", dim),
+                        master_span,
+                        Span::styled(format!("   intensity: {}%", app.tf_cfg.intensity), dim),
+                        Span::styled("   daemon: ", dim),
+                        daemon_span,
+                    ]));
+                }
+            }
+        }
+        if i + 1 < SetupSection::ALL.len() {
+            lines.push(Line::from(""));
+        }
+    }
+    (lines, starts)
+}
+
+/// Render the Setup body: the sectioned page `setup_sections` builds
+/// (logi-ffb, the SDK shim, the Proton games, the compatibility table,
+/// Simulated TrueForce). Shown instead of the settings list whenever
+/// `app.is_setup()`. Renders into `draw_scrolled`'s buffer: `area` is the
+/// view's full content height, not the viewport.
+fn draw_setup<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
+    let (lines, _) = setup_sections(app);
+    Paragraph::new(lines)
+        .block(pane_block("Setup", app.focus == Focus::Content))
+        .render(area, buf);
 }
 
 /// A `#`-filled 0..65535 gauge, `width` cells wide.
@@ -1078,23 +1167,61 @@ mod tests {
     }
 
     #[test]
-    fn small_terminal_flags_the_clipped_setup_view_and_scrolls_to_the_end() {
-        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    fn setup_sections_render_compact_and_expand_on_selection() {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         let mut a = setup_view_app();
+        a.focus = Focus::Content;
+        term.draw(|f| draw(f, &a)).unwrap();
+        let text = screen(&term);
+        // Every section header is on one screen thanks to the compact
+        // rendering; the unselected compatibility table shows only its
+        // one-line summary.
+        for header in [
+            "Force feedback in games (logi-ffb)",
+            "TrueForce SDK shim",
+            "Proton games",
+            "Game compatibility",
+            "Simulated TrueForce",
+        ] {
+            assert!(text.contains(header), "missing header {header}:\n{text}");
+        }
+        assert!(text.contains("known titles"), "compact compat summary:\n{text}");
+        assert!(!text.contains("BeamNG.drive"), "the table body stays collapsed:\n{text}");
+        // Selecting the compatibility section expands the full table.
+        use crossterm::event::KeyCode;
+        for _ in 0..3 {
+            a.on_key(KeyCode::Down);
+        }
+        assert_eq!(a.setup_section(), crate::app::SetupSection::Compat);
+        term.draw(|f| draw(f, &a)).unwrap();
+        let text = screen(&term);
+        assert!(text.contains("BeamNG.drive"), "the selected section expands:\n{text}");
+        assert!(!text.contains("known titles"), "the summary line yields to the body:\n{text}");
+    }
+
+    #[test]
+    fn small_terminal_flags_the_clipped_setup_view_and_scrolls_to_the_end() {
+        // 80x24: with the compatibility table expanded the page cannot
+        // fit, so the markers and the scroll fallback must still work.
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut a = setup_view_app();
+        a.focus = Focus::Content;
+        a.setup_section_idx = crate::app::SetupSection::ALL
+            .iter()
+            .position(|s| *s == crate::app::SetupSection::Compat)
+            .unwrap();
+        a.setup_scroll = 0;
         term.draw(|f| draw(f, &a)).unwrap();
         let text = screen(&term);
         assert!(text.contains("more below"), "clipped content is flagged:\n{text}");
-        assert!(
-            !text.contains("Game compatibility"),
-            "the last block starts off-screen at 24 lines:\n{text}"
-        );
-        // Scroll to the bottom: the marker flips and the last block shows.
+        // Scroll to the bottom: the marker flips and the table's last
+        // rows show.
         a.scroll_view(i32::from(a.max_scroll()));
         term.draw(|f| draw(f, &a)).unwrap();
         let text = screen(&term);
         assert!(text.contains("more above"), "the scrolled state is flagged:\n{text}");
         assert!(!text.contains("more below"), "nothing is clipped below any more:\n{text}");
-        assert!(text.contains("Game compatibility"), "scrolling reaches the bottom:\n{text}");
+        assert!(text.contains("BeamNG.drive"), "scrolling reaches the bottom:\n{text}");
     }
 
     #[test]

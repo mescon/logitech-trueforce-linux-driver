@@ -100,6 +100,39 @@ pub enum Focus {
     Content,
 }
 
+/// The Setup view's sections, in render order. Up/Down move a section
+/// cursor; the selected section expands to its full body while the others
+/// render compactly (header + one status line), so the page fits typical
+/// terminals. Games and Simulated TF carry inner state (a game cursor,
+/// the daemon toggles): Enter/Right steps inside, Esc/Left back out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupSection {
+    Ffb,
+    Sdk,
+    Games,
+    Compat,
+    SimTf,
+}
+
+impl SetupSection {
+    pub const ALL: [SetupSection; 5] = [
+        SetupSection::Ffb,
+        SetupSection::Sdk,
+        SetupSection::Games,
+        SetupSection::Compat,
+        SetupSection::SimTf,
+    ];
+    pub fn label(&self) -> &'static str {
+        match self {
+            SetupSection::Ffb => "Force feedback in games (logi-ffb)",
+            SetupSection::Sdk => "TrueForce SDK shim",
+            SetupSection::Games => "Proton games",
+            SetupSection::Compat => "Game compatibility",
+            SetupSection::SimTf => "Simulated TrueForce",
+        }
+    }
+}
+
 /// The SDK folder field's prefill: `$LOGITECH_TRUEFORCE_SDK_DIR` when set,
 /// else `~/.local/share/logitech-trueforce/sdk` (the installer script's
 /// own default). Editable in the view (the `s` key); the concrete outcome
@@ -171,6 +204,14 @@ pub struct App<S: SysfsIo> {
     /// edit is active: type to append, Backspace to erase, Enter commits
     /// (re-checking `sdk_valid`), Esc discards.
     pub sdk_edit: Option<String>,
+    /// The Setup view's section cursor (an index into
+    /// `SetupSection::ALL`): the selected section expands, the rest render
+    /// compactly. Kept across view switches, like the games scan.
+    pub setup_section_idx: usize,
+    /// Whether the selected Setup section's inner state is entered
+    /// (Enter/Right on Games or Simulated TF): the section's own keys only
+    /// act inside, and Esc/Left steps back to the section level first.
+    pub setup_inside: bool,
     /// The installed Proton games the Setup view lists, `scan_games`'s
     /// last result; `game_idx` is the selected row.
     pub games: Vec<SteamGame>,
@@ -305,6 +346,8 @@ impl<S: SysfsIo> App<S> {
             sdk_dir: sdk_field_prefill(),
             sdk_resolved: None,
             sdk_edit: None,
+            setup_section_idx: 0,
+            setup_inside: false,
             games: Vec::new(),
             game_idx: 0,
             games_scanned: false,
@@ -373,6 +416,42 @@ impl<S: SysfsIo> App<S> {
     /// Whether the synthetic "Setup" sidebar entry is selected.
     pub fn is_setup(&self) -> bool {
         self.cat_idx == SETUP_INDEX
+    }
+
+    /// The Setup view's selected section; see `SetupSection`.
+    pub fn setup_section(&self) -> SetupSection {
+        SetupSection::ALL[self.setup_section_idx.min(SetupSection::ALL.len() - 1)]
+    }
+
+    /// Move the Setup section cursor by `d` (clamped at both ends) and
+    /// scroll the view so the newly expanded section is on screen.
+    fn move_setup_section(&mut self, d: i32) {
+        let n = SetupSection::ALL.len() as i32;
+        self.setup_section_idx =
+            ((self.setup_section_idx as i32 + d).clamp(0, n - 1)) as usize;
+        self.ensure_setup_visible();
+    }
+
+    /// Scroll the Setup view so the selected section is visible: its whole
+    /// body when it fits the viewport, its header at minimum.
+    fn ensure_setup_visible(&mut self) {
+        let body = i32::from(self.body_height.get().max(1));
+        let starts = crate::ui::setup_section_starts(self);
+        let total = i32::from(crate::ui::setup_content_height(self));
+        let i = self.setup_section_idx;
+        // +1: the block's top border sits above the first content line
+        // (the first section drags the border itself into view).
+        let start = if i == 0 { 0 } else { i32::from(starts[i]) + 1 };
+        let end = starts.get(i + 1).map(|s| i32::from(*s)).unwrap_or(total - 1);
+        let mut scroll = i32::from(self.setup_scroll);
+        if end >= scroll + body {
+            scroll = end - body + 1;
+        }
+        if start < scroll {
+            scroll = start;
+        }
+        let max = i32::from(self.max_scroll());
+        self.setup_scroll = scroll.clamp(0, max) as u16;
     }
 
     /// Whether the Info category is selected (the page that carries the
@@ -805,9 +884,10 @@ impl<S: SysfsIo> App<S> {
         }
         self.cat_idx = idx;
         self.row_idx = 0;
-        // A fresh view always starts at its top.
+        // A fresh view always starts at its top, at the section level.
         self.info_scroll = 0;
         self.setup_scroll = 0;
+        self.setup_inside = false;
         // First visit to the Setup view scans the Steam libraries; later
         // visits keep the last scan (r rescans on demand). The daemon
         // probe is cheap, so every entry refreshes it.
@@ -1657,16 +1737,56 @@ impl<S: SysfsIo> App<S> {
             if self.nav_key(key) || self.sidebar_key(key) {
                 return;
             }
+            let section = self.setup_section();
+            let inside = self.setup_inside;
             match key {
-                Esc | Left => self.focus = Focus::Sidebar,
-                Up => self.game_idx = self.game_idx.saturating_sub(1),
-                Down => {
-                    if self.game_idx + 1 < self.games.len() {
-                        self.game_idx += 1;
+                // Esc discipline: an entered section closes first, then
+                // content focus steps back to the sidebar.
+                Esc | Left => {
+                    if self.setup_inside {
+                        self.setup_inside = false;
+                    } else {
+                        self.focus = Focus::Sidebar;
                     }
                 }
-                // Up/Down select games here, so only the page keys scroll
-                // the Setup view.
+                // Section level: Up/Down move the section cursor (the view
+                // scrolls along); inside Games they move the game cursor.
+                Up => {
+                    if inside && section == SetupSection::Games {
+                        self.game_idx = self.game_idx.saturating_sub(1);
+                    } else if !inside {
+                        self.move_setup_section(-1);
+                    }
+                }
+                Down => {
+                    if inside && section == SetupSection::Games {
+                        if self.game_idx + 1 < self.games.len() {
+                            self.game_idx += 1;
+                        }
+                    } else if !inside {
+                        self.move_setup_section(1);
+                    }
+                }
+                // Enter a section's inner state (Games, Simulated TF); the
+                // SDK section's Enter opens its one editable field, and the
+                // display-only sections are fully shown already.
+                Enter | Right if !inside => match section {
+                    SetupSection::Games => {
+                        if self.games.is_empty() {
+                            self.status = if self.games_scanned {
+                                "no Proton games found (r rescans)".to_string()
+                            } else {
+                                "scanning Steam libraries...".to_string()
+                            };
+                        } else {
+                            self.setup_inside = true;
+                        }
+                    }
+                    SetupSection::SimTf => self.setup_inside = true,
+                    SetupSection::Sdk => self.sdk_edit = Some(self.sdk_dir.clone()),
+                    SetupSection::Ffb | SetupSection::Compat => {}
+                },
+                // PgUp/PgDn keep scrolling as the fallback everywhere.
                 PageUp => self.scroll_view(-self.scroll_page()),
                 PageDown => self.scroll_view(self.scroll_page()),
                 Char('r') => {
@@ -1674,24 +1794,28 @@ impl<S: SysfsIo> App<S> {
                     self.tf_probe();
                     self.status = format!("rescanned: {} Proton game(s)", self.games.len());
                 }
-                // While a sweep plays, s stops it; otherwise it opens the
-                // SDK folder editor as before.
+                // While a sweep plays, s stops it from anywhere in Setup;
+                // otherwise it is the SDK section's edit shortcut.
                 Char('s') => {
-                    if !self.tf_stop_sweep() {
+                    if !self.tf_stop_sweep() && section == SetupSection::Sdk && !inside {
                         self.sdk_edit = Some(self.sdk_dir.clone());
                     }
                 }
-                Char('m') => self.tf_toggle_master(),
-                Char('e') => {
+                // The Simulated TF keys, scoped to its entered section.
+                Char('m') if inside && section == SetupSection::SimTf => {
+                    self.tf_toggle_master()
+                }
+                Char('e') if inside && section == SetupSection::SimTf => {
                     self.tf_intensity_edit = Some(self.tf_cfg.intensity.to_string());
                 }
-                Char('p') => {
+                Char('p') if inside && section == SetupSection::SimTf => {
                     self.tf_pitch_edit = Some(self.tf_cfg.pitch_pct.to_string());
                 }
-                Char('d') => self.tf_toggle_daemon(),
-                Char('g') => self.tf_toggle_selected_game(),
+                Char('d') if inside && section == SetupSection::SimTf => {
+                    self.tf_toggle_daemon()
+                }
                 // Arm the consent step; `t` never plays anything itself.
-                Char('t') => {
+                Char('t') if inside && section == SetupSection::SimTf => {
                     if self.tf_sweep.is_some() {
                         self.status = "test sweep: already playing (s stops it)".to_string();
                     } else if self.tf_bin.is_none() {
@@ -1703,27 +1827,37 @@ impl<S: SysfsIo> App<S> {
                         self.status = "Test simulated TrueForce: the wheel WILL produce haptic force for about 6 seconds. Keep hands relaxed. y continues, any other key cancels".to_string();
                     }
                 }
-                // Queued, not run here: the main loop draws a "running..."
-                // status line before the blocking run (see `pending_shim`).
-                Char('i') => match self.selected_game() {
-                    Some(game) => {
-                        let pfx = game.prefix.to_string_lossy().into_owned();
-                        // The RESOLVED dir goes along explicitly, i.e.
-                        // exactly what the SDK status line reports;
-                        // nothing resolved omits the flag and the
-                        // installer's own error guidance runs.
-                        let args = steam::shim_install_args(&pfx, self.sdk_resolved.as_deref());
-                        self.pending_shim = Some((args, "install"));
+                // The game keys, scoped to the entered games list. Queued,
+                // not run here: the main loop draws a "running..." status
+                // line before the blocking run (see `pending_shim`).
+                Char('i') if inside && section == SetupSection::Games => {
+                    match self.selected_game() {
+                        Some(game) => {
+                            let pfx = game.prefix.to_string_lossy().into_owned();
+                            // The RESOLVED dir goes along explicitly, i.e.
+                            // exactly what the SDK status line reports;
+                            // nothing resolved omits the flag and the
+                            // installer's own error guidance runs.
+                            let args =
+                                steam::shim_install_args(&pfx, self.sdk_resolved.as_deref());
+                            self.pending_shim = Some((args, "install"));
+                        }
+                        None => self.status = "shim install: no game selected".to_string(),
                     }
-                    None => self.status = "shim install: no game selected".to_string(),
-                },
-                Char('u') => match self.selected_game() {
-                    Some(game) => {
-                        let pfx = game.prefix.to_string_lossy().into_owned();
-                        self.pending_shim = Some((vec!["--uninstall-prefix".to_string(), pfx], "uninstall"));
+                }
+                Char('u') if inside && section == SetupSection::Games => {
+                    match self.selected_game() {
+                        Some(game) => {
+                            let pfx = game.prefix.to_string_lossy().into_owned();
+                            self.pending_shim =
+                                Some((vec!["--uninstall-prefix".to_string(), pfx], "uninstall"));
+                        }
+                        None => self.status = "shim uninstall: no game selected".to_string(),
                     }
-                    None => self.status = "shim uninstall: no game selected".to_string(),
-                },
+                }
+                Char('g') if inside && section == SetupSection::Games => {
+                    self.tf_toggle_selected_game()
+                }
                 _ => {}
             }
             return;
@@ -2226,22 +2360,18 @@ mod tests {
     }
 
     #[test]
-    fn setup_keeps_i_for_the_shim_install() {
+    fn setup_i_installs_only_inside_the_games_list() {
         use crossterm::event::KeyCode;
-        let mut a = app();
-        for _ in 0..Category::ALL.len() {
-            a.move_cat(1);
-        }
-        assert!(a.is_setup());
+        let mut a = setup_app();
+        // At the section level, i neither opens the settings info popup
+        // nor queues an install.
         a.on_key(KeyCode::Char('i'));
         assert!(a.info_popup.is_none(), "Setup's i must not open the info popup");
-        // The binding still means "install the shim": either a run was
-        // queued (a game is selected) or the no-game status appeared.
-        assert!(
-            a.take_pending_shim().is_some() || a.status.contains("no game selected"),
-            "status: {}",
-            a.status
-        );
+        assert_eq!(a.take_pending_shim(), None, "nothing queued at the section level");
+        // Inside the games list it queues the install for the selection.
+        enter_setup(&mut a, SetupSection::Games);
+        a.on_key(KeyCode::Char('i'));
+        assert!(a.take_pending_shim().is_some(), "status: {}", a.status);
     }
 
     #[test]
@@ -2430,10 +2560,82 @@ mod tests {
         a
     }
 
+    /// Park the Setup view on `target` and enter it (the Enter key), the
+    /// way a user reaches a section's inner keys.
+    fn enter_setup(a: &mut App<FakeSysfs>, target: SetupSection) {
+        a.setup_section_idx =
+            SetupSection::ALL.iter().position(|s| *s == target).unwrap();
+        a.setup_inside = false;
+        a.on_key(crossterm::event::KeyCode::Enter);
+    }
+
+    #[test]
+    fn setup_sections_move_clamp_and_enter() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        assert_eq!(a.setup_section(), SetupSection::Ffb, "starts on the first section");
+        a.on_key(KeyCode::Up);
+        assert_eq!(a.setup_section(), SetupSection::Ffb, "clamps at the top");
+        for _ in 0..10 {
+            a.on_key(KeyCode::Down);
+        }
+        assert_eq!(a.setup_section(), SetupSection::SimTf, "clamps at the bottom");
+        // Enter steps inside; Up/Down stop moving the section cursor.
+        a.on_key(KeyCode::Enter);
+        assert!(a.setup_inside);
+        a.on_key(KeyCode::Up);
+        assert_eq!(a.setup_section(), SetupSection::SimTf, "the cursor stays while inside");
+        // Esc leaves the section first, then hands focus to the sidebar.
+        a.on_key(KeyCode::Esc);
+        assert!(!a.setup_inside, "Esc closes the section level first");
+        assert_eq!(a.focus, Focus::Content);
+        a.on_key(KeyCode::Esc);
+        assert_eq!(a.focus, Focus::Sidebar, "then content focus steps back");
+        assert!(!a.quit);
+    }
+
+    #[test]
+    fn setup_right_and_left_mirror_enter_and_esc() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        enter_setup(&mut a, SetupSection::Games);
+        assert!(a.setup_inside, "Enter opens the games list");
+        a.on_key(KeyCode::Left);
+        assert!(!a.setup_inside, "Left leaves it");
+        a.on_key(KeyCode::Right);
+        assert!(a.setup_inside, "Right enters it again");
+    }
+
+    #[test]
+    fn setup_sim_tf_keys_only_act_inside_their_section() {
+        use crossterm::event::KeyCode;
+        let mut a = tf_setup_app();
+        // At the section level (Ffb selected) the SimTf keys are inert.
+        a.on_key(KeyCode::Char('m'));
+        assert!(a.tf_cfg.enabled, "m does nothing at the section level");
+        a.on_key(KeyCode::Char('e'));
+        assert!(a.tf_intensity_edit.is_none());
+        a.on_key(KeyCode::Char('d'));
+        enter_setup(&mut a, SetupSection::SimTf);
+        a.on_key(KeyCode::Char('m'));
+        assert!(!a.tf_cfg.enabled, "m toggles inside Simulated TF");
+    }
+
+    #[test]
+    fn setup_leaving_the_view_steps_back_out_of_a_section() {
+        let mut a = setup_app();
+        enter_setup(&mut a, SetupSection::Games);
+        assert!(a.setup_inside);
+        a.set_cat(0);
+        a.set_cat(SETUP_INDEX);
+        assert!(!a.setup_inside, "a fresh Setup entry starts at the section level");
+    }
+
     #[test]
     fn setup_keys_queue_a_per_game_shim_run_instead_of_running_it() {
         use crossterm::event::KeyCode;
         let mut a = setup_app();
+        enter_setup(&mut a, SetupSection::Games);
         // Nothing resolved: --sdk-dir is omitted so the installer's own
         // lookup (and its copy-the-DLLs guidance) runs. `sdk_resolved` is
         // set directly: the real resolution reads this machine's
@@ -2481,6 +2683,7 @@ mod tests {
     fn setup_game_selection_clamps_at_both_ends() {
         use crossterm::event::KeyCode;
         let mut a = setup_app();
+        enter_setup(&mut a, SetupSection::Games);
         a.on_key(KeyCode::Up);
         assert_eq!(a.game_idx, 0, "up from the first game stays");
         a.on_key(KeyCode::Down);
@@ -2495,9 +2698,11 @@ mod tests {
         let mut a = setup_app();
         a.games.clear();
         a.game_idx = 0;
+        enter_setup(&mut a, SetupSection::Games);
+        assert!(!a.setup_inside, "an empty list cannot be entered");
+        assert!(a.status.contains("no Proton games"), "status: {}", a.status);
         a.on_key(KeyCode::Char('i'));
-        assert_eq!(a.take_pending_shim(), None);
-        assert!(a.status.contains("no game selected"), "status: {}", a.status);
+        assert_eq!(a.take_pending_shim(), None, "i is inert outside the list");
     }
 
     #[test]
@@ -2505,6 +2710,8 @@ mod tests {
         use crossterm::event::KeyCode;
         let mut a = setup_app();
         a.sdk_dir = "/old".to_string();
+        a.setup_section_idx =
+            SetupSection::ALL.iter().position(|s| *s == SetupSection::Sdk).unwrap();
         a.on_key(KeyCode::Char('s'));
         assert_eq!(a.sdk_edit.as_deref(), Some("/old"));
         // While editing, view shortcuts are plain characters.
@@ -3037,6 +3244,7 @@ mod tests {
     fn setup_m_toggles_the_tf_master_switch() {
         use crossterm::event::KeyCode;
         let mut a = tf_setup_app();
+        enter_setup(&mut a, SetupSection::SimTf);
         assert!(a.tf_cfg.enabled, "defaults on");
         a.on_key(KeyCode::Char('m'));
         assert!(!a.tf_cfg.enabled);
@@ -3050,6 +3258,7 @@ mod tests {
     fn setup_e_edits_the_master_intensity_with_range_check() {
         use crossterm::event::KeyCode;
         let mut a = tf_setup_app();
+        enter_setup(&mut a, SetupSection::SimTf);
         a.on_key(KeyCode::Char('e'));
         assert_eq!(a.tf_intensity_edit.as_deref(), Some("60"), "draft seeds from the value");
         a.on_key(KeyCode::Backspace);
@@ -3077,6 +3286,7 @@ mod tests {
     fn setup_p_edits_pitch_with_its_own_range() {
         use crossterm::event::KeyCode;
         let mut a = tf_setup_app();
+        enter_setup(&mut a, SetupSection::SimTf);
         a.on_key(KeyCode::Char('p'));
         assert_eq!(a.tf_pitch_edit.as_deref(), Some("50"), "the default pitch seeds the editor");
         for _ in 0..3 {
@@ -3101,6 +3311,7 @@ mod tests {
     fn setup_g_toggles_only_games_with_a_daemon_id() {
         use crossterm::event::KeyCode;
         let mut a = tf_setup_app();
+        enter_setup(&mut a, SetupSection::Games);
         // The selected fixture game (ACC) has no tf-sim id.
         a.on_key(KeyCode::Char('g'));
         assert!(a.status.contains("no per-game support"), "status: {}", a.status);
@@ -3125,6 +3336,7 @@ mod tests {
     fn setup_t_arms_consent_and_only_y_plays() {
         use crossterm::event::KeyCode;
         let mut a = tf_setup_app();
+        enter_setup(&mut a, SetupSection::SimTf);
         // No binary: nothing arms.
         a.on_key(KeyCode::Char('t'));
         assert!(!a.tf_sweep_confirm);
@@ -3171,10 +3383,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         a.tf_bin = Some(stub);
+        enter_setup(&mut a, SetupSection::SimTf);
         a.on_key(KeyCode::Char('t'));
         a.on_key(KeyCode::Char('y'));
         assert!(a.tf_sweep_active());
-        // s goes to the sweep, not the SDK editor, while one plays.
+        // s stops the sweep from anywhere in Setup; never the SDK editor.
         a.on_key(KeyCode::Char('s'));
         assert!(a.sdk_edit.is_none());
         for _ in 0..200 {
@@ -3185,7 +3398,12 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!a.tf_sweep_active(), "SIGTERM stopped the stub");
-        // With no sweep playing, s opens the SDK folder editor as before.
+        // With no sweep playing, s belongs to the SDK section only.
+        a.on_key(KeyCode::Char('s'));
+        assert!(a.sdk_edit.is_none(), "s is inert inside Simulated TF");
+        a.on_key(KeyCode::Esc);
+        a.setup_section_idx =
+            SetupSection::ALL.iter().position(|s| *s == SetupSection::Sdk).unwrap();
         a.on_key(KeyCode::Char('s'));
         assert!(a.sdk_edit.is_some());
     }
@@ -3468,6 +3686,11 @@ mod tests {
         // Pinned rather than resolved: the real resolution reads this
         // machine's environment (repo sdk/, env var).
         a.sdk_resolved = None;
+        a.focus = Focus::Content;
+        a.setup_section_idx =
+            SetupSection::ALL.iter().position(|s| *s == SetupSection::Games).unwrap();
+        a.on_key(KeyCode::Enter);
+        assert!(a.setup_inside, "the games list opens without a wheel");
         a.on_key(KeyCode::Char('i'));
         let (args, verb) = a.take_pending_shim().expect("shim installs work without a wheel");
         assert_eq!(verb, "install");
@@ -3511,6 +3734,7 @@ mod tests {
     fn setup_page_keys_scroll_and_the_game_keys_stay_selection() {
         use crossterm::event::KeyCode;
         let mut a = setup_app();
+        enter_setup(&mut a, SetupSection::Games);
         a.body_height.set(10);
         a.on_key(KeyCode::PageDown);
         assert!(a.setup_scroll > 0, "PgDn scrolls the Setup view");
@@ -3524,6 +3748,25 @@ mod tests {
         assert_eq!(a.setup_scroll, scrolled);
         a.on_key(KeyCode::PageUp);
         assert_eq!(a.setup_scroll, 0, "PgUp scrolls back to the top");
+    }
+
+    #[test]
+    fn setup_section_cursor_scrolls_its_section_into_view() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.body_height.set(8); // a small viewport: the page cannot fit
+        for _ in 0..SetupSection::ALL.len() {
+            a.on_key(KeyCode::Down);
+        }
+        assert_eq!(a.setup_section(), SetupSection::SimTf);
+        assert!(
+            a.setup_scroll > 0,
+            "moving to the last section scrolled the view down"
+        );
+        for _ in 0..SetupSection::ALL.len() {
+            a.on_key(KeyCode::Up);
+        }
+        assert_eq!(a.setup_scroll, 0, "moving back up scrolled back to the top");
     }
 
     #[test]

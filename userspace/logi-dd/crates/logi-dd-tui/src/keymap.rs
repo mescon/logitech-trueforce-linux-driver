@@ -182,28 +182,44 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, bool) {
     (Section { title, bindings: keys }, false)
 }
 
-/// The Setup view's context bindings.
+/// The Setup view's context bindings, scoped to the selected section and
+/// whether its inner state is entered.
 fn setup_section<S: SysfsIo>(app: &App<S>) -> Section {
+    use crate::app::SetupSection;
     if app.focus == Focus::Sidebar {
         return sidebar();
     }
-    let mut keys = vec![
-        bf("Up/Down", "select a game"),
-        bf("i", "install the SDK shim"),
-        bf("u", "remove the SDK shim"),
-        bf("g", "toggle simulated TF for the game"),
-        b("m", "simulated TF master on/off"),
-        b("e", "simulated TF intensity"),
-        b("p", "simulated TF pitch"),
-        b("d", "start/stop the tf-sim daemon"),
-        b("t", "play a test sweep"),
-    ];
+    let mut keys: Vec<Binding> = Vec::new();
+    if app.setup_inside {
+        match app.setup_section() {
+            SetupSection::Games => {
+                keys.push(bf("Up/Down", "select a game"));
+                keys.push(bf("i", "install the SDK shim"));
+                keys.push(bf("u", "remove the SDK shim"));
+                keys.push(bf("g", "toggle simulated TF for the game"));
+                keys.push(bf("Esc/Left", "back to the sections"));
+            }
+            SetupSection::SimTf => {
+                keys.push(bf("m", "master on/off"));
+                keys.push(bf("e", "intensity"));
+                keys.push(bf("p", "pitch"));
+                keys.push(bf("d", "start/stop the daemon"));
+                keys.push(bf("t", "play a test sweep"));
+                keys.push(b("Esc/Left", "back to the sections"));
+            }
+            _ => {}
+        }
+    } else {
+        keys.push(bf("Up/Down", "select a section"));
+        keys.push(bf("Enter/Right", "open the section"));
+        if app.setup_section() == SetupSection::Sdk {
+            keys.push(bf("s", "edit the SDK folder"));
+        }
+    }
     if app.tf_sweep_active() {
         keys.push(bf("s", "stop the sweep"));
-    } else {
-        keys.push(b("s", "edit the SDK folder"));
     }
-    keys.push(bf("r", "rescan games + daemon"));
+    keys.push(b("r", "rescan games + daemon"));
     keys.push(b("PgUp/PgDn", "scroll"));
     Section { title: "Setup", bindings: keys }
 }
