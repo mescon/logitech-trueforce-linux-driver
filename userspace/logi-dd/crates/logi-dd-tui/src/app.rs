@@ -277,11 +277,6 @@ pub struct App<S: SysfsIo> {
     /// status could never be drawn first, the loop takes this via
     /// `take_pending_shim`, draws once, then calls `run_shim`.
     pending_shim: Option<(Vec<String>, &'static str)>,
-    /// A LIGHTSYNC try-on-wheel queued by `t` on the Leds page for the
-    /// main loop to execute (the 5 s hold blocks, same reason as
-    /// `pending_shim`); taken via `take_pending_led_try`, run by
-    /// `run_led_try`.
-    pending_led_try: bool,
     /// Whether the wrapped device probes as absent (no registry attribute
     /// readable): the shell stays up with empty device categories and a
     /// red header note, Setup and the Info monitor keep working, and `r`
@@ -370,7 +365,6 @@ impl<S: SysfsIo> App<S> {
             profile_name_edit: None,
             profile_delete_confirm: None,
             pending_shim: None,
-            pending_led_try: false,
             no_wheel: false,
             retry_requested: false,
             driver_version_path: PathBuf::from(logi_dd_core::driver::MODULE_VERSION_PATH),
@@ -779,12 +773,6 @@ impl<S: SysfsIo> App<S> {
         Some(colors)
     }
 
-    /// Take the try-on-wheel run the last key press queued, if any; see
-    /// `pending_led_try`.
-    pub fn take_pending_led_try(&mut self) -> bool {
-        std::mem::take(&mut self.pending_led_try)
-    }
-
     /// Run one LIGHTSYNC "preview on wheel": show the currently selected
     /// effect/slot on the physical strip, then restore the previous
     /// state. The selection commits immediately in this TUI, so the
@@ -797,9 +785,9 @@ impl<S: SysfsIo> App<S> {
     /// so the slot's colours AND direction show as a live fill; built-in
     /// effects hold for `hold` (their colours are firmware-owned). The
     /// restoring effect write also exits the fill back to the idle
-    /// pattern. Only LED state is written, nothing moves. Blocking, like
-    /// the shim runs: the main loop draws a status line first via the
-    /// `pending_led_try` queue.
+    /// pattern. Only LED state is written, nothing moves. Blocks while it
+    /// shows, so a future caller should draw a status line first (the way
+    /// the shim runs do via `pending_shim`).
     #[allow(dead_code)] // kept for a future staged slot-editor preview (see the removed 't' binding)
     pub fn run_led_try(&mut self, hold: std::time::Duration, sweep_step: std::time::Duration) {
         let effect = match self.device.read("wheel_led_effect") {
@@ -2837,22 +2825,15 @@ mod tests {
     }
 
     #[test]
-    fn t_on_the_lightsync_page_queues_nothing() {
+    fn t_on_the_lightsync_page_does_nothing() {
         // The 't' preview binding was removed: effect edits commit to the
         // device immediately, so the wheel already shows the selection and
         // a preview was a no-op by construction (2026-07-20).
         use crossterm::event::KeyCode;
         let mut a = leds_app("5", "0");
+        let status = a.status.clone();
         a.on_key(KeyCode::Char('t'));
-        assert!(!a.take_pending_led_try(), "no preview queue anymore");
-    }
-
-    #[test]
-    fn t_outside_the_lightsync_page_queues_nothing() {
-        use crossterm::event::KeyCode;
-        let mut a = app(); // the Ffb page
-        a.on_key(KeyCode::Char('t'));
-        assert!(!a.take_pending_led_try());
+        assert_eq!(a.status, status, "'t' is unbound on the Leds page");
     }
 
     #[test]

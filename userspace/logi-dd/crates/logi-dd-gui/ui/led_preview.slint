@@ -3,9 +3,8 @@ import { Theme } from "theme.slint";
 import { LedColor } from "rgb_strip.slint";
 
 // The LIGHTSYNC page's preview strip: the ACTIVE slot's 10 stored colors
-// (LED1 leftmost), a software-animated direction preview, and the "Preview
-// on wheel" button. Sits above the composed Effect row (see `app.slint`'s
-// Leds branch).
+// (LED1 leftmost) and a software-animated direction preview. Sits above
+// the composed Effect row (see `app.slint`'s Leds branch).
 //
 // The animation is purely on-screen: a repeating RPM-style sweep (a fill
 // that grows to full and shrinks back) driven by a `Timer`, following the
@@ -13,14 +12,6 @@ import { LedColor } from "rgb_strip.slint";
 // right-to-left fills, and the mirrored inside-out / outside-in pairs).
 // The physical strip is RPM-driven and shows a static idle pattern until a
 // game or telemetry bridge feeds it, which the caption says outright.
-//
-// "Preview on wheel" is wired through the Rust side's worker (apply the
-// selected effect/slot, show it, restore the prior state; LED state
-// only, nothing moves). A custom slot's try also plays one animated rev
-// sweep (`wheel_rev_level` 0..10..0) on the physical strip, so the slot's
-// colours AND direction show as a live fill; built-in effects hold ~5 s
-// (their colours are firmware-owned). `try-running` disables the button
-// while a try is in flight and `try-error` surfaces a failed run.
 export component LedPreview inherits Rectangle {
     // The ACTIVE slot's stored colors, from the same last-known values the
     // slot editor seeds from (mirrored pairs already collapsed for the
@@ -29,10 +20,6 @@ export component LedPreview inherits Rectangle {
     // The slot's `wheel_led_direction` enum value (0 = left to right,
     // 1 = right to left, 2 = inside-out, 3 = outside-in).
     in property <int> direction: 0;
-    in property <bool> try-running: false;
-    in property <string> try-error: "";
-
-    callback try-on-wheel();
 
     // Animation state: `phase` ticks 0..19 and folds into `count`, the
     // number of lit LEDs (0 -> 10 -> 0, the grow-and-shrink RPM sweep).

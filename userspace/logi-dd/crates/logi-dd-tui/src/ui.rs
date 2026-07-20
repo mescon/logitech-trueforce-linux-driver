@@ -384,9 +384,9 @@ fn draw_settings<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
             .collect();
         // The LIGHTSYNC view leads with the strip preview: the ACTIVE
         // slot's 10 stored colors as truecolor blocks (LED1 leftmost,
-        // mirrored pairs collapsed), plus the try-on-wheel hint. The
-        // GUI's animated direction preview has no text-mode counterpart;
-        // the hint says where to find it.
+        // mirrored pairs collapsed), plus the applies-immediately caption.
+        // The GUI's animated direction preview has no text-mode
+        // counterpart.
         if app.category() == Category::Leds && !app.no_wheel {
             if let Some(colors) = app.led_preview_colors() {
                 let mut spans = vec![

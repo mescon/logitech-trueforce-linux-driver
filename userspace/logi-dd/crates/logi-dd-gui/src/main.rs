@@ -1084,9 +1084,6 @@ fn main() -> Result<(), slint::PlatformError> {
                         // back to its "-" placeholders.
                         app.set_info_serial("".into());
                         app.set_info_firmware("".into());
-                        // An in-flight LIGHTSYNC try answered by NoWheel
-                        // (the wheel vanished) must re-enable its button.
-                        app.set_lightsync_try_running(false);
                     }
                     Response::Profiles { names, status, error } => {
                         let items: Vec<slint::SharedString> =
@@ -1094,12 +1091,6 @@ fn main() -> Result<(), slint::PlatformError> {
                         app.set_computer_profiles(slint::ModelRc::new(slint::VecModel::from(items)));
                         app.set_profiles_status(status.into());
                         app.set_profiles_status_error(error);
-                    }
-                    Response::LedTryDone { error } => {
-                        // The try finished (held and restored); re-enable
-                        // the button and surface any failure next to it.
-                        app.set_lightsync_try_running(false);
-                        app.set_lightsync_try_error(error.unwrap_or_default().into());
                     }
                 }
             });
@@ -1311,28 +1302,6 @@ fn main() -> Result<(), slint::PlatformError> {
                     worker.request(Request::Refresh(category));
                 }
             }
-        });
-    }
-
-    {
-        // The LIGHTSYNC preview's "Preview on wheel": apply the currently
-        // selected effect/slot (i.e. the device's last-known state, which
-        // the selector commits immediately; re-applying it makes the wheel
-        // visibly play it) for ~5 s, then restore. Runs on the worker
-        // thread; only LED state is written.
-        let worker = worker.clone();
-        let known_values = known_values.clone();
-        let app_weak = app.as_weak();
-        app.on_lightsync_try(move || {
-            let Some(app) = app_weak.upgrade() else { return };
-            if app.get_lightsync_try_running() {
-                return;
-            }
-            app.set_lightsync_try_running(true);
-            app.set_lightsync_try_error("".into());
-            let effect = led_effect(&known_values).clamp(1, 9);
-            let slot = led_slot(&known_values).clamp(0, lightsync::CUSTOM_SLOTS as i32 - 1) as u8;
-            worker.request(Request::LedTry { effect, slot });
         });
     }
 

@@ -165,15 +165,10 @@ export component App inherits Window {
     // once from Rust; -1 until then, same guard as `setup-index`) and the
     // preview strip's state. `lightsync-leds`/`lightsync-direction` come
     // from the same last-known LIGHTSYNC values the slot editor seeds
-    // from, pushed on every Leds reload and relevant row update;
-    // `lightsync-try` runs the worker's apply-hold-restore (see
-    // `LedPreview`), with `lightsync-try-running`/`-error` pushed back.
+    // from, pushed on every Leds reload and relevant row update.
     in property <int> leds-index: -1;
     in property <[LedColor]> lightsync-leds: [];
     in property <int> lightsync-direction: 0;
-    in property <bool> lightsync-try-running: false;
-    in property <string> lightsync-try-error: "";
-    callback lightsync-try();
 
     callback edit-slider(string, int);
     callback edit-choice(string, int);
@@ -537,9 +532,6 @@ export component App inherits Window {
                         vertical-stretch: 0;
                         leds: root.lightsync-leds;
                         direction: root.lightsync-direction;
-                        try-running: root.lightsync-try-running;
-                        try-error: root.lightsync-try-error;
-                        try-on-wheel() => { root.lightsync-try(); }
                     }
 
                     SettingsList {

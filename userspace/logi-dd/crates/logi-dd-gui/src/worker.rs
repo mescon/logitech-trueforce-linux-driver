@@ -43,8 +43,8 @@ const DRIFT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// How long a "Preview on wheel" run leaves the chosen LIGHTSYNC state on the
 /// physical strip before restoring what was there. The hold runs on this
 /// worker thread, so queued requests (and the drift watcher) wait it out;
-/// that is deliberate: the UI disables the button while the try runs, and
-/// nothing else should rewrite LED state mid-try anyway.
+/// that is deliberate: nothing else should rewrite LED state mid-try anyway.
+#[allow(dead_code)] // used again when a staged slot-editor preview returns (see `led_try_on_wheel`)
 const LED_TRY_HOLD: Duration = Duration::from_secs(5);
 
 /// The `wheel_led_effect` value that plays a stored CUSTOM slot (see
@@ -58,6 +58,7 @@ const CUSTOM_EFFECT: u8 = 5;
 /// interval. Must stay above the ~160 ms floor from the protocol docs
 /// (faster bursts starve the wheel's shared HID++ command processor and
 /// can cut FFB); 21 steps at 180 ms make the sweep run just under 4 s.
+#[allow(dead_code)] // used again when a staged slot-editor preview returns (see `led_try_on_wheel`)
 const REV_SWEEP_STEP: Duration = Duration::from_millis(180);
 
 /// A request from the UI thread. Every variant that touches the device
@@ -86,13 +87,6 @@ pub enum Request {
     ProfileApply(String),
     /// Delete computer profile `name`. Replied with `Response::Profiles`.
     ProfileDelete(String),
-    /// The LIGHTSYNC page's "Preview on wheel": apply `effect` (+ `slot` when
-    /// the effect is the custom 5) to the physical strip, show it (a
-    /// custom slot plays one animated rev sweep in the slot's colours and
-    /// direction; a built-in effect holds for [`LED_TRY_HOLD`]), then
-    /// restore the prior effect+slot state. Only LED state is written
-    /// (nothing moves). Replied with `Response::LedTryDone`.
-    LedTry { effect: u8, slot: u8 },
 }
 
 /// What the worker sends back.
@@ -126,10 +120,6 @@ pub enum Response {
     /// after every profile request and alongside every Profiles-category
     /// `Rows` reply.
     Profiles { names: Vec<String>, status: String, error: bool },
-    /// A `Request::LedTry` finished (the hold elapsed and the prior state
-    /// was written back). `error` carries the first failure, if any; the
-    /// restore is attempted even after a failed apply.
-    LedTryDone { error: Option<String> },
 }
 
 /// Handle to the worker thread. Cheap to clone (it is just a channel
@@ -250,7 +240,6 @@ fn request_category(req: &Request) -> Option<Category> {
         Request::ProfileSave(_) | Request::ProfileApply(_) | Request::ProfileDelete(_) => {
             Some(Category::Profiles)
         }
-        Request::LedTry { .. } => Some(Category::Leds),
         Request::SetMode(_) | Request::Discover => None,
     }
 }
@@ -265,7 +254,11 @@ fn request_category(req: &Request) -> Option<Category> {
 /// sweep failed (a half-applied try must not stick); the first error
 /// wins. Everything goes through the same `ViewModel::edit` path the
 /// settings widgets use, so validation and mode gating apply as usual.
-/// Pulled out of `handle` so tests can pass zero durations.
+/// Unwired since the "Preview on wheel" button was removed (2026-07-20:
+/// effect edits commit to the device immediately, so a preview of the
+/// selection was a no-op by construction); kept, with its tests, as the
+/// runner for a future staged slot-editor preview.
+#[allow(dead_code)]
 fn led_try_on_wheel<S: SysfsIo>(
     vm: &ViewModel<S>,
     effect: u8,
@@ -494,12 +487,6 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
             if let Ok(info) = vm.info() {
                 on_response(Response::Info(info));
             }
-        }
-        Request::LedTry { effect, slot } => {
-            let error = led_try_on_wheel(vm, effect, slot, LED_TRY_HOLD, REV_SWEEP_STEP)
-                .err()
-                .map(|e| e.to_string());
-            on_response(Response::LedTryDone { error });
         }
         // Handled in `spawn`'s loop before `handle` is ever called, so that
         // it can replace `vm` itself; `handle` only ever borrows it.

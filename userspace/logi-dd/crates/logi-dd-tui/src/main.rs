@@ -127,25 +127,6 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        // A queued LIGHTSYNC try-on-wheel blocks while it shows (a custom
-        // slot plays a ~4 s rev sweep, built-in effects hold 5 s), so it
-        // runs here (after a draw showed the status line), then drops any
-        // keypresses buffered meanwhile, same reasoning as the shim runs.
-        // The 180 ms sweep step keeps rev-level writes above the ~160 ms
-        // pacing floor the protocol docs require.
-        if app.take_pending_led_try() {
-            app.status =
-                "preview on wheel: previewing the selection on the strip (blocks a few seconds)...".to_string();
-            if let Err(e) = term.draw(|f| ui::draw(f, &app)) {
-                break Err(e.into());
-            }
-            app.run_led_try(Duration::from_secs(5), Duration::from_millis(180));
-            while let Ok(true) = event::poll(std::time::Duration::ZERO) {
-                if event::read().is_err() {
-                    break;
-                }
-            }
-        }
         if app.quit {
             break Ok(());
         }
