@@ -138,6 +138,13 @@ curve editor.
 
 ![logi-dd-gui curve editor](docs/images/logi-dd-curve-editor.png)
 
+The Info / Testing page doubles as a live input tester (does this button
+reach the computer?), and the Setup page manages the game helpers:
+
+![logi-dd-gui Info / Testing](docs/images/logi-dd-info-testing.png)
+
+![logi-dd-gui Setup](docs/images/logi-dd-setup.png)
+
 ```bash
 cd userspace/logi-dd && cargo build --release
 ./target/release/logi-dd-gui    # desktop app; ./target/release/logi-dd for the TUI
