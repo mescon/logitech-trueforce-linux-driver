@@ -1,23 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-<rect x="14" y="14" width="484" height="484" rx="104" fill="#17191d"/>
-<rect x="14" y="14" width="484" height="484" rx="104" fill="none" stroke="#2c3038" stroke-width="3"/>
-<g transform="translate(-15,-43)">
-<g transform="rotate(-18 256 280)">
-<path d="M 349.6 176.2 A 152 152 0 1 1 162.4 176.2" fill="none" stroke="#4b525d" stroke-width="46" stroke-linecap="round"/>
-<rect x="160" y="282" width="192" height="28" rx="14" fill="#3a4048"/>
-<circle cx="256" cy="296" r="44" fill="#262a30"/>
-<rect x="234" y="282" width="44" height="20" rx="5" fill="#0d0f12"/>
-<rect x="163.5" y="158.1" width="24" height="18" rx="6" fill="#2fd05a" transform="rotate(-32.0 175.5 167.1)"/>
-<rect x="180.0" y="149.1" width="24" height="18" rx="6" fill="#2fd05a" transform="rotate(-24.9 192.0 158.1)"/>
-<rect x="197.6" y="142.3" width="24" height="18" rx="6" fill="#2fd05a" transform="rotate(-17.8 209.6 151.3)"/>
-<rect x="215.9" y="137.6" width="24" height="18" rx="6" fill="#f5c518" transform="rotate(-10.7 227.9 146.6)"/>
-<rect x="234.6" y="135.3" width="24" height="18" rx="6" fill="#f5c518" transform="rotate(-3.6 246.6 144.3)"/>
-<rect x="253.4" y="135.3" width="24" height="18" rx="6" fill="#f5c518" transform="rotate(3.6 265.4 144.3)"/>
-<rect x="272.1" y="137.6" width="24" height="18" rx="6" fill="#ff8c1a" transform="rotate(10.7 284.1 146.6)"/>
-<rect x="290.4" y="142.3" width="24" height="18" rx="6" fill="#ff8c1a" transform="rotate(17.8 302.4 151.3)"/>
-<rect x="308.0" y="149.1" width="24" height="18" rx="6" fill="#ff3b30" transform="rotate(24.9 320.0 158.1)"/>
-<rect x="324.5" y="158.1" width="24" height="18" rx="6" fill="#ff3b30" transform="rotate(32.0 336.5 167.1)"/>
-</g>
-<path d="M 396 132 A 196 196 0 0 1 452 262" fill="none" stroke="#35c4f0" stroke-width="10" stroke-linecap="round" opacity="0.55"/>
-</g>
+  <!-- logi-dd mark v4: one universal logo. Tilted open-top rim in
+       mid-luminance steel blue (contrast on light AND dark surfaces),
+       the 10-segment rev-light arc bridging the opening. Transparent
+       background; used identically as launcher icon, README logo and
+       in-app mark. Original artwork, no vendor marks. GPL-2.0-only. -->
+  <g transform="translate(-3,-15) rotate(-18 256 256)">
+    <path d="M 342.0 145.1 A 150 150 0 1 1 170.0 145.1"
+          fill="none" stroke="#3e7fa8" stroke-width="52" stroke-linecap="round"/>
+    <rect x="146" y="252" width="220" height="32" rx="16" fill="#356d90"/>
+    <circle cx="256" cy="268" r="48" fill="#2a5875"/>
+    <rect x="230" y="252" width="52" height="24" rx="6" fill="#12222e"/>
+    <rect x="238" y="266" width="28" height="5" rx="2.5" fill="#35c4f0"/>
+  <rect x="171.3" y="127.8" width="24" height="18" rx="6" fill="#2fd05a" transform="rotate(-29.0 183.3 136.8)"/>
+  <rect x="186.5" y="120.5" width="24" height="18" rx="6" fill="#2fd05a" transform="rotate(-22.6 198.5 129.5)"/>
+  <rect x="202.4" y="114.9" width="24" height="18" rx="6" fill="#2fd05a" transform="rotate(-16.1 214.4 123.9)"/>
+  <rect x="218.8" y="111.1" width="24" height="18" rx="6" fill="#f5c518" transform="rotate(-9.7 230.8 120.1)"/>
+  <rect x="235.6" y="109.2" width="24" height="18" rx="6" fill="#f5c518" transform="rotate(-3.2 247.6 118.2)"/>
+  <rect x="252.4" y="109.2" width="24" height="18" rx="6" fill="#f5c518" transform="rotate(3.2 264.4 118.2)"/>
+  <rect x="269.2" y="111.1" width="24" height="18" rx="6" fill="#ff8c1a" transform="rotate(9.7 281.2 120.1)"/>
+  <rect x="285.6" y="114.9" width="24" height="18" rx="6" fill="#ff8c1a" transform="rotate(16.1 297.6 123.9)"/>
+  <rect x="301.5" y="120.5" width="24" height="18" rx="6" fill="#ff3b30" transform="rotate(22.6 313.5 129.5)"/>
+  <rect x="316.7" y="127.8" width="24" height="18" rx="6" fill="#ff3b30" transform="rotate(29.0 328.7 136.8)"/>
+  </g>
 </svg>
