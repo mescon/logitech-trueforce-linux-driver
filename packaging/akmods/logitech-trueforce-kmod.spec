@@ -19,7 +19,7 @@
 # id_table to the direct-drive wheel PIDs).
 
 %global kmod_name       logitech-trueforce
-%global upstream_ver    0.15.0
+%global upstream_ver    0.16.0
 # Out-of-tree kmod: no separate debug/debugsource package.
 %global debug_package %{nil}
 

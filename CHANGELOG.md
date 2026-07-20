@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.16.0 - 2026-07-20
 
 The settings app grows a desktop GUI, both frontends gain LIGHTSYNC,
 Setup and testing surfaces, simulated TrueForce arrives as a telemetry
