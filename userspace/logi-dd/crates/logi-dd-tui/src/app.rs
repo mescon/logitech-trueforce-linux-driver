@@ -695,6 +695,7 @@ impl<S: SysfsIo> App<S> {
     /// pattern. Only LED state is written, nothing moves. Blocking, like
     /// the shim runs: the main loop draws a status line first via the
     /// `pending_led_try` queue.
+    #[allow(dead_code)] // kept for a future staged slot-editor preview (see the removed 't' binding)
     pub fn run_led_try(&mut self, hold: std::time::Duration, sweep_step: std::time::Duration) {
         let effect = match self.device.read("wheel_led_effect") {
             Ok(Value::Int(n)) => n.clamp(1, 9),
@@ -1690,12 +1691,10 @@ impl<S: SysfsIo> App<S> {
             // Setup view's branch above keeps `i` for the shim install,
             // and the Info view's branch keeps its own bindings.
             Char('i') => self.open_info(),
-            // LIGHTSYNC only: queue a try-on-wheel (the 5 s hold blocks,
-            // so the main loop draws a status line first, same pattern as
-            // the shim runs).
-            Char('t') if self.category() == Category::Leds && !self.no_wheel => {
-                self.pending_led_try = true;
-            }
+            // No LIGHTSYNC 't' preview key: effect edits commit to the
+            // device immediately, so the wheel already shows the selection
+            // and a preview is a no-op by construction (removed 2026-07-20;
+            // run_led_try stays for a future staged slot-editor preview).
             // Only on the desktop Profiles page (the row exists nowhere
             // else): open the new-profile name prompt.
             Char('n') if self.rows.iter().any(|r| r.attr == PROFILE_NEW_ATTR) => {
@@ -2364,12 +2363,14 @@ mod tests {
     }
 
     #[test]
-    fn t_on_the_lightsync_page_queues_a_preview_on_wheel() {
+    fn t_on_the_lightsync_page_queues_nothing() {
+        // The 't' preview binding was removed: effect edits commit to the
+        // device immediately, so the wheel already shows the selection and
+        // a preview was a no-op by construction (2026-07-20).
         use crossterm::event::KeyCode;
         let mut a = leds_app("5", "0");
         a.on_key(KeyCode::Char('t'));
-        assert!(a.take_pending_led_try(), "t queues the blocking run for the main loop");
-        assert!(!a.take_pending_led_try(), "taken once");
+        assert!(!a.take_pending_led_try(), "no preview queue anymore");
     }
 
     #[test]

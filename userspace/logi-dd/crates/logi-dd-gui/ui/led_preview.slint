@@ -111,22 +111,14 @@ export component LedPreview inherits Rectangle {
                     root.animating = !root.animating;
                 }
             }
-            Button {
-                text: root.try-running ? "Previewing..." : "Preview on wheel";
-                enabled: !root.try-running;
-                clicked => { root.try-on-wheel(); }
-            }
-            if root.try-error != "": Text {
-                text: root.try-error;
-                font-size: 12px;
-                vertical-alignment: center;
-                color: Theme.error-color;
-                wrap: word-wrap;
-            }
+            // No "Preview on wheel" button here: the Effect dropdown
+            // commits to the device immediately, so the wheel is already
+            // showing the selection - a preview of it is a no-op by
+            // construction (removed 2026-07-20 after live confusion).
         }
 
         Text {
-            text: "The physical strip is a rev-light display, RPM-driven by a game or telemetry bridge, and shows a static idle pattern otherwise. \"Preview on wheel\" previews the current selection on the physical strip, then restores the previous state; a custom slot also plays one animated rev sweep in its colours and direction (built-in effects hold for 5 seconds).";
+            text: "Effect changes apply to the wheel immediately. The physical strip is a rev-light display, RPM-driven by a game or telemetry bridge, and shows a static idle pattern otherwise; the animation preview above shows on screen how a custom slot's direction behaves.";
             font-size: 11px;
             color: Theme.muted-text-color;
             wrap: word-wrap;
