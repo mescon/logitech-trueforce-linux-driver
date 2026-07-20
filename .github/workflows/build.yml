@@ -17,8 +17,8 @@ jobs:
 
       - name: Get checkpatch.pl
         run: |
-          curl -sL https://raw.githubusercontent.com/torvalds/linux/master/scripts/checkpatch.pl -o checkpatch.pl
-          curl -sL https://raw.githubusercontent.com/torvalds/linux/master/scripts/spelling.txt -o spelling.txt
+          curl -sL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/torvalds/linux/master/scripts/checkpatch.pl -o checkpatch.pl
+          curl -sL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/torvalds/linux/master/scripts/spelling.txt -o spelling.txt
           chmod +x checkpatch.pl
 
       - name: Run checkpatch

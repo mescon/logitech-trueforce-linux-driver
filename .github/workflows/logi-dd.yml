@@ -19,8 +19,8 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component clippy
       - name: Build
-        run: cargo build --workspace --verbose
+        run: cargo build --workspace --locked --verbose
       - name: Test
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --locked --verbose
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
