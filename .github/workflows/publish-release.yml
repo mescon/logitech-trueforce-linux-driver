@@ -61,6 +61,16 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential dpkg-dev debhelper dkms dh-dkms cargo \
             pkg-config libfontconfig-dev
+      - name: Install a current Rust toolchain
+        # Ubuntu's apt cargo is too old for the workspace (the lockfile
+        # needs >= 1.88, the Slint GUI >= 1.92). Keep the apt cargo so
+        # dpkg-checkbuilddeps stays satisfied, but build with rustup's
+        # stable: ~/.cargo/bin is prepended to PATH so it wins over
+        # /usr/bin for every following step.
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Stamp version from the tag
         run: |
           set -eu
