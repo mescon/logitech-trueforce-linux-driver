@@ -150,10 +150,14 @@ cd userspace/logi-dd && cargo build --release
 ./target/release/logi-dd-gui    # desktop app; ./target/release/logi-dd for the TUI
 ```
 
-Everything logi-dd sets is also available as plain sysfs attributes under
-`/sys/class/hidraw/hidrawX/device/wheel_*`, and the GUI tool
-[Oversteer](https://github.com/berarma/oversteer) recognizes many of them. The
-complete attribute reference is in [**docs/SYSFS_API.md**](docs/SYSFS_API.md).
+**logi-dd is the recommended way to configure these wheels** - it is built for
+them specifically and covers everything the driver exposes. Everything it sets
+is also available as plain sysfs attributes under
+`/sys/class/hidraw/hidrawX/device/wheel_*`, so you can script them directly; the
+complete reference is in [**docs/SYSFS_API.md**](docs/SYSFS_API.md). If you
+already run [Oversteer](https://github.com/berarma/oversteer) across a
+collection of Logitech wheels, the driver also exposes its expected attribute
+names, so it recognizes the basics here too.
 
 ## Verified game support
 
