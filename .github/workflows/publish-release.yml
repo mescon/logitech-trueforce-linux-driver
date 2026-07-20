@@ -147,6 +147,15 @@ jobs:
         with:
           ref: ${{ env.TAG }}
           fetch-depth: 0
+      # Second checkout: the packaging recipes from the ref this workflow
+      # run belongs to (the tag itself on release events, the dispatched
+      # branch on workflow_dispatch). Sources always come from the tag,
+      # but taking the spec/_service from here lets a manual dispatch
+      # re-publish a release with packaging fixes made after the tag,
+      # without re-tagging.
+      - uses: actions/checkout@v4
+        with:
+          path: packaging-ref
       - name: Install tools
         # cargo + zstd: the spec builds the Rust workspace offline (OBS
         # builders have no network), so this job vendors the crate
@@ -165,20 +174,21 @@ jobs:
           VERSION="${TAG#v}"
           git config --global --add safe.directory '*'
           sed -i "s/^%global\\( *\\)modver.*/%global\\1modver   ${VERSION}/" \
-            packaging/obs/logitech-trueforce-dkms.spec
+            packaging-ref/packaging/obs/logitech-trueforce-dkms.spec
           sed -i "s/^Version:.*/Version:        ${VERSION}/" \
-            packaging/obs/logitech-trueforce-dkms.spec
+            packaging-ref/packaging/obs/logitech-trueforce-dkms.spec
           sed -i "s#<param name=\"revision\">[^<]*</param>#<param name=\"revision\">${TAG}</param>#" \
-            packaging/obs/_service
+            packaging-ref/packaging/obs/_service
           sed -i "s#<param name=\"version\">[^<]*</param>#<param name=\"version\">${VERSION}</param>#" \
-            packaging/obs/_service
+            packaging-ref/packaging/obs/_service
           # git-free tarball: `git archive` fails in this container job
           # (git refuses repo discovery across the checkout mount
           # boundary), and the tag is already checked out, so tar the
           # working tree with the versioned prefix directory.
           PREFIX="logitech-trueforce-linux-driver-${VERSION}"
           stage="$(mktemp -d)"; mkdir -p "$stage/$PREFIX"
-          tar --exclude=./.git --exclude=./srpm --exclude=./out -cf - . \
+          tar --exclude=./.git --exclude=./srpm --exclude=./out \
+            --exclude=./packaging-ref -cf - . \
             | tar -xf - -C "$stage/$PREFIX"
           tar -czf "/tmp/${PREFIX}.tar.gz" -C "$stage" "$PREFIX"
           # Vendor the Rust workspace's crate dependencies (Source1). OBS
@@ -195,8 +205,8 @@ jobs:
           osc checkout home:mescon logitech-trueforce-dkms
           cd home:mescon/logitech-trueforce-dkms
           rm -f logitech-trueforce-linux-driver-*.tar.gz logi-dd-vendor-*.tar.zst
-          cp "$GITHUB_WORKSPACE/packaging/obs/logitech-trueforce-dkms.spec" .
-          cp "$GITHUB_WORKSPACE/packaging/obs/_service" .
+          cp "$GITHUB_WORKSPACE/packaging-ref/packaging/obs/logitech-trueforce-dkms.spec" .
+          cp "$GITHUB_WORKSPACE/packaging-ref/packaging/obs/_service" .
           cp "/tmp/logitech-trueforce-linux-driver-${VERSION}.tar.gz" .
           cp "/tmp/logi-dd-vendor-${VERSION}.tar.zst" .
           osc addremove
