@@ -15199,7 +15199,7 @@ static struct hid_driver hidpp_driver = {
 
 static int __init hidpp_module_init(void)
 {
-	pr_info("hid-logitech-hidpp: loaded (git=%s)\n", HIDPP_DD_GIT_HASH);
+	pr_info("hid-logitech-dd %s loaded\n", HIDPP_DD_GIT_HASH);
 	return hid_register_driver(&hidpp_driver);
 }
 

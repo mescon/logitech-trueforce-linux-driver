@@ -38,6 +38,7 @@ config: ~/.config/logi-dd/tf-sim.conf (key=value)
 enum Mode {
     Daemon,
     Sweep(Option<u8>),
+    Version,
     Help,
     Unknown(String),
 }
@@ -47,6 +48,7 @@ fn parse(args: &[String]) -> Mode {
     match args.get(1).map(String::as_str) {
         None => Mode::Daemon,
         Some("-h") | Some("--help") => Mode::Help,
+        Some("--version") | Some("-V") => Mode::Version,
         Some("--sweep") => match args.get(2) {
             None => Mode::Sweep(None),
             Some(p) => match p.parse::<u8>() {
@@ -70,6 +72,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         Mode::Daemon => daemon::run(&Config::load()),
+        Mode::Version => {
+            println!("logi-tf-sim {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Mode::Sweep(pitch) => daemon::install_signal_handlers()
             .and_then(|()| sweep::run(&Config::load(), pitch, &daemon::STOP)),
     };

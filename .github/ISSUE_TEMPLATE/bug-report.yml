@@ -58,6 +58,14 @@ body:
       required: true
 
   - type: input
+    id: driver-version
+    attributes:
+      label: Driver version
+      description: "`cat /sys/module/hid_logitech_dd/version` (also printed in dmesg at load, and shown with the app version on the Info / Testing page of logi-dd / logi-dd-gui)"
+      placeholder: v0.16.1
+    validations:
+      required: true
+  - type: input
     id: distro
     attributes:
       label: Distribution

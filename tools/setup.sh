@@ -54,10 +54,16 @@ doctor() {
 
 	say "[1/7] Kernel module"
 	if [ -d /sys/module/hid_logitech_dd ]; then
-		ok "hid_logitech_dd is loaded"
+		ok "hid_logitech_dd is loaded (version: $(cat /sys/module/hid_logitech_dd/version 2>/dev/null || echo unknown))"
 	else
 		bad "hid_logitech_dd is not loaded (run: sudo ./tools/setup.sh)"
 	fi
+	# App versions, when the tools are on PATH; bug reports want these.
+	for tool in logi-dd logi-dd-gui logi-ffb logi-tf-sim; do
+		if command -v "$tool" >/dev/null 2>&1; then
+			ok "$tool on PATH ($("$tool" --version 2>/dev/null || echo "version flag unsupported"))"
+		fi
+	done
 	# No `grep -q` here: under `set -o pipefail`, -q exits on the first
 	# match (our module sorts first in dkms output), dkms catches SIGPIPE
 	# mid-print and the successful pipeline reports failure. Reading the

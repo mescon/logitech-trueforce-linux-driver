@@ -25,6 +25,11 @@ use std::time::{Duration, Instant};
 const DRIFT_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("logi-dd {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // No wheel is not fatal: start the shell anyway (red header note,
     // Setup fully usable, the Info monitor's empty state) with a
     // placeholder device that reads as absent; `r` retries discovery.

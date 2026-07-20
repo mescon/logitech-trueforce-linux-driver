@@ -767,6 +767,11 @@ fn run_test_sim(
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("logi-dd-gui {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     let app = App::new()?;
     // The sidebar labels are the real device categories plus a trailing
     // "Setup" row; kept out of `bridge::category_labels_model` (and its own
