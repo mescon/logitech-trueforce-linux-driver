@@ -22,6 +22,8 @@ Source0:        logitech-trueforce-linux-driver-%{version}.tar.gz
 Source1:        logi-dd-vendor-%{version}.tar.zst
 BuildArch:      noarch
 BuildRequires:  cargo, rust
+# owns the hicolor icon directories during the post-build filelist check
+BuildRequires:  hicolor-icon-theme
 # Extracts the zstd-compressed vendor tarball (Source1) in %%prep.
 BuildRequires:  zstd
 # logi-tf-sim's build.rs compiles the in-repo libtrueforce.a via make+gcc
