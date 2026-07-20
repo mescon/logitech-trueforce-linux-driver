@@ -27,19 +27,21 @@ pub const EV_ABS: u16 = 0x03;
 pub const SYN_REPORT: u16 = 0x00;
 
 pub const ABS_X: u16 = 0x00;
-pub const ABS_Y: u16 = 0x01;
-pub const ABS_Z: u16 = 0x02;
+pub const ABS_RX: u16 = 0x03;
+pub const ABS_RY: u16 = 0x04;
 pub const ABS_RZ: u16 = 0x05;
 
 pub const BTN_TRIGGER: u16 = 0x120;
 
-// Real-wheel axis assignment. This is the one place to change it once the
-// actual evdev node is captured and confirmed (a later hardware validation
-// step); everything else in this module refers to these names, not the raw
-// ABS_* codes.
+// Real-wheel axis assignment, hardware-confirmed on the RS50 (the live
+// input monitor sessions, and issue #50): throttle/brake/clutch arrive on
+// ABS_RX/ABS_RY/ABS_RZ. The earlier ABS_Y/ABS_Z guesses matched nothing
+// the wheel emits (ABS_Z is the handbrake accessory), which left pedals
+// frozen on the virtual device. Everything else in this module refers to
+// these names, not the raw ABS_* codes.
 const AXIS_STEERING: u16 = ABS_X;
-const AXIS_THROTTLE: u16 = ABS_Y;
-const AXIS_BRAKE: u16 = ABS_Z;
+const AXIS_THROTTLE: u16 = ABS_RX;
+const AXIS_BRAKE: u16 = ABS_RY;
 const AXIS_CLUTCH: u16 = ABS_RZ;
 
 /// Mirrors the kernel's `struct timeval` as embedded in `struct input_event`
@@ -178,6 +180,15 @@ mod tests {
     fn abs_x_maps_to_steering_and_syn_completes_frame() {
         let mut r = InputReport::default();
         assert!(!map_event(&mut r, &ev(EV_ABS, ABS_X, 0x4000)));
+        // Pin the RAW pedal codes to the RS50's hardware truth (issue #50:
+        // the old ABS_Y/ABS_Z guesses left pedals frozen). 0x03/0x04/0x05
+        // are what the wheel actually emits for throttle/brake/clutch.
+        assert!(!map_event(&mut r, &ev(EV_ABS, 0x03, 111)));
+        assert_eq!(r.throttle, 111, "throttle must map from raw ABS_RX (0x03)");
+        assert!(!map_event(&mut r, &ev(EV_ABS, 0x04, 222)));
+        assert_eq!(r.brake, 222, "brake must map from raw ABS_RY (0x04)");
+        assert!(!map_event(&mut r, &ev(EV_ABS, 0x05, 333)));
+        assert_eq!(r.clutch, 333, "clutch must map from raw ABS_RZ (0x05)");
         assert_eq!(r.steering, 0x4000);
         assert!(map_event(&mut r, &ev(EV_SYN, SYN_REPORT, 0)));
     }
