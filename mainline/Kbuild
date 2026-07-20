@@ -40,3 +40,18 @@ endif
 ifdef CONFIG_HID_LOGITECH_HIDPP_DEBUG
 ccflags-y += -DCONFIG_HID_LOGITECH_HIDPP_DEBUG
 endif
+
+# The logi-ffb virtual wheel (0x046d:0xc2dd, a uhid device created by the
+# userspace FFB proxy) gets the kernel's PID force-feedback layer attached in
+# probe so its evdev node gains real FF capability (issue #50). The entry
+# point, hid_pidff_init_with_quirks(), has been exported for external modules
+# since mainline v6.15 (the hid-universal-pidff work), but older kernels lack
+# it and the kernel does not ship hid-pidff.h in the external-module header
+# set, so a version check cannot be trusted across backports. Probe the
+# target kernel's own symbol table instead: compile the virtual-wheel support
+# only when its Module.symvers exports the symbol ($(objtree) is the kernel
+# build directory during an external-module build).
+PIDFF_EXPORTED := $(shell grep -qs '\bhid_pidff_init_with_quirks\b' $(objtree)/Module.symvers && echo y)
+ifeq ($(PIDFF_EXPORTED),y)
+ccflags-y += -DHIDPP_DD_HAVE_PIDFF
+endif

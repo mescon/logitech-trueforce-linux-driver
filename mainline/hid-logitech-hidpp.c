@@ -14702,11 +14702,87 @@ static int hidpp_dd_minimal_probe(struct hid_device *hdev)
 	return ret;
 }
 
+#ifdef HIDPP_DD_HAVE_PIDFF
+/*
+ * The kernel's PID force-feedback layer entry point
+ * (drivers/hid/usbhid/hid-pidff.c), exported for external modules since
+ * v6.15 for the hid-universal-pidff work. Its header (hid-pidff.h) is not
+ * shipped in the external-module header set, so declare the prototype
+ * here. HIDPP_DD_HAVE_PIDFF is defined by the Kbuild probe only when the
+ * target kernel's Module.symvers actually exports the symbol.
+ */
+int hid_pidff_init_with_quirks(struct hid_device *hid, u32 initial_quirks);
+
+/*
+ * logi-ffb virtual wheel (0x046d:0xc2dd): the uhid device created by the
+ * userspace FFB proxy (userspace/logi-dd/crates/ffb-proxy), NOT a real
+ * wheel and NOT a HID++ device. Its report descriptor carries a full PID
+ * output collection and the proxy forwards decoded effects to the real
+ * wheel, but without a kernel driver attaching the PID FF layer the
+ * virtual evdev node has no FF capability at all, so games using the
+ * evdev route (SDL and native Linux sims) see a wheel that rejects every
+ * effect upload (issue #50). Bind it here and attach the kernel's PID FF
+ * layer the same way hid-universal-pidff does.
+ *
+ * None of the real-wheel machinery may run for this product: no HID++
+ * probes, no sysfs attributes, no FF retry timers. drvdata stays NULL,
+ * which every callback in this driver already treats as "not ours", and
+ * hidpp_remove's NULL-drvdata path is a plain hid_hw_stop.
+ */
+static int hidpp_dd_virtual_ffb_probe(struct hid_device *hdev)
+{
+	int ret;
+
+	ret = hid_parse(hdev);
+	if (ret) {
+		hid_err(hdev, "virtual wheel: hid_parse failed: %d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * Mask out HID_CONNECT_FF: it would ask the transport driver to run
+	 * its own ff_init, which uhid does not have. The PID FF layer is
+	 * attached explicitly below instead.
+	 */
+	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT & ~HID_CONNECT_FF);
+	if (ret) {
+		hid_err(hdev, "virtual wheel: hid_hw_start failed: %d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * No quirks: the proxy's descriptor is our own and declares every
+	 * field the PID layer expects (delay, PBO, negative coefficient/
+	 * saturation, deadband), so auto-detection has nothing to patch up.
+	 * A failure here still leaves a working input-only device; the
+	 * proxy's hidraw path (Wine's PID driver) is unaffected either way.
+	 */
+	ret = hid_pidff_init_with_quirks(hdev, 0);
+	if (ret)
+		hid_warn(hdev,
+			 "virtual wheel: PID FF init failed (%d), evdev FF disabled\n",
+			 ret);
+	else
+		hid_info(hdev, "virtual wheel: kernel PID FF attached\n");
+
+	return 0;
+}
+#endif /* HIDPP_DD_HAVE_PIDFF */
+
 static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	struct hidpp_device *hidpp;
 	int ret;
 	unsigned int connect_mask = HID_CONNECT_DEFAULT | HID_CONNECT_DRIVER;
+
+#ifdef HIDPP_DD_HAVE_PIDFF
+	/*
+	 * The logi-ffb virtual wheel takes its own minimal path: plain HID
+	 * plus the kernel PID FF layer, none of the HID++ machinery below.
+	 */
+	if (hdev->product == USB_DEVICE_ID_LOGI_FFB_VIRTUAL_WHEEL)
+		return hidpp_dd_virtual_ffb_probe(hdev);
+#endif
 
 	/* report_fixup needs drvdata to be set before we call hid_parse */
 	hidpp = devm_kzalloc(&hdev->dev, sizeof(*hidpp), GFP_KERNEL);
@@ -15159,6 +15235,18 @@ static const struct hid_device_id hidpp_devices[] = {
 	{ /* Logitech RS50 Direct Drive Wheel (PlayStation/PC) over USB */
 	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_RS50),
 		.driver_data = HIDPP_QUIRK_CLASS_G920 | HIDPP_QUIRK_DD_FFB },
+#ifdef HIDPP_DD_HAVE_PIDFF
+	{ /*
+	   * logi-ffb virtual wheel: the userspace FFB proxy's uhid device,
+	   * not real hardware and not HID++. Registered as BUS_USB by the
+	   * proxy, so HID_USB_DEVICE matches. The probe attaches the kernel
+	   * PID FF layer so games get evdev FFB (issue #50); see
+	   * hidpp_dd_virtual_ffb_probe. Compiled only on kernels exporting
+	   * hid_pidff_init_with_quirks (v6.15+), see Kbuild.
+	   */
+	  HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH,
+			 USB_DEVICE_ID_LOGI_FFB_VIRTUAL_WHEEL) },
+#endif
 	{}
 };
 
