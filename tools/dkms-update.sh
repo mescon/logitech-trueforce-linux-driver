@@ -57,7 +57,9 @@ find "$SRC_DIR" \( \
 # `-c safe.directory=...` is needed because we run as root via sudo
 # while $REPO_ROOT is owned by the invoking user; without it git's
 # dubious-ownership check fails and we silently record "unknown".
-GIT_HASH=$(git -c "safe.directory=$REPO_ROOT" -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+# Tag-derived version (v0.16.0 at a tag, v0.16.0-3-gabc1234 between tags)
+# so the DKMS-built module reports the release, not a bare hash.
+GIT_HASH=$(git -c "safe.directory=$REPO_ROOT" -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown)
 echo "$GIT_HASH" > "$SRC_DIR/.git_hash"
 
 # Drop previous DKMS state for this version. Ignore "not found".
