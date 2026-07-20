@@ -55,13 +55,22 @@ straight to racing if you do not need TrueForce).
 | Arch, CachyOS, Manjaro | `paru -S logi-dd-gui` (AUR; or your AUR helper; pulls `logi-dd` and the driver. Headless box: `paru -S logi-dd`) |
 | Debian, Ubuntu, Mint, Pop!_OS | download the `.deb`s from [Releases](https://github.com/mescon/logitech-trueforce-linux-driver/releases) and `sudo apt install ./logitech-trueforce-dkms_*.deb ./logi-dd_*.deb ./logi-dd-gui_*.deb` (skip the gui one on a headless box) |
 | Bazzite, Silverblue, Kinoite | atomic; see [section 1a](#1a-atomic--immutable-distros-bazzite-silverblue-kinoite) |
-| Fedora, openSUSE, others | build from source (below) |
+| Fedora, Nobara | `sudo dnf copr enable mescon/logitech-trueforce && sudo dnf install logi-dd-gui` (pulls `logi-dd` and the akmod driver; headless box: `logi-dd`) |
+| openSUSE | OBS repo `home:mescon`, then `sudo zypper install logi-dd-gui` (headless: `logi-dd`) |
+| Others | build from source (below) |
 
-The AUR package and the Debian `.deb` are DKMS-based and rebuild the module
-automatically on kernel upgrades. Native Fedora (COPR akmod) and openSUSE (OBS)
-packages are prepared but not yet published; until they are, install from
-source with the one-command setup below. On any install you can stage the SDK
-DLLs and run `logitech-trueforce-install-shim` (step 2) for TrueForce.
+**What the packages contain** (one source, three packages, dependencies
+pull the rest automatically):
+
+| Package | Contents | Install it when |
+|---|---|---|
+| `logitech-trueforce-dkms` (akmod on Fedora) | the kernel driver + udev rules | you only want the wheel to work; games and sysfs are enough |
+| `logi-dd` | the terminal settings app, `logi-ffb` (DirectInput FFB proxy), `logi-tf-sim` (simulated TrueForce daemon), the TrueForce shim installer | a headless or terminal-first setup; depends on the driver package |
+| `logi-dd-gui` | the desktop settings app, menu entry and icon | a desktop; depends on `logi-dd`, so this one package installs everything |
+
+All channels are DKMS/akmod-based and rebuild the module automatically on
+kernel upgrades. On any install you can stage the SDK DLLs and run
+`logitech-trueforce-install-shim` (step 2) for TrueForce.
 
 ### From source (any distro)
 
