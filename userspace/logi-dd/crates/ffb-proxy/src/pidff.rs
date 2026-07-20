@@ -40,7 +40,14 @@ const REPORT_SET_CONSTANT: u8 = 0x55;
 const REPORT_SET_RAMP: u8 = 0x58;
 const REPORT_DEVICE_GAIN: u8 = 0x59;
 const REPORT_EFFECT_OPERATION: u8 = 0x5A;
+const REPORT_BLOCK_FREE: u8 = 0x5B;
 const REPORT_SET_PERIODIC: u8 = 0x5D;
+
+/// The Set Effect report's Duration field declares logical max 0x7FFF, but
+/// the PID spec (and the kernel's hid-pidff, which fills the field's full 16
+/// bits) uses the all-ones value to mean "play until stopped". evdev encodes
+/// the same thing as `replay.length == 0`.
+pub const PID_DURATION_INFINITE: u16 = 0xFFFF;
 
 /// The waveform/condition family of a PID effect, decoded from the
 /// `CREATE_NEW_EFFECT` (0x54) report's Effect Type usage byte.
@@ -59,12 +66,39 @@ pub enum EffectKind {
     Friction,
 }
 
-/// Maps a PID Effect Type usage byte (as carried by the Create New Effect
-/// feature report, `0x54`) to the waveform/condition family it selects.
-/// Returns `None` for a usage the descriptor declares but this proxy has no
-/// `EffectKind` variant for (e.g. `0x28`, Custom Force Data).
+/// Maps the Effect Type byte carried by the Create New Effect feature
+/// report (`0x54`) to the waveform/condition family it selects.
+///
+/// Two encodings arrive on the wire for this HID *array* field:
+///
+/// - The HID-conformant one: array fields carry a *logical value*, the
+///   1-based index into the collection's usage list (the descriptor
+///   declares Logical Min 1). This is what the kernel's hid-pidff sends
+///   (`create_new_effect_type->value[0] = type_id`, a `find_usage()+1`
+///   index) and what a descriptor-driven host stack produces.
+/// - The raw usage byte itself (`0x26` Constant .. `0x43` Friction), which
+///   some PID host stacks write directly.
+///
+/// The two ranges (1..=12 and 0x26..=0x43) do not overlap, so both are
+/// accepted here. Returns `None` for anything else, including index 3 /
+/// usage `0x28` (Custom Force Data, declared but unsupported downstream).
 pub fn effect_kind_from_type_byte(b: u8) -> Option<EffectKind> {
     match b {
+        // 1-based usage-list indices, in the descriptor's declared order:
+        // 0x26, 0x27, 0x28, 0x30..0x34, 0x40..0x43.
+        1 => Some(EffectKind::Constant),
+        2 => Some(EffectKind::Ramp),
+        // 3 is Custom Force Data: no EffectKind variant.
+        4 => Some(EffectKind::Square),
+        5 => Some(EffectKind::Sine),
+        6 => Some(EffectKind::Triangle),
+        7 => Some(EffectKind::SawUp),
+        8 => Some(EffectKind::SawDown),
+        9 => Some(EffectKind::Spring),
+        10 => Some(EffectKind::Damper),
+        11 => Some(EffectKind::Inertia),
+        12 => Some(EffectKind::Friction),
+
         EFFECT_TYPE_CONSTANT => Some(EffectKind::Constant),
         EFFECT_TYPE_RAMP => Some(EffectKind::Ramp),
         EFFECT_TYPE_SQUARE => Some(EffectKind::Square),
@@ -132,6 +166,35 @@ pub fn pid_pool_reply() -> [u8; 5] {
     [0x57, ram[0], ram[1], PID_POOL_SIMULTANEOUS_MAX, FLAG_DEVICE_MANAGED_POOL]
 }
 
+/// The PID Device Control selector (report `0x50`, usages `0x97..=0x9C`).
+/// The wire value is the array field's logical value, 1..=6 in the
+/// descriptor's declared usage order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceControlOp {
+    EnableActuators,
+    DisableActuators,
+    StopAllEffects,
+    Reset,
+    Pause,
+    Continue,
+}
+
+impl DeviceControlOp {
+    /// Maps the wire selector byte to the control operation, `None` for a
+    /// value outside the declared logical range.
+    pub fn from_wire(b: u8) -> Option<DeviceControlOp> {
+        match b {
+            0x01 => Some(DeviceControlOp::EnableActuators),
+            0x02 => Some(DeviceControlOp::DisableActuators),
+            0x03 => Some(DeviceControlOp::StopAllEffects),
+            0x04 => Some(DeviceControlOp::Reset),
+            0x05 => Some(DeviceControlOp::Pause),
+            0x06 => Some(DeviceControlOp::Continue),
+            _ => None,
+        }
+    }
+}
+
 /// A single decoded PID output report, one variant per report id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectOp {
@@ -143,8 +206,10 @@ pub enum EffectOp {
     SetCondition { block: u8, center: i16, coeff_pos: i16, coeff_neg: i16, sat_pos: u16, sat_neg: u16 },
     SetEnvelope { block: u8, attack_ms: u16, attack_level: u16, fade_ms: u16, fade_level: u16 },
     Operation { block: u8, start: bool, loop_count: u8 },
+    /// PID Block Free (`0x5B`): the host is done with this effect block.
+    Destroy { block: u8 },
     Gain { value: u8 },
-    DeviceControl { enable: bool },
+    DeviceControl { op: DeviceControlOp },
 }
 
 /// Reads a little-endian `u16` at byte offset `at`, or `None` if the report
@@ -168,10 +233,10 @@ pub fn decode(report: &[u8]) -> Option<EffectOp> {
     match id {
         // DEVICE_CONTROL: byte 1 is the control selector (Enable Actuators=1,
         // Disable Actuators=2, Stop All Effects=3, Device Reset=4, Device
-        // Pause=5, Device Continue=6). We collapse it to enable/disable.
+        // Pause=5, Device Continue=6).
         REPORT_DEVICE_CONTROL => {
-            let control = *report.get(1)?;
-            Some(EffectOp::DeviceControl { enable: control == 0x01 })
+            let op = DeviceControlOp::from_wire(*report.get(1)?)?;
+            Some(EffectOp::DeviceControl { op })
         }
 
         // SET_EFFECT: byte 1 = Effect Block Index, byte 2 = Effect Type
@@ -183,7 +248,11 @@ pub fn decode(report: &[u8]) -> Option<EffectOp> {
         // Direction (LE u16).
         REPORT_SET_EFFECT => {
             let block = *report.get(1)?;
-            let duration_ms = u16_at(report, 3)?;
+            // The PID "infinite" duration sentinel maps to evdev's 0.
+            let duration_ms = match u16_at(report, 3)? {
+                PID_DURATION_INFINITE => 0,
+                d => d,
+            };
             let direction = u16_at(report, 14)?;
             Some(EffectOp::SetEffect { block, duration_ms, direction })
         }
@@ -233,12 +302,16 @@ pub fn decode(report: &[u8]) -> Option<EffectOp> {
             Some(EffectOp::SetConstant { block, magnitude })
         }
 
-        // SET_RAMP: byte 1 = Effect Block Index, bytes 2..4 = Ramp Start (LE
-        // i16), bytes 4..6 = Ramp End (LE i16).
+        // SET_RAMP: byte 1 = Effect Block Index, byte 2 = Ramp Start, byte 3
+        // = Ramp End. The descriptor declares Start/End as single unsigned
+        // bytes (logical 0..255), so a descriptor-driven host (the kernel's
+        // hid-pidff, Wine's HidP) sends the levels magnitude-only, one byte
+        // each; the sign is not expressible on this wire. Upscale 0..255
+        // back to the evdev level range 0..32767.
         REPORT_SET_RAMP => {
             let block = *report.get(1)?;
-            let start = i16_at(report, 2)?;
-            let end = i16_at(report, 4)?;
+            let start = (*report.get(2)? as i32 * 32767 / 255) as i16;
+            let end = (*report.get(3)? as i32 * 32767 / 255) as i16;
             Some(EffectOp::SetRamp { block, start, end })
         }
 
@@ -246,6 +319,14 @@ pub fn decode(report: &[u8]) -> Option<EffectOp> {
         REPORT_DEVICE_GAIN => {
             let value = *report.get(1)?;
             Some(EffectOp::Gain { value })
+        }
+
+        // BLOCK_FREE: byte 1 = Effect Block Index. Sent by the kernel's
+        // hid-pidff when an effect is erased (and once at init, to discard
+        // its autocenter-detection probe effect).
+        REPORT_BLOCK_FREE => {
+            let block = *report.get(1)?;
+            Some(EffectOp::Destroy { block })
         }
 
         // EFFECT_OPERATION: byte 1 = Effect Block Index, byte 2 = Operation
@@ -425,15 +506,48 @@ mod tests {
     }
 
     #[test]
-    fn decodes_set_ramp() {
-        // id 0x58, block 5, start -5000, end 6000
-        let mut r = vec![0x58, 0x05];
-        r.extend_from_slice(&(-5000i16).to_le_bytes());
-        r.extend_from_slice(&6000i16.to_le_bytes());
+    fn decodes_set_ramp_single_byte_levels() {
+        // id 0x58, block 5, start 0, end 255: the descriptor declares the
+        // ramp levels as single unsigned bytes, upscaled to 0..32767.
+        let r = [0x58, 0x05, 0x00, 0xFF];
         assert!(matches!(
             decode(&r),
-            Some(EffectOp::SetRamp { block: 5, start: -5000, end: 6000 })
+            Some(EffectOp::SetRamp { block: 5, start: 0, end: 32767 })
         ));
+    }
+
+    #[test]
+    fn decodes_block_free_as_destroy() {
+        let r = [0x5B, 0x07];
+        assert!(matches!(decode(&r), Some(EffectOp::Destroy { block: 7 })));
+    }
+
+    #[test]
+    fn set_effect_infinite_duration_maps_to_zero() {
+        // hid-pidff writes the full-16-bit sentinel 0xFFFF for "play until
+        // stopped"; evdev spells that replay.length == 0.
+        let mut r = vec![0u8; 18];
+        r[0] = 0x51;
+        r[1] = 0x01;
+        r[3..5].copy_from_slice(&PID_DURATION_INFINITE.to_le_bytes());
+        assert!(matches!(
+            decode(&r),
+            Some(EffectOp::SetEffect { block: 1, duration_ms: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn effect_kind_accepts_array_index_encoding() {
+        // The kernel's hid-pidff writes the Create New Effect array field as
+        // a 1-based usage-list index, not the usage byte.
+        assert_eq!(effect_kind_from_type_byte(1), Some(EffectKind::Constant));
+        assert_eq!(effect_kind_from_type_byte(5), Some(EffectKind::Sine));
+        assert_eq!(effect_kind_from_type_byte(9), Some(EffectKind::Spring));
+        assert_eq!(effect_kind_from_type_byte(12), Some(EffectKind::Friction));
+        // Index 3 is Custom Force Data: declared, unsupported.
+        assert_eq!(effect_kind_from_type_byte(3), None);
+        // Past the usage list.
+        assert_eq!(effect_kind_from_type_byte(13), None);
     }
 
     #[test]
@@ -451,14 +565,20 @@ mod tests {
     }
 
     #[test]
-    fn decodes_device_control_enable() {
-        let r = [0x50, 0x01];
-        assert!(matches!(decode(&r), Some(EffectOp::DeviceControl { enable: true })));
-    }
-
-    #[test]
-    fn decodes_device_control_disable() {
-        let r = [0x50, 0x02];
-        assert!(matches!(decode(&r), Some(EffectOp::DeviceControl { enable: false })));
+    fn decodes_device_control_selectors() {
+        let cases = [
+            (0x01, DeviceControlOp::EnableActuators),
+            (0x02, DeviceControlOp::DisableActuators),
+            (0x03, DeviceControlOp::StopAllEffects),
+            (0x04, DeviceControlOp::Reset),
+            (0x05, DeviceControlOp::Pause),
+            (0x06, DeviceControlOp::Continue),
+        ];
+        for (wire, want) in cases {
+            let r = [0x50, wire];
+            assert_eq!(decode(&r), Some(EffectOp::DeviceControl { op: want }));
+        }
+        // Out-of-range selector is not an op.
+        assert_eq!(decode(&[0x50, 0x07]), None);
     }
 }

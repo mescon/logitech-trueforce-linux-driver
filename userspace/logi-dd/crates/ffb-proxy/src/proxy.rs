@@ -159,6 +159,23 @@ impl Proxy {
         Ok(Proxy { device, source, sink, next_block: 1, last_created_block: 0 })
     }
 
+    /// Apply one decoded PID op to the sink, updating the proxy's own
+    /// block-assignment state first: a Device Reset returns the device to
+    /// "no effect blocks in use" (the sink drops them all), so block
+    /// assignment starts over from 1. The kernel's hid-pidff resets exactly
+    /// when its own effect count is zero, so no live block survives into
+    /// the restarted numbering. Sink errors are logged, never fatal: a
+    /// single failed effect must not tear down the whole proxy.
+    fn dispatch(&mut self, op: pidff::EffectOp) {
+        if let pidff::EffectOp::DeviceControl { op: pidff::DeviceControlOp::Reset } = op {
+            self.next_block = 1;
+            self.last_created_block = 0;
+        }
+        if let Err(e) = self.sink.apply(op) {
+            eprintln!("logi-ffb: failed to apply FF operation: {e}");
+        }
+    }
+
     /// Run the poll loop until `stop` is set (checked at least every
     /// `POLL_TIMEOUT_MS` milliseconds) or the real wheel goes away.
     ///
@@ -221,9 +238,7 @@ impl Proxy {
                 match self.device.read_event() {
                     Ok(uhid::Event::Output(bytes)) => {
                         if let Some(op) = pidff::decode(&bytes) {
-                            if let Err(e) = self.sink.apply(op) {
-                                eprintln!("logi-ffb: failed to apply FF effect: {e}");
-                            }
+                            self.dispatch(op);
                         }
                     }
 
@@ -250,17 +265,21 @@ impl Proxy {
                         }
                     }
 
-                    // Any other Feature Set_Report (e.g. Device Control,
-                    // 0x50): best-effort, feed it straight to the Output
-                    // decoder. Set_Report `data` already leads with the report
-                    // id byte the decoder keys on, so it is passed as-is (not
-                    // re-prefixed). Apply if it decodes to something, then ack
-                    // regardless.
+                    // Any other Set_Report: feed it straight to the report
+                    // decoder. This is both the Feature path (e.g. Device
+                    // Control if a host writes it as a feature) and the path
+                    // every kernel-originated *output* report takes: uhid has
+                    // no async request op, so the kernel PID FF layer's
+                    // hid_hw_request(HID_REQ_SET_REPORT) calls arrive here as
+                    // UHID_SET_REPORT with the output rtype, each blocking
+                    // until the ack below (5 s uhid timeout). Set_Report
+                    // `data` already leads with the report id byte the
+                    // decoder keys on, so it is passed as-is (not
+                    // re-prefixed). Apply if it decodes to something, then
+                    // ack regardless so the kernel is never left waiting.
                     Ok(uhid::Event::SetReport { data, id, .. }) => {
                         if let Some(op) = pidff::decode(&data) {
-                            if let Err(e) = self.sink.apply(op) {
-                                eprintln!("logi-ffb: failed to apply FF feature report: {e}");
-                            }
+                            self.dispatch(op);
                         }
                         if let Err(e) = self.device.send_set_report_reply(id, 0) {
                             break Err(e);

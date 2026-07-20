@@ -168,10 +168,32 @@ const PID_COLLECTION: &[u8] = &[
     0x15, 0x00, 0x26, 0xFF, 0x00, 0x75, 0x08, 0x95, 0x02, 0x91, 0x02, 0xC0,
 ];
 
+// PID Block Free output report (usage 0x90), report id 0x5B: the host frees
+// one effect block by index. NOT part of the driver's hidpp_dd_pid_rdesc[]
+// (Wine's PID stack tolerates its absence), but the kernel's PID FF layer
+// (drivers/hid/usbhid/hid-pidff.c) lists Block Free among its REQUIRED
+// reports and refuses to initialize without it; the hid-logitech-dd driver
+// attaches that layer to this virtual device to give it evdev FF (issue
+// #50). Report id 0x5B is the one id in the 0x50..0x5D block the driver
+// collection leaves unused as a report id.
+#[rustfmt::skip]
+const BLOCK_FREE_COLLECTION: &[u8] = &[
+    0x05, 0x0F,             // Usage Page (Physical Interface Device)
+    0x09, 0x90,             // Usage (PID Block Free Report)
+    0xA1, 0x02,             // Collection (Logical)
+    0x85, 0x5B,             //   Report ID (0x5B)
+    0x09, 0x22,             //   Usage (Effect Block Index)
+    0x15, 0x01, 0x25, 0x28, //   Logical Min 1, Max 40
+    0x75, 0x08, 0x95, 0x01, //   Report Size 8, Count 1
+    0x91, 0x02,             //   Output (Data,Var,Abs)
+    0xC0,                   // End Collection (Logical)
+];
+
 const APP_END: &[u8] = &[0xC0]; // End Collection (Application)
 
 /// Full report descriptor: joystick application collection (input report id 1)
-/// followed by the PID output collection, then the application End Collection.
+/// followed by the PID output collection and the Block Free report, then the
+/// application End Collection.
 pub fn report_descriptor() -> &'static [u8] {
     use std::sync::OnceLock;
     static D: OnceLock<Vec<u8>> = OnceLock::new();
@@ -179,6 +201,7 @@ pub fn report_descriptor() -> &'static [u8] {
         let mut v = Vec::new();
         v.extend_from_slice(JOYSTICK_PREFIX);
         v.extend_from_slice(PID_COLLECTION);
+        v.extend_from_slice(BLOCK_FREE_COLLECTION);
         v.extend_from_slice(APP_END);
         v
     })
@@ -219,5 +242,15 @@ mod tests {
         // Input report id 1 and PID Set-Effect report id 0x51 both present as `0x85, id`.
         assert!(d.windows(2).any(|w| w == [0x85, INPUT_REPORT_ID]));
         assert!(d.windows(2).any(|w| w == [0x85, 0x51]));
+    }
+
+    #[test]
+    fn report_descriptor_declares_pid_block_free() {
+        // The kernel's PID FF layer (attached to this device by the
+        // hid-logitech-dd driver, issue #50) treats Block Free (PID usage
+        // 0x90) as a required report and refuses to init without it.
+        let d = report_descriptor();
+        assert!(d.windows(2).any(|w| w == [0x09, 0x90]), "PID Block Free usage missing");
+        assert!(d.windows(2).any(|w| w == [0x85, 0x5B]), "Block Free report id missing");
     }
 }

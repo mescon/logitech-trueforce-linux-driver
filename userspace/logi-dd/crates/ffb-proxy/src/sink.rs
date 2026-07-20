@@ -31,7 +31,7 @@ use nix::sys::stat::Mode;
 use nix::unistd::write;
 use nix::{ioctl_write_int, ioctl_write_ptr};
 
-use crate::pidff::{EffectKind, EffectOp};
+use crate::pidff::{DeviceControlOp, EffectKind, EffectOp};
 use crate::source::{input_event, Timeval};
 use crate::{Error, Result};
 
@@ -232,10 +232,18 @@ pub fn to_ff_effect(kind: EffectKind, params: &EffectParams, id: i16) -> ff_effe
         }
     }
 
+    // The PID wire carries direction in hundredths of degrees (the
+    // descriptor's Direction field: logical 0..35900, unit degrees,
+    // exponent -2); evdev's ff_effect.direction spans the same circle over
+    // the full u16 (0x4000 = 90 degrees). Without this rescale a 270-degree
+    // PID direction (27000) lands in evdev's upper-left quadrant instead of
+    // west, flipping the force sign for every leftward effect.
+    let direction = ((params.direction as u32 * 0x10000) / 36000).min(0xFFFF) as u16;
+
     ff_effect {
         type_,
         id,
-        direction: params.direction,
+        direction,
         trigger: ff_trigger::default(),
         replay: ff_replay { length: params.duration_ms, delay: 0 },
         u: FfUnion(u),
@@ -398,16 +406,53 @@ impl Sink {
                 let value = if start { loop_count.max(1) as i32 } else { 0 };
                 self.write_ff_event(id as u16, value)
             }
+            EffectOp::Destroy { block } => {
+                // Block Free: forget the block. A block that was Created but
+                // never uploaded (no Set* report arrived, e.g. hid-pidff's
+                // autocenter-detection probe effect) has no kernel id yet;
+                // removing the bookkeeping is all there is to do.
+                self.kinds.remove(&block);
+                self.params.remove(&block);
+                if let Some(id) = self.effects.remove(&block) {
+                    let _ = unsafe { eviocrmff(self.fd.as_raw_fd(), id as u64) };
+                }
+                Ok(())
+            }
             EffectOp::Gain { value } => {
                 let scaled = (value as i32) * 0xFFFF / 255;
                 self.write_ff_event(FF_GAIN, scaled)
             }
-            EffectOp::DeviceControl { enable } => {
-                if !enable {
-                    self.shutdown();
+            EffectOp::DeviceControl { op } => match op {
+                // Actuator enable/disable gates whether uploaded effects
+                // may produce force; model it with the device gain, keeping
+                // the uploaded effects intact so Enable resumes them. A
+                // host-set gain is clobbered by Enable, which matches the
+                // PID default of full gain after actuators come back.
+                DeviceControlOp::EnableActuators => self.write_ff_event(FF_GAIN, 0xFFFF),
+                DeviceControlOp::DisableActuators => self.write_ff_event(FF_GAIN, 0),
+                DeviceControlOp::StopAllEffects => {
+                    let ids: Vec<i16> = self.effects.values().copied().collect();
+                    for id in ids {
+                        let _ = self.write_ff_event(id as u16, 0);
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
+                // Reset returns the device to its default state: no effects
+                // loaded, full gain. hid-pidff sends this before the first
+                // effect of a session and re-sends gain only at init, so
+                // zeroing the gain here (as the old shutdown-based handling
+                // did) would leave every subsequent effect silent.
+                DeviceControlOp::Reset => {
+                    for (_, id) in self.effects.drain() {
+                        let _ = unsafe { eviocrmff(self.fd.as_raw_fd(), id as u64) };
+                    }
+                    self.kinds.clear();
+                    self.params.clear();
+                    self.write_ff_event(FF_GAIN, 0xFFFF)
+                }
+                // Pause/Continue have no evdev counterpart; ack and ignore.
+                DeviceControlOp::Pause | DeviceControlOp::Continue => Ok(()),
+            },
         }
     }
 
@@ -506,6 +551,59 @@ mod tests {
         };
         let union_offset = (&e.u as *const _ as usize) - (&e as *const _ as usize);
         assert_eq!(union_offset, 16);
+    }
+
+    #[test]
+    fn direction_rescales_pid_centidegrees_to_evdev_circle() {
+        // PID 90.00 degrees (9000) is evdev 0x4000; PID 270.00 degrees
+        // (27000) is evdev 0xC000. Getting this wrong flips force signs.
+        let p = EffectParams { direction: 9000, ..Default::default() };
+        assert_eq!(to_ff_effect(EffectKind::Constant, &p, 0).direction, 0x4000);
+        let p = EffectParams { direction: 27000, ..Default::default() };
+        assert_eq!(to_ff_effect(EffectKind::Constant, &p, 0).direction, 0xC000);
+        let p = EffectParams { direction: 0, ..Default::default() };
+        assert_eq!(to_ff_effect(EffectKind::Constant, &p, 0).direction, 0);
+    }
+
+    /// A Sink over /dev/null: exercises apply()'s bookkeeping without a real
+    /// evdev node (writes succeed, ioctls are never reached on these paths).
+    fn null_sink() -> Sink {
+        let f = std::fs::File::options().write(true).open("/dev/null").expect("open /dev/null");
+        Sink { fd: f.into(), effects: HashMap::new(), kinds: HashMap::new(), params: HashMap::new() }
+    }
+
+    #[test]
+    fn destroy_of_created_but_never_uploaded_block_is_ok() {
+        // hid-pidff's autocenter probe: Create then immediately Block Free,
+        // with no Set* (and thus no kernel upload) in between.
+        let mut sink = null_sink();
+        sink.apply(EffectOp::Create { block: 1, kind: EffectKind::Constant }).unwrap();
+        sink.apply(EffectOp::Destroy { block: 1 }).unwrap();
+        assert!(sink.kinds.is_empty());
+        assert!(sink.params.is_empty());
+    }
+
+    #[test]
+    fn destroy_of_unknown_block_is_ok() {
+        let mut sink = null_sink();
+        sink.apply(EffectOp::Destroy { block: 9 }).unwrap();
+    }
+
+    #[test]
+    fn reset_clears_bookkeeping_and_keeps_gain_path_ok() {
+        let mut sink = null_sink();
+        sink.apply(EffectOp::Create { block: 1, kind: EffectKind::Constant }).unwrap();
+        sink.apply(EffectOp::DeviceControl { op: DeviceControlOp::Reset }).unwrap();
+        assert!(sink.kinds.is_empty());
+        assert!(sink.params.is_empty());
+        assert!(sink.effects.is_empty());
+    }
+
+    #[test]
+    fn pause_and_continue_are_accepted_noops() {
+        let mut sink = null_sink();
+        sink.apply(EffectOp::DeviceControl { op: DeviceControlOp::Pause }).unwrap();
+        sink.apply(EffectOp::DeviceControl { op: DeviceControlOp::Continue }).unwrap();
     }
 
     #[test]
