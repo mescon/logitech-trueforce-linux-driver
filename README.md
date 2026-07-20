@@ -1,3 +1,5 @@
+<img src="docs/images/logo.svg" align="right" width="120" alt="logi-dd logo"/>
+
 # Logitech TrueForce Linux Driver
 
 A Linux kernel driver and userspace tools for Logitech's direct-drive racing
