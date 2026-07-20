@@ -5,6 +5,25 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.16.2 - 2026-07-20
+
+### Fixed
+- **logi-ffb pedals never reached the virtual wheel** (issue #50): the
+  proxy listened on guessed axis codes; the RS50 emits throttle, brake
+  and clutch on ABS_RX/ABS_RY/ABS_RZ. Verified end to end; DirectInput
+  sims can now bind all three pedals.
+- **The openSUSE OBS channel had been silently stale since 0.14.0**:
+  builders have no network, so the Rust workspace could not fetch
+  crates. The publish workflow now vendors the crates into the sources,
+  and the spec builds offline and locked; two follow-up spec fixes
+  (icon-directory ownership, dropping the dkms-era noarch marking) let
+  all three packages build and publish on OBS.
+
+### Added
+- All four binaries answer `--version`; `setup.sh doctor` prints driver
+  and app versions; the bug-report template requires the driver
+  version; the module logs its tag-derived version at load.
+
 ## 0.16.1 - 2026-07-20
 
 Branding patch: one universal logo (steel-blue rim, legible on light

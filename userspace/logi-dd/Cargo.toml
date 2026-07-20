@@ -5,5 +5,5 @@ members = ["crates/logi-dd-core", "crates/logi-dd-tui", "crates/ffb-proxy", "cra
 [workspace.package]
 edition = "2021"
 rust-version = "1.74"
-version = "0.16.1"
+version = "0.16.2"
 license = "GPL-2.0"
