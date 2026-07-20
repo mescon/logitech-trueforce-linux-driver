@@ -36,7 +36,7 @@ pub const PROFILE_NEW_ATTR: &str = "profile-new";
 /// The LIGHTSYNC effect selector's modal state: left/right cycles `index`
 /// through `labels` (the entries `lightsync::dropdown_labels` builds: the
 /// 4 sweeps, the 5 custom slots, plus the raw current effect only while it
-/// is outside 1-5), Enter commits it (one or two device writes; see
+/// is outside 1-9), Enter commits it (one or two device writes; see
 /// `commit_effect_edit`), Esc discards. A separate little state from
 /// `edit::EditState` because the selector's index is a position in a
 /// dynamic label list, not a value any registry `Kind` can bump.
@@ -619,8 +619,8 @@ impl<S: SysfsIo> App<S> {
     }
 
     /// The composed LIGHTSYNC page: Effect (the composed selector), the
-    /// global Brightness, then, only while the custom effect (5) is
-    /// active, the active slot's fields as an indented group. The
+    /// global Brightness, then, only while a custom-slot effect (5-9)
+    /// is active, the active slot's fields as an indented group. The
     /// slot-scoped registry rows stop being top-level rows;
     /// `wheel_led_slot` itself has no row at all (the selector's CUSTOM
     /// entries pick the slot). The G PRO rev lights live on the Steering
@@ -630,7 +630,7 @@ impl<S: SysfsIo> App<S> {
             self.led_row("wheel_led_effect", "Effect"),
             self.led_row("wheel_led_brightness", "Brightness"),
         ];
-        if matches!(self.device.read("wheel_led_effect"), Ok(Value::Int(5))) {
+        if matches!(self.device.read("wheel_led_effect"), Ok(Value::Int(5..=9))) {
             rows.push(self.led_row("wheel_led_slot_name", "  Slot name"));
             rows.push(self.led_row("wheel_led_slot_brightness", "  Slot brightness"));
             rows.push(self.led_row("wheel_led_direction", "  Direction"));
@@ -743,7 +743,7 @@ impl<S: SysfsIo> App<S> {
     /// step per `step`. The fill uses the active slot's colours and
     /// follows its direction; the caller's `wheel_led_effect` restore
     /// exits the fill afterwards.
-    #[allow(dead_code)] // returns with the sweep preview once the rev display's config semantics are decoded (issue #20)
+    #[allow(dead_code)] // returns with the sweep preview once the fill is re-verified after the slot-switch fix
     fn rev_sweep(&self, step: std::time::Duration) -> Result<(), logi_dd_core::Error> {
         for level in (0..=10i32).chain((0..10).rev()) {
             self.device.write("wheel_rev_level", &Value::Int(level))?;
@@ -1206,7 +1206,7 @@ impl<S: SysfsIo> App<S> {
         if spec.access == Access::ReadOnly {
             return;
         }
-        // The LIGHTSYNC Effect row cycles the 13 selector entries, not the
+        // The LIGHTSYNC Effect row cycles the selector entries, not the
         // raw 1-9 value; it gets its own little modal (see `EffectEdit`).
         if attr == "wheel_led_effect" {
             let effect = match self.device.read(&attr) {
@@ -1271,7 +1271,7 @@ impl<S: SysfsIo> App<S> {
     pub fn commit_effect_edit(&mut self) {
         let Some(fe) = self.effect_edit.take() else { return };
         // The raw current effect only matters when the trailing raw entry
-        // (shown while the device reports an effect outside 1-5) is
+        // (shown while the device reports an effect outside 1-9) is
         // re-picked: that entry commits the same value back.
         let current = match self.device.read("wheel_led_effect") {
             Ok(Value::Int(n)) => n.clamp(0, i32::from(u8::MAX)) as u8,
@@ -2554,23 +2554,28 @@ mod tests {
     }
 
     #[test]
-    fn effect_selector_shows_a_raw_entry_only_for_an_out_of_range_effect() {
+    fn effect_readback_of_7_round_trips_as_custom_3() {
         use crossterm::event::KeyCode;
-        // The driver accepts 1-9; a device reporting 7 gets a trailing
-        // "Effect 7" entry so the selector reflects the real state, and
-        // committing it re-writes the same value.
+        // Device effects 5-9 ARE the custom slots: a readback of 7 must
+        // show as CUSTOM 3 (slot 2), never a raw "Effect 7" entry, and
+        // re-committing the entry resolves to the slot write pair.
         let mut a = leds_app("7", "0");
         a.row_idx = 0;
-        assert_eq!(a.lightsync_effect_label(), "Effect 7");
+        assert_eq!(a.lightsync_effect_label(), "CUSTOM 3");
         a.on_key(KeyCode::Enter);
         {
             let fe = a.effect_edit.as_ref().unwrap();
-            assert_eq!(fe.labels.len(), 10);
-            assert_eq!(fe.index, 9, "the raw entry is selected");
-            assert_eq!(fe.labels[9], "Effect 7");
+            assert_eq!(fe.labels.len(), 9, "no trailing raw entry for a decoded value");
+            assert_eq!(fe.index, 6, "effect 7 = CUSTOM 3 = selector index 6");
+            assert_eq!(fe.labels[6], "CUSTOM 3");
         }
-        a.on_key(KeyCode::Enter); // commit unchanged
-        assert_eq!(a.device.read("wheel_led_effect").unwrap(), Value::Int(7));
+        a.on_key(KeyCode::Enter); // commit the same entry
+        assert_eq!(a.device.read("wheel_led_slot").unwrap(), Value::Int(2));
+        assert_eq!(a.device.read("wheel_led_effect").unwrap(), Value::Int(5));
+        assert!(
+            a.lightsync_effect_label().starts_with("CUSTOM 3"),
+            "label survives the round trip"
+        );
     }
 
     #[test]
@@ -2849,13 +2854,13 @@ mod tests {
         use crossterm::event::KeyCode;
         let mut a = tf_setup_app();
         a.on_key(KeyCode::Char('p'));
-        assert_eq!(a.tf_pitch_edit.as_deref(), Some("100"));
+        assert_eq!(a.tf_pitch_edit.as_deref(), Some("50"), "the default pitch seeds the editor");
         for _ in 0..3 {
             a.on_key(KeyCode::Backspace);
         }
         a.on_key(KeyCode::Char('5'));
         a.on_key(KeyCode::Enter);
-        assert_eq!(a.tf_cfg.pitch_pct, 100, "5 is below the 10-200 range");
+        assert_eq!(a.tf_cfg.pitch_pct, 50, "5 is below the 10-200 range");
         assert!(a.status.contains("10-200"), "status: {}", a.status);
         a.on_key(KeyCode::Char('p'));
         for _ in 0..3 {
