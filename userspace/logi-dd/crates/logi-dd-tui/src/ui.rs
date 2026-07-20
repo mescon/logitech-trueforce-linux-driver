@@ -123,6 +123,11 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         draw_curve_editor(f, ce, root[1]);
     }
 
+    // The LED color picker floats centered over the body when active.
+    if let Some(picker) = &app.color_picker {
+        draw_color_picker(f, picker, root[1]);
+    }
+
     // The `i` info popup floats centered over the body; any key closes it.
     if let Some(popup) = &app.info_popup {
         draw_info_popup(f, popup, root[1]);
@@ -1037,6 +1042,110 @@ fn draw_curve_editor(f: &mut Frame, ce: &CurveEditor, area: Rect) {
             .collect();
         f.render_widget(Paragraph::new(text), pinner);
     }
+}
+
+/// Render the modal LED color picker: the 10 LEDs as truecolor blocks
+/// with a cursor on top, the 16-swatch palette grid below (Tab moves the
+/// arrows between the two), the live hex preview of what `w` would write,
+/// and the key line. The focused half wears the accent marker so the
+/// arrows' target is always visible.
+fn draw_color_picker(f: &mut Frame, picker: &crate::color_picker::ColorPicker, area: Rect) {
+    use crate::color_picker::{PickerFocus, PALETTE, PALETTE_COLS};
+
+    let led_focus = picker.focus == PickerFocus::Leds;
+    let focus_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut lines: Vec<Line> = Vec::new();
+
+    // The LED strip: 10 numbered, colored blocks; the cursor LED wears
+    // brackets (and the row label the accent while the arrows act here).
+    lines.push(Line::from(Span::styled(
+        "LEDs (left = LED 1)",
+        if led_focus { focus_style } else { dim },
+    )));
+    let mut strip: Vec<Span> = vec![Span::raw("  ")];
+    let mut ruler = String::from("  ");
+    for (i, c) in picker.colors.iter().enumerate() {
+        let block = Span::styled("██", Style::default().fg(Color::Rgb(c.r, c.g, c.b)));
+        if i == picker.cursor {
+            strip.push(Span::styled("[", focus_style));
+            strip.push(block);
+            strip.push(Span::styled("]", focus_style));
+            ruler.push_str(&format!(" {:<3}", i + 1));
+        } else {
+            strip.push(Span::raw(" "));
+            strip.push(block);
+            strip.push(Span::raw(" "));
+            ruler.push_str(&format!(" {:<3}", i + 1));
+        }
+    }
+    lines.push(Line::from(strip));
+    lines.push(Line::from(Span::styled(ruler, dim)));
+    lines.push(Line::from(""));
+
+    // The palette grid: PALETTE_COLS swatches per row, the selected one
+    // bracketed; its name prints next to the grid label.
+    lines.push(Line::from(vec![
+        Span::styled(
+            "Palette",
+            if led_focus { dim } else { focus_style },
+        ),
+        Span::raw("  "),
+        Span::styled(PALETTE[picker.palette].0, Style::default().add_modifier(Modifier::BOLD)),
+    ]));
+    for row in PALETTE.chunks(PALETTE_COLS).enumerate() {
+        let (row_idx, swatches) = row;
+        let mut spans: Vec<Span> = vec![Span::raw("  ")];
+        for (col_idx, (_, c)) in swatches.iter().enumerate() {
+            let idx = row_idx * PALETTE_COLS + col_idx;
+            let block = Span::styled("██", Style::default().fg(Color::Rgb(c.r, c.g, c.b)));
+            if idx == picker.palette {
+                spans.push(Span::styled("[", focus_style));
+                spans.push(block);
+                spans.push(Span::styled("]", focus_style));
+            } else {
+                spans.push(Span::raw(" "));
+                spans.push(block);
+                spans.push(Span::raw(" "));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::from(""));
+
+    // The hex entry (while open) or the live preview of the exact write.
+    match &picker.hex {
+        Some(draft) => lines.push(Line::from(vec![
+            Span::raw(format!("  LED {} hex: ", picker.cursor + 1)),
+            Span::styled(
+                format!("{draft}_"),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        None => lines.push(Line::from(vec![
+            Span::styled("  w writes: ", dim),
+            Span::styled(picker.preview(), dim),
+        ])),
+    }
+    lines.push(Line::from(Span::styled(
+        "  Tab LEDs/palette   Enter paint   a all   p pair   x hex   w write   Esc cancel",
+        dim,
+    )));
+
+    let width = area.width.saturating_sub(4).clamp(30, 76).min(area.width);
+    let height = (lines.len() as u16).saturating_add(2).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" LED colors ")),
+        rect,
+    );
 }
 
 /// Render the `i` info popup: a centered, cleared, bordered paragraph over

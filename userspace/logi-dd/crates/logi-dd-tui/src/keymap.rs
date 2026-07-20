@@ -41,25 +41,37 @@ fn globals() -> Section {
     }
 }
 
-/// The keymap for the app's current state: the topmost active context
-/// first (a modal or text editor when one is open, the focused pane
-/// otherwise), then the globals. A text-entry context stands alone: every
-/// printable key is input there, so no other binding is reachable.
-pub fn sections<S: SysfsIo>(app: &App<S>) -> Vec<Section> {
-    let (context, text_entry) = context_section(app);
-    if text_entry {
-        return vec![context];
-    }
-    vec![context, globals()]
+/// How much of the keymap is reachable from the current context.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// A pane-level view: the globals apply on top of the context keys.
+    View,
+    /// A modal editor that owns every key it lists; only `?` stays live
+    /// on top, so the globals are left out.
+    Modal,
+    /// Text entry (or an any-key/confirm state): every key is input,
+    /// nothing else is reachable, not even `?`.
+    TextEntry,
 }
 
-/// The context's own section plus whether it is a text-entry state.
-fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, bool) {
+/// The keymap for the app's current state: the topmost active context
+/// first (a modal or text editor when one is open, the focused pane
+/// otherwise), then the globals where they still apply.
+pub fn sections<S: SysfsIo>(app: &App<S>) -> Vec<Section> {
+    let (context, scope) = context_section(app);
+    match scope {
+        Scope::View => vec![context, globals()],
+        Scope::Modal | Scope::TextEntry => vec![context],
+    }
+}
+
+/// The context's own section plus its scope.
+fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, Scope) {
     use Category::*;
     if app.info_popup.is_some() {
         return (
             Section { title: "Info popup", bindings: vec![bf("any key", "close")] },
-            true,
+            Scope::TextEntry,
         );
     }
     if app.curve_edit.is_some() {
@@ -75,7 +87,39 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, bool) {
                     bf("Esc", "cancel"),
                 ],
             },
-            false,
+            Scope::Modal,
+        );
+    }
+    if let Some(picker) = &app.color_picker {
+        if picker.hex.is_some() {
+            return (
+                Section {
+                    title: "LED color: hex entry",
+                    bindings: vec![
+                        bf("0-9 a-f", "type 6 hex digits"),
+                        b("Backspace", "erase"),
+                        bf("Enter", "apply to this LED"),
+                        bf("Esc", "back to the picker"),
+                    ],
+                },
+                Scope::TextEntry,
+            );
+        }
+        return (
+            Section {
+                title: "Color picker",
+                bindings: vec![
+                    bf("Tab", "focus LEDs / palette"),
+                    bf("arrows", "move (Home/End: first/last LED)"),
+                    bf("Enter", "paint the LED"),
+                    b("a", "paint all LEDs"),
+                    b("p", "paint the LED and its mirror pair"),
+                    b("x", "hex entry for the LED"),
+                    bf("w", "write to the wheel"),
+                    bf("Esc", "cancel"),
+                ],
+            },
+            Scope::Modal,
         );
     }
     if app.effect_edit.is_some() {
@@ -88,7 +132,7 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, bool) {
                     bf("Esc", "cancel"),
                 ],
             },
-            false,
+            Scope::Modal,
         );
     }
     if app.edit.is_some() {
@@ -103,36 +147,36 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, bool) {
                     bf("Esc", "cancel"),
                 ],
             },
-            true,
+            Scope::TextEntry,
         );
     }
     if app.profile_name_edit.is_some() {
-        return (text_field("Profile name"), true);
+        return (text_field("Profile name"), Scope::TextEntry);
     }
     if app.profile_delete_confirm.is_some() {
-        return (confirm("Delete profile"), true);
+        return (confirm("Delete profile"), Scope::TextEntry);
     }
     if app.is_setup() {
         if app.sdk_edit.is_some() {
-            return (text_field("SDK folder"), true);
+            return (text_field("SDK folder"), Scope::TextEntry);
         }
         if app.tf_intensity_edit.is_some() {
-            return (digit_field("TF intensity (0-100)"), true);
+            return (digit_field("TF intensity (0-100)"), Scope::TextEntry);
         }
         if app.tf_pitch_edit.is_some() {
-            return (digit_field("TF pitch (10-200)"), true);
+            return (digit_field("TF pitch (10-200)"), Scope::TextEntry);
         }
         if app.tf_sweep_confirm {
-            return (confirm("Test sweep"), true);
+            return (confirm("Test sweep"), Scope::TextEntry);
         }
-        return (setup_section(app), false);
+        return (setup_section(app), Scope::View);
     }
     if app.is_info() {
         if app.test.confirm.is_some() {
-            return (confirm("Simulation"), true);
+            return (confirm("Simulation"), Scope::TextEntry);
         }
         if app.focus == Focus::Sidebar {
-            return (sidebar(), false);
+            return (sidebar(), Scope::View);
         }
         let mut keys = vec![
             bf("Up/Down", "scroll (PgUp/PgDn: page)"),
@@ -146,10 +190,10 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, bool) {
         keys.push(b("c", "show serial + versions for copying"));
         keys.push(bf("r", "rescan wheel + input"));
         keys.push(b("d", "toggle desktop/onboard mode"));
-        return (Section { title: "Info / Testing", bindings: keys }, false);
+        return (Section { title: "Info / Testing", bindings: keys }, Scope::View);
     }
     if app.focus == Focus::Sidebar {
-        return (sidebar(), false);
+        return (sidebar(), Scope::View);
     }
     // A plain settings view (content focus).
     let mut keys = vec![
@@ -179,7 +223,7 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, bool) {
             Info => "Info / Testing",
         }
     };
-    (Section { title, bindings: keys }, false)
+    (Section { title, bindings: keys }, Scope::View)
 }
 
 /// The Setup view's context bindings, scoped to the selected section and
@@ -269,15 +313,14 @@ fn confirm(title: &'static str) -> Section {
 /// most contextual keys) plus the pointer to the full overlay. Text-entry
 /// contexts leave the pointer off: `?` is input there.
 pub fn footer<S: SysfsIo>(app: &App<S>) -> String {
-    let sections = sections(app);
-    let text_entry = sections.len() == 1;
-    let mut parts: Vec<String> = sections
+    let (_, scope) = context_section(app);
+    let mut parts: Vec<String> = sections(app)
         .iter()
         .flat_map(|s| s.bindings.iter())
         .filter(|b| b.footer)
         .map(|b| format!("{} {}", b.keys, b.action_short()))
         .collect();
-    if !text_entry {
+    if scope != Scope::TextEntry {
         parts.push("? keys".to_string());
     }
     parts.join("   ")

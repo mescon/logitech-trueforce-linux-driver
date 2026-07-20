@@ -1,3 +1,4 @@
+use crate::color_picker::{ColorPicker, PickerOutcome};
 use crate::curve_editor::CurveEditor;
 use crate::edit;
 use crate::wheel_test::{SimKind, TestView};
@@ -164,6 +165,9 @@ pub struct App<S: SysfsIo> {
     pub edit: Option<edit::EditState>,
     /// The modal curve editor, active while shaping a `Kind::Curve` attribute.
     pub curve_edit: Option<CurveEditor>,
+    /// The modal LED color picker, active while `wheel_led_colors` (the
+    /// only `Kind::RgbStrip` attribute) is being edited.
+    pub color_picker: Option<ColorPicker>,
     /// The LIGHTSYNC effect selector, active while the Effect row is being
     /// cycled.
     pub effect_edit: Option<EffectEdit>,
@@ -337,6 +341,7 @@ impl<S: SysfsIo> App<S> {
             status: String::new(),
             edit: None,
             curve_edit: None,
+            color_picker: None,
             effect_edit: None,
             info_popup: None,
             quit: false,
@@ -537,6 +542,7 @@ impl<S: SysfsIo> App<S> {
         if self.no_wheel
             || self.edit.is_some()
             || self.curve_edit.is_some()
+            || self.color_picker.is_some()
             || self.effect_edit.is_some()
             || self.info_popup.is_some()
             || self.help
@@ -1364,10 +1370,17 @@ impl<S: SysfsIo> App<S> {
                 return;
             }
         };
-        // Curves get the modal point-list editor; everything else the inline
-        // field editor.
+        // Curves get the modal point-list editor; the LED strip gets the
+        // modal color picker; everything else the inline field editor.
         if matches!(spec.kind, Kind::Curve) {
             self.curve_edit = Some(CurveEditor::from_value(spec.attr, &cur));
+            return;
+        }
+        if matches!(spec.kind, Kind::RgbStrip { .. }) {
+            match ColorPicker::from_value(&cur) {
+                Some(picker) => self.color_picker = Some(picker),
+                None => self.status = "cannot edit (value unreadable)".into(),
+            }
             return;
         }
         self.edit = Some(edit::EditState::start(spec.attr, spec.kind, &cur));
@@ -1402,6 +1415,23 @@ impl<S: SysfsIo> App<S> {
                 format!("Effect set: {label}")
             }
             Err(e) => format!("Effect: {e}"),
+        };
+        self.reload();
+    }
+
+    /// Commit the color picker's working strip: the same write path the
+    /// old raw hex editor used, so a mirrored direction still mirrors the
+    /// left half before the write.
+    pub fn commit_color_picker(&mut self) {
+        let Some(picker) = self.color_picker.take() else { return };
+        let v = self.mirror_colors_if_needed("wheel_led_colors", Value::Rgb(picker.colors));
+        self.status = match self.device.write("wheel_led_colors", &v) {
+            Ok(()) => "Colors set".to_string(),
+            Err(Error::WrongMode { needed }) => {
+                let m = if needed == Mode::Desktop { "desktop" } else { "onboard" };
+                format!("needs {m} mode: press 'd' to toggle, then retry")
+            }
+            Err(e) => format!("Colors: {e}"),
         };
         self.reload();
     }
@@ -1598,6 +1628,20 @@ impl<S: SysfsIo> App<S> {
                 Char('-') => ce.delete_point(),
                 Char('?') => self.help = true,
                 _ => {}
+            }
+            return;
+        }
+        if let Some(picker) = self.color_picker.as_mut() {
+            // ? opens the overlay on top only while no hex draft is open
+            // (hex entry is text input).
+            if picker.hex.is_none() && key == Char('?') {
+                self.help = true;
+                return;
+            }
+            match picker.on_key(key) {
+                PickerOutcome::Open => {}
+                PickerOutcome::Commit => self.commit_color_picker(),
+                PickerOutcome::Cancel => self.color_picker = None,
             }
             return;
         }
@@ -3038,12 +3082,52 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_the_colors_row_opens_the_picker_not_the_inline_editor() {
+        use crossterm::event::KeyCode;
+        let mut a = leds_app("5", "0");
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_led_colors").unwrap();
+        a.on_key(KeyCode::Enter);
+        let picker = a.color_picker.as_ref().expect("the picker opens");
+        assert_eq!(picker.colors.len(), 10);
+        assert_eq!(picker.colors[0].to_hex(), "ff0000", "seeded from the wheel");
+        assert!(a.edit.is_none(), "not the raw hex line editor");
+    }
+
+    #[test]
+    fn picker_esc_cancels_without_writing_and_w_commits() {
+        use crossterm::event::KeyCode;
+        let mut a = leds_app("5", "0");
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_led_colors").unwrap();
+        a.on_key(KeyCode::Enter);
+        // Paint LED 1 with the palette's Blue, then cancel: no write.
+        a.color_picker.as_mut().unwrap().palette = 10;
+        a.on_key(KeyCode::Enter);
+        a.on_key(KeyCode::Esc);
+        assert!(a.color_picker.is_none());
+        match a.device.read("wheel_led_colors").unwrap() {
+            Value::Rgb(cs) => assert_eq!(cs[0].to_hex(), "ff0000", "Esc never writes"),
+            v => panic!("expected colors, got {v:?}"),
+        }
+        // Same edit again, committed with w: the write lands.
+        a.on_key(KeyCode::Enter);
+        a.color_picker.as_mut().unwrap().palette = 10;
+        a.on_key(KeyCode::Enter);
+        a.on_key(KeyCode::Char('w'));
+        assert!(a.color_picker.is_none());
+        match a.device.read("wheel_led_colors").unwrap() {
+            Value::Rgb(cs) => assert_eq!(cs[0].to_hex(), "0000ff", "w writes the strip"),
+            v => panic!("expected colors, got {v:?}"),
+        }
+        assert!(a.status.contains("Colors set"), "status: {}", a.status);
+    }
+
+    #[test]
     fn colors_commit_mirrors_the_left_half_when_the_direction_mirrors() {
         use crossterm::event::KeyCode;
         let mut a = leds_app("5", "2"); // inside-out
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_led_colors").unwrap();
-        a.on_key(KeyCode::Enter); // open the raw color entry
-        a.on_key(KeyCode::Enter); // commit unchanged
+        a.on_key(KeyCode::Enter); // open the color picker
+        a.on_key(KeyCode::Char('w')); // commit unchanged
         match a.device.read("wheel_led_colors").unwrap() {
             Value::Rgb(cs) => {
                 for i in 0..5 {
@@ -3062,7 +3146,7 @@ mod tests {
         let mut a = leds_app("5", "0"); // left to right
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_led_colors").unwrap();
         a.on_key(KeyCode::Enter);
-        a.on_key(KeyCode::Enter);
+        a.on_key(KeyCode::Char('w'));
         match a.device.read("wheel_led_colors").unwrap() {
             Value::Rgb(cs) => {
                 assert_eq!(cs[9].to_hex(), "000000", "no mirroring for a sweep");
