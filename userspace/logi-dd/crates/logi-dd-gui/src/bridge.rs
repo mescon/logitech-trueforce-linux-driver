@@ -545,6 +545,15 @@ pub fn apply_add_point(curve: &mut Curve, x_frac: f32) {
     curve.add_point(from_frac(x_frac));
 }
 
+/// The composed curve's output at the input screen-fraction `x_frac`, as a
+/// screen-fraction y. Drives the editor's hover ghost: the hollow point
+/// snaps to the curve, previewing exactly where `apply_add_point` (which
+/// inserts at the curve's interpolated output) would land a new point.
+pub fn curve_ghost_y_frac(curve: &Curve, x_frac: f32) -> f32 {
+    let output = logi_dd_core::curve::interp(&curve.compose(), from_frac(x_frac));
+    1.0 - f32::from(output) / f32::from(FULL)
+}
+
 /// Apply the lower-deadzone slider's raw `int` (the Slint `Slider` reports a
 /// `float` rounded to a plain `int` in `curve_editor.slint`) to `curve`,
 /// clamping into the `u8` range `Curve::set_lower_deadzone` itself expects.
@@ -1101,6 +1110,35 @@ mod tests {
         expected.add_point(from_frac(0.5));
 
         assert_eq!(c.points(), expected.points());
+    }
+
+    #[test]
+    fn ghost_y_snaps_to_the_composed_curve() {
+        // On a plain linear curve the ghost tracks the diagonal: hovering
+        // at 50% input previews a point at 50% output (screen y 0.5).
+        let c = linear_curve();
+        assert!((curve_ghost_y_frac(&c, 0.5) - 0.5).abs() < 0.01);
+        assert!((curve_ghost_y_frac(&c, 0.0) - 1.0).abs() < 0.01, "zero input, zero output");
+        assert!((curve_ghost_y_frac(&c, 1.0) - 0.0).abs() < 0.01, "full input, full output");
+
+        // On a bent curve the ghost follows the composed shape, exactly
+        // where apply_add_point would land a new point.
+        let mut bent = linear_curve();
+        bent.add_point(FULL / 2);
+        bent.move_point(1, FULL / 2, FULL); // midpoint bent to full output
+        assert!(curve_ghost_y_frac(&bent, 0.5) < 0.01, "full output plots at the top");
+        let ghost = curve_ghost_y_frac(&bent, 0.25);
+        let mut added = bent.clone();
+        apply_add_point(&mut added, 0.25);
+        let (_, landed) = added.points()[1];
+        assert!(
+            (ghost - (1.0 - f32::from(landed) / f32::from(FULL))).abs() < 0.01,
+            "ghost y {ghost} matches where the added point lands ({landed})"
+        );
+
+        // Out-of-plot hover fractions clamp instead of panicking.
+        assert!((curve_ghost_y_frac(&c, -0.5) - 1.0).abs() < 0.01);
+        assert!((curve_ghost_y_frac(&c, 1.5) - 0.0).abs() < 0.01);
     }
 
     #[test]

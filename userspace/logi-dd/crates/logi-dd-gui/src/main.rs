@@ -1411,6 +1411,18 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     {
         let curve_editor = curve_editor.clone();
+        // The hover ghost's y: the composed curve's output at the hover x,
+        // in screen fractions (`bridge::curve_ghost_y_frac`). 0.5 with no
+        // editor state open (cannot happen while the overlay shows; the
+        // ghost is invisible then anyway).
+        app.on_curve_ghost_y(move |x| {
+            let guard = curve_editor.lock().unwrap();
+            let Some(state) = guard.as_ref() else { return 0.5 };
+            bridge::curve_ghost_y_frac(&state.curve, x)
+        });
+    }
+    {
+        let curve_editor = curve_editor.clone();
         let app_weak = app.as_weak();
         app.on_curve_add_point(move |x| {
             let Some(app) = app_weak.upgrade() else { return };

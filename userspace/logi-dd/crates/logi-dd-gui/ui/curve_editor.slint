@@ -51,7 +51,13 @@ export component CurveEditor inherits Rectangle {
     callback remove-point(int);
     // (x-frac, y-frac, aspect): `aspect` is the plot's width/height ratio so
     // the Rust-side hit-test can use the same pixel radius in both axes.
-    callback grab-point(float, float, float) -> int;
+    // Pure: the hover ghost's visibility binding calls it too (an empty-
+    // space hover is exactly "the hit-test grabs nothing").
+    pure callback grab-point(float, float, float) -> int;
+    // The composed curve's output at an input fraction, as a screen-fraction
+    // y (`bridge::curve_ghost_y_frac`): where the hover ghost snaps, which
+    // is exactly where add-point would land a new point.
+    pure callback ghost-y(float) -> float;
     callback set-lower-deadzone(int);
     callback set-upper-deadzone(int);
     callback commit();
@@ -97,7 +103,9 @@ export component CurveEditor inherits Rectangle {
             }
 
             Text {
-                text: "Click empty space to add a point. Drag a point to shape the curve. Select a point to set its exact values or remove it.";
+                // Kept short: the hover ghost in the plot is the real
+                // "you can add a point here" affordance.
+                text: "Click to add a point; drag to shape; select for exact values.";
                 font-size: 11px;
                 color: Theme.muted-text-color;
                 wrap: word-wrap;
@@ -150,6 +158,21 @@ export component CurveEditor inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.panel-border;
 
+                        // The hover ghost's state: while the pointer hovers
+                        // empty plot space (the grab hit-test finds nothing
+                        // within its radius) and no drag is in progress, a
+                        // hollow point snapped to the curve's output at the
+                        // hover x (plus a small "+") previews that a click
+                        // adds a point exactly there.
+                        property <float> hover-x-frac: clamp(ta.mouse-x / self.width, 0, 1);
+                        property <bool> ghost-visible: ta.has-hover
+                            && root.grabbed < 0
+                            && root.grab-point(
+                                ta.mouse-x / self.width,
+                                ta.mouse-y / self.height,
+                                self.width / self.height,
+                            ) == -1;
+
                         Path {
                             viewbox-width: 1;
                             viewbox-height: 1;
@@ -180,11 +203,34 @@ export component CurveEditor inherits Rectangle {
                             y: p.y * plot-area.height - self.height / 2;
                         }
 
+                        // The hover ghost (pure visuals, like the control-point
+                        // handles above: `ta` below owns every pointer event).
+                        ghost := Rectangle {
+                            visible: plot-area.ghost-visible;
+                            width: 10px;
+                            height: 10px;
+                            border-radius: 5px;
+                            background: transparent;
+                            border-width: 2px;
+                            border-color: Palette.accent-background;
+                            x: plot-area.hover-x-frac * plot-area.width - self.width / 2;
+                            y: root.ghost-y(plot-area.hover-x-frac) * plot-area.height - self.height / 2;
+                        }
+                        Text {
+                            visible: plot-area.ghost-visible;
+                            text: "+";
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: Palette.accent-background;
+                            x: ghost.x + ghost.width + 3px;
+                            y: ghost.y + ghost.height / 2 - self.height / 2;
+                        }
+
                         // The one fixed-frame interaction layer for the whole plot.
                         // Because it never moves, it keeps tracking the pointer for
                         // the entire gesture, unlike a TouchArea riding on the point
                         // being dragged.
-                        TouchArea {
+                        ta := TouchArea {
                             pointer-event(ev) => {
                                 if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
                                     root.press-x = self.mouse-x;
