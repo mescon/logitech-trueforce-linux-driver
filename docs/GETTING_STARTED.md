@@ -75,6 +75,12 @@ cd logitech-trueforce-linux-driver
 sudo ./tools/setup.sh
 ```
 
+Building the Rust apps (logi-dd, logi-dd-gui, logi-ffb, logi-tf-sim) from
+source needs Rust 1.88 or newer; on distributions whose packaged rustc is
+older (Debian stable, for one), install the toolchain with
+[rustup](https://rustup.rs) first. The prebuilt distribution packages do
+not need Rust at all.
+
 It is safe to run again - after a `git pull` or a kernel update, just
 re-run it. It ends by checking every part of the setup is in place; you
 can re-run that health check alone at any time, as your normal user:
