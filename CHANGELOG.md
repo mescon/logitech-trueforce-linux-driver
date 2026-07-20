@@ -5,6 +5,15 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.16.1 - 2026-07-20
+
+Branding patch: one universal logo (steel-blue rim, legible on light
+and dark surfaces) used identically as launcher icon, README logo,
+window icon and in-app header mark; the GUI presents as "Logi DD"
+(window title, header, desktop entry - binary and package names are
+unchanged); desktop entry gains StartupWMClass; TUI header carries the
+rev-light arc signature.
+
 ## 0.16.0 - 2026-07-20
 
 The settings app grows a desktop GUI, both frontends gain LIGHTSYNC,

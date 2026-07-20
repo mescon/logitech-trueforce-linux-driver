@@ -1397,7 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "ffb-proxy"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "libc",
  "nix",
@@ -2847,11 +2847,11 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "logi-dd-core"
-version = "0.16.0"
+version = "0.16.1"
 
 [[package]]
 name = "logi-dd-gui"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "libc",
  "logi-dd-core",
@@ -2861,7 +2861,7 @@ dependencies = [
 
 [[package]]
 name = "logi-dd-tui"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "crossterm",
  "libc",
@@ -5006,7 +5006,7 @@ checksum = "f18aa187839b2bdb1ad2fa35ead8c4c2976b64e4363c386d45ac0f7ee85c9233"
 
 [[package]]
 name = "tf-sim"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "libc",
  "logi-dd-core",
