@@ -605,7 +605,10 @@ Set: 10 FF [idx] 3C [Effect] 00 00
 | `0x02` | Outside→In |
 | `0x03` | Right→Left |
 | `0x04` | Left→Right |
-| `0x05` | Static |
+| `0x05`-`0x09` | CUSTOM 1-5 (renders custom slot `effect - 5`) |
+
+The value only STAGES the effect; the strip repaints on the following
+zero-parameter fn6 commit (see section 9.3.2).
 
 #### Profile/Mode Switch (Feature 0x8137, Index 0x17)
 
@@ -995,17 +998,21 @@ direction setting for the built-in sweep effects.
 > **RS50 accepts the same level command (hardware-verified 2026-07-20):**
 > writes to `wheel_rev_level` visibly drive the RS50's 10-LED strip too -
 > 0 = all dark, 10 = all lit, intermediate values a partial fill. The
-> fill is the wheel's own BUILT-IN rev display: its default look is the
-> classic green-edges-to-red-centre palette filling edges-inward, and it
-> is NOT a renderer of the active custom slot (later same-day testing:
-> with slot 3 applied and verified, the fill still used the rev palette).
-> While slot 0 was active, the fill DID track slot 0's stored direction
-> (all four directions watched live per the 9.4.1 mapping), so slot 0 (or
-> a shared "current config") is likely the rev display's source; the
-> exact config source and the arm semantics await a G HUB rev-feed
-> capture (requested in issue #20). A written level holds until the next
-> level write; writing `wheel_led_effect` restores the idle pattern. A
-> live RPM rev display works on the RS50 today regardless.
+> fill renders the SELECTED slot's stored config: while slot 0 was
+> selected, the fill tracked slot 0's stored direction (all four
+> directions watched live per the 9.4.1 mapping). An earlier draft of
+> this note concluded the fill was "NOT a renderer of the active custom
+> slot" because the fill kept its look after "slot 3 was applied" - but
+> the driver's slot switch was broken at the time (it hardcoded effect
+> `0x05` = CUSTOM 1, see revision 7.0), so slot 3 was never actually
+> selected and that observation is consistent with fill = selected slot.
+> With slot selection fixed, a fill taken after selecting another slot
+> is expected to render that slot's colours and direction (expected,
+> re-verify: no direct post-fix fill observation yet). The arm semantics
+> still await a G HUB rev-feed capture (requested in issue #20). A
+> written level holds until the next level write; writing
+> `wheel_led_effect` restores the idle pattern. A live RPM rev display
+> works on the RS50 today regardless.
 >
 > **The arm burst stomps the active effect (hardware-verified
 > 2026-07-20):** the burst's "fn3 param 0x02" is a plain SET_EFFECT, so
@@ -1044,7 +1051,7 @@ LIGHTSYNC uses multiple report types depending on the function:
 |----------|-------|-------------|-------------|
 | Get RGB Zone Config | `0x1C` | 0x12 (Very Long) | Read slot configuration |
 | Set RGB Zone Config | `0x2C` | 0x12 (Very Long) | Write slot configuration |
-| Set Effect Mode | `0x3C` | 0x10 (Short) | Select effect (1-5), also activates slot |
+| Set Effect Mode | `0x3C` | 0x10 (Short) | Select effect 1-9 (5-9 = custom slots); stages, fn6 commits |
 | Get Zone Name | `0x3C` | 0x12 (Very Long) | Read custom slot name |
 | Set Zone Name | `0x4C` | 0x12 (Very Long) | Write custom slot name |
 | **Enable LED Subsystem** | **`0x6C`** | **0x11 (Long)** | **REQUIRED before LEDs work** |
@@ -1096,8 +1103,8 @@ The function byte encodes: `(function_number << 4) | SW_ID`
 |-----|------|------------------|----------------|---------------|-------|
 | 0 | 0x0C | GET_INFO | (none) | `01 0a 0a 00 00 00` | Version=1, LEDcount=10, LEDcount=10 |
 | 1 | 0x1C | GET_CAPS | (none) | `00 02 01 03 04 05 06 07 08 09` | Capability flags or effect IDs |
-| 2 | 0x2C | GET_STATE | (none) | `05 00 00 00` | Current effect mode (5=Static/Custom) |
-| 3 | 0x3C | SET_EFFECT | `[mode] 00 00` | `[mode] 00 00` | Set effect 1-5 (returns set mode) |
+| 2 | 0x2C | GET_STATE | (none) | `05 00 00 00` | Current effect (>= 5 means custom slot `effect - 5` is selected) |
+| 3 | 0x3C | SET_EFFECT | `[mode] 00 00` | `[mode] 00 00` | Set effect 1-9 (stages; fn6 commits) |
 | 4 | 0x4C | Unknown | `00 0a 00` | - | Context-dependent; works during config only |
 | 5 | 0x5C | Unknown | `[index]` | `[index] 00 00` | Context-dependent; echoes param during config |
 | 6 | 0x6C | PRE_CONFIG/COMMIT | 16-byte LONG | - | Required before/after RGB changes |
@@ -1136,17 +1143,32 @@ Interpretation: May enumerate effect types or zone capabilities (appears to be z
 ```
 05 00 00 00
  │
- └── Current effect mode (5 = Static/Custom)
+ └── Current effect mode (5 = CUSTOM 1 / slot 0 selected)
 ```
 
-**Effect Mode Values (fn3 parameter):**
+**Effect Mode Values (fn3 parameter, decoded 2026-07-20):**
 | Value | Effect | G Hub Name |
 |-------|--------|------------|
 | 0x01 | Inside→Out animation | FRÅN INSIDAN UT |
 | 0x02 | Outside→In animation | FRÅN UTSIDAN IN |
 | 0x03 | Right→Left animation | HÖGER TILL VÄNSTER |
 | 0x04 | Left→Right animation | VÄNSTER TILL HÖGER |
-| 0x05 | Static (custom colors) | ANPASSAD |
+| 0x05 | CUSTOM 1 (renders custom slot 0) | the slot's name |
+| 0x06 | CUSTOM 2 (renders custom slot 1) | the slot's name |
+| 0x07 | CUSTOM 3 (renders custom slot 2) | the slot's name |
+| 0x08 | CUSTOM 4 (renders custom slot 3) | the slot's name |
+| 0x09 | CUSTOM 5 (renders custom slot 4) | the slot's name |
+
+> **Effect values 5-9 ARE the five custom slots** - there is no separate
+> "activate slot" command; selecting a slot IS selecting its effect
+> number, staged by fn3 and repainted by the zero-parameter fn6 commit.
+> Decoded from `2026-01-30_desktop_led_colors.pcapng` (every G Hub
+> dropdown switch to CUSTOM N sends fn3 `[0x04 + N]` and reads back slot
+> `N - 1`'s config and name: frames 219/339/715 and 279/525/775) and
+> hardware-confirmed live (fn3 `0x08` + fn6 repainted the strip to
+> slot 3). Earlier revisions misread 0x05 as a lone "Static/Custom" mode
+> and called 6-9 unlabeled. Corollary: fn2 GET_STATE returns the selected
+> custom slot as `effect - 5` when the value is >= 5.
 
 #### Feature 0x0C (Page 0x807B) - RGB Zone Config
 
@@ -1155,7 +1177,7 @@ Interpretation: May enumerate effect types or zone capabilities (appears to be z
 | 0 | 0x0C | GET_INFO | (none) | `05 05 08 01 0a` | Slots=5, ?, maxNameLen=8, ?, LEDs=10 |
 | 1 | 0x1C | GET_SLOT_CONFIG | `[slot]` | `[slot] [type] [RGB...]` | Returns slot's RGB colors (partial) |
 | 2 | 0x2C | SET_SLOT_CONFIG | 64-byte RGB | - | Write RGB colors (VERY_LONG report) |
-| 3 | 0x3C | GET_NAME / ACTIVATE | `[slot]` | `[slot] [len] [name...]` | Get slot name; also activates slot |
+| 3 | 0x3C | GET_NAME | `[slot]` | `[slot] [len] [name...]` | Get slot name (a pure read; earlier revisions mislabeled it "activate slot") |
 | 4 | 0x4C | SET_NAME | `[slot] [len] [name]` | - | Set slot name (confirmed working) |
 | 5+ | 0x5C+ | - | - | ERROR 7 | Not supported |
 
@@ -1226,11 +1248,11 @@ When user applies new custom colors:
 ```
 1. 10 FF 17 0C ...        - Profile query (feature 0x8137)
 2. 10 FF 09 0C 00 03 00   - Sync call (feature 0x1BC0)
-3. 10 FF 0B 3C 05 00 00   - Set effect mode 5 (feature 0x0B fn3)
+3. 10 FF 0B 3C 05 00 00   - Select slot 0's effect (feature 0x0B fn3, 0x05 = CUSTOM 1)
 4. 11 FF 0B 6C ...        - Pre-config (feature 0x0B fn6, LONG report)
 5. 12 FF 0C 2C ...        - 64-byte RGB data (feature 0x0C fn2)
 6. 11 FF 0B 6C ...        - Commit (feature 0x0B fn6, LONG report)
-7. 10 FF 0C 3C 00 00 00   - Activate slot 0 (feature 0x0C fn3)
+7. 10 FF 0C 3C 00 00 00   - Read back slot 0's name (feature 0x0C fn3 GET_NAME - a read, not an activate)
 8. 10 FF 0B 7C 00 00 00   - Enable/refresh display (feature 0x0B fn7)
 ```
 
@@ -1312,11 +1334,11 @@ driver-enum directions were watched on the physical strip and match the
 table above exactly - enum 0 fills left to right, 1 right to left, 2 from
 the centre outward, 3 from the edges inward. The verification used the
 rev-level fill (0x807A fn2+fn6, see the rev-light note at the top of
-section 9), which follows the ACTIVE SLOT's stored
+section 9), which follows the SELECTED slot's stored
 direction, so the same test confirmed both the wire mapping and the
-fill/direction coupling. The older 0x807A quick-effect table (section 9,
-~line 600-608) remains unverified on 3/4 (different command, 0x807A effect
-select vs 0x807B slot config); its labels are cosmetic only.
+fill/direction coupling. The 0x807A effect-select values are a separate
+encoding entirely (1-4 = built-in animations, 5-9 = the custom slots;
+see 9.3.2).
 
 > **Historical bug:** an earlier driver encoded byte 5 as `enum + 2`
 > (L->R=2, R->L=3, IO=4, **OI=5**). That both mislabelled the sweeps (its
@@ -1491,10 +1513,10 @@ directly and reframe open questions in this section:
 - **The 9.3.2 fn1 response `00 02 01 03 04 05 06 07 08 09`**,
   previously labeled "zone IDs?", is byte 0 = zone/cluster index and
   bytes 1..9 = the list of supported effect IDs - CONFIRMED live
-  2026-07-02 by re-reading fn1 on the wheel. Effect IDs 1..9 exist
-  (the driver's named effects are 1-5; 6-9 are accepted on the wire
-  and appear in G Hub effect-change broadcasts but are not yet
-  visually labeled).
+  2026-07-02 by re-reading fn1 on the wheel. Effect IDs 1..9 exist:
+  1-4 are the built-in animations and 5-9 are the five custom slots
+  (0x05 = CUSTOM 1 .. 0x09 = CUSTOM 5, decoded 2026-07-20); the
+  G Hub effect-change broadcasts carrying 6 and 9 were slot switches.
 
 x8071's `rgbClusterChangedEvent` DOES have a 0x807A equivalent,
 confirmed across seven captures and now consumed by the driver:
@@ -1512,7 +1534,7 @@ led_effect cache and notifies wheel_led_effect pollers.
 
 ### 9.12 LIGHTSYNC Command Sequence
 
-LIGHTSYNC requires a **specific 6-step sequence** using **both features** (0x0B and 0x0C).
+LIGHTSYNC requires a **specific 5-step sequence** using **both features** (0x0B and 0x0C).
 fn6 (pre-config) and fn6/fn7 (commit/enable) must go to feature 0x0B, while RGB data goes to feature 0x0C.
 
 #### Command Sequence
@@ -1520,15 +1542,20 @@ fn6 (pre-config) and fn6/fn7 (commit/enable) must go to feature 0x0B, while RGB 
 ```
 Step  Feature  Function  Purpose                    Parameters
 ----  -------  --------  -------------------------  ---------------------------
-1     0x0B     fn3       Set effect mode 5          05 00 00
+1     0x0B     fn3       Select the slot's effect   [05+slot] 00 00
 2     0x0B     fn6       Pre-config (LONG report)   00 01 00 0a 00 00 00 ...
-3     0x0C     fn2       Set RGB colors (64-byte)   [slot] 03 [30 bytes RGB]
-4     0x0C     fn3       Activate slot              [slot] 00 00
-5     0x0B     fn6       Commit (LONG report)       00 01 00 0a 00 0a 00 ...
-6     0x0B     fn7       Enable/refresh display     00 00 00
+3     0x0C     fn2       Set RGB colors (64-byte)   [slot] [dir] [30 bytes RGB]
+4     0x0B     fn6       Commit (LONG report)       00 01 00 0a 00 0a 00 ...
+5     0x0B     fn7       Enable/refresh display     00 00 00
 ```
 
 **Important Notes:**
+- Step 1's effect value is `0x05 + slot` (see 9.3.2): selecting a custom
+  slot IS selecting its effect number. There is NO separate "activate
+  slot" command - the `10 FF 0C 3C [slot]` frame earlier revisions listed
+  here as an "Activate slot" step is 0x807B fn3 GET_NAME, a pure read
+  (G Hub issues it as a read-back after switching; the driver's old
+  "activate" call did nothing).
 - params[1] in the RGB config (byte 5) IS the animation direction, as a 1-4
   wire value (see 9.4.1): 1=Inside-Out, 2=Outside-In, 3=L->R, 4=R->L. An
   earlier note here claimed it "must be 0x03, not direction" - that was from
@@ -1539,8 +1566,8 @@ Step  Feature  Function  Purpose                    Parameters
 
 | Feature Index | Page ID | Purpose | Functions Used |
 |---------------|---------|---------|----------------|
-| **0x0B** | **0x807A** | Effect control & commit | fn3 (effect), fn6 (pre/commit), fn7 (enable) |
-| **0x0C** | **0x807B** | RGB Zone Config | fn2 (set colors), fn3 (activate slot) |
+| **0x0B** | **0x807A** | Effect/slot select & commit | fn3 (effect, 5-9 = slots), fn6 (pre/commit), fn7 (enable) |
+| **0x0C** | **0x807B** | RGB Zone Config | fn2 (set colors), fn3 (get name) |
 
 #### Driver Init Sequence (runs once at startup)
 
@@ -1556,17 +1583,16 @@ Step  Feature  Function  Purpose                    Parameters
 #### Color Change Sequence (runs for each update)
 
 ```
-10 FF 0B 3C 05 00 00              Step 1: Effect mode 5 (static/custom)
+10 FF 0B 3C [05+slot] 00 00       Step 1: Select the slot's effect (0x05 = CUSTOM 1 .. 0x09 = CUSTOM 5)
 11 FF 0B 6C 00 01 00 0a 00 ...    Step 2: Pre-config on 0x0B
-12 FF 0C 2C [slot] 03 [RGB...]    Step 3: RGB data to 0x0C (params[1]=0x03!)
-10 FF 0C 3C [slot] 00 00          Step 4: Activate slot
-11 FF 0B 6C 00 01 00 0a 00 0a ... Step 5: Commit on 0x0B (params[5]=0x0a)
-10 FF 0B 7C 00 00 00              Step 6: Enable/refresh on 0x0B
+12 FF 0C 2C [slot] [dir] [RGB...] Step 3: RGB data to 0x0C (byte 5 = direction 1-4)
+11 FF 0B 6C 00 01 00 0a 00 0a ... Step 4: Commit on 0x0B (params[5]=0x0a)
+10 FF 0B 7C 00 00 00              Step 5: Enable/refresh on 0x0B
 ```
 
 #### Linux Driver Implementation
 
-The `rs50_lightsync_apply_slot()` function implements the full 6-step sequence.
+The `hidpp_dd_lightsync_apply_slot()` function implements the full 5-step sequence.
 All sysfs attributes (`wheel_led_colors`, `wheel_led_slot`, etc.) trigger this function.
 
 ---
@@ -1713,5 +1739,6 @@ This returns the PAGE ID at each index. G Hub queries indices 0x00 through ~0x1F
 | 6.5 | 2026-07-03 | Renamed from RS50_PROTOCOL_SPECIFICATION.md (covers the whole direct-drive family); driver symbols updated to the hidpp_dd_ prefix; documented that the RS50 keeps its own USB product string in G PRO compatibility mode ("RS50 Base for PlayStation/PC" under PID c272) while a real G PRO reports "PRO Racing Wheel" - the driver uses this to tag log output per model |
 | 6.6 | 2026-07-04 | Cross-pollination from the TF4ALL project (issue #20): the Windows game-FFB path for DD wheels is HID++ 0x8123 fn2 (int16 BE at offset 10-11; catalog index 0x10 native / 0x0e G-PRO-PID); stream-packet bytes 6-9 ("cur") are the motor torque target and override 0x8123 while a session is active, with the window additive on top; AC EVO streams unified cur+audio packets at up to ~1000 pkt/s; texture amplitudes above ~0.5-0.7 FS cross from vibration into steering pull; the REAL G PRO rim has level-based rev lights on 0x807A (SHORT fn2 + LONG fn6, byte 9 = 0-10) with no per-LED RGB - section 9 describes RS50 hardware only |
 | 6.7 | 2026-07-06 | Section 4 corrected and de-duplicated against TRUEFORCE_PROTOCOL.md: byte 10 is the new-sample count that demuxes the shared ep-0x03 packet family (0 = constant force, 4 = unified force+audio), not padding; bytes 6-9 named as the "cur" motor torque target; force rate note updated (games 250-1000 Hz, driver 500 Hz); TRUEFORCE_PROTOCOL.md pointed to as the authoritative framing reference, with a reciprocal link back. Removed the RS50_PROTOCOL_SPECIFICATION.md redirect stub (rename complete). |
-| 6.9 | 2026-07-20 | Hardware-verified on the RS50: (a) all four 9.4.1 slot-direction wire values watched live via rev-fill sweeps - the driver-enum labels are correct as tabled; (b) the RS50 accepts the G PRO level-based rev-light command (0x807A fn2+fn6, byte 9 = 0-10) - the fill renders the active slot's colours and follows its direction, making a live RPM rev display possible without G HUB's own feed format; (c) fn3 SET_EFFECT only STAGES an effect - the strip repaints on a zero-parameter fn6 commit (driver now sends the pair). |
 | 6.8 | 2026-07-19 | LIGHTSYNC slot-direction wire encoding decoded from `dev/captures/2026-07-19_lightsync_direction.pcapng`: byte 5 of the 0x807B RGB config is a 1-4 value (1=Inside-Out, 2=Outside-In, 3=Left->Right, 4=Right->Left), not the driver's 0-3 enum (9.4.1). Fixed the driver's `direction + 2` encoding, which both mislabelled the sweeps and sent an out-of-range 5 for Outside-In (firmware NAK -> -EIO). Documented the 5-mirrored-pair (palindrome) behaviour of the two symmetric directions (9.8). |
+| 6.9 | 2026-07-20 | Hardware-verified on the RS50: (a) all four 9.4.1 slot-direction wire values watched live via rev-fill sweeps - the driver-enum labels are correct as tabled; (b) the RS50 accepts the G PRO level-based rev-light command (0x807A fn2+fn6, byte 9 = 0-10) - the fill renders the active slot's colours and follows its direction, making a live RPM rev display possible without G HUB's own feed format; (c) fn3 SET_EFFECT only STAGES an effect - the strip repaints on a zero-parameter fn6 commit (driver now sends the pair). |
+| 7.0 | 2026-07-20 | LIGHTSYNC slot selection decoded (`2026-01-30_desktop_led_colors.pcapng` frames 219/339/715 + 279/525/775, hardware-confirmed live): 0x807A fn3 effect values 5-9 ARE the five custom slots (0x05 = CUSTOM 1 .. 0x09 = CUSTOM 5) - selecting a slot is selecting its effect number, staged by fn3 and repainted by the fn6 commit (zero-parameter standalone; the full-config forms bracket an RGB upload). No separate "activate slot" function exists: 0x807B fn3 is GET_NAME, a pure read (the driver's old "activate" step did nothing, and its hardcoded fn3 = 0x05 pinned the strip to CUSTOM 1 on every slot switch; both fixed). Section 9 effect tables and sequences corrected; rev-display note reconciled - the rev fill renders the SELECTED slot's config (the earlier "not the active slot" reading was an artifact of the broken switch; post-fix colour source expected, re-verify); the arm burst's effect stomp is healed by re-asserting the pre-arm effect value after the one-time burst. |

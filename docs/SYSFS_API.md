@@ -502,10 +502,17 @@ Alternatively, use built-in effects via `wheel_led_effect`.
 **Access**: Read/Write
 **Values**: `0` to `4` (custom slot index)
 
-Selects the active custom LED slot for configuration.
+Selects the active custom LED slot and renders it on the strip. On the
+wire a custom slot IS effect value `5 + slot` (see `wheel_led_effect`),
+so writing this attribute is equivalent to writing effect `5 + slot`:
+the driver applies the slot's stored config and switches the strip to it
+(hardware-verified working, both directions, 2026-07-20). The slot-scoped
+attributes (`wheel_led_slot_name`, `wheel_led_colors`,
+`wheel_led_direction`, `wheel_led_slot_brightness`) target the slot
+selected here.
 
 ```bash
-# Select slot 2
+# Select slot 2 (CUSTOM 3) and render it
 echo 2 > wheel_led_slot
 ```
 
@@ -608,13 +615,19 @@ the wire:
 | `2` | Outside to in |
 | `3` | Right to left |
 | `4` | Left to right |
-| `5` | Static/Custom (use custom slot colors) |
-| `6`-`9` | Advertised by the wheel's supported-effect list (live-verified) but not yet visually labeled - try them and watch the LEDs |
+| `5`-`9` | The five custom slots: `5` = CUSTOM 1 .. `9` = CUSTOM 5 |
 
-Writing `5` re-applies the active slot's stored RGB so the new mode
-has something to render; writes for other modes just switch the
-effect and leave the cached colors untouched. Writes outside `1..9`
-are clamped to the nearest end of the range.
+Values `5`-`9` ARE the custom slots (decoded 2026-07-20): there is no
+separate slot-activate command, selecting a slot is selecting its
+effect number. Writing `5` renders the ACTIVE slot - the driver
+re-applies `wheel_led_slot`'s stored RGB and sends `5 + slot` on the
+wire, so through this attribute `5` always means "custom mode with the
+currently selected slot". Writing `6`-`9` selects that specific slot's
+image directly without moving `wheel_led_slot`; prefer `wheel_led_slot`
+(or `5`) so the slot-scoped attributes keep targeting the rendered
+slot. Writes for the animated modes (1-4) just switch the effect and
+leave the cached colors untouched. Writes outside `1..9` are clamped
+to the nearest end of the range.
 
 Effect changed from outside the driver (G Hub-style tools, or the
 wheel itself) is tracked: the driver consumes the LIGHTSYNC
@@ -622,8 +635,11 @@ effect-change broadcast, updates this attribute, and notifies
 `poll()`ers.
 
 ```bash
-# Use custom slot colors
+# Render the active custom slot
 echo 5 > wheel_led_effect
+
+# Render CUSTOM 3 (slot 2) directly
+echo 7 > wheel_led_effect
 
 # Animate right to left
 echo 3 > wheel_led_effect
@@ -664,13 +680,16 @@ wrong after an upload. Whether curves persist across power cycles is untested.
 **Access**: Read/Write
 **Values**: `0`-`10` (number of rev LEDs lit)
 **Availability**: real G PRO rim AND the RS50's LIGHTSYNC strip
-(hardware-verified 2026-07-20). On the RS50 the level drives the wheel's
-own BUILT-IN rev display: the fill style and palette are the rev
-display's own (observed default: green edges to red centre, filling
-edges-inward, F1-style), not a rendering of the active custom slot.
-Which config the rev display reads its palette/direction from is not yet
-decoded (the issue #20 capture will settle it); during testing it
-tracked slot 0's stored direction while slot 0 was active. A written
+(hardware-verified 2026-07-20). On the RS50 the level fills the strip
+with the SELECTED custom slot's stored config: during testing the fill
+tracked slot 0's stored direction (all four directions watched live)
+while slot 0 was selected. An earlier draft of this note said the fill
+was "not a rendering of the active custom slot"; that observation came
+from the then-broken slot switch (the driver pinned selection to
+CUSTOM 1, fixed 2026-07-20), so the fill's source is simply the
+selected slot - a fill taken after selecting a different slot is
+expected to render that slot's colours and direction, but this has not
+been directly re-observed post-fix (expected, re-verify). A written
 level holds until the next write; write `wheel_led_effect` to restore
 the normal idle pattern.
 
