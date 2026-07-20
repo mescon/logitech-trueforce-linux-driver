@@ -7,10 +7,48 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
-The settings app grows a desktop GUI and both frontends gain LIGHTSYNC,
-Setup and Test sections. Driver-side, one LIGHTSYNC encoding fix.
+The settings app grows a desktop GUI, both frontends gain LIGHTSYNC,
+Setup and testing surfaces, simulated TrueForce arrives as a telemetry
+daemon, and a hardware-verification campaign decoded three LIGHTSYNC
+protocol facts (custom slots are effect values 5-9, effect selects need
+a commit, the strip doubles as a level-driven rev display) and fixed
+the driver accordingly. Packaging splits into three interdependent
+packages.
 
 ### Added
+- **`logi-tf-sim`, a simulated-TrueForce daemon**: synthesizes engine
+  haptics from a game's own UDP telemetry (DiRT Rally 2.0 and the
+  classic Codemasters format, Automobilista 2 / Project CARS 2) for
+  titles without native TrueForce, and feeds the same RPM to the
+  wheel's rev-light display. Per-game enable and intensity, master
+  switch, tunable felt rev rate, a consent-gated test sweep, and a
+  Setup panel in both frontends. Streams through `libtrueforce`
+  (static-linked).
+- **RPM rev-light display**: `wheel_rev_level` (0-10) drives the RS50's
+  strip as a live rev display (hardware-verified), fed manually, by
+  `logi-tf-sim`, or by any telemetry bridge.
+- **Per-axis shaping**: throttle, brake, clutch, handbrake and steering
+  each choose sensitivity or the full response curve independently.
+- **Mode-coupled profiles**: onboard mode shows the wheel's five named
+  slots; desktop mode manages computer-side profile presets
+  (save/apply/delete under `~/.config/logi-dd/profiles`).
+- **Info / Testing page**: serial, firmware, app and driver versions
+  (copyable), a live input monitor (rotating wheel diagram, button
+  tester with GL/GR, pedal bars) and guarded, cancelable force
+  simulations.
+- **Per-game Setup**: Steam/Proton game discovery with per-game shim
+  install/remove, an SDK folder with live resolution, a games
+  compatibility table, and helper discovery that also finds repo
+  checkouts.
+- **Curve editor polish**: axis legends, a hover ghost showing where a
+  click adds a point, numeric per-point entry.
+- **Drift watcher**: external profile/mode changes (the rim's buttons)
+  refresh whatever page is open within about two seconds.
+- **Desktop entry and an original logo** for `logi-dd-gui`.
+- **Three-package split** in every channel: the driver package,
+  `logi-dd` (TUI + `logi-ffb` + `logi-tf-sim` + shim installer) and
+  `logi-dd-gui` (desktop app), with dependency chains so one install
+  pulls what it needs.
 - **`logi-dd-gui`, a desktop settings app** (Slint): the full `wheel_*`
   settings surface as a GUI - every category with live values, mode
   switching and refresh, a G HUB-style curve editor, an HSV color picker,
@@ -48,6 +86,24 @@ Setup and Test sections. Driver-side, one LIGHTSYNC encoding fix.
   severed widget bindings re-sync from model pushes, pair edits no longer
   race, mode edits no longer desync the header, and slot renames give
   feedback and refresh the profile dropdown.
+- **Custom LIGHTSYNC slots never switched on the wheel.** Decoded from
+  captures and hardware-confirmed: the five custom slots ARE effect
+  values 5-9 (0x05 = CUSTOM 1); the driver hardcoded 0x05, so every
+  slot switch rendered slot 1, and its "activate" call was actually a
+  name read. Slot selection now visibly repaints the strip.
+- **Built-in LED effects never repainted.** fn3 only stages an effect;
+  the strip repaints on a zero-parameter fn6 commit, which the driver
+  now sends.
+- **The rev-arm burst stomped the active effect** (its fn3 0x02 side
+  effect); the driver snapshots and restores the user's effect and slot
+  around arming.
+- **Combined pedals trapped the toggle**: the driver misparsed the
+  toggle's own change echo as a "profile 1" broadcast, briefly reporting
+  onboard mode; the frontends then locked the row as wrong-mode.
+- **GL and GR are their own buttons** (codes 0x2cc/0x2cd), not aliases
+  of the shifter paddles; the input tester now maps them.
+- **wheel_rev_level is not G PRO-only**: the RS50 accepts the level
+  command; docs and labels corrected.
 
 ## 0.15.0 - 2026-07-18
 
