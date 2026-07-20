@@ -10,10 +10,13 @@ hid-logitech-dd-y := hid-logitech-hidpp.o
 # so users on a "did my fix actually take effect?" hunt can read it back
 # from dmesg / `modinfo` (issue #17). Resolution order:
 #   1. .git_hash file dropped into the source dir by tools/dkms-update.sh
-#   2. live `git rev-parse` if the source dir is itself a git checkout
-#      (in-tree developer build via `make` on the repo)
+#   2. live `git describe` if the source dir is itself a git checkout
+#      (in-tree developer build via `make` on the repo): a tagged build
+#      reads "v0.16.0", a dev build "v0.15.0-231-g8beb949" (plus "-dirty"
+#      for uncommitted changes); --always keeps a tagless clone working
+#      (plain short hash, the old behavior)
 #   3. literal "unknown" so the build still succeeds for tarballs etc.
-GIT_HASH := $(shell cat $(src)/.git_hash 2>/dev/null || git -C $(src) rev-parse --short HEAD 2>/dev/null || echo unknown)
+GIT_HASH := $(shell cat $(src)/.git_hash 2>/dev/null || git -C $(src) describe --tags --always --dirty 2>/dev/null || echo unknown)
 ccflags-y += -DHIDPP_DD_GIT_HASH=\"$(GIT_HASH)\"
 
 # hid_report_raw_event() gained a `size_t bufsize` parameter in
