@@ -121,12 +121,14 @@ doctor() {
 
 	echo
 	say "[4/7] Permissions (udev)"
-	if [ -f "$UDEV_DST" ]; then
+	# Distro packages install rules under /usr/lib/udev/rules.d; setup.sh
+	# uses /etc/udev/rules.d. Either location counts as installed.
+	if [ -f "$UDEV_DST" ] || [ -f "/usr/lib/udev/rules.d/70-logitech-trueforce.rules" ]; then
 		ok "udev rule installed"
 	else
 		wrn "udev rule missing - settings need sudo (run: sudo ./tools/setup.sh)"
 	fi
-	if [ -f "$UDEV_FFB_DST" ]; then
+	if [ -f "$UDEV_FFB_DST" ] || [ -f "/usr/lib/udev/rules.d/71-logi-ffb-uhid.rules" ]; then
 		ok "logi-ffb uhid udev rule installed"
 	else
 		wrn "logi-ffb uhid udev rule missing - logi-ffb needs sudo for /dev/uhid (run: sudo ./tools/setup.sh)"
