@@ -1,35 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- logi-dd: direct-drive wheel control for Linux.
-       Original artwork: open-top racing rim with the 10-segment
-       rev-light arc (the feature this project brought to Linux).
-       No vendor trademarks. GPL-2.0-only, same as the project. -->
+  <!-- logi-dd v2: open-top racing rim as a thick horseshoe, the
+       10-segment rev-light arc bridging the opening. Original artwork,
+       no vendor marks. GPL-2.0-only. -->
   <rect x="14" y="14" width="484" height="484" rx="104" fill="#17191d"/>
   <rect x="14" y="14" width="484" height="484" rx="104" fill="none" stroke="#2c3038" stroke-width="3"/>
 
-  <!-- rim: side grips + lower bar -->
-  <rect x="84"  y="186" width="74" height="196" rx="37" fill="#4b525d"/>
-  <rect x="354" y="186" width="74" height="196" rx="37" fill="#4b525d"/>
-  <rect x="118" y="322" width="276" height="60" rx="30" fill="#4b525d"/>
+  <!-- rim: 290-degree arc, open at the top -->
+  <path d="M 342.0 177.1 A 150 150 0 1 1 170.0 177.1"
+        fill="none" stroke="#4b525d" stroke-width="58" stroke-linecap="round"/>
 
-  <!-- center hub -->
-  <rect x="178" y="212" width="156" height="130" rx="22" fill="#262a30"/>
-  <!-- hub screen with a telemetry accent -->
-  <rect x="206" y="238" width="100" height="46" rx="8" fill="#0d0f12"/>
-  <rect x="216" y="272" width="56" height="5" rx="2.5" fill="#35c4f0"/>
-  <!-- hub buttons hint -->
-  <circle cx="222" cy="312" r="8" fill="#4b525d"/>
-  <circle cx="256" cy="312" r="8" fill="#4b525d"/>
-  <circle cx="290" cy="312" r="8" fill="#4b525d"/>
+  <!-- spokes + hub -->
+  <rect x="146" y="284" width="220" height="34" rx="17" fill="#3a4048"/>
+  <circle cx="256" cy="300" r="52" fill="#262a30"/>
+  <rect x="228" y="282" width="56" height="26" rx="6" fill="#0d0f12"/>
+  <rect x="236" y="296" width="30" height="4" rx="2" fill="#35c4f0"/>
 
-  <!-- rev-light arc -->
-  <rect x="124.7" y="154.9" width="21.5" height="15" rx="5" fill="#2fd05a"/>
-  <rect x="151.4" y="148.9" width="21.5" height="15" rx="5" fill="#2fd05a"/>
-  <rect x="178.2" y="143.9" width="21.5" height="15" rx="5" fill="#2fd05a"/>
-  <rect x="205.1" y="140.2" width="21.5" height="15" rx="5" fill="#f5c518"/>
-  <rect x="231.8" y="138.2" width="21.5" height="15" rx="5" fill="#f5c518"/>
-  <rect x="258.6" y="138.2" width="21.5" height="15" rx="5" fill="#f5c518"/>
-  <rect x="285.4" y="140.2" width="21.5" height="15" rx="5" fill="#ff8c1a"/>
-  <rect x="312.2" y="143.9" width="21.5" height="15" rx="5" fill="#ff8c1a"/>
-  <rect x="339.1" y="148.9" width="21.5" height="15" rx="5" fill="#ff3b30"/>
-  <rect x="365.9" y="154.9" width="21.5" height="15" rx="5" fill="#ff3b30"/>
+  <!-- rev-light arc bridging the rim opening -->
+  <rect x="171.3" y="159.8" width="24" height="18" rx="6" fill="#2fd05a" transform="rotate(-29.0 183.3 168.8)"/>
+  <rect x="186.5" y="152.5" width="24" height="18" rx="6" fill="#2fd05a" transform="rotate(-22.6 198.5 161.5)"/>
+  <rect x="202.4" y="146.9" width="24" height="18" rx="6" fill="#2fd05a" transform="rotate(-16.1 214.4 155.9)"/>
+  <rect x="218.8" y="143.1" width="24" height="18" rx="6" fill="#f5c518" transform="rotate(-9.7 230.8 152.1)"/>
+  <rect x="235.6" y="141.2" width="24" height="18" rx="6" fill="#f5c518" transform="rotate(-3.2 247.6 150.2)"/>
+  <rect x="252.4" y="141.2" width="24" height="18" rx="6" fill="#f5c518" transform="rotate(3.2 264.4 150.2)"/>
+  <rect x="269.2" y="143.1" width="24" height="18" rx="6" fill="#ff8c1a" transform="rotate(9.7 281.2 152.1)"/>
+  <rect x="285.6" y="146.9" width="24" height="18" rx="6" fill="#ff8c1a" transform="rotate(16.1 297.6 155.9)"/>
+  <rect x="301.5" y="152.5" width="24" height="18" rx="6" fill="#ff3b30" transform="rotate(22.6 313.5 161.5)"/>
+  <rect x="316.7" y="159.8" width="24" height="18" rx="6" fill="#ff3b30" transform="rotate(29.0 328.7 168.8)"/>
 </svg>
