@@ -12,14 +12,22 @@ pub struct Binding {
     pub action: &'static str,
     /// Whether the slim footer line carries this binding too.
     pub footer: bool,
+    /// The footer's compact wording; empty means derive it from `action`
+    /// (everything before the first parenthesis).
+    short: &'static str,
 }
 
 const fn b(keys: &'static str, action: &'static str) -> Binding {
-    Binding { keys, action, footer: false }
+    Binding { keys, action, footer: false, short: "" }
 }
 
 const fn bf(keys: &'static str, action: &'static str) -> Binding {
-    Binding { keys, action, footer: true }
+    Binding { keys, action, footer: true, short: "" }
+}
+
+/// A footer binding whose footer wording differs from the overlay's.
+const fn bfs(keys: &'static str, action: &'static str, short: &'static str) -> Binding {
+    Binding { keys, action, footer: true, short }
 }
 
 pub struct Section {
@@ -34,7 +42,7 @@ fn globals() -> Section {
         bindings: vec![
             b("1-7", "jump to that view"),
             b("Tab", "switch focus: sidebar / content"),
-            b("Esc", "close the topmost thing, else back to the sidebar"),
+            b("Esc", "close topmost, else back to the sidebar"),
             b("?", "this key list"),
             b("q", "quit"),
         ],
@@ -109,13 +117,13 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, Scope) {
             Section {
                 title: "Color picker",
                 bindings: vec![
-                    bf("Tab", "focus LEDs / palette"),
-                    bf("arrows", "move (Home/End: first/last LED)"),
-                    bf("Enter", "paint the LED"),
+                    bfs("Tab", "focus LEDs / palette", "LEDs/palette"),
+                    bfs("arrows", "move (Home/End: first/last LED)", "move"),
+                    bfs("Enter", "paint the LED", "paint"),
                     b("a", "paint all LEDs"),
                     b("p", "paint the LED and its mirror pair"),
                     b("x", "hex entry for the LED"),
-                    bf("w", "write to the wheel"),
+                    bfs("w", "write to the wheel", "write"),
                     bf("Esc", "cancel"),
                 ],
             },
@@ -179,16 +187,16 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, Scope) {
             return (sidebar(), Scope::View);
         }
         let mut keys = vec![
-            bf("Up/Down", "scroll (PgUp/PgDn: page)"),
+            bfs("Up/Down", "scroll (PgUp/PgDn: page)", "scroll"),
         ];
         if app.test.sim_running() {
-            keys.push(bf("s", "stop the simulation"));
+            keys.push(bfs("s", "stop the simulation", "stop sim"));
         } else {
-            keys.push(bf("f", "force feedback sim"));
-            keys.push(bf("t", "TrueForce texture sim"));
+            keys.push(bfs("f", "force feedback sim", "FFB sim"));
+            keys.push(bfs("t", "TrueForce texture sim", "texture sim"));
         }
         keys.push(b("c", "show serial + versions for copying"));
-        keys.push(bf("r", "rescan wheel + input"));
+        keys.push(bfs("r", "rescan wheel + input", "rescan"));
         keys.push(b("d", "toggle desktop/onboard mode"));
         return (Section { title: "Info / Testing", bindings: keys }, Scope::View);
     }
@@ -197,15 +205,15 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, Scope) {
     }
     // A plain settings view (content focus).
     let mut keys = vec![
-        bf("Up/Down", "select a row"),
-        bf("Enter", "edit / apply / run"),
-        bf("i", "explain the setting"),
+        bfs("Up/Down", "select a row", "select"),
+        bfs("Enter", "edit / apply / run", "edit"),
+        bfs("i", "explain the setting", "info"),
     ];
     if app.rows.iter().any(|r| r.attr == crate::app::PROFILE_NEW_ATTR) {
-        keys.push(bf("n", "save current as a new profile"));
+        keys.push(bfs("n", "save current as a new profile", "new profile"));
         keys.push(b("d", "delete profile (mode toggle on the Mode row)"));
     } else {
-        keys.push(bf("d", "toggle desktop/onboard mode"));
+        keys.push(bfs("d", "toggle desktop/onboard mode", "mode"));
     }
     if app.has_shaping_toggle() {
         keys.push(b("a", "sensitivity/curve for the row's axis"));
@@ -237,27 +245,27 @@ fn setup_section<S: SysfsIo>(app: &App<S>) -> Section {
     if app.setup_inside {
         match app.setup_section() {
             SetupSection::Games => {
-                keys.push(bf("Up/Down", "select a game"));
-                keys.push(bf("i", "install the SDK shim"));
-                keys.push(bf("u", "remove the SDK shim"));
-                keys.push(bf("g", "toggle simulated TF for the game"));
-                keys.push(bf("Esc/Left", "back to the sections"));
+                keys.push(bfs("Up/Down", "select a game", "game"));
+                keys.push(bfs("i", "install the SDK shim", "install"));
+                keys.push(bfs("u", "remove the SDK shim", "remove"));
+                keys.push(bfs("g", "toggle simulated TF for the game", "sim TF"));
+                keys.push(bfs("Esc/Left", "back to the sections", "back"));
             }
             SetupSection::SimTf => {
                 keys.push(bf("m", "master on/off"));
                 keys.push(bf("e", "intensity"));
                 keys.push(bf("p", "pitch"));
-                keys.push(bf("d", "start/stop the daemon"));
-                keys.push(bf("t", "play a test sweep"));
+                keys.push(bfs("d", "start/stop the daemon", "daemon"));
+                keys.push(bfs("t", "play a test sweep", "sweep"));
                 keys.push(b("Esc/Left", "back to the sections"));
             }
             _ => {}
         }
     } else {
-        keys.push(bf("Up/Down", "select a section"));
-        keys.push(bf("Enter/Right", "open the section"));
+        keys.push(bfs("Up/Down", "select a section", "section"));
+        keys.push(bfs("Enter/Right", "open the section", "open"));
         if app.setup_section() == SetupSection::Sdk {
-            keys.push(bf("s", "edit the SDK folder"));
+            keys.push(bfs("s", "edit the SDK folder", "SDK folder"));
         }
     }
     if app.tf_sweep_active() {
@@ -272,8 +280,8 @@ fn sidebar() -> Section {
     Section {
         title: "Sidebar",
         bindings: vec![
-            bf("Up/Down", "choose a view (loads live)"),
-            bf("Enter/Right", "into the view's content"),
+            bfs("Up/Down", "choose a view (loads live)", "view"),
+            bfs("Enter/Right", "into the view's content", "content"),
         ],
     }
 }
@@ -327,10 +335,13 @@ pub fn footer<S: SysfsIo>(app: &App<S>) -> String {
 }
 
 impl Binding {
-    /// The footer's compact wording: everything up to the first
-    /// parenthesis, so the overlay can elaborate without bloating the
-    /// footer line.
+    /// The footer's compact wording: the explicit short label when one is
+    /// set, else everything up to the first parenthesis, so the overlay
+    /// can elaborate without bloating the footer line.
     fn action_short(&self) -> &str {
+        if !self.short.is_empty() {
+            return self.short;
+        }
         self.action.split(" (").next().unwrap_or(self.action).trim_end()
     }
 }

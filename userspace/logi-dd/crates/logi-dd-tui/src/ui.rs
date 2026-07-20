@@ -1122,13 +1122,15 @@ fn draw_color_picker(f: &mut Frame, picker: &crate::color_picker::ColorPicker, a
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
         ])),
+        // "  w: " + the 69-char strip = 74 columns: exactly the modal's
+        // inner width on an 80-column terminal, so no hex value clips.
         None => lines.push(Line::from(vec![
-            Span::styled("  w writes: ", dim),
+            Span::styled("  w: ", dim),
             Span::styled(picker.preview(), dim),
         ])),
     }
     lines.push(Line::from(Span::styled(
-        "  Tab LEDs/palette   Enter paint   a all   p pair   x hex   w write   Esc cancel",
+        "  Tab focus  Enter paint  a all  p pair  x hex  w write  Esc cancel",
         dim,
     )));
 
