@@ -32,7 +32,7 @@ to work · 🟡 needs a tester · `-` not applicable.
 | Rotation range (90 to 2700°), strength, damping, filters | ✅ | 🟢 |
 | Pedal response curves, sensitivity, deadzones, combined pedals | ✅ | 🟢 |
 | RS Shifter & Handbrake (shift, digital + analog handbrake) | ✅ | 🟢 |
-| LIGHTSYNC RGB LEDs (slots, colors, direction, on-wheel preview) | ✅ (faceplate strip) | 🟡 (rev lights) |
+| LIGHTSYNC RGB LEDs (slots, colors, direction; edits apply live) | ✅ (faceplate strip) | 🟡 (rev lights) |
 | RPM rev-light display (level fill, direction-aware) | ✅ | 🟡 |
 | Simulated TrueForce from game telemetry (`logi-tf-sim`) | ✅ (sweep-verified) | 🟢 |
 | Centre calibration, mode / profile switching, computer-side profiles | ✅ | 🟢 |
@@ -54,9 +54,9 @@ Six pieces, all built from this repository:
   curve editor. So you do not have to `echo` values into sysfs by hand.
 
 - **logi-dd-gui**, the same settings surface as a desktop app (Slint): every
-  wheel setting, a LIGHTSYNC editor with per-slot colors, animation direction
-  and an on-wheel preview, per-game TrueForce shim and simulated-TrueForce
-  management on the Setup page, computer-side profile presets, and an
+  wheel setting, a LIGHTSYNC editor with per-slot colors and animation
+  direction (changes apply to the wheel immediately), per-game TrueForce shim
+  and simulated-TrueForce management on the Setup page, computer-side profile presets, and an
   Info / Testing page with a live input tester (rotating wheel diagram,
   button and pedal readouts) and guarded, cancelable force simulations.
 
@@ -76,8 +76,8 @@ Six pieces, all built from this repository:
   SDK, for apps that want to drive TrueForce without Wine (a telemetry-driven
   haptic generator, for example). Optional; not needed for the Proton recipe.
 
-The distribution packages install the driver plus the `logi-dd`, `logi-dd-gui`
-and `logi-ffb` tools; `libtrueforce` has its own build under
+The distribution packages install the driver plus the `logi-dd`, `logi-dd-gui`,
+`logi-ffb` and `logi-tf-sim` tools; `libtrueforce` has its own build under
 `userspace/libtrueforce/`.
 
 ## Install

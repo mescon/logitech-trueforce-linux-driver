@@ -38,7 +38,7 @@ proxy (see below).
 logi-dd is a Rust workspace of four crates (see Layout below): the
 `logi-dd-core` library, the `logi-dd-tui` and `logi-dd-gui` frontends, and the
 `ffb-proxy` crate that builds `logi-ffb`. It needs a Rust toolchain (edition
-2021, Rust 1.74 or newer; the Slint GUI wants a current stable). The TUI needs
+2021, Rust 1.88 or newer; the Slint GUI needs 1.92). The TUI needs
 no system libraries beyond the standard terminal; the GUI additionally needs
 `pkg-config` and the fontconfig headers (`libfontconfig-dev` on Debian/Ubuntu,
 `fontconfig-devel` on Fedora, `fontconfig` on Arch).
@@ -76,24 +76,50 @@ loaded and bound).
 
 ## Keys
 
-**Main view**
+The TUI is a sidebar of views plus a content pane. Press `?` at any time for
+the complete key list of the current context; that in-app overlay and the
+footer render from the same table, so they are the authoritative reference.
+
+**Global** (whenever no text entry is open)
+
+| Key | Action |
+|-----|--------|
+| 1-7 | Jump straight to that sidebar view |
+| Tab | Switch focus between the sidebar and the content pane |
+| Esc | Close the topmost editor / overlay, else back to the sidebar |
+| ? | The full key list for the current context |
+| q | Quit |
+
+**Sidebar focus**: Up / Down choose a view (its content loads live),
+Enter / Right move focus into the content pane.
+
+**Settings views** (content focus)
 
 | Key | Action |
 |-----|--------|
 | Up / Down | Select a setting |
-| Left / Right | Switch category |
-| Enter | Edit the selected setting (or run it, for actions) |
-| d | Toggle desktop / onboard mode |
+| Enter | Edit the selected setting (or apply / run it, for actions) |
+| i | Explain the selected setting |
+| a | Toggle sensitivity / full curve for the row's axis (Steering, Pedals) |
+| d | Toggle desktop / onboard mode (on a saved-profile row: delete it) |
 | r | Re-read all values from the wheel |
-| q | Quit |
 
-**Editing a value**: Left / Right nudge the value (or type for text fields),
+**Editing a value**: Left / Right nudge the value (or type, for text fields),
 Enter commits, Esc cancels.
 
 **Curve editor** (opens on a curve setting): Up / Down move between fields
 (point, input, output, lower deadzone, upper deadzone), Left / Right adjust the
 selected field, `+` / `-` add or delete a point, Enter uploads the curve, Esc
 cancels.
+
+**LED color picker** (opens on the LED colors row): Tab switches between the
+strip and the palette, arrows move, Enter paints the selected LED (`a` paints
+all, `p` the LED and its mirror pair, `x` opens hex entry), `w` writes the
+strip to the wheel, Esc cancels.
+
+**Setup and Info / Testing** are sectioned views with their own keys (per-game
+shim install / remove, simulated-TrueForce daemon controls, guarded force
+simulations); the footer shows the most useful ones and `?` lists them all.
 
 ## DirectInput force feedback (`logi-ffb`)
 

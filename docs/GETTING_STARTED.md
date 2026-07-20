@@ -34,7 +34,7 @@ needs a copy of Logitech G HUB to source files from.
   terminal twin, both with a G HUB-style curve editor
   (`userspace/logi-dd/`); the same settings are also plain sysfs
   files, documented in `docs/SYSFS_API.md`.
-- Honest expectations: see "State of the driver" in the README. Short
+- Honest expectations: see "What works" in the README. Short
   version: the core works and is verified on real hardware; settings are
   a desktop app (logi-dd-gui), a terminal app (logi-dd) or sysfs files;
   and install is
@@ -55,7 +55,7 @@ straight to racing if you do not need TrueForce).
 | Arch, CachyOS, Manjaro | `paru -S logi-dd-gui` (AUR; or your AUR helper; pulls `logi-dd` and the driver. Headless box: `paru -S logi-dd`) |
 | Debian, Ubuntu, Mint, Pop!_OS | download the `.deb`s from [Releases](https://github.com/mescon/logitech-trueforce-linux-driver/releases) and `sudo apt install ./logitech-trueforce-dkms_*.deb ./logi-dd_*.deb ./logi-dd-gui_*.deb` (skip the gui one on a headless box) |
 | Bazzite, Silverblue, Kinoite | atomic; see [section 1a](#1a-atomic--immutable-distros-bazzite-silverblue-kinoite) |
-| Fedora, Nobara | `sudo dnf copr enable mescon/logitech-trueforce && sudo dnf install logi-dd-gui` (pulls `logi-dd` and the akmod driver; headless box: `logi-dd`) |
+| Fedora, Nobara | `sudo dnf copr enable mescon/logitech-trueforce && sudo dnf install akmod-logitech-trueforce logi-dd-gui` (pulls `logi-dd`; headless box: `akmod-logitech-trueforce logi-dd`) |
 | openSUSE | OBS repo `home:mescon`, then `sudo zypper install logi-dd-gui` (headless: `logi-dd`) |
 | Others | build from source (below) |
 
@@ -85,7 +85,8 @@ sudo ./tools/setup.sh
 ```
 
 Building the Rust apps (logi-dd, logi-dd-gui, logi-ffb, logi-tf-sim) from
-source needs Rust 1.88 or newer; on distributions whose packaged rustc is
+source needs Rust 1.88 or newer (1.92 for the logi-dd-gui desktop app); on
+distributions whose packaged rustc is
 older (Debian stable, for one), install the toolchain with
 [rustup](https://rustup.rs) first. The prebuilt distribution packages do
 not need Rust at all.
