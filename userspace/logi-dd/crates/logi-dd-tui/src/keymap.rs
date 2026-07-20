@@ -1,0 +1,353 @@
+//! One source of truth for every key binding: the `?` help overlay and the
+//! footer hints both render from the tables `sections` builds, so the two
+//! can never drift apart. Each binding says whether the slim footer shows
+//! it (the 4-5 most contextual keys); the overlay shows everything.
+
+use crate::app::{App, Focus};
+use logi_dd_core::sysfs::SysfsIo;
+use logi_dd_core::Category;
+
+pub struct Binding {
+    pub keys: &'static str,
+    pub action: &'static str,
+    /// Whether the slim footer line carries this binding too.
+    pub footer: bool,
+}
+
+const fn b(keys: &'static str, action: &'static str) -> Binding {
+    Binding { keys, action, footer: false }
+}
+
+const fn bf(keys: &'static str, action: &'static str) -> Binding {
+    Binding { keys, action, footer: true }
+}
+
+pub struct Section {
+    pub title: &'static str,
+    pub bindings: Vec<Binding>,
+}
+
+/// The global navigation keys, appended to every non-text context.
+fn globals() -> Section {
+    Section {
+        title: "Global",
+        bindings: vec![
+            b("1-7", "jump to that view"),
+            b("Tab", "switch focus: sidebar / content"),
+            b("Esc", "close the topmost thing, else back to the sidebar"),
+            b("?", "this key list"),
+            b("q", "quit"),
+        ],
+    }
+}
+
+/// The keymap for the app's current state: the topmost active context
+/// first (a modal or text editor when one is open, the focused pane
+/// otherwise), then the globals. A text-entry context stands alone: every
+/// printable key is input there, so no other binding is reachable.
+pub fn sections<S: SysfsIo>(app: &App<S>) -> Vec<Section> {
+    let (context, text_entry) = context_section(app);
+    if text_entry {
+        return vec![context];
+    }
+    vec![context, globals()]
+}
+
+/// The context's own section plus whether it is a text-entry state.
+fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, bool) {
+    use Category::*;
+    if app.info_popup.is_some() {
+        return (
+            Section { title: "Info popup", bindings: vec![bf("any key", "close")] },
+            true,
+        );
+    }
+    if app.curve_edit.is_some() {
+        return (
+            Section {
+                title: "Curve editor",
+                bindings: vec![
+                    bf("Up/Down", "field"),
+                    bf("Left/Right", "adjust"),
+                    b("+", "add point"),
+                    b("-", "delete point"),
+                    bf("Enter", "save"),
+                    bf("Esc", "cancel"),
+                ],
+            },
+            false,
+        );
+    }
+    if app.effect_edit.is_some() {
+        return (
+            Section {
+                title: "Effect selector",
+                bindings: vec![
+                    bf("Left/Right", "choose"),
+                    bf("Enter", "apply"),
+                    bf("Esc", "cancel"),
+                ],
+            },
+            false,
+        );
+    }
+    if app.edit.is_some() {
+        return (
+            Section {
+                title: "Editing",
+                bindings: vec![
+                    bf("Left/Right", "adjust / pick slot"),
+                    bf("type", "text"),
+                    b("Backspace", "erase"),
+                    bf("Enter", "commit"),
+                    bf("Esc", "cancel"),
+                ],
+            },
+            true,
+        );
+    }
+    if app.profile_name_edit.is_some() {
+        return (text_field("Profile name"), true);
+    }
+    if app.profile_delete_confirm.is_some() {
+        return (confirm("Delete profile"), true);
+    }
+    if app.is_setup() {
+        if app.sdk_edit.is_some() {
+            return (text_field("SDK folder"), true);
+        }
+        if app.tf_intensity_edit.is_some() {
+            return (digit_field("TF intensity (0-100)"), true);
+        }
+        if app.tf_pitch_edit.is_some() {
+            return (digit_field("TF pitch (10-200)"), true);
+        }
+        if app.tf_sweep_confirm {
+            return (confirm("Test sweep"), true);
+        }
+        return (setup_section(app), false);
+    }
+    if app.is_info() {
+        if app.test.confirm.is_some() {
+            return (confirm("Simulation"), true);
+        }
+        if app.focus == Focus::Sidebar {
+            return (sidebar(), false);
+        }
+        let mut keys = vec![
+            bf("Up/Down", "scroll (PgUp/PgDn: page)"),
+        ];
+        if app.test.sim_running() {
+            keys.push(bf("s", "stop the simulation"));
+        } else {
+            keys.push(bf("f", "force feedback sim"));
+            keys.push(bf("t", "TrueForce texture sim"));
+        }
+        keys.push(b("c", "show serial + versions for copying"));
+        keys.push(bf("r", "rescan wheel + input"));
+        keys.push(b("d", "toggle desktop/onboard mode"));
+        return (Section { title: "Info / Testing", bindings: keys }, false);
+    }
+    if app.focus == Focus::Sidebar {
+        return (sidebar(), false);
+    }
+    // A plain settings view (content focus).
+    let mut keys = vec![
+        bf("Up/Down", "select a row"),
+        bf("Enter", "edit / apply / run"),
+        bf("i", "explain the setting"),
+    ];
+    if app.rows.iter().any(|r| r.attr == crate::app::PROFILE_NEW_ATTR) {
+        keys.push(bf("n", "save current as a new profile"));
+        keys.push(b("d", "delete profile (mode toggle on the Mode row)"));
+    } else {
+        keys.push(bf("d", "toggle desktop/onboard mode"));
+    }
+    if app.has_shaping_toggle() {
+        keys.push(b("a", "sensitivity/curve for the row's axis"));
+    }
+    keys.push(b("r", "refresh"));
+    let title = if app.no_wheel {
+        "Settings (no wheel)"
+    } else {
+        match app.category() {
+            Ffb => "Force feedback",
+            Steering => "Steering",
+            Pedals => "Pedals",
+            Leds => "LIGHTSYNC",
+            Profiles => "Profiles / mode",
+            Info => "Info / Testing",
+        }
+    };
+    (Section { title, bindings: keys }, false)
+}
+
+/// The Setup view's context bindings.
+fn setup_section<S: SysfsIo>(app: &App<S>) -> Section {
+    if app.focus == Focus::Sidebar {
+        return sidebar();
+    }
+    let mut keys = vec![
+        bf("Up/Down", "select a game"),
+        bf("i", "install the SDK shim"),
+        bf("u", "remove the SDK shim"),
+        bf("g", "toggle simulated TF for the game"),
+        b("m", "simulated TF master on/off"),
+        b("e", "simulated TF intensity"),
+        b("p", "simulated TF pitch"),
+        b("d", "start/stop the tf-sim daemon"),
+        b("t", "play a test sweep"),
+    ];
+    if app.tf_sweep_active() {
+        keys.push(bf("s", "stop the sweep"));
+    } else {
+        keys.push(b("s", "edit the SDK folder"));
+    }
+    keys.push(bf("r", "rescan games + daemon"));
+    keys.push(b("PgUp/PgDn", "scroll"));
+    Section { title: "Setup", bindings: keys }
+}
+
+fn sidebar() -> Section {
+    Section {
+        title: "Sidebar",
+        bindings: vec![
+            bf("Up/Down", "choose a view (loads live)"),
+            bf("Enter/Right", "into the view's content"),
+        ],
+    }
+}
+
+fn text_field(title: &'static str) -> Section {
+    Section {
+        title,
+        bindings: vec![
+            bf("type", "text"),
+            b("Backspace", "erase"),
+            bf("Enter", "save"),
+            bf("Esc", "cancel"),
+        ],
+    }
+}
+
+fn digit_field(title: &'static str) -> Section {
+    Section {
+        title,
+        bindings: vec![
+            bf("digits", "value"),
+            b("Backspace", "erase"),
+            bf("Enter", "save"),
+            bf("Esc", "cancel"),
+        ],
+    }
+}
+
+fn confirm(title: &'static str) -> Section {
+    Section {
+        title,
+        bindings: vec![bf("y", "confirm"), bf("any other key", "cancel")],
+    }
+}
+
+/// The slim footer line: the context's footer-flagged bindings (the 4-5
+/// most contextual keys) plus the pointer to the full overlay. Text-entry
+/// contexts leave the pointer off: `?` is input there.
+pub fn footer<S: SysfsIo>(app: &App<S>) -> String {
+    let sections = sections(app);
+    let text_entry = sections.len() == 1;
+    let mut parts: Vec<String> = sections
+        .iter()
+        .flat_map(|s| s.bindings.iter())
+        .filter(|b| b.footer)
+        .map(|b| format!("{} {}", b.keys, b.action_short()))
+        .collect();
+    if !text_entry {
+        parts.push("? keys".to_string());
+    }
+    parts.join("   ")
+}
+
+impl Binding {
+    /// The footer's compact wording: everything up to the first
+    /// parenthesis, so the overlay can elaborate without bloating the
+    /// footer line.
+    fn action_short(&self) -> &str {
+        self.action.split(" (").next().unwrap_or(self.action).trim_end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use logi_dd_core::sysfs::FakeSysfs;
+
+    fn app() -> App<FakeSysfs> {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_strength", "62");
+        fs.set("wheel_range", "900");
+        fs.set("wheel_mode", "desktop");
+        App::new(logi_dd_core::Device::with_io(fs))
+    }
+
+    /// Every footer entry must come from the same table the overlay
+    /// renders: the one-source-of-truth guarantee.
+    fn footer_subset_of_overlay(a: &App<FakeSysfs>) {
+        let overlay = sections(a);
+        let f = footer(a);
+        for part in f.split("   ") {
+            if part == "? keys" {
+                continue;
+            }
+            let keys = part.split(' ').next().unwrap();
+            assert!(
+                overlay.iter().any(|s| s.bindings.iter().any(|b| b.keys == keys)),
+                "footer key '{keys}' missing from the overlay: {f}"
+            );
+        }
+    }
+
+    #[test]
+    fn footer_always_renders_from_the_overlay_table() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        footer_subset_of_overlay(&a); // sidebar focus
+        a.focus = Focus::Content;
+        footer_subset_of_overlay(&a); // settings content
+        a.on_key(KeyCode::Enter); // inline editor
+        assert!(a.edit.is_some());
+        footer_subset_of_overlay(&a);
+        a.on_key(KeyCode::Esc);
+        for idx in 0..=crate::app::SETUP_INDEX {
+            a.set_cat(idx);
+            a.games_scanned = true;
+            footer_subset_of_overlay(&a);
+        }
+    }
+
+    #[test]
+    fn footer_stays_slim_and_points_at_the_overlay() {
+        let mut a = app();
+        a.focus = Focus::Content;
+        let f = footer(&a);
+        let hints = f.split("   ").count();
+        assert!(hints <= 6, "at most 5 keys + the pointer: {f}");
+        assert!(f.ends_with("? keys"), "footer points at the overlay: {f}");
+    }
+
+    #[test]
+    fn text_entry_contexts_stand_alone_without_the_globals() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        a.focus = Focus::Content;
+        a.profile_name_edit = Some(String::new());
+        let s = sections(&a);
+        assert_eq!(s.len(), 1, "typing states show only their own keys");
+        assert!(!footer(&a).contains("? keys"), "? is input while typing");
+        a.profile_name_edit = None;
+        a.on_key(KeyCode::Char('?'));
+        assert!(a.help, "? opens the overlay outside text entry");
+        a.on_key(KeyCode::Char('q'));
+        assert!(!a.help, "any key closes it");
+        assert!(!a.quit, "the closing key does nothing else");
+    }
+}

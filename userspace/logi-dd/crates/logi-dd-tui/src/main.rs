@@ -1,6 +1,7 @@
 mod app;
 mod curve_editor;
 mod edit;
+mod keymap;
 mod ui;
 mod wheel_test;
 

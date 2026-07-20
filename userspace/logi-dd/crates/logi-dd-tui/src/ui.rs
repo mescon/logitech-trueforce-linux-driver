@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, Focus};
 use crate::curve_editor::CurveEditor;
 use logi_dd_core::sysfs::SysfsIo;
 use logi_dd_core::{shaping, Category, Device, Mode, Value};
@@ -61,7 +61,8 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
     // categories, plus a trailing synthetic "Setup" entry (index
     // `Category::ALL.len()`, i.e. `app::SETUP_INDEX`) that is not a real
     // `Category`: it shows the game helpers (logi-ffb, the TrueForce SDK
-    // shim) instead of a settings list.
+    // shim) instead of a settings list. Every entry wears its digit-jump
+    // number: pressing that digit lands there from anywhere.
     let mut cats: Vec<ListItem> = Category::ALL
         .iter()
         .enumerate()
@@ -71,16 +72,18 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
             } else {
                 Style::default().fg(Color::Cyan)
             };
-            ListItem::new(c.label()).style(style)
+            ListItem::new(format!("{} {}", i + 1, c.label())).style(style)
         })
         .collect();
-    cats.push(ListItem::new("Setup").style(if app.is_setup() {
-        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Cyan)
-    }));
+    cats.push(
+        ListItem::new(format!("{} Setup", crate::app::SETUP_INDEX + 1)).style(if app.is_setup() {
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Cyan)
+        }),
+    );
     f.render_widget(
-        List::new(cats).block(Block::default().borders(Borders::ALL).title("Category")),
+        List::new(cats).block(pane_block("Category", app.focus == Focus::Sidebar)),
         body[0],
     );
 
@@ -123,6 +126,11 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
     // The `i` info popup floats centered over the body; any key closes it.
     if let Some(popup) = &app.info_popup {
         draw_info_popup(f, popup, root[1]);
+    }
+
+    // The `?` help overlay floats over everything; any key closes it.
+    if app.help {
+        draw_help(f, app, root[1]);
     }
 
     draw_status(f, app, root[2]);
@@ -243,7 +251,7 @@ fn draw_settings<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
         ];
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title("Settings"))
+            .block(pane_block("Settings", app.focus == Focus::Content))
             .render(area, buf);
         return;
     }
@@ -408,75 +416,73 @@ fn draw_settings<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
             ])));
         }
         List::new(rows)
-            .block(Block::default().borders(Borders::ALL).title("Settings"))
+            .block(pane_block("Settings", app.focus == Focus::Content))
             .render(area, buf);
 }
 
-/// Render the status line (green on success, red on trouble) + a dim
-/// context-sensitive help line.
+/// Render the status line (green on success, red on trouble) + the slim
+/// footer (the keymap table's footer-flagged bindings; `?` has the rest).
+/// A selected shaping toggle row swaps the footer for its explainer, the
+/// same text the GUI rows carry.
 fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
-    let help = if app.info_popup.is_some() {
-        "info:  any key closes"
-    } else if app.curve_edit.is_some() {
-        "curve:  up/down field   <-/-> adjust   + add point   - delete   Enter save   Esc cancel"
-    } else if app.effect_edit.is_some() {
-        "effect:  <-/->  choose    Enter  apply    Esc  cancel"
-    } else if app.edit.is_some() {
-        "editing:  <-/->  adjust    type  text    Enter  commit    Esc  cancel"
-    } else if app.profile_name_edit.is_some() {
-        "profile name:  type name   Backspace erase   Enter save   Esc cancel"
-    } else if app.profile_delete_confirm.is_some() {
-        "confirm:  y delete   any other key cancels"
-    } else if app.is_setup() {
-        if app.sdk_edit.is_some() {
-            "SDK folder:  type path   Backspace erase   Enter save   Esc cancel"
-        } else if app.tf_intensity_edit.is_some() {
-            "TF intensity (0-100):  type digits   Backspace erase   Enter save   Esc cancel"
-        } else if app.tf_pitch_edit.is_some() {
-            "TF pitch (10-200; felt rev rate, 100 = crank speed):  type digits   Backspace erase   Enter save   Esc cancel"
-        } else if app.tf_sweep_confirm {
-            "confirm:  y plays the ~6 s sweep on the wheel   any other key cancels"
-        } else if app.tf_sweep_active() {
-            "s stop sweep   up/down game   PgUp/PgDn scroll   i/u shim   g game sim TF   m TF on/off   e intensity   p pitch   d daemon   r rescan   q quit"
-        } else {
-            "up/down game   PgUp/PgDn scroll   i/u shim   g game sim TF   m TF on/off   e intensity   p pitch   d daemon start/stop   t test sweep   s SDK folder   r rescan   <-/-> category   q quit"
-        }
-    } else if app.is_info() {
-        if app.test.confirm.is_some() {
-            "confirm:  y continue   any other key cancels"
-        } else if app.test.sim_running() {
-            "s stop sim   up/down/PgUp/PgDn scroll   r rescan   d desktop/onboard   <-/-> category   q quit"
-        } else {
-            "up/down/PgUp/PgDn scroll   f force feedback sim   t TrueForce texture sim   c show serial+firmware   r rescan   d desktop/onboard   <-/-> category   q quit"
-        }
-    } else if app.selected().is_some_and(|r| shaping::toggle_axis(&r.attr).is_some()) {
-        // A toggle row's help explains why each axis shows only one of
-        // the two shaping controls, same text the GUI rows carry.
-        shaping::TOGGLE_HELP
-    } else if app.no_wheel && !app.is_setup() && !app.is_info() {
-        "no wheel connected   r retry discovery   <-/-> category   q quit"
-    } else if !app.is_setup() && !app.is_info() && app.category() == Category::Leds {
-        // No text-mode animation preview; the GUI has the animated one.
-        "up/down select   Enter edit   i info (changes apply to the wheel immediately)   d desktop/onboard   q quit"
-    } else if app.rows.iter().any(|r| r.attr == crate::app::PROFILE_NEW_ATTR) {
-        // The desktop Profiles page: the computer-side profile store.
-        "up/down select   Enter apply/save   i info   n new profile   d delete profile (or desktop/onboard on Mode)   <-/-> category   q quit"
-    } else if app.has_shaping_toggle() {
-        "up/down select   <-/-> category   Enter edit   i info   a sensitivity/curve for this axis   d desktop/onboard   r refresh   q quit"
+    let plain_settings = !app.is_setup() && !app.is_info() && app.edit.is_none();
+    let help = if plain_settings
+        && app.selected().is_some_and(|r| shaping::toggle_axis(&r.attr).is_some())
+    {
+        shaping::TOGGLE_HELP.to_string()
     } else {
-        "up/down select   <-/-> category   Enter edit   i info   d toggle desktop/onboard   r refresh   q quit"
+        crate::keymap::footer(app)
     };
     let lines = vec![
         Line::from(Span::styled(
             app.status.clone(),
             Style::default().fg(status_colour(&app.status)),
         )),
-        Line::from(Span::styled(
-            help.to_string(),
-            Style::default().fg(Color::DarkGray),
-        )),
+        Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))),
     ];
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Render the `?` help overlay: the full keymap for the current context
+/// plus the globals, straight from `crate::keymap::sections` (the same
+/// table the footer renders from). Any key closes it.
+fn draw_help<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
+    let sections = crate::keymap::sections(app);
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, section) in sections.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            section.title.to_string(),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )));
+        for b in &section.bindings {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<14}", b.keys), Style::default().fg(Color::Yellow)),
+                Span::raw(b.action.to_string()),
+            ]));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "any key closes",
+        Style::default().fg(Color::DarkGray),
+    )));
+    let width = area.width.saturating_sub(6).clamp(20, 64).min(area.width);
+    let height = (lines.len() as u16).saturating_add(2).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" Keys ")),
+        rect,
+    );
 }
 
 /// Render the Setup body: the logi-ffb helper, the SDK folder line (edited
@@ -972,6 +978,22 @@ fn draw_info_popup(f: &mut Frame, popup: &crate::app::InfoPopup, area: Rect) {
         ),
         rect,
     );
+}
+
+/// A pane's bordered block: the focused pane's border wears the accent
+/// colour and a bold title, so the pane Up/Down act on is always visible.
+fn pane_block(title: &str, focused: bool) -> Block<'static> {
+    let block = Block::default().borders(Borders::ALL);
+    if focused {
+        block
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(Span::styled(
+                title.to_string(),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ))
+    } else {
+        block.title(title.to_string())
+    }
 }
 
 /// Render a profile number with its onboard slot name.

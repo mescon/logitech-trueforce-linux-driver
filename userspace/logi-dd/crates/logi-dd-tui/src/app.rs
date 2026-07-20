@@ -90,6 +90,16 @@ fn kind_detail(kind: &Kind) -> String {
 /// entry: the live input tester lives on the Info category's page.
 pub const SETUP_INDEX: usize = Category::ALL.len();
 
+/// Which pane the arrow keys act on: the category sidebar (Up/Down move
+/// between views, loading each live) or the view's content (Up/Down move
+/// the row/section/scroll cursor). Tab toggles; Esc steps content focus
+/// back to the sidebar; the digit jumps land on content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Sidebar,
+    Content,
+}
+
 /// The SDK folder field's prefill: `$LOGITECH_TRUEFORCE_SDK_DIR` when set,
 /// else `~/.local/share/logitech-trueforce/sdk` (the installer script's
 /// own default). Editable in the view (the `s` key); the concrete outcome
@@ -108,6 +118,13 @@ fn sdk_field_prefill() -> String {
 pub struct App<S: SysfsIo> {
     pub device: Device<S>,
     pub cat_idx: usize,
+    /// Which pane the arrow keys act on; see `Focus`. Starts on the
+    /// sidebar so Up/Down browse the categories right away.
+    pub focus: Focus,
+    /// Whether the `?` help overlay is on screen; any key closes it. Its
+    /// content comes from `crate::keymap` (one source of truth with the
+    /// footer), never hand-written strings.
+    pub help: bool,
     pub row_idx: usize,
     pub rows: Vec<Row>,
     pub status: String,
@@ -272,6 +289,8 @@ impl<S: SysfsIo> App<S> {
         let mut a = App {
             device,
             cat_idx: 0,
+            focus: Focus::Sidebar,
+            help: false,
             row_idx: 0,
             rows: Vec::new(),
             status: String::new(),
@@ -441,6 +460,7 @@ impl<S: SysfsIo> App<S> {
             || self.curve_edit.is_some()
             || self.effect_edit.is_some()
             || self.info_popup.is_some()
+            || self.help
             || self.sdk_edit.is_some()
             || self.profile_name_edit.is_some()
             || self.profile_delete_confirm.is_some()
@@ -773,7 +793,17 @@ impl<S: SysfsIo> App<S> {
     pub fn move_cat(&mut self, d: i32) {
         // +1 for the trailing Setup entry, past the last real category.
         let n = (Category::ALL.len() + 1) as i32;
-        self.cat_idx = ((self.cat_idx as i32 + d).rem_euclid(n)) as usize;
+        self.set_cat(((self.cat_idx as i32 + d).rem_euclid(n)) as usize);
+    }
+
+    /// Switch straight to sidebar entry `idx` (a digit jump, or one
+    /// `move_cat` step) and bring that view to life, exactly like the
+    /// arrow-key path always did.
+    pub fn set_cat(&mut self, idx: usize) {
+        if idx > SETUP_INDEX {
+            return;
+        }
+        self.cat_idx = idx;
         self.row_idx = 0;
         // A fresh view always starts at its top.
         self.info_scroll = 0;
@@ -1402,8 +1432,75 @@ impl<S: SysfsIo> App<S> {
         );
     }
 
+    /// The global navigation keys, live in every view once no text-entry
+    /// state is active: the digit jumps (1-7 land on that sidebar entry
+    /// with content focus), Tab (toggle sidebar/content focus), `?` (the
+    /// help overlay) and q (quit, no confirmation). Returns whether the
+    /// key was one of them.
+    fn nav_key(&mut self, key: crossterm::event::KeyCode) -> bool {
+        use crossterm::event::KeyCode::*;
+        match key {
+            Char(c) if c.is_ascii_digit() => {
+                let n = c.to_digit(10).unwrap_or(0) as usize;
+                if (1..=SETUP_INDEX + 1).contains(&n) {
+                    self.set_cat(n - 1);
+                    self.focus = Focus::Content;
+                }
+                true
+            }
+            Tab => {
+                self.focus = match self.focus {
+                    Focus::Sidebar => Focus::Content,
+                    Focus::Content => Focus::Sidebar,
+                };
+                true
+            }
+            Char('?') => {
+                self.help = true;
+                true
+            }
+            Char('q') => {
+                self.quit = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The sidebar-focus navigation keys: Up/Down move the category (the
+    /// content pane loads live), Enter/Right hand focus to the content,
+    /// Left/Esc are consumed (nothing sits above the sidebar; Esc never
+    /// quits). Any other key falls through to the view's own handler.
+    fn sidebar_key(&mut self, key: crossterm::event::KeyCode) -> bool {
+        use crossterm::event::KeyCode::*;
+        if self.focus != Focus::Sidebar {
+            return false;
+        }
+        match key {
+            Up => {
+                self.move_cat(-1);
+                true
+            }
+            Down => {
+                self.move_cat(1);
+                true
+            }
+            Enter | Right => {
+                self.focus = Focus::Content;
+                true
+            }
+            Left | Esc => true,
+            _ => false,
+        }
+    }
+
     pub fn on_key(&mut self, key: crossterm::event::KeyCode) {
         use crossterm::event::KeyCode::*;
+        // The help overlay swallows the key that closes it, whatever it is.
+        if self.help {
+            self.help = false;
+            return;
+        }
         // The info popup swallows the key that closes it, whatever it is.
         if self.info_popup.is_some() {
             self.info_popup = None;
@@ -1419,6 +1516,7 @@ impl<S: SysfsIo> App<S> {
                 Right => ce.adjust(1),
                 Char('+') => ce.add_point(),
                 Char('-') => ce.delete_point(),
+                Char('?') => self.help = true,
                 _ => {}
             }
             return;
@@ -1430,6 +1528,7 @@ impl<S: SysfsIo> App<S> {
                 Esc => self.effect_edit = None,
                 Left => fe.index = (fe.index + n - 1) % n,
                 Right => fe.index = (fe.index + 1) % n,
+                Char('?') => self.help = true,
                 _ => {}
             }
             return;
@@ -1458,10 +1557,14 @@ impl<S: SysfsIo> App<S> {
                 };
                 return;
             }
+            if self.nav_key(key) || self.sidebar_key(key) {
+                return;
+            }
             match key {
-                Char('q') => self.quit = true,
-                Left => self.move_cat(-1),
-                Right => self.move_cat(1),
+                // Content focus steps back to the sidebar (Esc discipline:
+                // nothing modal is open here, so the pane focus is the
+                // topmost thing left).
+                Esc | Left => self.focus = Focus::Sidebar,
                 // The Info/Testing view has no list selection, so Up/Down
                 // scroll the composed view (one line) alongside the page
                 // keys; a small terminal can reach everything this way.
@@ -1551,10 +1654,11 @@ impl<S: SysfsIo> App<S> {
                 }
                 return;
             }
+            if self.nav_key(key) || self.sidebar_key(key) {
+                return;
+            }
             match key {
-                Char('q') => self.quit = true,
-                Left => self.move_cat(-1),
-                Right => self.move_cat(1),
+                Esc | Left => self.focus = Focus::Sidebar,
                 Up => self.game_idx = self.game_idx.saturating_sub(1),
                 Down => {
                     if self.game_idx + 1 < self.games.len() {
@@ -1661,8 +1765,10 @@ impl<S: SysfsIo> App<S> {
             }
             return;
         }
+        if self.nav_key(key) || self.sidebar_key(key) {
+            return;
+        }
         match key {
-            Char('q') => self.quit = true,
             // Without a wheel, r queues a re-discovery instead of a
             // (pointless) reload; the main loop runs it.
             Char('r') => {
@@ -1702,8 +1808,7 @@ impl<S: SysfsIo> App<S> {
             }
             Up => self.move_row(-1),
             Down => self.move_row(1),
-            Left => self.move_cat(-1),
-            Right => self.move_cat(1),
+            Esc | Left => self.focus = Focus::Sidebar,
             Enter => {
                 if let Some(name) = self.selected_profile_name() {
                     self.apply_profile(&name);
@@ -1729,6 +1834,7 @@ mod tests {
         fs.set("wheel_range", "900");
         fs.set("wheel_mode", "desktop");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.focus = Focus::Content;
         a.reload();
         a
     }
@@ -1741,6 +1847,119 @@ mod tests {
         // absent attrs are marked unavailable, not dropped
         let s = a.rows.iter().find(|r| r.attr == "wheel_ffb_filter").unwrap();
         assert!(!s.available);
+    }
+
+    // --- the focus model, digit jumps and Esc discipline ---
+
+    #[test]
+    fn digit_jumps_land_on_the_view_with_content_focus() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.on_key(KeyCode::Char('4'));
+        assert_eq!(a.category(), Category::Leds, "4 is the LIGHTSYNC entry");
+        assert_eq!(a.focus, Focus::Content, "a jump lands ready to work");
+        a.on_key(KeyCode::Char('7'));
+        assert!(a.is_setup(), "7 is the Setup entry");
+        a.on_key(KeyCode::Char('1'));
+        assert_eq!(a.category(), Category::Ffb);
+        // Out-of-range digits do nothing (but never fall through).
+        let cat = a.cat_idx;
+        a.on_key(KeyCode::Char('9'));
+        assert_eq!(a.cat_idx, cat);
+    }
+
+    #[test]
+    fn digits_type_into_text_editors_instead_of_jumping() {
+        use crossterm::event::KeyCode;
+        let mut a = profiles_app("desktop");
+        a.on_key(KeyCode::Char('n'));
+        a.on_key(KeyCode::Char('7'));
+        assert_eq!(a.profile_name_edit.as_deref(), Some("7"), "7 is text here");
+        assert!(!a.is_setup(), "no jump happened");
+    }
+
+    #[test]
+    fn tab_toggles_the_focused_pane() {
+        use crossterm::event::KeyCode;
+        // A freshly started app browses the sidebar (the test fixture
+        // parks itself on the content instead, so build one directly).
+        let a = App::new(logi_dd_core::Device::with_io(FakeSysfs::new()));
+        assert_eq!(a.focus, Focus::Sidebar, "starts on the sidebar");
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.on_key(KeyCode::Tab);
+        assert_eq!(a.focus, Focus::Content);
+        a.on_key(KeyCode::Tab);
+        assert_eq!(a.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn sidebar_updown_moves_the_category_and_loads_it_live() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.on_key(KeyCode::Down);
+        assert_eq!(a.category(), Category::Steering);
+        assert_eq!(a.focus, Focus::Sidebar, "browsing stays on the sidebar");
+        a.on_key(KeyCode::Up);
+        assert_eq!(a.category(), Category::Ffb, "the content loaded live both ways");
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.focus, Focus::Content, "Enter steps into the content");
+        assert!(a.edit.is_none(), "no editor opened from the sidebar");
+    }
+
+    #[test]
+    fn esc_closes_the_topmost_thing_and_never_quits() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        a.focus = Focus::Content;
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_strength").unwrap();
+        a.on_key(KeyCode::Enter); // the inline editor (topmost)
+        assert!(a.edit.is_some());
+        a.on_key(KeyCode::Esc);
+        assert!(a.edit.is_none(), "Esc closes the editor first");
+        assert_eq!(a.focus, Focus::Content, "and only the editor");
+        a.on_key(KeyCode::Esc);
+        assert_eq!(a.focus, Focus::Sidebar, "then content focus steps back");
+        a.on_key(KeyCode::Esc);
+        assert!(!a.quit, "Esc never quits");
+        assert_eq!(a.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn q_quits_from_both_focus_states_but_not_through_editors() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.on_key(KeyCode::Char('q'));
+        assert!(a.quit);
+        let mut b = profiles_app("desktop");
+        b.on_key(KeyCode::Char('n'));
+        b.on_key(KeyCode::Char('q'));
+        assert!(!b.quit, "q is text inside a prompt");
+        assert_eq!(b.profile_name_edit.as_deref(), Some("q"));
+    }
+
+    #[test]
+    fn help_overlay_opens_everywhere_and_any_key_closes_it() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        a.on_key(KeyCode::Char('?'));
+        assert!(a.help);
+        a.on_key(KeyCode::Char('q'));
+        assert!(!a.help, "any key closes the overlay");
+        assert!(!a.quit, "and does nothing else");
+        // From inside a non-text modal too (the curve editor keeps its
+        // keys, ? opens the overlay on top).
+        let mut p = pedal_app();
+        p.on_key(KeyCode::Enter);
+        assert!(p.curve_edit.is_some());
+        p.on_key(KeyCode::Char('?'));
+        assert!(p.help);
+        p.on_key(KeyCode::Esc);
+        assert!(!p.help);
+        assert!(p.curve_edit.is_some(), "the closing key never leaks into the editor");
     }
 
     #[test]
@@ -1774,6 +1993,7 @@ mod tests {
         fs.set("wheel_mode", "onboard");
         fs.set("wheel_sensitivity", "50");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.focus = Focus::Content;
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Steering).unwrap();
         a.reload();
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_sensitivity").unwrap();
@@ -1890,6 +2110,7 @@ mod tests {
         let fs = FakeSysfs::new();
         fs.set("wheel_throttle_curve", "0/64 points loaded (0 = built-in curve)");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.focus = Focus::Content;
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
         // A curve row only shows while its axis's shaping toggle is on (the
         // default is the simple sensitivity view).
@@ -1976,6 +2197,7 @@ mod tests {
         fs.set("wheel_mode", "desktop");
         fs.set("wheel_sensitivity", "50");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.focus = Focus::Content;
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Steering).unwrap();
         a.reload();
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_sensitivity").unwrap();
@@ -2357,6 +2579,7 @@ mod tests {
         fs.set("wheel_led_colors", TEN_COLORS);
         fs.set("wheel_rev_level", "0");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.focus = Focus::Content;
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Leds).unwrap();
         a.reload();
         a
@@ -2659,6 +2882,7 @@ mod tests {
         fs.set("wheel_sensitivity", "50");
         fs.set("wheel_response_curve", "reset");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.focus = Focus::Content;
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Steering).unwrap();
         a.reload();
         a
@@ -3017,6 +3241,7 @@ mod tests {
         fs.set("wheel_profile", "2");
         fs.set("wheel_profile_names", "1: AC EVO\n2: GT7");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.focus = Focus::Content;
         a.profiles_dir = profiles_tempdir();
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Profiles).unwrap();
         a.reload();
@@ -3172,7 +3397,7 @@ mod tests {
             // 's' SDK editor), then move on.
             a.on_key(Esc);
             assert!(a.edit.is_none() && a.curve_edit.is_none(), "no editor without rows");
-            a.on_key(Right);
+            a.move_cat(1);
         }
         assert!(!a.quit);
     }
