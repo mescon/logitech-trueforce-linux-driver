@@ -51,6 +51,9 @@ cargo build --release
 The binaries land at `userspace/logi-dd/target/release/{logi-dd,logi-dd-gui,logi-ffb}`.
 Copy them somewhere on your `PATH` if you like, or run them in place.
 
+The workspace crates share one version (`workspace.package` in `Cargo.toml`)
+that follows the repository's release tag; bump it as part of cutting a release.
+
 ## Running
 
 ```bash
