@@ -62,6 +62,12 @@ export component InfoPage inherits Rectangle {
     // Info rows); empty strings while no wheel is bound.
     in property <string> serial: "";
     in property <string> firmware: "";
+    // Software identity: the running front-end's own name + version
+    // ("logi-dd-gui 0.16.0", from CARGO_PKG_VERSION) and the loaded
+    // kernel module's version stamp (/sys/module/hid_logitech_dd/version;
+    // "(module not loaded)" when absent). Set on the Rust side.
+    in property <string> app-version: "";
+    in property <string> driver-version: "";
     // Project home, opened via `open-url` (xdg-open on the Rust side).
     in property <string> project-url: "";
     callback open-url(string);
@@ -168,6 +174,50 @@ export component InfoPage inherits Rectangle {
                             text: "Copy";
                             enabled: root.firmware != "";
                             clicked => { root.copy-value(root.firmware); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            width: 90px;
+                            text: "App";
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            color: Theme.muted-text-color;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.app-version == "" ? "-" : root.app-version;
+                            vertical-alignment: center;
+                            color: Theme.text-color;
+                            overflow: elide;
+                        }
+                        Button {
+                            text: "Copy";
+                            enabled: root.app-version != "";
+                            clicked => { root.copy-value(root.app-version); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            width: 90px;
+                            text: "Driver";
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            color: Theme.muted-text-color;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.driver-version == "" ? "-" : root.driver-version;
+                            vertical-alignment: center;
+                            color: Theme.text-color;
+                            overflow: elide;
+                        }
+                        Button {
+                            text: "Copy";
+                            enabled: root.driver-version != "";
+                            clicked => { root.copy-value(root.driver-version); }
                         }
                     }
                 }

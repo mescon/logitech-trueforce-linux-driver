@@ -230,6 +230,11 @@ pub struct App<S: SysfsIo> {
     /// only exists for the real sysfs type) and hands any find back via
     /// `adopt_device`.
     retry_requested: bool,
+    /// Where the loaded kernel module's version stamp lives
+    /// (`driver::MODULE_VERSION_PATH`); overridable in tests. The Info
+    /// view's Driver row and the `c` status print read through this, so
+    /// they always show the stamp of the module actually loaded right now.
+    pub driver_version_path: PathBuf,
     /// The Info/Testing view's viewport scroll offset, in lines: the two
     /// composed views (Info/Testing and Setup) render more content than a
     /// small terminal can show, so PgUp/PgDn (plus Up/Down on Info, which
@@ -301,6 +306,7 @@ impl<S: SysfsIo> App<S> {
             pending_led_try: false,
             no_wheel: false,
             retry_requested: false,
+            driver_version_path: PathBuf::from(logi_dd_core::driver::MODULE_VERSION_PATH),
             info_scroll: 0,
             setup_scroll: 0,
             body_height: std::cell::Cell::new(0),
@@ -360,6 +366,19 @@ impl<S: SysfsIo> App<S> {
     /// the evdev monitor instead of blocking on the next key.
     pub fn test_polling(&self) -> bool {
         self.is_info() && self.test.monitoring()
+    }
+
+    /// The Info view's App row: this front-end's own name + version.
+    pub fn app_version_text(&self) -> &'static str {
+        concat!("logi-dd ", env!("CARGO_PKG_VERSION"))
+    }
+
+    /// The Info view's Driver row: the loaded kernel module's version
+    /// stamp (read fresh through `driver_version_path` on every draw, so
+    /// it is current at page load), or the explicit not-loaded marker.
+    pub fn driver_version_text(&self) -> String {
+        logi_dd_core::driver::module_version_at(&self.driver_version_path)
+            .unwrap_or_else(|| "(module not loaded)".to_string())
     }
 
     /// The wheel's configured rotation range for the Test view's degree
@@ -1461,19 +1480,21 @@ impl<S: SysfsIo> App<S> {
                 }
                 Char('f') => self.request_sim(SimKind::ConstantForce),
                 Char('t') => self.request_sim(SimKind::Texture),
-                // Show serial + firmware on the status line. This TUI has
-                // no clipboard mechanism (and deliberately gains no
-                // dependency for one), so the values are surfaced for a
-                // manual terminal copy instead.
+                // Show serial + firmware + the software versions on the
+                // status line. This TUI has no clipboard mechanism (and
+                // deliberately gains no dependency for one), so the values
+                // are surfaced for a manual terminal copy instead.
                 Char('c') => {
                     let read = |attr: &str| match self.device.read(attr) {
                         Ok(Value::Text(s)) => s.trim().replace('\n', " / "),
                         _ => "-".to_string(),
                     };
                     self.status = format!(
-                        "serial: {}   firmware: {}   (shown for manual copy)",
+                        "serial: {}   firmware: {}   app: {}   driver: {}   (shown for manual copy)",
                         read("wheel_serial"),
-                        read("wheel_firmware")
+                        read("wheel_firmware"),
+                        self.app_version_text(),
+                        self.driver_version_text()
                     );
                 }
                 // Stop the playing sim; a no-op while nothing plays.
@@ -2085,6 +2106,10 @@ mod tests {
         fs.set("wheel_serial", "0000TESTSER1");
         fs.set("wheel_firmware", "base: U1 00.00.B0000\nmotor: SC 00.00.B0000");
         let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        // Point the module-version read at a path that never exists, so
+        // the test does not depend on whether this machine has the module
+        // loaded.
+        a.driver_version_path = PathBuf::from("/nonexistent/logi-dd-test/version");
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Info).unwrap();
         a.reload();
         assert!(a.is_info());
@@ -2095,7 +2120,38 @@ mod tests {
             "both firmware lines flattened onto the one-line status: {}",
             a.status
         );
+        assert!(
+            a.status.contains(concat!("app: logi-dd ", env!("CARGO_PKG_VERSION"))),
+            "the running front-end's version is on the status line: {}",
+            a.status
+        );
+        assert!(
+            a.status.contains("driver: (module not loaded)"),
+            "an absent module stamp shows the explicit marker: {}",
+            a.status
+        );
         assert!(a.status.contains("manual copy"), "status: {}", a.status);
+    }
+
+    #[test]
+    fn info_c_shows_the_loaded_driver_stamp() {
+        // With a readable version file (the fake-path override standing in
+        // for /sys/module/hid_logitech_dd/version), 'c' prints its stamp.
+        use crossterm::event::KeyCode;
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_serial", "0000TESTSER1");
+        let stamp = std::env::temp_dir()
+            .join(format!("logi-dd-tui-driver-stamp-{}", std::process::id()));
+        std::fs::write(&stamp, "v0.16.0\n").unwrap();
+        let mut a = App::new(logi_dd_core::Device::with_io(fs));
+        a.driver_version_path = stamp.clone();
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Info).unwrap();
+        a.reload();
+        a.on_key(KeyCode::Char('c'));
+        std::fs::remove_file(&stamp).unwrap();
+        assert!(a.status.contains("driver: v0.16.0"), "status: {}", a.status);
+        assert_eq!(a.driver_version_text(), "(module not loaded)", "gone after unload");
     }
 
     #[test]

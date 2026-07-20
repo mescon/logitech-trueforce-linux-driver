@@ -129,11 +129,11 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
 }
 
 /// The height the settings list wants: one line per row (plus the extra
-/// lines a multi-line value renders), the Info doc-link line, and the
-/// block's two border lines. Used to split the Info page between the
-/// identity rows and the live monitor.
+/// lines a multi-line value renders), the Info view's App/Driver version
+/// rows and doc-link line, and the block's two border lines. Used to
+/// split the Info page between the identity rows and the live monitor.
 fn settings_height<S: SysfsIo>(app: &App<S>) -> u16 {
-    let mut lines = app.rows.len() + 1; // + doc link
+    let mut lines = app.rows.len() + 3; // + App/Driver rows + doc link
     for row in &app.rows {
         if let Ok(Value::Text(s)) = &row.value {
             lines += s.matches('\n').count();
@@ -386,10 +386,21 @@ fn draw_settings<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
                 rows.insert(0, ListItem::new(Line::from(spans)));
             }
         }
-        // On the Info category, append the project link so users know where
-        // to find docs and source (a terminal cannot open it, but it is
-        // copyable).
+        // On the Info category, append the software versions (this app,
+        // and the loaded kernel module's stamp; `c` prints the same pair
+        // on the status line for a manual copy) and the project link so
+        // users know where to find docs and source (a terminal cannot
+        // open it, but it is copyable).
         if app.category() == Category::Info {
+            let display_row = |label: &str, value: String| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{label:<24}"), Style::default().fg(Color::Gray)),
+                    Span::raw(" "),
+                    Span::styled(value, Style::default()),
+                ]))
+            };
+            rows.push(display_row("App", app.app_version_text().to_string()));
+            rows.push(display_row("Driver", app.driver_version_text()));
             rows.push(ListItem::new(Line::from(vec![
                 Span::styled(format!("{:<24}", "Documentation"), Style::default().fg(Color::Gray)),
                 Span::raw(" "),

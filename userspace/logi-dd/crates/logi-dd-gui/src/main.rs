@@ -562,6 +562,14 @@ fn run_tf_sweep(
     });
 }
 
+/// The Info page's Driver row: the loaded module's version stamp, or the
+/// explicit not-loaded marker (`logi_dd_core::driver` reads the sysfs
+/// file; absent means no module).
+fn driver_version_text() -> String {
+    logi_dd_core::driver::module_version()
+        .unwrap_or_else(|| "(module not loaded)".to_string())
+}
+
 /// Dev-only render aid: `LOGI_DD_TEST_OVERLAYS=<degrees>` forces every
 /// callout overlay visible and the wheel image to that steering angle, so
 /// the overlay positions and the rotation can be screenshot-verified
@@ -782,6 +790,11 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_leds_index(bridge::index_of(Category::Leds));
     app.set_project_url(logi_dd_core::PROJECT_URL.into());
     app.on_open_url(|url| open_in_browser(&url));
+    // The Info identity block's software rows: this front-end's own
+    // version, and the loaded kernel module's stamp (re-read whenever the
+    // Info rows load, so a module reload shows up on the next visit).
+    app.set_info_app_version(concat!("logi-dd-gui ", env!("CARGO_PKG_VERSION")).into());
+    app.set_info_driver_version(driver_version_text().into());
 
     // Setup page: helper presence, resolved once at startup: `PATH` first,
     // then the repo-checkout fallbacks (`logi-ffb` next to this executable,
@@ -934,6 +947,10 @@ fn main() -> Result<(), slint::PlatformError> {
                             };
                             app.set_info_serial(text("wheel_serial").into());
                             app.set_info_firmware(text("wheel_firmware").into());
+                            // The Driver row re-reads the module stamp on
+                            // every Info page load (the app row is fixed
+                            // for the process lifetime).
+                            app.set_info_driver_version(driver_version_text().into());
                         }
                         // A Leds reload reads the active slot and its name
                         // together, which is the only safe pairing for the

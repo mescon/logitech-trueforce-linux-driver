@@ -113,6 +113,11 @@ export component App inherits Window {
     in property <int> info-index: -1;
     in property <string> info-serial: "";
     in property <string> info-firmware: "";
+    // Software identity under the device rows: the running front-end's
+    // name + version, and the loaded kernel module's version stamp (or
+    // "(module not loaded)"). Both set from Rust.
+    in property <string> info-app-version: "";
+    in property <string> info-driver-version: "";
     // Copy one identity value (the serial, or the two firmware lines) to
     // the clipboard; same best-effort mechanism as `setup-copy-launch`.
     callback info-copy(string);
@@ -445,6 +450,8 @@ export component App inherits Window {
                     vertical-stretch: 1;
                     serial: root.info-serial;
                     firmware: root.info-firmware;
+                    app-version: root.info-app-version;
+                    driver-version: root.info-driver-version;
                     project-url: root.project-url;
                     available: root.test-available;
                     scanned: root.test-scanned;
