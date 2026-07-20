@@ -9164,7 +9164,17 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 	 * bug, issue #29).
 	 */
 	if (set_effect && ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND) {
-		params[0] = 0x05;  /* Effect mode 5 = static/custom */
+		/*
+		 * Effect values 0x05..0x09 ARE the five custom slots
+		 * (0x05 = CUSTOM 1 .. 0x09 = CUSTOM 5): selecting a slot is
+		 * selecting its effect number. Decoded 2026-07-20 from the
+		 * 2026-01-30 G Hub capture (fn3=0x09 -> slot 4 read-back,
+		 * fn3=0x06 -> slot 1) and hardware-confirmed live (fn3=0x08
+		 * + fn6 repainted the strip to slot 3). A hardcoded 0x05
+		 * here was why slot switches never changed the rendering:
+		 * everything always selected CUSTOM 1.
+		 */
+		params[0] = 0x05 + slot;
 		params[1] = 0x00;
 		params[2] = 0x00;
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
@@ -9234,23 +9244,12 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 		return ret;
 
 	/*
-	 * Step 5: Activate slot on feature 0x0C.
-	 * From capture: 10 FF 0C 3C [slot] 00 00
+	 * No separate "activate" step exists: 0x807B fn3 is GET_NAME (a
+	 * read), and the frame this step was copied from turned out to be
+	 * a name query in the capture. The rendered slot is selected by
+	 * the fn3 effect value above (0x05 + slot); the old call here did
+	 * nothing but fetch a name into a response nobody read.
 	 */
-	params[0] = slot;
-	params[1] = 0x00;
-	params[2] = 0x00;
-
-	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_rgb_config,
-					  HIDPP_DD_RGB_FN_ACTIVATE, params, 3, &response);
-	if (ret < 0) {
-		dd_err(hid, "LIGHTSYNC activate bus error on slot %d: %d\n",
-			slot, ret);
-		return ret;
-	}
-	if (ret > 0)
-		dd_warn(hid, "LIGHTSYNC activate HID++ error 0x%02x on slot %d\n",
-			 ret, slot);
 
 	/*
 	 * Step 6: Call fn6 (commit) on 0x0B AFTER RGB config.
