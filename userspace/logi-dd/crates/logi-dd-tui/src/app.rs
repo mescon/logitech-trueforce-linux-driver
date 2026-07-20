@@ -712,12 +712,16 @@ impl<S: SysfsIo> App<S> {
             .write("wheel_led_slot", &Value::Int(slot))
             .and_then(|()| self.device.write("wheel_led_effect", &Value::Int(effect)));
         let shown = if applied.is_ok() {
-            if effect == 5 && self.device.read("wheel_rev_level").is_ok() {
-                self.rev_sweep(sweep_step)
-            } else {
-                std::thread::sleep(hold);
-                Ok(())
-            }
+            // Rev-sweep previews are disabled: the rev fill is the wheel's
+            // own built-in rev display (own palette and fill style), not a
+            // renderer of the active slot, so a sweep previews the wrong
+            // thing (hardware finding, 2026-07-20). The static apply is
+            // pixel-faithful; sweeps return when the rev display's config
+            // semantics are decoded (issue #20 capture). sweep_step is kept
+            // in the signature for that return.
+            let _ = sweep_step;
+            std::thread::sleep(hold);
+            Ok(())
         } else {
             Ok(())
         };
@@ -738,6 +742,7 @@ impl<S: SysfsIo> App<S> {
     /// step per `step`. The fill uses the active slot's colours and
     /// follows its direction; the caller's `wheel_led_effect` restore
     /// exits the fill afterwards.
+    #[allow(dead_code)] // returns with the sweep preview once the rev display's config semantics are decoded (issue #20)
     fn rev_sweep(&self, step: std::time::Duration) -> Result<(), logi_dd_core::Error> {
         for level in (0..=10i32).chain((0..10).rev()) {
             self.device.write("wheel_rev_level", &Value::Int(level))?;
@@ -2398,10 +2403,12 @@ mod tests {
     }
 
     #[test]
-    fn run_led_try_sequences_the_sweep_between_apply_and_restore() {
-        // Regression guard for the one-frame flash: the show phase (the
-        // sweep here) must land BETWEEN the apply writes and the restore
-        // writes, never after them. Pinned via the FakeSysfs write log.
+    fn run_led_try_sequences_the_hold_between_apply_and_restore() {
+        // Regression guard for the one-frame flash: the show phase must
+        // land BETWEEN the apply writes and the restore writes. Sweeps are
+        // disabled (the rev fill is the wheel's own rev display, hardware
+        // finding 2026-07-20), so the sequence is apply then restore with
+        // no rev_level writes at all.
         use std::rc::Rc;
         let fs = Rc::new(FakeSysfs::new());
         fs.set("wheel_mode", "desktop");
@@ -2413,17 +2420,12 @@ mod tests {
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Leds).unwrap();
         a.reload(); // reads only; the write log stays empty until the try
         a.run_led_try(std::time::Duration::ZERO, std::time::Duration::ZERO);
-        let mut expected = vec![
+        let expected = vec![
+            ("wheel_led_slot".to_string(), "1".to_string()),
+            ("wheel_led_effect".to_string(), "5".to_string()),
             ("wheel_led_slot".to_string(), "1".to_string()),
             ("wheel_led_effect".to_string(), "5".to_string()),
         ];
-        expected.extend(
-            (0..=10i32)
-                .chain((0..10).rev())
-                .map(|n| ("wheel_rev_level".to_string(), n.to_string())),
-        );
-        expected.push(("wheel_led_slot".to_string(), "1".to_string()));
-        expected.push(("wheel_led_effect".to_string(), "5".to_string()));
         assert_eq!(fs.writes(), expected);
     }
 
@@ -2431,17 +2433,17 @@ mod tests {
     fn run_led_try_really_blocks_between_apply_and_restore() {
         // Regression: a custom slot's try used to flash for about one
         // frame. The show phase must consume real wall time before the
-        // restore runs, for the sweep (one step per `sweep_step`, 21
-        // steps) and for a built-in effect's static hold alike.
+        // restore runs; with sweeps disabled the static hold paces custom
+        // slots and built-ins alike.
         let hold = std::time::Duration::from_millis(40);
         let step = std::time::Duration::from_millis(2);
 
-        let mut a = leds_app("5", "0"); // custom: the sweep paces the show
+        let mut a = leds_app("5", "0"); // custom: the hold paces the show
         let t0 = std::time::Instant::now();
-        a.run_led_try(std::time::Duration::ZERO, step);
+        a.run_led_try(hold, step);
         assert!(
-            t0.elapsed() >= step * 21,
-            "the sweep must take at least 21 steps of real time, took {:?}",
+            t0.elapsed() >= hold,
+            "the show must hold for real wall time, took {:?}",
             t0.elapsed()
         );
 

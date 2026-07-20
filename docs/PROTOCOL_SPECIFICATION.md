@@ -994,15 +994,18 @@ direction setting for the built-in sweep effects.
 >
 > **RS50 accepts the same level command (hardware-verified 2026-07-20):**
 > writes to `wheel_rev_level` visibly drive the RS50's 10-LED strip too -
-> 0 = all dark, 10 = all lit, intermediate values a partial fill. The fill
-> renders the active slot's colours and follows the slot's stored
-> DIRECTION (all four directions watched live: L-to-R, R-to-L,
-> centre-out, edges-in per the 9.4.1 mapping). G HUB itself was never
-> captured using this command on an RS50, so the exact idle/timeout
-> semantics may differ from the G PRO's; a written level holds until the
-> next level write, and writing `wheel_led_effect` restores the normal
-> idle pattern. This makes a live RPM rev display possible on the RS50
-> today without knowing G HUB's own feed format.
+> 0 = all dark, 10 = all lit, intermediate values a partial fill. The
+> fill is the wheel's own BUILT-IN rev display: its default look is the
+> classic green-edges-to-red-centre palette filling edges-inward, and it
+> is NOT a renderer of the active custom slot (later same-day testing:
+> with slot 3 applied and verified, the fill still used the rev palette).
+> While slot 0 was active, the fill DID track slot 0's stored direction
+> (all four directions watched live per the 9.4.1 mapping), so slot 0 (or
+> a shared "current config") is likely the rev display's source; the
+> exact config source and the arm semantics await a G HUB rev-feed
+> capture (requested in issue #20). A written level holds until the next
+> level write; writing `wheel_led_effect` restores the idle pattern. A
+> live RPM rev display works on the RS50 today regardless.
 >
 > **The arm burst stomps the active effect (hardware-verified
 > 2026-07-20):** the burst's "fn3 param 0x02" is a plain SET_EFFECT, so

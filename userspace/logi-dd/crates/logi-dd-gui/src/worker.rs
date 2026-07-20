@@ -51,6 +51,7 @@ const LED_TRY_HOLD: Duration = Duration::from_secs(5);
 /// `logi_dd_core::lightsync`): the only selection whose try also plays a
 /// rev sweep, since a slot's colours and direction are host-visible while
 /// the built-in effects (1-4) are firmware-owned.
+#[allow(dead_code)] // used again when sweep previews return (issue #20)
 const CUSTOM_EFFECT: u8 = 5;
 
 /// Pace of the try-on-wheel rev sweep: one `wheel_rev_level` step per this
@@ -284,11 +285,16 @@ fn led_try_on_wheel<S: SysfsIo>(
         .edit("wheel_led_slot", WidgetInput::Slider(i64::from(slot)))
         .and_then(|()| vm.edit("wheel_led_effect", WidgetInput::Slider(i64::from(effect))));
     let shown = if applied.is_ok() {
-        if effect == CUSTOM_EFFECT && vm.device_read("wheel_rev_level").is_ok() {
+        if false {
+            // Rev-sweep previews are disabled: hardware testing (2026-07-20)
+            // showed the rev fill is the wheel's own built-in rev display
+            // with its own palette and fill style, NOT a renderer of the
+            // active slot, so a sweep here previews the wrong thing. The
+            // static apply below is pixel-faithful (hardware-verified with
+            // solid color tests); re-enable the sweep only once the rev
+            // display's config semantics are decoded (issue #20 capture).
             rev_sweep(vm, sweep_step)
         } else {
-            // Built-in effects (and wheels without a rev-level attribute)
-            // keep the static apply-hold-restore.
             thread::sleep(hold);
             Ok(())
         }
@@ -993,7 +999,11 @@ mod tests {
     }
 
     #[test]
-    fn led_try_on_a_custom_slot_plays_one_rev_sweep_between_apply_and_restore() {
+    fn led_try_on_a_custom_slot_applies_and_restores_without_rev_writes() {
+        // Rev-sweep previews are disabled (the fill is the wheel's own rev
+        // display, not a slot renderer - hardware finding 2026-07-20), so a
+        // custom-slot preview is a pure apply-hold-restore with NO
+        // wheel_rev_level writes.
         let fs = std::rc::Rc::new(FakeSysfs::new());
         fs.set("wheel_mode", "desktop");
         fs.set("wheel_led_effect", "1");
@@ -1001,20 +1011,12 @@ mod tests {
         fs.set("wheel_rev_level", "0");
         let vm = ViewModel::with_io(fs.clone());
         led_try_on_wheel(&vm, 5, 2, Duration::ZERO, Duration::ZERO).unwrap();
-        // The exact sequence: apply (slot, then effect), ONE 0..10..0
-        // sweep, restore (slot, then effect; the effect write exits the
-        // fill back to the idle pattern).
-        let mut expected = vec![
+        let expected = vec![
             ("wheel_led_slot".to_string(), "2".to_string()),
             ("wheel_led_effect".to_string(), "5".to_string()),
+            ("wheel_led_slot".to_string(), "0".to_string()),
+            ("wheel_led_effect".to_string(), "1".to_string()),
         ];
-        expected.extend(
-            (0..=10i64)
-                .chain((0..10).rev())
-                .map(|n| ("wheel_rev_level".to_string(), n.to_string())),
-        );
-        expected.push(("wheel_led_slot".to_string(), "0".to_string()));
-        expected.push(("wheel_led_effect".to_string(), "1".to_string()));
         assert_eq!(fs.writes(), expected);
     }
 
