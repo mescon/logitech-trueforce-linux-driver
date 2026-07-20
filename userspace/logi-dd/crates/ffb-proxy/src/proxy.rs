@@ -136,10 +136,31 @@ fn assign_block(next_block: &mut u8) -> u8 {
 
 /// Ties the virtual device, the real-wheel input source, and the real-wheel
 /// FF sink together and drives the poll loop between them.
+///
+/// Force-feedback application is handed to a dedicated worker thread rather
+/// than performed inline in the poll loop. The kernel PID FF layer attached
+/// to the virtual device drives it through *synchronous* HID feature/output
+/// requests: each `hid_hw_request` blocks the kernel (and therefore the
+/// game's `EVIOCSFF`) until the proxy answers over uhid, with only a ~5 s
+/// uhid timeout to spare. Applying an effect to the real wheel's evdev FF
+/// node can itself block (an `EVIOCSFF`/`UI_FF_UPLOAD` round trip), so doing
+/// it inline would stall the poll loop between reading a uhid request and
+/// answering it. A single effect that took long enough would time out the
+/// kernel request and, for the multi-report condition effects (spring,
+/// damper, friction, inertia; each uploads a Set Effect plus per-axis Set
+/// Condition reports), tear the session down (issue #50 follow-up). The
+/// worker keeps the poll loop free to answer every uhid request promptly;
+/// effects are applied in FIFO order just slightly behind the acks.
 pub struct Proxy {
     device: uhid::Device,
     source: source::Source,
-    sink: sink::Sink,
+    /// Sends decoded effect ops to the sink worker. `None` only after
+    /// [`Proxy::run`] has closed it during shutdown. Dropping it signals the
+    /// worker to run `Sink::shutdown` and exit.
+    sink_tx: Option<std::sync::mpsc::Sender<pidff::EffectOp>>,
+    /// The sink worker thread handle, joined at the end of [`Proxy::run`] so
+    /// the real wheel's effects are torn down before the proxy returns.
+    sink_worker: Option<std::thread::JoinHandle<()>>,
     /// Next PID effect block index to assign on a Create New Effect
     /// (`0x54`) request. Starts at 1 (0 is not a valid Effect Block Index
     /// per the descriptor's logical range).
@@ -149,30 +170,59 @@ pub struct Proxy {
     last_created_block: u8,
 }
 
+/// The sink worker body: apply decoded effect ops to the real wheel in FIFO
+/// order until the channel's sender is dropped, then tear the effects down.
+/// Runs on its own thread so a blocking sink `EVIOCSFF`/`UI_FF_UPLOAD` round
+/// trip never stalls the poll loop's uhid servicing. Individual apply errors
+/// are logged, never fatal: one dropped effect must not stop the worker.
+fn run_sink_worker(mut sink: sink::Sink, rx: std::sync::mpsc::Receiver<pidff::EffectOp>) {
+    for op in &rx {
+        if let Err(e) = sink.apply(op) {
+            eprintln!("logi-ffb: failed to apply FF operation: {e}");
+        }
+    }
+    sink.shutdown();
+}
+
 impl Proxy {
-    /// Bring up the virtual uhid device and open the real wheel's evdev node
-    /// both as an input source and as an FF sink.
+    /// Bring up the virtual uhid device, open the real wheel's evdev node as
+    /// an input source, and spawn the FF sink worker against the same node.
     pub fn new(paths: WheelPaths) -> Result<Proxy> {
         let device = uhid::Device::create()?;
         let source = source::Source::open(&paths.evdev)?;
         let sink = sink::Sink::open(&paths.evdev)?;
-        Ok(Proxy { device, source, sink, next_block: 1, last_created_block: 0 })
+
+        let (sink_tx, sink_rx) = std::sync::mpsc::channel::<pidff::EffectOp>();
+        let sink_worker = std::thread::Builder::new()
+            .name("logi-ffb-sink".into())
+            .spawn(move || run_sink_worker(sink, sink_rx))
+            .map_err(|e| Error::Io("spawn sink worker".into(), e))?;
+
+        Ok(Proxy {
+            device,
+            source,
+            sink_tx: Some(sink_tx),
+            sink_worker: Some(sink_worker),
+            next_block: 1,
+            last_created_block: 0,
+        })
     }
 
-    /// Apply one decoded PID op to the sink, updating the proxy's own
+    /// Hand one decoded PID op to the sink worker, updating the proxy's own
     /// block-assignment state first: a Device Reset returns the device to
-    /// "no effect blocks in use" (the sink drops them all), so block
+    /// "no effect blocks in use" (the worker drops them all), so block
     /// assignment starts over from 1. The kernel's hid-pidff resets exactly
-    /// when its own effect count is zero, so no live block survives into
-    /// the restarted numbering. Sink errors are logged, never fatal: a
-    /// single failed effect must not tear down the whole proxy.
+    /// when its own effect count is zero, so no live block survives into the
+    /// restarted numbering. The send never blocks the poll loop; a closed
+    /// channel (worker gone) is ignored, as a single dropped effect must not
+    /// tear down the whole proxy.
     fn dispatch(&mut self, op: pidff::EffectOp) {
         if let pidff::EffectOp::DeviceControl { op: pidff::DeviceControlOp::Reset } = op {
             self.next_block = 1;
             self.last_created_block = 0;
         }
-        if let Err(e) = self.sink.apply(op) {
-            eprintln!("logi-ffb: failed to apply FF operation: {e}");
+        if let Some(tx) = &self.sink_tx {
+            let _ = tx.send(op);
         }
     }
 
@@ -256,9 +306,7 @@ impl Proxy {
                         if let Some(kind) = data.get(1).and_then(|&b| pidff::effect_kind_from_type_byte(b)) {
                             let block = assign_block(&mut self.next_block);
                             self.last_created_block = block;
-                            if let Err(e) = self.sink.apply(pidff::EffectOp::Create { block, kind }) {
-                                eprintln!("logi-ffb: failed to create FF effect: {e}");
-                            }
+                            self.dispatch(pidff::EffectOp::Create { block, kind });
                         }
                         if let Err(e) = self.device.send_set_report_reply(id, 0) {
                             break Err(e);
@@ -324,7 +372,13 @@ impl Proxy {
             }
         };
 
-        self.sink.shutdown();
+        // Close the channel so the worker finishes its queued ops, runs
+        // Sink::shutdown, and exits; then join it so teardown completes
+        // before we return (and before the uhid device is destroyed).
+        self.sink_tx = None;
+        if let Some(worker) = self.sink_worker.take() {
+            let _ = worker.join();
+        }
         outcome
     }
 }
@@ -340,6 +394,45 @@ mod tests {
         assert_eq!(assign_block(&mut next), 2);
         assert_eq!(assign_block(&mut next), 3);
         assert_eq!(next, 4);
+    }
+
+    // A Sink over a real fd (/dev/null) whose FF ioctls fail but never block:
+    // enough to drive the worker's drain/apply/shutdown path off the poll
+    // loop without a wheel. Sink::open writes a gain event first (a plain
+    // write, which /dev/null accepts), so opening succeeds.
+    fn null_sink() -> sink::Sink {
+        sink::Sink::open("/dev/null").expect("open /dev/null sink")
+    }
+
+    #[test]
+    fn sink_worker_drains_a_full_condition_sequence_and_exits_on_close() {
+        use pidff::{EffectKind, EffectOp};
+        use std::sync::mpsc;
+
+        let (tx, rx) = mpsc::channel::<EffectOp>();
+        let worker = std::thread::spawn(move || run_sink_worker(null_sink(), rx));
+
+        // The exact op sequence a condition effect (spring) produces: create,
+        // per-axis conditions, set-effect, then play. Sending never blocks the
+        // producer even though each apply hits (and errors on) the null fd.
+        let block = 1u8;
+        tx.send(EffectOp::Create { block, kind: EffectKind::Spring }).unwrap();
+        tx.send(EffectOp::SetCondition {
+            block, center: 0, coeff_pos: 0x4000, coeff_neg: 0x4000, sat_pos: 0x2000, sat_neg: 0x2000,
+        })
+        .unwrap();
+        tx.send(EffectOp::SetCondition {
+            block, center: 0, coeff_pos: 0x4000, coeff_neg: 0x4000, sat_pos: 0x2000, sat_neg: 0x2000,
+        })
+        .unwrap();
+        tx.send(EffectOp::SetEffect { block, duration_ms: 1000, direction: 0 }).unwrap();
+        tx.send(EffectOp::Operation { block, start: true, loop_count: 1 }).unwrap();
+
+        // Dropping the sender ends the drain loop; the worker runs shutdown and
+        // exits, so the join completes (it would hang if the worker stalled on
+        // any op).
+        drop(tx);
+        worker.join().expect("sink worker joined cleanly");
     }
 
     #[test]

@@ -523,6 +523,52 @@ mod tests {
     }
 
     #[test]
+    fn full_condition_effect_report_sequence_all_decode_to_some() {
+        // A condition effect (spring/damper/friction/inertia) is uploaded by
+        // the kernel's hid-pidff as a Set Effect, then ONE Set Condition per
+        // axis (two for a 2-axis wheel, distinguished by the Parameter Block
+        // Offset at byte 2), then an Effect Operation Start to play it. Every
+        // one of these reports MUST decode to Some(..): a None here would be
+        // dropped, and historically a dropped report on the play path ended
+        // the proxy session for condition effects (issue #50 follow-up). This
+        // pins that each report id in the sequence is understood.
+        let block = 1u8;
+
+        // Set Effect (0x51): block, type, duration@3, ..., direction@14.
+        let mut set_effect = vec![0u8; 18];
+        set_effect[0] = 0x51;
+        set_effect[1] = block;
+        set_effect[3..5].copy_from_slice(&1000u16.to_le_bytes());
+        set_effect[14..16].copy_from_slice(&0u16.to_le_bytes());
+        assert!(
+            matches!(decode(&set_effect), Some(EffectOp::SetEffect { block: 1, .. })),
+            "Set Effect must decode",
+        );
+
+        // Set Condition, axis 0 and axis 1: byte 2 is the Parameter Block
+        // Offset (0 then 1). Both must decode to the same block.
+        for axis in 0u8..2 {
+            let mut cond = vec![0x53, block, axis];
+            cond.extend_from_slice(&0i16.to_le_bytes()); // center
+            cond.extend_from_slice(&0x4000i16.to_le_bytes()); // coeff_pos
+            cond.extend_from_slice(&0x4000i16.to_le_bytes()); // coeff_neg
+            cond.extend_from_slice(&0x2000u16.to_le_bytes()); // sat_pos
+            cond.extend_from_slice(&0x2000u16.to_le_bytes()); // sat_neg
+            assert!(
+                matches!(decode(&cond), Some(EffectOp::SetCondition { block: 1, .. })),
+                "Set Condition axis {axis} must decode",
+            );
+        }
+
+        // Effect Operation Start (0x5A): op byte 1 = start.
+        let op = [0x5A, block, 0x01, 0x01];
+        assert!(
+            matches!(decode(&op), Some(EffectOp::Operation { block: 1, start: true, .. })),
+            "Effect Operation Start must decode",
+        );
+    }
+
+    #[test]
     fn set_effect_infinite_duration_maps_to_zero() {
         // hid-pidff writes the full-16-bit sentinel 0xFFFF for "play until
         // stopped"; evdev spells that replay.length == 0.
