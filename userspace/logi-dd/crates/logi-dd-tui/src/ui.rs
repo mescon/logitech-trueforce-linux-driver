@@ -31,9 +31,14 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
             };
             Line::from(vec![
                 Span::styled(
-                    " logi-dd",
+                    " logi-dd ",
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 ),
+                // The rev-light arc, the project mark, in true color.
+                Span::styled("\u{2584}\u{2584}", Style::default().fg(Color::Rgb(0x2f, 0xd0, 0x5a))),
+                Span::styled("\u{2584}\u{2584}", Style::default().fg(Color::Rgb(0xf5, 0xc5, 0x18))),
+                Span::styled("\u{2584}", Style::default().fg(Color::Rgb(0xff, 0x8c, 0x1a))),
+                Span::styled("\u{2584}", Style::default().fg(Color::Rgb(0xff, 0x3b, 0x30))),
                 // Serial and firmware live in the Info category, not the
                 // header. Keep the header to the app name and current mode.
                 Span::raw("   mode: "),
