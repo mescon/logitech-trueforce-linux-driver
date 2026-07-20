@@ -71,7 +71,10 @@ impl Default for Config {
         Config {
             enabled: true,
             intensity: DEFAULT_INTENSITY,
-            pitch_pct: 100,
+            // Default 50: at 100 (crank-rate fundamental) the hardware
+            // feel-test read as an alarmingly fast engine (2026-07-20);
+            // half rate feels like an engine, not a dentist drill.
+            pitch_pct: 50,
             leds: true,
             codemasters_port: codemasters::DEFAULT_PORT,
             pcars_port: pcars::DEFAULT_PORT,

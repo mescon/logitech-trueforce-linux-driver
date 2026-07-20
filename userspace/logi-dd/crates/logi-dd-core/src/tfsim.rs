@@ -35,7 +35,7 @@ pub const DEFAULT_INTENSITY: u8 = 60;
 /// Default per-game intensity (percent), relative to the master.
 pub const DEFAULT_GAME_INTENSITY: u8 = 100;
 /// Default pitch scale (percent of the crank rate).
-pub const DEFAULT_PITCH: u8 = 100;
+pub const DEFAULT_PITCH: u8 = 50; // hardware feel-test verdict 2026-07-20
 
 /// The daemon's process name, as `/proc/<pid>/stat` reports it (11 chars,
 /// safely under the kernel's 15-char comm truncation).
