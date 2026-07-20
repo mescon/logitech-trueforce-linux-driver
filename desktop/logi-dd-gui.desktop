@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=logi-dd
+Name=Logi DD
 GenericName=Racing wheel control
 Comment=Settings, helpers and TrueForce for Logitech direct-drive racing wheels
 Exec=logi-dd-gui
