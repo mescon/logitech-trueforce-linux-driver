@@ -186,6 +186,15 @@ More cases, with commands, are in
 
 ## Documentation
 
+The [**project wiki**](https://github.com/mescon/logitech-trueforce-linux-driver/wiki)
+is the friendliest place to start: a **Users** section (install, force feedback
+in games, configuring the wheel, simulated TrueForce, troubleshooting) and a
+**Developers** section (architecture, the sysfs API, the protocol
+specification, libtrueforce, and the internals of `logi-ffb` and the
+simulated-TrueForce daemon).
+
+The reference documents below live in the repository, versioned with the code:
+
 - [**GETTING_STARTED.md**](docs/GETTING_STARTED.md) - install, TrueForce SDK
   setup, per-distro notes, troubleshooting.
 - [**SYSFS_API.md**](docs/SYSFS_API.md) - every `wheel_*` sysfs attribute.
