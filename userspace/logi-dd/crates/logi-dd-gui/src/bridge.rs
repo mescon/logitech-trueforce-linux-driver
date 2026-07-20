@@ -236,7 +236,7 @@ pub fn compose_profiles(items: Vec<SettingRow>, names: &[String]) -> Vec<Setting
 
 /// The effect-selector labels as Slint strings, in
 /// `lightsync::selection_index` order: the 4 sweeps, the 5 custom slots,
-/// plus the trailing raw entry only while `effect` is outside 1-5 (see
+/// plus the trailing raw entry only while `effect` is outside 1-9 (see
 /// `lightsync::dropdown_labels`). `slot_names` is the per-slot name cache
 /// `main.rs` maintains (see its `led_slot_names` doc); missing, empty or
 /// default-named entries fall back to the plain "CUSTOM N" labels.
@@ -248,8 +248,9 @@ pub fn lightsync_choice_labels(slot_names: &[String], effect: u8) -> Vec<slint::
 /// `wheel_led_effect` row, so `sr.int_value` is the raw effect value 1-9)
 /// into the composed effect selector: tags it `KIND_LIGHT_EFFECT`,
 /// installs the labels, and replaces `int_value` with the selector index
-/// for the current effect + `slot` (`wheel_led_slot`'s value, which picks
-/// the CUSTOM entry when the effect is 5). Only meaningful for
+/// for the current effect + `slot` (`wheel_led_slot`'s value, consulted
+/// when the effect is 5, custom mode with the active slot; effects 6-9
+/// carry their slot in the value itself). Only meaningful for
 /// `wheel_led_effect`; callers guard on `attr` before calling this, same
 /// convention as `apply_profile_choices`.
 pub fn apply_lightsync_effect(sr: &mut SettingRow, slot: i32, slot_names: &[String]) {
@@ -285,7 +286,7 @@ fn light_slot_row(effect: i32, available: bool, mode_ok: bool) -> SettingRow {
         kind: KIND_LIGHT_SLOT,
         int_value: 0,
         int_value2: 0,
-        bool_value: effect == 5,
+        bool_value: (5..=9).contains(&effect),
         text_value: slint::SharedString::new(),
         display: slint::SharedString::new(),
         choices: slint::ModelRc::new(slint::VecModel::<slint::SharedString>::default()),
@@ -1448,13 +1449,18 @@ mod tests {
     }
 
     #[test]
-    fn compose_lightsync_appends_the_raw_entry_for_an_out_of_range_effect() {
+    fn compose_lightsync_maps_a_raw_effect_readback_to_its_custom_entry() {
+        // Device effects 5-9 ARE the custom slots: a readback of 7 must
+        // land on the CUSTOM 3 entry (slot 2), never a raw "Effect 7"
+        // entry, regardless of the slot attr.
         let out = compose_lightsync(leds_setting_rows("7", "0"), &[]);
         let effect = out.iter().find(|r| r.attr == "wheel_led_effect").unwrap();
-        assert_eq!(effect.int_value, 9, "the trailing raw entry is selected");
+        assert_eq!(effect.int_value, 6, "effect 7 = CUSTOM 3 = selector index 6");
         let choices: Vec<String> = effect.choices.iter().map(|s| s.to_string()).collect();
-        assert_eq!(choices.len(), 10);
-        assert_eq!(choices[9], "Effect 7");
+        assert_eq!(choices.len(), 9, "no trailing raw entry for a decoded value");
+        assert_eq!(choices[6], "CUSTOM 3");
+        let button = out.iter().find(|r| r.attr == LIGHT_EDIT_SLOT_ATTR).unwrap();
+        assert!(button.bool_value, "a custom-slot effect enables the Edit slot button");
     }
 
     #[test]

@@ -286,13 +286,15 @@ fn led_try_on_wheel<S: SysfsIo>(
         .and_then(|()| vm.edit("wheel_led_effect", WidgetInput::Slider(i64::from(effect))));
     let shown = if applied.is_ok() {
         if false {
-            // Rev-sweep previews are disabled: hardware testing (2026-07-20)
-            // showed the rev fill is the wheel's own built-in rev display
-            // with its own palette and fill style, NOT a renderer of the
-            // active slot, so a sweep here previews the wrong thing. The
-            // static apply below is pixel-faithful (hardware-verified with
-            // solid color tests); re-enable the sweep only once the rev
-            // display's config semantics are decoded (issue #20 capture).
+            // Rev-sweep previews stay disabled until re-verified: the rev
+            // fill renders the SELECTED slot's config (the earlier "own
+            // built-in palette, not the active slot" reading came from the
+            // then-broken slot switch, which pinned selection to CUSTOM 1;
+            // fixed 2026-07-20), but a fill taken right after selecting a
+            // fresh slot has not been watched post-fix. The static apply
+            // below is pixel-faithful (hardware-verified with solid color
+            // tests); re-enable the sweep once the fill is re-verified on
+            // hardware.
             rev_sweep(vm, sweep_step)
         } else {
             thread::sleep(hold);

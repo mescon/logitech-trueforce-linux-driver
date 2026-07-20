@@ -6,11 +6,13 @@
 //! The sysfs surface stays raw (`wheel_led_effect` 1-9 plus the slot
 //! attrs); everything here is presentation-side mapping so the GUI and the
 //! TUI cannot drift apart on how a selection translates to device writes.
-//! Effect values outside 1-5 (the undocumented 6-9 the driver still
-//! accepts for the curious, or anything a device could report) get no
-//! standing selector entry: a raw "Effect N" entry is appended only while
-//! the device currently reports one, so the selector never lies about the
-//! current state and never offers the unlabeled values.
+//! Effect values 5-9 ARE the five custom slots (5 = CUSTOM 1 .. 9 =
+//! CUSTOM 5, hardware-confirmed 2026-07-20): a device readback of any of
+//! them maps onto that slot's CUSTOM entry. Only a value outside the
+//! decoded 1-9 range (nothing the driver writes, but a device could
+//! report anything) gets a trailing raw "Effect N" entry, appended only
+//! while the device currently reports it, so the selector never lies
+//! about the current state.
 
 /// Labels for `wheel_led_effect` values 1..=4, in value order: value `n`
 /// is `EFFECT_LABELS[n - 1]`.
@@ -28,7 +30,9 @@ pub const SELECTION_COUNT: usize = 9;
 
 /// One effect-selector choice, resolved back to what the device needs
 /// written: a plain `wheel_led_effect` value, or a CUSTOM slot (which
-/// writes `wheel_led_slot` first and then `wheel_led_effect = 5`).
+/// writes `wheel_led_slot` first and then `wheel_led_effect = 5`; the
+/// driver renders effect 5 as `5 + slot` on the wire, and writing the
+/// slot first keeps the slot-scoped attrs targeting the rendered slot).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
     /// A non-custom `wheel_led_effect` value (a sweep 1-4, or the raw
@@ -39,8 +43,12 @@ pub enum Selection {
 }
 
 /// The selector index showing the device state `effect` (+ `slot` when
-/// `effect` is 5, the custom mode). Selector order: effects 1..=4, then
-/// CUSTOM slots 0..=4; any other effect value selects the trailing raw
+/// `effect` is 5). Selector order: effects 1..=4, then CUSTOM slots
+/// 0..=4. Effect values 5-9 are the custom slots themselves (slot
+/// `effect - 5`); effect 5 additionally consults `slot`, because through
+/// the driver's sysfs surface a stored 5 means "custom mode with the
+/// active slot" (`wheel_led_slot`), while a raw 6-9 readback carries its
+/// slot in the value itself. Any other value selects the trailing raw
 /// entry (index `SELECTION_COUNT`, which [`dropdown_labels`] appends for
 /// exactly that state). An out-of-range slot clamps rather than panicking
 /// (a device could report anything).
@@ -48,6 +56,7 @@ pub fn selection_index(effect: u8, slot: u8) -> usize {
     match effect {
         1..=4 => usize::from(effect) - 1,
         5 => 4 + usize::from(slot.min(CUSTOM_SLOTS as u8 - 1)),
+        6..=9 => 4 + usize::from(effect - 5),
         _ => SELECTION_COUNT,
     }
 }
@@ -66,7 +75,7 @@ pub fn index_selection(idx: usize, current_effect: u8) -> Selection {
 }
 
 /// The selector labels, in `selection_index` order: the 4 sweeps, then the
-/// 5 custom slots, then, ONLY while `current_effect` is outside 1-5, one
+/// 5 custom slots, then, ONLY while `current_effect` is outside 1-9, one
 /// trailing "Effect N" entry showing that raw device state. Custom entries
 /// show "CUSTOM N: <name>" using `slot_names[N - 1]` (trimmed), or a plain
 /// "CUSTOM N" when that entry is empty, missing, or just the slot's own
@@ -86,7 +95,7 @@ pub fn dropdown_labels(slot_names: &[String], current_effect: u8) -> Vec<String>
             None => default,
         });
     }
-    if !(1..=5).contains(&current_effect) {
+    if !(1..=9).contains(&current_effect) {
         labels.push(format!("Effect {current_effect}"));
     }
     labels
@@ -136,10 +145,24 @@ mod tests {
     }
 
     #[test]
+    fn effects_5_to_9_map_to_their_custom_slot_entries() {
+        // Effect values 5-9 ARE the custom slots (5 = CUSTOM 1 .. 9 =
+        // CUSTOM 5); a readback of any of them selects that CUSTOM entry.
+        for e in 5..=9u8 {
+            assert_eq!(selection_index(e, 0), 4 + usize::from(e - 5), "effect {e}");
+        }
+        // 6-9 carry their slot in the value itself; the slot attr only
+        // disambiguates effect 5 (custom mode with the active slot).
+        assert_eq!(selection_index(7, 4), 6, "effect 7 is CUSTOM 3 regardless of the slot attr");
+        assert_eq!(selection_index(5, 3), 7, "effect 5 follows the active slot");
+    }
+
+    #[test]
     fn selection_index_sends_out_of_range_effects_to_the_trailing_entry() {
-        // Effects outside 1-5 have no standing entry; they select the raw
-        // trailing entry `dropdown_labels` appends for that state.
-        for e in [0u8, 6, 7, 8, 9, 200] {
+        // Only values outside the decoded 1-9 range have no standing
+        // entry; they select the raw trailing entry `dropdown_labels`
+        // appends for that state.
+        for e in [0u8, 10, 200] {
             assert_eq!(selection_index(e, 0), SELECTION_COUNT, "effect {e}");
         }
         assert_eq!(selection_index(5, 200), 8, "past-the-end slot clamps to CUSTOM 5");
@@ -168,10 +191,10 @@ mod tests {
 
     #[test]
     fn the_trailing_entry_re_selects_the_current_raw_effect() {
-        // Picking the appended "Effect 7" entry (or anything past the
+        // Picking the appended "Effect 200" entry (or anything past the
         // standing list) just re-writes the current raw value.
-        assert_eq!(index_selection(SELECTION_COUNT, 7), Selection::Effect(7));
-        assert_eq!(index_selection(999, 9), Selection::Effect(9));
+        assert_eq!(index_selection(SELECTION_COUNT, 200), Selection::Effect(200));
+        assert_eq!(index_selection(999, 0), Selection::Effect(0));
     }
 
     #[test]
@@ -187,14 +210,26 @@ mod tests {
 
     #[test]
     fn dropdown_labels_append_the_raw_entry_only_while_active() {
-        for e in [0u8, 6, 9, 200] {
+        for e in [0u8, 10, 200] {
             let labels = dropdown_labels(&[], e);
             assert_eq!(labels.len(), SELECTION_COUNT + 1, "effect {e}");
             assert_eq!(labels[SELECTION_COUNT], format!("Effect {e}"));
         }
-        for e in [1u8, 5] {
+        // The whole decoded 1-9 range has standing entries: 1-4 are the
+        // sweeps, 5-9 the custom slots.
+        for e in 1..=9u8 {
             assert_eq!(dropdown_labels(&[], e).len(), SELECTION_COUNT, "effect {e}");
         }
+    }
+
+    #[test]
+    fn a_device_readback_of_7_shows_custom_3() {
+        // The dropdown round-trips raw device effects 5-9 to the CUSTOM
+        // entries: 7 = CUSTOM 3 (slot 2), and re-committing that entry
+        // resolves back to slot 2.
+        let labels = dropdown_labels(&[], 7);
+        assert_eq!(labels[selection_index(7, 0)], "CUSTOM 3");
+        assert_eq!(index_selection(selection_index(7, 0), 7), Selection::Custom(2));
     }
 
     #[test]

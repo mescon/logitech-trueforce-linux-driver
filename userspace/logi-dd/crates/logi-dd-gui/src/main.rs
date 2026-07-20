@@ -1277,7 +1277,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let category = get(&current_category);
             // The current raw effect only matters for the trailing raw
             // entry (present while the device reports an effect outside
-            // 1-5): picking it re-writes that same value.
+            // 1-9): picking it re-writes that same value.
             match lightsync::index_selection(index.max(0) as usize, led_effect(&known_values)) {
                 lightsync::Selection::Effect(e) => {
                     worker.request(Request::Edit {
