@@ -50,6 +50,7 @@ fn full_config() -> Config {
         leds: false,
         codemasters_port: 30500,
         pcars_port: 5607,
+        beamng_port: 4445,
         games,
     }
 }

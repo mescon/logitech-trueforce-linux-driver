@@ -21,7 +21,7 @@ use crate::leds::RevLeds;
 use crate::synth::EngineSynth;
 use crate::telemetry::Telemetry;
 use crate::tf::TfStream;
-use crate::{codemasters, pcars};
+use crate::{beamng, codemasters, f1, pcars, wrc};
 
 /// Stop the stream after this much telemetry silence (spec safety rail).
 pub const SILENCE_TIMEOUT_MS: u64 = 500;
@@ -83,15 +83,43 @@ fn bind(port: u16) -> Result<UdpSocket> {
     Ok(sock)
 }
 
-/// Block until either socket is readable or the timeout expires.
-fn poll_sockets(a: &UdpSocket, b: &UdpSocket) {
-    let mut fds = [
-        libc::pollfd { fd: a.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-        libc::pollfd { fd: b.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-    ];
-    // SAFETY: fds points at a valid array of 2 initialized pollfd. EINTR
-    // and other failures just fall through to the (nonblocking) reads.
+/// Block until any of the sockets is readable or the timeout expires.
+fn poll_sockets(socks: &[&UdpSocket]) {
+    let mut fds: Vec<libc::pollfd> = socks
+        .iter()
+        .map(|s| libc::pollfd { fd: s.as_raw_fd(), events: libc::POLLIN, revents: 0 })
+        .collect();
+    // SAFETY: fds points at a valid array of initialized pollfd. EINTR and
+    // other failures just fall through to the (nonblocking) reads.
     unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, POLL_TIMEOUT_MS) };
+}
+
+/// The stateful telemetry decoders. Only the formats that omit a redline
+/// (`f1`, `beamng`) need state; the rest parse purely per packet. Held
+/// across iterations so their running `max_rpm` survives, and reset when a
+/// stream is torn down so a new session re-learns.
+#[derive(Default)]
+struct Decoders {
+    f1: f1::Decoder,
+    beamng: beamng::Decoder,
+}
+
+impl Decoders {
+    /// Parse a datagram arriving on the Codemasters port (20777), which is
+    /// shared by three formats: the classic float array, modern F1, and the
+    /// logi-tf-sim WRC packet. Each is told apart by length and header, so
+    /// trying them in turn never cross-matches.
+    fn parse_codemasters_port(&mut self, pkt: &[u8]) -> Option<(&'static str, Telemetry)> {
+        codemasters::parse(pkt)
+            .or_else(|| self.f1.parse(pkt))
+            .or_else(|| wrc::parse(pkt))
+    }
+
+    /// Forget every learned redline (called when a stream is torn down).
+    fn reset(&mut self) {
+        self.f1.reset();
+        self.beamng.reset();
+    }
 }
 
 /// Drain every pending datagram on `sock` through `parse`, keeping the
@@ -99,7 +127,7 @@ fn poll_sockets(a: &UdpSocket, b: &UdpSocket) {
 fn drain(
     sock: &UdpSocket,
     buf: &mut [u8],
-    parse: fn(&[u8]) -> Option<(&'static str, Telemetry)>,
+    mut parse: impl FnMut(&[u8]) -> Option<(&'static str, Telemetry)>,
     latest: &mut Option<(&'static str, Telemetry)>,
 ) {
     loop {
@@ -122,26 +150,29 @@ fn drain(
 pub fn run(cfg: &Config) -> Result<()> {
     let cm_sock = bind(cfg.codemasters_port)?;
     let pc_sock = bind(cfg.pcars_port)?;
+    let bn_sock = bind(cfg.beamng_port)?;
     install_signal_handlers()?;
 
     eprintln!(
-        "logi-tf-sim: listening (codemasters/EA on udp/{}, pcars2/ams2 on udp/{})",
-        cfg.codemasters_port, cfg.pcars_port
+        "logi-tf-sim: listening (codemasters/F1/WRC on udp/{}, pcars2/ams2 on udp/{}, beamng on udp/{})",
+        cfg.codemasters_port, cfg.pcars_port, cfg.beamng_port
     );
     if !cfg.enabled {
         eprintln!("logi-tf-sim: master switch is off in the config; listening but not synthesizing");
     }
 
     let mut active: Option<Active> = None;
+    let mut decoders = Decoders::default();
     let mut next_open_attempt = Instant::now();
     let mut buf = [0u8; 2048];
 
     while !STOP.load(Ordering::SeqCst) {
-        poll_sockets(&cm_sock, &pc_sock);
+        poll_sockets(&[&cm_sock, &pc_sock, &bn_sock]);
 
         let mut latest: Option<(&'static str, Telemetry)> = None;
-        drain(&cm_sock, &mut buf, codemasters::parse, &mut latest);
+        drain(&cm_sock, &mut buf, |p| decoders.parse_codemasters_port(p), &mut latest);
         drain(&pc_sock, &mut buf, pcars::parse, &mut latest);
+        drain(&bn_sock, &mut buf, |p| decoders.beamng.parse(p), &mut latest);
 
         let now = Instant::now();
 
@@ -226,6 +257,8 @@ pub fn run(cfg: &Config) -> Result<()> {
                 }
                 eprintln!("logi-tf-sim: stream stop ({}): {reason}", a.game);
             }
+            // A new session re-learns the running redlines from scratch.
+            decoders.reset();
         }
     }
 

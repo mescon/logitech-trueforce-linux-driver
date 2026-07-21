@@ -11,7 +11,8 @@
 //! - `enabled` (0/1): master switch
 //! - `intensity` (0-100): master intensity
 //! - `leds` (0/1): drive the wheel's rev display from telemetry RPM
-//! - `port.codemasters`, `port.pcars`: UDP listen ports
+//! - `port.codemasters` (also serves modern F1 and EA Sports WRC),
+//!   `port.pcars`, `port.beamng`: UDP listen ports
 //! - `game.<id>.enabled` (0/1), `game.<id>.intensity` (0-100)
 
 use std::collections::BTreeMap;
@@ -19,7 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::{codemasters, pcars};
+use crate::{beamng, codemasters, pcars};
 
 /// First line of every saved file.
 pub const FILE_HEADER: &str = "# logi-tf-sim configuration";
@@ -58,10 +59,13 @@ pub struct Config {
     /// Whether the daemon also drives the wheel's rev display
     /// (`wheel_rev_level`) from telemetry RPM while streaming.
     pub leds: bool,
-    /// Codemasters/EA family listen port.
+    /// Codemasters/EA family listen port (classic float array, modern F1,
+    /// and EA Sports WRC all arrive here, told apart by length and header).
     pub codemasters_port: u16,
     /// PCARS2/AMS2 listen port.
     pub pcars_port: u16,
+    /// BeamNG OutGauge listen port.
+    pub beamng_port: u16,
     /// Per-game overrides, keyed by game id.
     pub games: BTreeMap<String, GameConfig>,
 }
@@ -78,6 +82,7 @@ impl Default for Config {
             leds: true,
             codemasters_port: codemasters::DEFAULT_PORT,
             pcars_port: pcars::DEFAULT_PORT,
+            beamng_port: beamng::DEFAULT_PORT,
             games: BTreeMap::new(),
         }
     }
@@ -159,6 +164,11 @@ impl Config {
                         cfg.pcars_port = v;
                     }
                 }
+                "port.beamng" => {
+                    if let Ok(v) = raw.parse::<u16>() {
+                        cfg.beamng_port = v;
+                    }
+                }
                 _ => {
                     let Some(rest) = key.strip_prefix("game.") else { continue };
                     let Some((id, field)) = rest.rsplit_once('.') else { continue };
@@ -199,6 +209,7 @@ impl Config {
         out.push_str(&format!("leds={}\n", u8::from(self.leds)));
         out.push_str(&format!("port.codemasters={}\n", self.codemasters_port));
         out.push_str(&format!("port.pcars={}\n", self.pcars_port));
+        out.push_str(&format!("port.beamng={}\n", self.beamng_port));
         for (id, game) in &self.games {
             out.push_str(&format!("game.{id}.enabled={}\n", u8::from(game.enabled)));
             out.push_str(&format!("game.{id}.intensity={}\n", game.intensity));
@@ -249,12 +260,13 @@ mod tests {
         assert_eq!(cfg.intensity, DEFAULT_INTENSITY);
         assert_eq!(cfg.codemasters_port, 20777);
         assert_eq!(cfg.pcars_port, 5606);
+        assert_eq!(cfg.beamng_port, 4444);
     }
 
     #[test]
     fn save_load_round_trips() {
         let path = tempdir().join(FILE_NAME);
-        let mut cfg = Config { enabled: false, intensity: 42, pitch_pct: 50, leds: false, codemasters_port: 30500, pcars_port: 5607, games: BTreeMap::new() };
+        let mut cfg = Config { enabled: false, intensity: 42, pitch_pct: 50, leds: false, codemasters_port: 30500, pcars_port: 5607, beamng_port: 4445, games: BTreeMap::new() };
         cfg.games.insert("dirt-rally-2".into(), GameConfig { enabled: true, intensity: 80 });
         cfg.games.insert("ams2-pcars2".into(), GameConfig { enabled: false, intensity: 100 });
         cfg.save_to(&path).unwrap();

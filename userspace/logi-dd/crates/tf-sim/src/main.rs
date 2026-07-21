@@ -19,9 +19,10 @@ usage: logi-tf-sim             run the daemon (listens for telemetry)
        logi-tf-sim -h|--help   show this help
 
 The daemon listens passively on UDP for Codemasters/EA telemetry
-(DiRT Rally 2.0 and friends, port 20777) and Project CARS 2 /
-Automobilista 2 telemetry (port 5606), and streams while telemetry
-flows. Enable UDP telemetry in the game's settings.
+(DiRT Rally 2.0 and friends, modern F1, and EA Sports WRC, all on
+port 20777), Project CARS 2 / Automobilista 2 telemetry (port 5606),
+and BeamNG OutGauge (port 4444), and streams while telemetry flows.
+Enable UDP telemetry in the game's settings.
 
 WARNING: --sweep drives the wheel with real haptic force. Hold the rim.
 
@@ -30,8 +31,8 @@ from telemetry RPM (leds=0 turns that off).
 
 config: ~/.config/logi-dd/tf-sim.conf (key=value)
   enabled=0|1, intensity=0-100, leds=0|1, port.codemasters=, port.pcars=,
-  game.<id>.enabled=0|1, game.<id>.intensity=0-100
-  (game ids: dirt-rally-2, codemasters, ams2-pcars2)";
+  port.beamng=, game.<id>.enabled=0|1, game.<id>.intensity=0-100
+  (game ids: dirt-rally-2, codemasters, ams2-pcars2, f1, beamng, ea-wrc)";
 
 /// What argv asked for.
 #[derive(Debug, PartialEq, Eq)]
