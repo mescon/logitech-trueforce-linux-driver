@@ -5,6 +5,20 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+### Changed
+- **DirectInput force feedback now uses Wine's hidraw PID path** (issue #50).
+  The `logi-ffb` proxy no longer relies on a kernel PID force-feedback layer
+  attached to the virtual wheel, which broke the wheel's detection in some
+  Proton sims. The virtual wheel stays a plain device, and the proxy enables
+  `PROTON_ENABLE_HIDRAW=1` for the game it launches, so Wine drives the virtual
+  wheel's PID collection directly and the proxy forwards the effects to the
+  real wheel.
+- **GUI settings redesign**: pages render as grouped cards with plain-English
+  help, the steering page gains a rotation dial, and every slider takes exact
+  keyboard entry.
+
 ## 0.16.2 - 2026-07-20
 
 ### Fixed

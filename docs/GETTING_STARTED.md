@@ -23,8 +23,11 @@ needs a copy of Logitech G HUB to source files from.
   iRacing) use the same SDK and are expected to behave the same; if you
   play one, your confirmation is wanted (open an issue, good or bad).
   Sims that drive force feedback through **DirectInput** rather than the
-  SDK (Le Mans Ultimate, for example) need `PROTON_ENABLE_HIDRAW=0`
-  instead of the recipe's `=1`, or they lose force feedback.
+  SDK (Le Mans Ultimate, for example) run through the `logi-ffb` proxy
+  instead (launch them as `logi-ffb %command%`); it presents a virtual
+  force-feedback wheel and sets up the hidraw path itself, so you do not
+  set `PROTON_ENABLE_HIDRAW` for those by hand. See the logi-ffb section
+  in `userspace/logi-dd/README.md`.
 - **Everything else** (native Linux games, non-SDK titles): you get
   the standard force-feedback suite (constant, spring, damper,
   friction, periodic, rumble) with no extra setup beyond step 1.
