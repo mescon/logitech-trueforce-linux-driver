@@ -410,7 +410,9 @@ type GamesCache = Arc<Mutex<Vec<logi_dd_core::steam::SteamGame>>>;
 fn refresh_games(app: &App, cache: &GamesCache) {
     let cfg = logi_dd_core::tfsim::Config::load();
     let games = cache.lock().unwrap();
-    app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(bridge::setup_games(&games, &cfg))));
+    let items = bridge::setup_games(&games, &cfg);
+    app.set_setup_games_summary(bridge::games_summary(&items).into());
+    app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
 }
 
 /// Rescan the installed Proton games off the UI thread (the Steam
@@ -436,6 +438,7 @@ fn scan_games(app_weak: slint::Weak<App>, cache: GamesCache) {
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else { return };
             let items = bridge::setup_games(&games, &cfg);
+            app.set_setup_games_summary(bridge::games_summary(&items).into());
             app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
             app.set_setup_games_scanned(true);
         });

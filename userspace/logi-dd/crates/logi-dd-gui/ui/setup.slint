@@ -23,17 +23,113 @@ export struct SetupGame {
     sim-intensity: int,
 }
 
+// One collapsible Setup section: a clickable header row (title + a short
+// muted status/summary on the right + a chevron that points right when
+// closed and down when open) with the section body shown only while
+// `open`. Each section keeps its own `open` state, so several may be open
+// at once (independent toggles, not a single-open accordion). The body is
+// whatever elements the caller nests inside (`@children`), padded and
+// stacked. The header is keyboard-usable: it is a `FocusScope`, so Tab
+// reaches it and Enter/Space toggle the section, with a focus ring while
+// it holds focus; a `TouchArea` handles the click (and takes focus first,
+// so the keyboard and the mouse agree on which section is active).
+component AccordionSection inherits Rectangle {
+    in property <string> title;
+    in property <string> summary;
+    // Colours the summary with the error brush (a "not found" state that
+    // wants to stand out) instead of the muted brush.
+    in property <bool> summary-alert: false;
+    in-out property <bool> open: false;
+
+    background: Theme.panel-background;
+    border-radius: Theme.panel-radius;
+    border-width: 1px;
+    border-color: Theme.panel-border;
+
+    VerticalLayout {
+        // The header row: click, or Enter/Space while focused, toggles the
+        // section open/closed.
+        Rectangle {
+            fs := FocusScope {
+                key-pressed(event) => {
+                    if (event.text == Key.Return || event.text == Key.Space) {
+                        root.open = !root.open;
+                        return EventResult.accept;
+                    }
+                    return EventResult.reject;
+                }
+                HorizontalLayout {
+                    padding: 14px;
+                    spacing: 8px;
+                    Text {
+                        text: root.title;
+                        font-size: 15px;
+                        font-weight: 700;
+                        color: Theme.text-color;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.summary;
+                        font-size: 12px;
+                        color: root.summary-alert ? Theme.error-color : Theme.muted-text-color;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    // Chevron: right (closed), down (open).
+                    Text {
+                        text: root.open ? "\u{25BE}" : "\u{25B8}";
+                        font-size: 14px;
+                        color: Theme.muted-text-color;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            // The keyboard focus ring, drawn only while the header holds
+            // focus so the tab target is obvious.
+            Rectangle {
+                border-width: fs.has-focus ? 2px : 0px;
+                border-color: Palette.accent-background;
+                border-radius: Theme.panel-radius;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    fs.focus();
+                    root.open = !root.open;
+                }
+            }
+        }
+        // The body collapses by clipping to zero height when closed (Slint
+        // forbids `@children` inside a conditional element, so the body is
+        // always built and the height gates it). `body`'s intrinsic
+        // preferred-height drives the open height, so the section grows to
+        // exactly fit whatever the caller nested inside.
+        Rectangle {
+            clip: true;
+            height: root.open ? body.preferred-height : 0px;
+            body := VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+                @children
+            }
+        }
+    }
+}
+
 // The sidebar's "Setup" page: an action panel for getting the best force
-// feedback out of each installed game. Top to bottom: a plain-English
-// primer on force feedback vs TrueForce, the global helpers (the logi-ffb
-// proxy, the TrueForce SDK folder, the Simulated TrueForce daemon), the
-// per-game "Your games" action list, and a link to the full compatibility
-// list in the project wiki. Shown instead of the settings list whenever
-// `App.selected-category` equals `App.setup-index` (see `app.slint`'s
-// content area). Nothing here is a device setting, so nothing goes through
-// `Category`/`SettingRow`; the Rust side (`main.rs`) wires the callbacks
-// directly to `std::process` calls, off the UI thread for the shim
-// installer and the Steam scan.
+// feedback out of each installed game, laid out as an accordion. The
+// "Force feedback vs TrueForce" primer stays open at the top as the
+// orientation; below it a stack of collapsible sections (Your games open
+// by default, then the logi-ffb helper, the TrueForce files folder, and
+// the Simulated TrueForce daemon) each toggle independently; a link to
+// the full compatibility list in the project wiki stays at the bottom.
+// Shown instead of the settings list whenever `App.selected-category`
+// equals `App.setup-index` (see `app.slint`'s content area). Nothing here
+// is a device setting, so nothing goes through `Category`/`SettingRow`;
+// the Rust side (`main.rs`) wires the callbacks directly to `std::process`
+// calls, off the UI thread for the shim installer and the Steam scan.
 export component Setup inherits Rectangle {
     in property <string> project-url: "";
     in property <bool> ffb-found: false;
@@ -58,8 +154,11 @@ export component Setup inherits Rectangle {
     // and scanned off the UI thread at startup and after every
     // install/remove/rescan; `games-scanned` gates the empty state so "no
     // Steam found" never flashes before the first scan lands.
+    // `games-summary` is the header's one-line count (built in Rust
+    // alongside the list; see `bridge::games_summary`).
     in property <[SetupGame]> games: [];
     in property <bool> games-scanned: false;
+    in property <string> games-summary: "";
     // Simulated TrueForce (the logi-tf-sim daemon): the resolved binary
     // ("" while not found), whether the daemon is running, the master
     // switch/intensity/pitch from tf-sim.conf, and the test sweep's
@@ -75,6 +174,14 @@ export component Setup inherits Rectangle {
     // The test sweep's consent dialog; the sweep only ever fires from its
     // Continue button, same discipline as the Test page's simulations.
     private property <bool> tf-confirm-open: false;
+
+    // The accordion sections' open/closed state. Your games leads open (it
+    // is the main task); the three global helpers start closed. Multiple
+    // may be open at once.
+    private property <bool> games-open: true;
+    private property <bool> ffb-open: false;
+    private property <bool> sdk-open: false;
+    private property <bool> simtf-open: false;
 
     // The action tags a `SetupGame.action` carries; kept in sync with
     // `bridge::ACTION_*`. Named here so the per-game row's `if` branches
@@ -136,7 +243,8 @@ export component Setup inherits Rectangle {
         }
 
         // Plain-English primer on the two things this page sets up. Most
-        // users have never been told the difference, so it leads the page.
+        // users have never been told the difference, so it leads the page
+        // and always stays visible (it is the orientation, not a section).
         Rectangle {
             background: Theme.panel-background;
             border-radius: Theme.panel-radius;
@@ -168,11 +276,10 @@ export component Setup inherits Rectangle {
             }
         }
 
-        // The whole page scrolls, with the scrollbar always visible so it
-        // is obvious more is below; the viewport is pinned to the visible
-        // width so nothing scrolls sideways. The panels below fill the full
-        // content width (the global helpers share a row of columns; the
-        // "Your games" list and the daemon panel span the width).
+        // The accordion scrolls as a whole, with the scrollbar always
+        // visible so it is obvious more is below; the viewport is pinned to
+        // the visible width so nothing scrolls sideways. Every section
+        // fills the full content width.
         ScrollView {
             vertical-stretch: 1;
             viewport-width: self.visible-width;
@@ -181,51 +288,104 @@ export component Setup inherits Rectangle {
             VerticalLayout {
                 spacing: Theme.gutter;
 
-                // Global helpers, side by side across the full width: the
-                // logi-ffb proxy and the TrueForce SDK folder.
-                HorizontalLayout {
-                    spacing: Theme.gutter;
+                // Section: "Your games", the per-game action list, open by
+                // default. One row per installed Steam/Proton game, matched
+                // to the compatibility registry, showing only the controls
+                // that game needs.
+                AccordionSection {
+                    title: "Your games";
+                    summary: root.games-scanned ? root.games-summary : "scanning...";
+                    open <=> root.games-open;
 
-                    // Section: logi-ffb (force feedback for older
-                    // DirectInput games run through Proton).
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        background: Theme.panel-background;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: "Your installed Steam games that run through Proton, and what each one needs to feel its best on this wheel.";
+                            font-size: 12px;
+                            color: Theme.muted-text-color;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                        }
+                        Button {
+                            text: "Rescan";
+                            enabled: !root.shim-running;
+                            clicked => { root.rescan-games(); }
+                        }
+                    }
+
+                    if root.games-scanned && root.games.length == 0: Text {
+                        text: "No Steam games that run through Proton were found. Install one, then press Rescan.";
+                        font-size: 12px;
+                        color: Theme.muted-text-color;
+                        wrap: word-wrap;
+                    }
+                    if !root.games-scanned: Text {
+                        text: "Scanning your Steam library...";
+                        font-size: 12px;
+                        color: Theme.muted-text-color;
+                    }
+
+                    for game in root.games: Rectangle {
+                        background: Theme.control-background;
                         border-radius: Theme.panel-radius;
-                        border-width: 1px;
-                        border-color: Theme.panel-border;
 
                         VerticalLayout {
-                            padding: 14px;
-                            spacing: 8px;
+                            padding: 12px;
+                            spacing: 6px;
 
+                            // Name on its own full-width line so long
+                            // titles never elide next to the controls.
                             Text {
-                                text: "Force feedback helper (logi-ffb)";
-                                font-size: 15px;
-                                font-weight: 700;
+                                text: game.name;
+                                font-size: 14px;
+                                font-weight: 600;
                                 color: Theme.text-color;
-                            }
-                            Text {
-                                text: "Games that use the older DirectInput force-feedback method (for example Le Mans Ultimate) get no force feedback through Proton by default. Launching them with the logi-ffb helper gives them force feedback through a virtual wheel.";
-                                color: Theme.muted-text-color;
-                                font-size: 12px;
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: root.ffb-found
-                                    ? "logi-ffb: found: " + root.ffb-path
-                                    : "logi-ffb: not found (on your PATH or next to this app)";
-                                font-size: 12px;
-                                color: root.ffb-found ? Theme.text-color : Theme.error-color;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: "Add this to the game's Steam launch options:";
+                                text: game.summary;
                                 font-size: 12px;
                                 color: Theme.muted-text-color;
+                                wrap: word-wrap;
                             }
-                            HorizontalLayout {
+
+                            // Install / remove the TrueForce shim (games
+                            // with built-in TrueForce).
+                            if game.action == root.action-shim: HorizontalLayout {
                                 spacing: 8px;
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: game.installed
+                                        ? "TrueForce files installed for this game"
+                                        : "TrueForce files not installed yet";
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    color: game.installed ? Theme.ok-color : Theme.muted-text-color;
+                                }
+                                Button {
+                                    text: game.installed ? "Remove TrueForce" : "Install TrueForce";
+                                    enabled: !root.shim-running;
+                                    clicked => {
+                                        if (game.installed) {
+                                            root.remove-game(game.prefix);
+                                        } else {
+                                            root.install-game(game.prefix);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Older DirectInput game: launch it with
+                            // logi-ffb.
+                            if game.action == root.action-logi-ffb: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Steam launch options:";
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    color: Theme.muted-text-color;
+                                }
                                 LineEdit {
                                     horizontal-stretch: 1;
                                     text: "logi-ffb %command%";
@@ -236,361 +396,253 @@ export component Setup inherits Rectangle {
                                     clicked => { root.copy-launch(); }
                                 }
                             }
+
+                            // Simulated TrueForce: the game's own switch
+                            // + strength, writing tf-sim.conf.
+                            if game.action == root.action-sim-tf: HorizontalLayout {
+                                spacing: 8px;
+                                Switch {
+                                    text: "Simulated TrueForce";
+                                    checked: game.sim-enabled;
+                                    toggled => { root.sim-game-enabled(game.sim-id, self.checked); }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                Text {
+                                    text: "Strength";
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    color: game.sim-enabled ? Theme.text-color : Theme.muted-text-color;
+                                }
+                                SpinBox {
+                                    minimum: 0;
+                                    maximum: 100;
+                                    value: game.sim-intensity;
+                                    enabled: game.sim-enabled;
+                                    edited(v) => { root.sim-game-intensity(game.sim-id, v); }
+                                }
+                            }
+
+                            // Native force feedback, nothing to install.
+                            if game.action == root.action-out-of-box: Text {
+                                text: "Force feedback works out of the box.";
+                                font-size: 12px;
+                                color: Theme.ok-color;
+                            }
                         }
                     }
 
-                    // Section: the TrueForce SDK folder + libtrueforce note.
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        background: Theme.panel-background;
-                        border-radius: Theme.panel-radius;
-                        border-width: 1px;
-                        border-color: Theme.panel-border;
+                    if root.shim-output != "": TextEdit {
+                        height: 90px;
+                        read-only: true;
+                        wrap: word-wrap;
+                        text: root.shim-output;
+                    }
+                }
 
-                        VerticalLayout {
-                            padding: 14px;
-                            spacing: 8px;
+                // Section: logi-ffb (force feedback for older DirectInput
+                // games run through Proton).
+                AccordionSection {
+                    title: "Force feedback helper (logi-ffb)";
+                    summary: root.ffb-found ? "found" : "not found";
+                    summary-alert: !root.ffb-found;
+                    open <=> root.ffb-open;
 
-                            Text {
-                                text: "TrueForce files folder";
-                                font-size: 15px;
-                                font-weight: 700;
-                                color: Theme.text-color;
-                            }
-                            Text {
-                                text: "Games with built-in TrueForce (like ACC and AC EVO) need Logitech's TrueForce files installed into their Proton folder. Point this at the folder holding those files; the per-game buttons below then use it.";
-                                font-size: 12px;
-                                color: Theme.muted-text-color;
-                                wrap: word-wrap;
-                            }
-                            LineEdit {
-                                text: root.sdk-dir;
-                                placeholder-text: "Path to your Logitech TrueForce files";
-                                accepted(text) => { root.sdk-dir-edited(text); }
-                            }
-                            // The concrete resolution outcome: green
-                            // "found at <path>", or a red not-found line
-                            // (the files must be copied from a Windows G HUB
-                            // install first).
-                            Text {
-                                text: root.sdk-status;
-                                font-size: 12px;
-                                color: root.sdk-valid ? Theme.ok-color : Theme.error-color;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: "The TrueForce files come from Logitech's G HUB install on Windows and are never redistributed; the project README explains how to copy them here. Native Linux apps can also drive TrueForce through this project's libtrueforce library.";
-                                font-size: 12px;
-                                color: Theme.muted-text-color;
-                                wrap: word-wrap;
-                            }
+                    Text {
+                        text: "Games that use the older DirectInput force-feedback method (for example Le Mans Ultimate) get no force feedback through Proton by default. Launching them with the logi-ffb helper gives them force feedback through a virtual wheel.";
+                        color: Theme.muted-text-color;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.ffb-found
+                            ? "logi-ffb: found: " + root.ffb-path
+                            : "logi-ffb: not found (on your PATH or next to this app)";
+                        font-size: 12px;
+                        color: root.ffb-found ? Theme.text-color : Theme.error-color;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Add this to the game's Steam launch options:";
+                        font-size: 12px;
+                        color: Theme.muted-text-color;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        LineEdit {
+                            horizontal-stretch: 1;
+                            text: "logi-ffb %command%";
+                            read-only: true;
+                        }
+                        Button {
+                            text: "Copy";
+                            clicked => { root.copy-launch(); }
                         }
                     }
                 }
 
-                // Section: Simulated TrueForce (the logi-tf-sim daemon), a
-                // global helper spanning the full width. Master switch +
-                // intensity/pitch write tf-sim.conf; the per-game switches
-                // live in each game's row in "Your games" below.
-                Rectangle {
-                    background: Theme.panel-background;
-                    border-radius: Theme.panel-radius;
-                    border-width: 1px;
-                    border-color: Theme.panel-border;
+                // Section: the TrueForce SDK folder + libtrueforce note.
+                AccordionSection {
+                    title: "TrueForce files";
+                    summary: root.sdk-valid ? "found" : "not found";
+                    summary-alert: !root.sdk-valid;
+                    open <=> root.sdk-open;
 
-                    VerticalLayout {
-                        padding: 14px;
+                    Text {
+                        text: "Games with built-in TrueForce (like ACC and AC EVO) need Logitech's TrueForce files installed into their Proton folder. Point this at the folder holding those files; the per-game buttons above then use it.";
+                        font-size: 12px;
+                        color: Theme.muted-text-color;
+                        wrap: word-wrap;
+                    }
+                    LineEdit {
+                        text: root.sdk-dir;
+                        placeholder-text: "Path to your Logitech TrueForce files";
+                        accepted(text) => { root.sdk-dir-edited(text); }
+                    }
+                    // The concrete resolution outcome: green "found at
+                    // <path>", or a red not-found line (the files must be
+                    // copied from a Windows G HUB install first).
+                    Text {
+                        text: root.sdk-status;
+                        font-size: 12px;
+                        color: root.sdk-valid ? Theme.ok-color : Theme.error-color;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "The TrueForce files come from Logitech's G HUB install on Windows and are never redistributed; the project README explains how to copy them here. Native Linux apps can also drive TrueForce through this project's libtrueforce library.";
+                        font-size: 12px;
+                        color: Theme.muted-text-color;
+                        wrap: word-wrap;
+                    }
+                }
+
+                // Section: Simulated TrueForce (the logi-tf-sim daemon).
+                // Master switch + intensity/pitch write tf-sim.conf; the
+                // per-game switches live in each game's row above.
+                AccordionSection {
+                    title: "Simulated TrueForce (logi-tf-sim)";
+                    summary: root.tf-enabled ? "on" : "off";
+                    open <=> root.simtf-open;
+
+                    Text {
+                        text: "Creates TrueForce-style engine vibration from a game's own telemetry, for games without built-in TrueForce. The background helper listens quietly and only sends vibration while a supported game is streaming its telemetry. Turn it on for individual games in the list above.";
+                        font-size: 12px;
+                        color: Theme.muted-text-color;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.tf-found
+                            ? "logi-tf-sim: found: " + root.tf-path
+                            : "logi-tf-sim: not found (on your PATH or next to this app)";
+                        font-size: 12px;
+                        color: root.tf-found ? Theme.text-color : Theme.error-color;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
                         spacing: 8px;
-
                         Text {
-                            text: "Simulated TrueForce (logi-tf-sim)";
-                            font-size: 15px;
-                            font-weight: 700;
+                            horizontal-stretch: 1;
+                            text: root.tf-running ? "Background helper: running" : "Background helper: stopped";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            color: root.tf-running ? Theme.ok-color : Theme.muted-text-color;
+                        }
+                        Button {
+                            text: "Start";
+                            enabled: root.tf-found && !root.tf-running;
+                            clicked => { root.tf-start-daemon(); }
+                        }
+                        Button {
+                            text: "Stop";
+                            enabled: root.tf-running;
+                            clicked => { root.tf-stop-daemon(); }
+                        }
+                    }
+                    Switch {
+                        text: "Simulated TrueForce on (master switch)";
+                        checked: root.tf-enabled;
+                        toggled => { root.tf-set-enabled(self.checked); }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            width: 70px;
+                            text: "Strength";
+                            font-size: 12px;
+                            vertical-alignment: center;
                             color: Theme.text-color;
                         }
+                        intensity-slider := Slider {
+                            horizontal-stretch: 1;
+                            minimum: 0;
+                            maximum: 100;
+                            value: root.tf-intensity;
+                            // Committed on release, not on every drag
+                            // tick, same rule as the settings sliders.
+                            released(v) => { root.tf-set-intensity(round(v)); }
+                        }
                         Text {
-                            text: "Creates TrueForce-style engine vibration from a game's own telemetry, for games without built-in TrueForce. The background helper listens quietly and only sends vibration while a supported game is streaming its telemetry. Turn it on for individual games in the list below.";
+                            width: 36px;
+                            text: round(intensity-slider.value) + "%";
                             font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
                             color: Theme.muted-text-color;
-                            wrap: word-wrap;
-                        }
-                        Text {
-                            text: root.tf-found
-                                ? "logi-tf-sim: found: " + root.tf-path
-                                : "logi-tf-sim: not found (on your PATH or next to this app)";
-                            font-size: 12px;
-                            color: root.tf-found ? Theme.text-color : Theme.error-color;
-                            wrap: word-wrap;
-                        }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                horizontal-stretch: 1;
-                                text: root.tf-running ? "Background helper: running" : "Background helper: stopped";
-                                font-size: 12px;
-                                vertical-alignment: center;
-                                color: root.tf-running ? Theme.ok-color : Theme.muted-text-color;
-                            }
-                            Button {
-                                text: "Start";
-                                enabled: root.tf-found && !root.tf-running;
-                                clicked => { root.tf-start-daemon(); }
-                            }
-                            Button {
-                                text: "Stop";
-                                enabled: root.tf-running;
-                                clicked => { root.tf-stop-daemon(); }
-                            }
-                        }
-                        Switch {
-                            text: "Simulated TrueForce on (master switch)";
-                            checked: root.tf-enabled;
-                            toggled => { root.tf-set-enabled(self.checked); }
-                        }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                width: 70px;
-                                text: "Strength";
-                                font-size: 12px;
-                                vertical-alignment: center;
-                                color: Theme.text-color;
-                            }
-                            intensity-slider := Slider {
-                                horizontal-stretch: 1;
-                                minimum: 0;
-                                maximum: 100;
-                                value: root.tf-intensity;
-                                // Committed on release, not on every drag
-                                // tick, same rule as the settings sliders.
-                                released(v) => { root.tf-set-intensity(round(v)); }
-                            }
-                            Text {
-                                width: 36px;
-                                text: round(intensity-slider.value) + "%";
-                                font-size: 12px;
-                                vertical-alignment: center;
-                                horizontal-alignment: right;
-                                color: Theme.muted-text-color;
-                            }
-                        }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                width: 70px;
-                                text: "Rev rate";
-                                font-size: 12px;
-                                vertical-alignment: center;
-                                color: Theme.text-color;
-                            }
-                            pitch-slider := Slider {
-                                horizontal-stretch: 1;
-                                minimum: 10;
-                                maximum: 200;
-                                value: root.tf-pitch;
-                                released(v) => { root.tf-set-pitch(round(v)); }
-                            }
-                            Text {
-                                width: 36px;
-                                text: round(pitch-slider.value) + "%";
-                                font-size: 12px;
-                                vertical-alignment: center;
-                                horizontal-alignment: right;
-                                color: Theme.muted-text-color;
-                            }
-                        }
-                        Text {
-                            text: "Rev rate is how fast the felt engine buzz rises with the revs; 100% tracks the engine speed.";
-                            font-size: 11px;
-                            color: Theme.muted-text-color;
-                            wrap: word-wrap;
-                        }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Button {
-                                text: "Test simulated TrueForce";
-                                enabled: root.tf-found && !root.tf-sweep-running;
-                                clicked => { root.tf-confirm-open = true; }
-                            }
-                            Button {
-                                text: "Stop test";
-                                enabled: root.tf-sweep-running;
-                                clicked => { root.tf-sweep-stop(); }
-                            }
-                        }
-                        if root.tf-output != "": TextEdit {
-                            height: 70px;
-                            read-only: true;
-                            wrap: word-wrap;
-                            text: root.tf-output;
                         }
                     }
-                }
-
-                // Section: "Your games", the full-width action list. One row
-                // per installed Steam/Proton game, matched to the
-                // compatibility registry, showing only the controls that
-                // game needs.
-                Rectangle {
-                    background: Theme.panel-background;
-                    border-radius: Theme.panel-radius;
-                    border-width: 1px;
-                    border-color: Theme.panel-border;
-
-                    VerticalLayout {
-                        padding: 14px;
+                    HorizontalLayout {
                         spacing: 8px;
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                horizontal-stretch: 1;
-                                text: "Your games";
-                                font-size: 15px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                                color: Theme.text-color;
-                            }
-                            Button {
-                                text: "Rescan";
-                                enabled: !root.shim-running;
-                                clicked => { root.rescan-games(); }
-                            }
+                        Text {
+                            width: 70px;
+                            text: "Rev rate";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            color: Theme.text-color;
+                        }
+                        pitch-slider := Slider {
+                            horizontal-stretch: 1;
+                            minimum: 10;
+                            maximum: 200;
+                            value: root.tf-pitch;
+                            released(v) => { root.tf-set-pitch(round(v)); }
                         }
                         Text {
-                            text: "Your installed Steam games that run through Proton, and what each one needs to feel its best on this wheel.";
+                            width: 36px;
+                            text: round(pitch-slider.value) + "%";
                             font-size: 12px;
-                            color: Theme.muted-text-color;
-                            wrap: word-wrap;
-                        }
-
-                        if root.games-scanned && root.games.length == 0: Text {
-                            text: "No Steam games that run through Proton were found. Install one, then press Rescan.";
-                            font-size: 12px;
-                            color: Theme.muted-text-color;
-                            wrap: word-wrap;
-                        }
-                        if !root.games-scanned: Text {
-                            text: "Scanning your Steam library...";
-                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
                             color: Theme.muted-text-color;
                         }
-
-                        for game in root.games: Rectangle {
-                            background: Theme.control-background;
-                            border-radius: Theme.panel-radius;
-
-                            VerticalLayout {
-                                padding: 12px;
-                                spacing: 6px;
-
-                                // Name on its own full-width line so long
-                                // titles never elide next to the controls.
-                                Text {
-                                    text: game.name;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                    color: Theme.text-color;
-                                    wrap: word-wrap;
-                                }
-                                Text {
-                                    text: game.summary;
-                                    font-size: 12px;
-                                    color: Theme.muted-text-color;
-                                    wrap: word-wrap;
-                                }
-
-                                // Install / remove the TrueForce shim (games
-                                // with built-in TrueForce).
-                                if game.action == root.action-shim: HorizontalLayout {
-                                    spacing: 8px;
-                                    Text {
-                                        horizontal-stretch: 1;
-                                        text: game.installed
-                                            ? "TrueForce files installed for this game"
-                                            : "TrueForce files not installed yet";
-                                        font-size: 12px;
-                                        vertical-alignment: center;
-                                        color: game.installed ? Theme.ok-color : Theme.muted-text-color;
-                                    }
-                                    Button {
-                                        text: game.installed ? "Remove TrueForce" : "Install TrueForce";
-                                        enabled: !root.shim-running;
-                                        clicked => {
-                                            if (game.installed) {
-                                                root.remove-game(game.prefix);
-                                            } else {
-                                                root.install-game(game.prefix);
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Older DirectInput game: launch it with
-                                // logi-ffb.
-                                if game.action == root.action-logi-ffb: HorizontalLayout {
-                                    spacing: 8px;
-                                    Text {
-                                        text: "Steam launch options:";
-                                        font-size: 12px;
-                                        vertical-alignment: center;
-                                        color: Theme.muted-text-color;
-                                    }
-                                    LineEdit {
-                                        horizontal-stretch: 1;
-                                        text: "logi-ffb %command%";
-                                        read-only: true;
-                                    }
-                                    Button {
-                                        text: "Copy";
-                                        clicked => { root.copy-launch(); }
-                                    }
-                                }
-
-                                // Simulated TrueForce: the game's own switch
-                                // + strength, writing tf-sim.conf.
-                                if game.action == root.action-sim-tf: HorizontalLayout {
-                                    spacing: 8px;
-                                    Switch {
-                                        text: "Simulated TrueForce";
-                                        checked: game.sim-enabled;
-                                        toggled => { root.sim-game-enabled(game.sim-id, self.checked); }
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    Text {
-                                        text: "Strength";
-                                        font-size: 12px;
-                                        vertical-alignment: center;
-                                        color: game.sim-enabled ? Theme.text-color : Theme.muted-text-color;
-                                    }
-                                    SpinBox {
-                                        minimum: 0;
-                                        maximum: 100;
-                                        value: game.sim-intensity;
-                                        enabled: game.sim-enabled;
-                                        edited(v) => { root.sim-game-intensity(game.sim-id, v); }
-                                    }
-                                }
-
-                                // Native force feedback, nothing to install.
-                                if game.action == root.action-out-of-box: Text {
-                                    text: "Force feedback works out of the box.";
-                                    font-size: 12px;
-                                    color: Theme.ok-color;
-                                }
-                            }
+                    }
+                    Text {
+                        text: "Rev rate is how fast the felt engine buzz rises with the revs; 100% tracks the engine speed.";
+                        font-size: 11px;
+                        color: Theme.muted-text-color;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button {
+                            text: "Test simulated TrueForce";
+                            enabled: root.tf-found && !root.tf-sweep-running;
+                            clicked => { root.tf-confirm-open = true; }
                         }
-
-                        if root.shim-output != "": TextEdit {
-                            height: 90px;
-                            read-only: true;
-                            wrap: word-wrap;
-                            text: root.shim-output;
+                        Button {
+                            text: "Stop test";
+                            enabled: root.tf-sweep-running;
+                            clicked => { root.tf-sweep-stop(); }
                         }
+                    }
+                    if root.tf-output != "": TextEdit {
+                        height: 70px;
+                        read-only: true;
+                        wrap: word-wrap;
+                        text: root.tf-output;
                     }
                 }
 
-                // The full compatibility list lives in the wiki now.
+                // The full compatibility list lives in the wiki now; this
+                // link stays at the bottom, always visible.
                 HorizontalLayout {
                     alignment: start;
                     spacing: 6px;

@@ -78,6 +78,9 @@ export component App inherits Window {
     // `Setup.games`).
     in property <[SetupGame]> setup-games: [];
     in property <bool> setup-games-scanned: false;
+    // The "Your games" accordion header's one-line count (installed / need
+    // setup), built in Rust alongside the list (see `bridge::games_summary`).
+    in property <string> setup-games-summary: "";
     // Simulated TrueForce (see `Setup`'s tf-* properties): the resolved
     // logi-tf-sim binary, the daemon's run state, the tf-sim.conf master
     // values, and the test sweep's run state + output.
@@ -414,6 +417,7 @@ export component App inherits Window {
                     sdk-status: root.setup-sdk-status;
                     games: root.setup-games;
                     games-scanned: root.setup-games-scanned;
+                    games-summary: root.setup-games-summary;
                     tf-found: root.setup-tf-found;
                     tf-path: root.setup-tf-path;
                     tf-running: root.setup-tf-running;
