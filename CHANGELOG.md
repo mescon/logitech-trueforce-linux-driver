@@ -5,19 +5,42 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.17.0 - 2026-07-22
+
+### Added
+- **Simulated TrueForce for more sims.** New `logi-tf-sim` telemetry parsers
+  for F1 (modern UDP), BeamNG (OutGauge) and EA WRC synthesize engine haptics
+  and drive the rev lights for games without native TrueForce.
+- **Per-game compatibility registry.** A built-in list of what each known sim
+  supports (native FFB, native or simulated TrueForce), surfaced in the GUI
+  and TUI Setup views so you can see and toggle per-game support at a glance.
+- **Exact numeric entry on settings.** Every slider takes a typed value, not
+  just a drag, including the steering rotation range.
 
 ### Changed
+- **GUI settings redesign.** Pages render as grouped cards with a plain-English
+  explanation under every setting, the steering page gains a rotation dial, and
+  force feedback versus TrueForce is spelled out where it matters.
+- **Setup rebuilt as a per-game panel.** Enable or disable TrueForce per game
+  from a "Your games" list instead of a scrolling reference dump; the TUI Setup
+  view matches.
 - **DirectInput force feedback now uses Wine's hidraw PID path** (issue #50).
-  The `logi-ffb` proxy no longer relies on a kernel PID force-feedback layer
-  attached to the virtual wheel, which broke the wheel's detection in some
-  Proton sims. The virtual wheel stays a plain device, and the proxy enables
-  `PROTON_ENABLE_HIDRAW=1` for the game it launches, so Wine drives the virtual
-  wheel's PID collection directly and the proxy forwards the effects to the
+  The `logi-ffb` proxy no longer attaches a kernel PID force-feedback layer to
+  the virtual wheel, which broke the wheel's detection in some Proton sims. The
+  virtual wheel stays a plain device, and the proxy enables
+  `PROTON_ENABLE_HIDRAW=1` for the game it launches so Wine drives the virtual
+  wheel's PID collection directly, with the proxy forwarding effects to the
   real wheel.
-- **GUI settings redesign**: pages render as grouped cards with plain-English
-  help, the steering page gains a rotation dial, and every slider takes exact
-  keyboard entry.
+- **No group or terminal step to use the wheel.** udev grants the session user
+  access to the wheel settings and the proxy device directly, so first-time
+  setup no longer needs a group membership or a manual command.
+
+### Fixed
+- **logi-ffb button coverage.** The proxy now forwards the D-pad and the
+  extended button block to the virtual wheel.
+
+### Removed
+- The standalone Oversteer udev patch, superseded by logi-dd.
 
 ## 0.16.2 - 2026-07-20
 
