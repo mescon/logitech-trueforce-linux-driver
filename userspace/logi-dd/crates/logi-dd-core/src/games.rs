@@ -183,6 +183,66 @@ impl GameCompat {
             _ => self.ffb.label(),
         }
     }
+
+    /// The single enablement action the Setup page offers for this title
+    /// (see [`SetupAction`]). A native-TrueForce sim wants the shim; a
+    /// title logi-tf-sim can drive today wants its simulated-TrueForce
+    /// switch; a DirectInput title wants the logi-ffb helper; everything
+    /// else already works with plain force feedback.
+    pub fn setup_action(&self) -> SetupAction {
+        if self.ffb == Ffb::TrueForceShim {
+            SetupAction::InstallShim
+        } else if self.simulated_tf.live_id().is_some() {
+            SetupAction::SimulatedTrueForce
+        } else if self.ffb == Ffb::DirectInput {
+            SetupAction::UseLogiFfb
+        } else {
+            SetupAction::WorksOutOfBox
+        }
+    }
+}
+
+/// Normalize a game title for fuzzy matching: lower-cased, trademark marks
+/// removed, any parenthetical suffix (e.g. "(early access)", "(original)")
+/// dropped, and whitespace collapsed. Steam's display name and the
+/// registry name both pass through this before they are compared, so
+/// "Assetto Corsa EVO" from Steam matches "Assetto Corsa EVO (early
+/// access)" here.
+fn normalize_title(title: &str) -> String {
+    let mut out = String::with_capacity(title.len());
+    let mut depth: i32 = 0;
+    for ch in title.chars() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = (depth - 1).max(0),
+            '\u{2122}' | '\u{00ae}' | '\u{00a9}' => {} // (TM) (R) (C)
+            _ if depth > 0 => {}
+            _ => out.extend(ch.to_lowercase()),
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Best-effort match of an installed Steam game's display name to a
+/// registry entry, for the Setup page's "Your games" list. An exact
+/// normalized-name match ([`normalize_title`]) wins; the four EA Sports F1
+/// season titles (F1 22-25) fall back to the single "EA Sports F1" row,
+/// mirroring the family handling in `tfsim::game_id_for_title`. Returns
+/// `None` when nothing matches confidently, so an unknown game is shown as
+/// "no special setup needed" rather than mislabeled.
+pub fn match_title(steam_name: &str) -> Option<&'static GameCompat> {
+    let target = normalize_title(steam_name);
+    if target.is_empty() {
+        return None;
+    }
+    if let Some(g) = GAMES.iter().find(|g| normalize_title(g.name) == target) {
+        return Some(g);
+    }
+    let f1 = matches!(target.as_str(), "f1 22" | "f1 23" | "f1 24" | "f1 25");
+    if f1 {
+        return GAMES.iter().find(|g| g.name == "EA Sports F1 (F1 22-25)");
+    }
+    None
 }
 
 /// Every title the project has compatibility information about. Transcribed
@@ -538,6 +598,60 @@ mod tests {
         for pair in sorted.windows(2) {
             assert!(pair[0].name.to_lowercase() <= pair[1].name.to_lowercase());
         }
+    }
+
+    #[test]
+    fn match_title_handles_exact_parenthetical_and_trademark_names() {
+        // Steam's plain display names match the registry's fuller names.
+        assert_eq!(
+            match_title("Assetto Corsa Competizione").map(|g| g.name),
+            Some("Assetto Corsa Competizione")
+        );
+        // The parenthetical registry suffix is dropped for the compare.
+        assert_eq!(
+            match_title("Assetto Corsa EVO").map(|g| g.name),
+            Some("Assetto Corsa EVO (early access)")
+        );
+        assert_eq!(
+            match_title("Assetto Corsa").map(|g| g.name),
+            Some("Assetto Corsa (original)")
+        );
+        // Trademark marks and casing do not block a match.
+        assert_eq!(match_title("EA SPORTS\u{2122} WRC").map(|g| g.name), Some("EA Sports WRC"));
+        assert_eq!(match_title("DiRT Rally 2.0").map(|g| g.name), Some("DiRT Rally 2.0"));
+    }
+
+    #[test]
+    fn match_title_maps_f1_season_titles_to_the_family_row() {
+        for title in ["F1 22", "F1 23", "F1 24", "F1 25"] {
+            assert_eq!(
+                match_title(title).map(|g| g.name),
+                Some("EA Sports F1 (F1 22-25)"),
+                "{title} should ride the EA Sports F1 row"
+            );
+        }
+    }
+
+    #[test]
+    fn match_title_returns_none_for_unknown_games() {
+        assert!(match_title("TEKKEN 8").is_none());
+        assert!(match_title("").is_none());
+        assert!(match_title("   ").is_none());
+    }
+
+    #[test]
+    fn setup_action_classifies_each_ffb_and_sim_combination() {
+        let action = |name: &str| GAMES.iter().find(|g| g.name == name).unwrap().setup_action();
+        // Native-TrueForce sims want the shim.
+        assert_eq!(action("Assetto Corsa Competizione"), SetupAction::InstallShim);
+        // Live simulated-TF titles want their per-game switch, even when
+        // their base force feedback is native evdev.
+        assert_eq!(action("Automobilista 2"), SetupAction::SimulatedTrueForce);
+        assert_eq!(action("DiRT Rally 2.0"), SetupAction::SimulatedTrueForce);
+        // DirectInput titles want logi-ffb.
+        assert_eq!(action("Le Mans Ultimate"), SetupAction::UseLogiFfb);
+        // Plain native force feedback needs nothing.
+        assert_eq!(action("Wreckfest"), SetupAction::WorksOutOfBox);
     }
 
     #[test]
