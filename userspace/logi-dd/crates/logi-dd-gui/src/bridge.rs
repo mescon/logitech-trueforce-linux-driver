@@ -8,11 +8,12 @@ use logi_dd_core::curve::{Curve, FULL};
 use logi_dd_core::shaping::{self, ShapingRole};
 use logi_dd_core::{lightsync, Access, Category, Color, Error, Kind, Value, REGISTRY};
 
-use logi_dd_core::games;
+use logi_dd_core::games::{self, SetupAction};
+use logi_dd_core::steam::SteamGame;
 use logi_dd_core::tfsim;
 
 use crate::viewmodel::Row;
-use crate::{CurvePoint, LedColor, SettingRow, SetupCompatRow, SlotNameRow};
+use crate::{CurvePoint, LedColor, SettingRow, SetupGame, SlotNameRow};
 
 // Stable `SettingRow.kind` tag numbering; keep in sync with the doc comment
 // on `SettingRow` and the per-kind branches in `ui/widgets.slint`.
@@ -679,35 +680,74 @@ pub fn apply_set_slot_name(names: &mut [String], slot: u8, name: &str) {
     }
 }
 
-/// Build the Setup page's compatibility table from the core
-/// [`games::GAMES`] registry (sorted by name) plus `cfg` (the current
-/// tf-sim.conf). A row whose title synthesizes TrueForce today carries its
-/// tf-sim game id (`SimTf::LiveNow`, pinned to the daemon's real parser
-/// ids) and that game's live toggle + intensity, so the Slint side renders
-/// the live "Simulated TF" cell; every other row keeps its static enum
-/// label. A trailing "*" marks the softer `Expected`/`Unknown` titles not
-/// verified on this driver yet; the note above the table says so.
-pub fn compat_rows(cfg: &tfsim::Config) -> Vec<SetupCompatRow> {
-    games::sorted_by_name()
-        .into_iter()
-        .map(|g| {
-            let sim_id = g.simulated_tf.live_id().unwrap_or("");
-            let sim = cfg.game(sim_id);
-            let game = if g.confidence.is_provisional() {
-                format!("{} *", g.name)
-            } else {
-                g.name.to_string()
-            };
-            SetupCompatRow {
-                game: game.into(),
-                how: g.ffb_cell().into(),
-                native_tf: g.native_trueforce.label().into(),
-                tf: g.simulated_tf.label().into(),
-                setup: g.setup.into(),
-                sim_id: sim_id.into(),
-                sim_enabled: sim.enabled,
-                sim_intensity: i32::from(sim.intensity),
+// The `SetupGame.action` tags a "Your games" row carries; kept in sync
+// with the `action-*` properties in `ui/setup.slint`. Each names the
+// single enablement control that row shows.
+/// Install/remove the TrueForce shim (games with built-in TrueForce).
+pub const ACTION_SHIM: i32 = 0;
+/// Launch with the logi-ffb helper (older DirectInput games).
+pub const ACTION_LOGI_FFB: i32 = 1;
+/// The game's own simulated-TrueForce switch + strength.
+pub const ACTION_SIM_TF: i32 = 2;
+/// Native force feedback, nothing to install.
+pub const ACTION_OUT_OF_BOX: i32 = 3;
+/// A game the compatibility registry does not know: no special setup.
+pub const ACTION_UNKNOWN: i32 = 4;
+
+/// The Slint action tag for a matched registry entry's [`SetupAction`].
+fn action_tag(action: SetupAction) -> i32 {
+    match action {
+        SetupAction::InstallShim => ACTION_SHIM,
+        SetupAction::UseLogiFfb => ACTION_LOGI_FFB,
+        SetupAction::SimulatedTrueForce => ACTION_SIM_TF,
+        SetupAction::WorksOutOfBox => ACTION_OUT_OF_BOX,
+    }
+}
+
+/// Build the Setup page's "Your games" list from the installed Proton
+/// games (`games`, from [`logi_dd_core::steam::installed_games`]) matched
+/// against the compatibility registry, plus `cfg` (the current
+/// tf-sim.conf). Each row carries the single enablement action its game
+/// needs (see [`GameCompat::setup_action`](games::GameCompat::setup_action)):
+/// a title with built-in TrueForce gets the shim install/remove (its
+/// `installed` flag drives the button), an older DirectInput title gets
+/// the logi-ffb launch-option hint, a title logi-tf-sim can drive today
+/// carries its tf-sim game id plus that game's live switch + strength, and
+/// everything else works out of the box. A game the registry does not know
+/// is shown as needing no special setup.
+pub fn setup_games(games: &[SteamGame], cfg: &tfsim::Config) -> Vec<SetupGame> {
+    games
+        .iter()
+        .map(|g| match games::match_title(&g.name) {
+            Some(compat) => {
+                let action = compat.setup_action();
+                let sim_id = if action == SetupAction::SimulatedTrueForce {
+                    compat.simulated_tf.live_id().unwrap_or("")
+                } else {
+                    ""
+                };
+                let sim = cfg.game(sim_id);
+                SetupGame {
+                    name: g.name.as_str().into(),
+                    prefix: g.prefix.to_string_lossy().as_ref().into(),
+                    summary: compat.setup.into(),
+                    action: action_tag(action),
+                    installed: g.shim_installed,
+                    sim_id: sim_id.into(),
+                    sim_enabled: sim.enabled,
+                    sim_intensity: i32::from(sim.intensity),
+                }
             }
+            None => SetupGame {
+                name: g.name.as_str().into(),
+                prefix: g.prefix.to_string_lossy().as_ref().into(),
+                summary: "No special setup needed: play it and adjust the wheel settings to taste.".into(),
+                action: ACTION_UNKNOWN,
+                installed: g.shim_installed,
+                sim_id: String::new().into(),
+                sim_enabled: false,
+                sim_intensity: 0,
+            },
         })
         .collect()
 }
@@ -736,54 +776,72 @@ mod tests {
             .unwrap_or_else(|| panic!("no row for {attr}"))
     }
 
+    fn steam_game(name: &str, shim_installed: bool) -> SteamGame {
+        SteamGame {
+            appid: 1,
+            name: name.to_string(),
+            prefix: std::path::PathBuf::from(format!("/pfx/{name}")),
+            shim_installed,
+        }
+    }
+
     #[test]
-    fn compat_rows_carry_live_cells_only_for_daemon_known_titles() {
+    fn setup_games_classifies_each_game_type() {
         let mut cfg = tfsim::Config::default();
         cfg.games.insert(
             "dirt-rally-2".to_string(),
             tfsim::GameConfig { enabled: false, intensity: 40 },
         );
-        let rows = compat_rows(&cfg);
-        assert_eq!(rows.len(), games::GAMES.len());
+        let steam = vec![
+            steam_game("Assetto Corsa Competizione", true),
+            steam_game("Le Mans Ultimate", false),
+            steam_game("DiRT Rally 2.0", false),
+            steam_game("Wreckfest", false),
+            steam_game("TEKKEN 8", false),
+        ];
+        let rows = setup_games(&steam, &cfg);
+        assert_eq!(rows.len(), steam.len(), "one row per installed game, order preserved");
 
-        let live: Vec<(String, String)> = rows
-            .iter()
-            .filter(|r| !r.sim_id.is_empty())
-            .map(|r| (r.game.to_string(), r.sim_id.to_string()))
-            .collect();
-        assert_eq!(
-            live,
-            vec![
-                ("Automobilista 2".to_string(), "ams2-pcars2".to_string()),
-                ("BeamNG.drive *".to_string(), "beamng".to_string()),
-                ("DiRT 4".to_string(), "codemasters".to_string()),
-                ("DiRT Rally 2.0".to_string(), "dirt-rally-2".to_string()),
-                ("EA Sports F1 (F1 22-25) *".to_string(), "f1".to_string()),
-                ("EA Sports WRC".to_string(), "ea-wrc".to_string()),
-                ("Project CARS 2".to_string(), "ams2-pcars2".to_string()),
-            ],
-            "only the ids the daemon detects go live; everything else stays static (sorted)"
-        );
+        // Built-in TrueForce -> shim action, its installed flag carried.
+        let acc = &rows[0];
+        assert_eq!(acc.action, ACTION_SHIM);
+        assert!(acc.installed);
+        assert!(acc.sim_id.is_empty());
+        assert!(!acc.summary.is_empty());
 
-        let dr2 = rows.iter().find(|r| r.game == "DiRT Rally 2.0").unwrap();
+        // DirectInput -> logi-ffb action.
+        assert_eq!(rows[1].action, ACTION_LOGI_FFB);
+
+        // Live simulated-TF -> the game's own switch, from tf-sim.conf.
+        let dr2 = &rows[2];
+        assert_eq!(dr2.action, ACTION_SIM_TF);
+        assert_eq!(dr2.sim_id, "dirt-rally-2");
         assert!(!dr2.sim_enabled);
         assert_eq!(dr2.sim_intensity, 40);
-        // The unlisted shared id falls back to the daemon's defaults, and
-        // both titles carrying it show the same state.
-        let ams2 = rows.iter().find(|r| r.game == "Automobilista 2").unwrap();
-        let pc2 = rows.iter().find(|r| r.game == "Project CARS 2").unwrap();
-        assert!(ams2.sim_enabled && pc2.sim_enabled);
-        assert_eq!(ams2.sim_intensity, 100);
-        assert_eq!(pc2.sim_intensity, 100);
-        // Shim titles keep their static "n/a (native)" text and carry the
-        // native-TF and setup cells.
-        let acc = rows.iter().find(|r| r.game == "Assetto Corsa Competizione").unwrap();
-        assert_eq!(acc.tf.as_str(), "n/a (native)");
-        assert_eq!(acc.native_tf.as_str(), "Yes");
-        assert!(!acc.setup.is_empty());
-        assert!(acc.sim_id.is_empty());
-        // Provisional (expected/unknown) titles carry the "*" marker.
-        assert!(rows.iter().any(|r| r.game == "BeamNG.drive *"));
+
+        // Plain native force feedback -> works out of the box.
+        assert_eq!(rows[3].action, ACTION_OUT_OF_BOX);
+
+        // A game the registry does not know -> no special setup.
+        let tekken = &rows[4];
+        assert_eq!(tekken.action, ACTION_UNKNOWN);
+        assert!(tekken.sim_id.is_empty());
+        assert!(!tekken.summary.is_empty());
+    }
+
+    #[test]
+    fn setup_games_shares_sim_state_across_titles_with_one_id() {
+        // AMS2 and Project CARS 2 are one daemon id: both show the same
+        // (here default) live state.
+        let cfg = tfsim::Config::default();
+        let steam = vec![
+            steam_game("Automobilista 2", false),
+            steam_game("Project CARS 2", false),
+        ];
+        let rows = setup_games(&steam, &cfg);
+        assert!(rows.iter().all(|r| r.action == ACTION_SIM_TF && r.sim_id == "ams2-pcars2"));
+        assert!(rows.iter().all(|r| r.sim_enabled));
+        assert!(rows.iter().all(|r| r.sim_intensity == 100));
     }
 
     #[test]

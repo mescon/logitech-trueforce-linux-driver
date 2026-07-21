@@ -386,23 +386,43 @@ fn sdk_field_prefill() -> String {
 fn sdk_status(field: &str, installer: Option<&std::path::Path>) -> (Option<std::path::PathBuf>, String) {
     match logi_dd_core::steam::resolve_sdk_dir(field, installer) {
         Some(dir) => {
-            let message = format!("SDK DLLs: found at {}", dir.display());
+            let message = format!("TrueForce files: found at {}", dir.display());
             (Some(dir), message)
         }
         None => (
             None,
-            "SDK DLLs: not found - copy them from a Windows G HUB install; see the README".to_string(),
+            "TrueForce files: not found - copy them from a Windows G HUB install; see the README".to_string(),
         ),
     }
 }
 
+/// The scanned installed-games cache, shared between the Steam scan (which
+/// writes it) and the per-game "Your games" list rebuilds (which read it
+/// with a fresh tf-sim.conf). Caching the scan means a simulated-TrueForce
+/// toggle can refresh the list instantly without re-walking slow Steam
+/// libraries.
+type GamesCache = Arc<Mutex<Vec<logi_dd_core::steam::SteamGame>>>;
+
+/// Rebuild the "Your games" model from the cached Steam scan plus a fresh
+/// tf-sim.conf, and push it into `setup-games`. Called on the UI thread
+/// after every per-game simulated-TrueForce edit so both titles sharing a
+/// daemon id show the new value at once.
+fn refresh_games(app: &App, cache: &GamesCache) {
+    let cfg = logi_dd_core::tfsim::Config::load();
+    let games = cache.lock().unwrap();
+    app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(bridge::setup_games(&games, &cfg))));
+}
+
 /// Rescan the installed Proton games off the UI thread (the Steam
-/// libraries can live on slow external drives) and push the result into
-/// `setup-games` via `slint::invoke_from_event_loop`, the same
+/// libraries can live on slow external drives), match each against the
+/// compatibility registry (`bridge::setup_games`), and push the result
+/// into `setup-games` via `slint::invoke_from_event_loop`, the same
 /// worker-thread-to-UI pattern `Worker::spawn`'s response closure uses.
-/// Runs at startup, on the Rescan button, and after every install/remove
-/// so the per-row shim status reflects what just happened.
-fn scan_games(app_weak: slint::Weak<App>) {
+/// The raw scan is stored in `cache` so later per-game edits can rebuild
+/// the list without re-walking Steam. Runs at startup, on the Rescan
+/// button, and after every install/remove so the per-row status reflects
+/// what just happened.
+fn scan_games(app_weak: slint::Weak<App>, cache: GamesCache) {
     std::thread::spawn(move || {
         let games = match std::env::var_os("HOME") {
             Some(home) => {
@@ -411,16 +431,11 @@ fn scan_games(app_weak: slint::Weak<App>) {
             }
             None => Vec::new(),
         };
+        let cfg = logi_dd_core::tfsim::Config::load();
+        *cache.lock().unwrap() = games.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else { return };
-            let items: Vec<SetupGame> = games
-                .iter()
-                .map(|g| SetupGame {
-                    name: g.name.as_str().into(),
-                    prefix: g.prefix.to_string_lossy().as_ref().into(),
-                    installed: g.shim_installed,
-                })
-                .collect();
+            let items = bridge::setup_games(&games, &cfg);
             app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
             app.set_setup_games_scanned(true);
         });
@@ -438,7 +453,7 @@ fn scan_games(app_weak: slint::Weak<App>) {
 /// immediately, without spawning anything (the installer is never
 /// re-resolved mid-run, so a binary installed after startup needs an app
 /// restart to be picked up, same as the status line next to the buttons).
-fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<String>, args: Vec<String>) {
+fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<String>, args: Vec<String>, cache: GamesCache) {
     let Some(bin) = binary else {
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else { return };
@@ -463,7 +478,7 @@ fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<String>, args: Ve
             app.set_setup_shim_output(text.into());
             app.set_setup_shim_running(false);
         });
-        scan_games(rescan_weak);
+        scan_games(rescan_weak, cache);
     });
 }
 
@@ -500,15 +515,6 @@ fn refresh_tf_daemon(app_weak: slint::Weak<App>, expect_running: Option<bool>) {
             }
         });
     });
-}
-
-/// Reload tf-sim.conf and rebuild the compatibility table's rows: a
-/// per-game edit must show up on BOTH titles sharing an id (AMS2 and
-/// Project CARS 2 are one daemon id), so the whole model is rebuilt from
-/// the file rather than patching the edited row.
-fn refresh_compat_rows(app: &App) {
-    let cfg = logi_dd_core::tfsim::Config::load();
-    app.set_setup_compat_rows(slint::ModelRc::new(slint::VecModel::from(bridge::compat_rows(&cfg))));
 }
 
 /// Surface a tf-sim.conf write failure in the Simulated TrueForce panel's
@@ -829,11 +835,14 @@ fn main() -> Result<(), slint::PlatformError> {
         app.set_setup_sdk_valid(resolved.is_some());
         app.set_setup_sdk_status(message.into());
     }
-    scan_games(app.as_weak());
+    // The installed-games scan cache, shared by the Steam scan and every
+    // per-game "Your games" rebuild (see `GamesCache`).
+    let games_cache: GamesCache = Arc::new(Mutex::new(Vec::new()));
+    scan_games(app.as_weak(), games_cache.clone());
     // Setup page: Simulated TrueForce. The binary resolves once at startup
-    // (same rule as logi-ffb); tf-sim.conf is read fresh for the controls
-    // and the compatibility table, and the daemon's run state is probed
-    // off the UI thread.
+    // (same rule as logi-ffb); tf-sim.conf is read fresh for the master
+    // controls (the per-game switches live in each game's row), and the
+    // daemon's run state is probed off the UI thread.
     let tf_binary: Option<String> =
         logi_dd_core::helpers::tf_sim_path().map(|p| p.to_string_lossy().into_owned());
     app.set_setup_tf_found(tf_binary.is_some());
@@ -843,9 +852,6 @@ fn main() -> Result<(), slint::PlatformError> {
         app.set_setup_tf_enabled(cfg.enabled);
         app.set_setup_tf_intensity(i32::from(cfg.intensity));
         app.set_setup_tf_pitch(i32::from(cfg.pitch_pct));
-        app.set_setup_compat_rows(slint::ModelRc::new(slint::VecModel::from(
-            bridge::compat_rows(&cfg),
-        )));
     }
     refresh_tf_daemon(app.as_weak(), None);
     // Installed once, here, and never replaced: `load_rows`/`update_row`
@@ -1786,6 +1792,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let sdk_dir = sdk_dir.clone();
         let installer_path = installer_path.clone();
         let shim_binary = shim_binary.clone();
+        let games_cache = games_cache.clone();
         let app_weak = app.as_weak();
         app.on_setup_install_game(move |prefix| {
             let Some(app) = app_weak.upgrade() else { return };
@@ -1797,23 +1804,25 @@ fn main() -> Result<(), slint::PlatformError> {
             // omits the flag and the installer's own error guidance runs.
             let resolved = logi_dd_core::steam::resolve_sdk_dir(&dir, installer_path.as_deref());
             let args = logi_dd_core::steam::shim_install_args(&prefix, resolved.as_deref());
-            run_shim_command(app_weak.clone(), shim_binary.clone(), args);
+            run_shim_command(app_weak.clone(), shim_binary.clone(), args, games_cache.clone());
         });
     }
     {
         let shim_binary = shim_binary.clone();
+        let games_cache = games_cache.clone();
         let app_weak = app.as_weak();
         app.on_setup_remove_game(move |prefix| {
             let Some(app) = app_weak.upgrade() else { return };
             app.set_setup_shim_output("Running...".into());
             app.set_setup_shim_running(true);
             let args = vec!["--uninstall-prefix".to_string(), prefix.to_string()];
-            run_shim_command(app_weak.clone(), shim_binary.clone(), args);
+            run_shim_command(app_weak.clone(), shim_binary.clone(), args, games_cache.clone());
         });
     }
     {
         let app_weak = app.as_weak();
-        app.on_setup_rescan_games(move || scan_games(app_weak.clone()));
+        let games_cache = games_cache.clone();
+        app.on_setup_rescan_games(move || scan_games(app_weak.clone(), games_cache.clone()));
     }
 
     // Setup page: Simulated TrueForce. Every conf edit writes exactly one
@@ -1858,6 +1867,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     {
         let app_weak = app.as_weak();
+        let games_cache = games_cache.clone();
         app.on_setup_sim_game_enabled(move |id, v| {
             let Some(app) = app_weak.upgrade() else { return };
             report_tf_write(
@@ -1865,11 +1875,12 @@ fn main() -> Result<(), slint::PlatformError> {
                 logi_dd_core::tfsim::set_game_enabled_in(&logi_dd_core::tfsim::default_path(), &id, v),
             );
             // Both titles sharing the id must show the fresh value.
-            refresh_compat_rows(&app);
+            refresh_games(&app, &games_cache);
         });
     }
     {
         let app_weak = app.as_weak();
+        let games_cache = games_cache.clone();
         app.on_setup_sim_game_intensity(move |id, v| {
             let Some(app) = app_weak.upgrade() else { return };
             report_tf_write(
@@ -1880,7 +1891,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     v.clamp(0, 100) as u8,
                 ),
             );
-            refresh_compat_rows(&app);
+            refresh_games(&app, &games_cache);
         });
     }
     {

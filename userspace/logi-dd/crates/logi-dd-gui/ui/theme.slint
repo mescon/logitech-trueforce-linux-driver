@@ -35,6 +35,10 @@ export global Theme {
     out property <brush> panel-background: Palette.alternate-background;
     out property <brush> panel-border: Palette.border;
     out property <length> panel-radius: 10px;
+    // A card sitting inside a panel (e.g. one game's row in the Setup
+    // page's "Your games" list): the base surface, so it reads as a
+    // distinct tile against the panel's alternate-background.
+    out property <brush> control-background: Palette.background;
 
     // Typography roles used throughout the main shell and the overlays.
     out property <brush> text-color: Palette.foreground;

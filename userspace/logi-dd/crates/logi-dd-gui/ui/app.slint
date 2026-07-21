@@ -4,12 +4,12 @@ import { SettingRow, SettingsList } from "widgets.slint";
 import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
-import { Setup, SetupGame, SetupCompatRow } from "setup.slint";
+import { Setup, SetupGame } from "setup.slint";
 import { InfoPage, TestButton, TestAxis, TestCallout } from "info_page.slint";
 import { ComputerProfiles } from "computer_profiles.slint";
 import { LedPreview } from "led_preview.slint";
 export { SettingRow } from "widgets.slint";
-export { SetupGame, SetupCompatRow } from "setup.slint";
+export { SetupGame } from "setup.slint";
 export { TestButton, TestAxis, TestCallout } from "info_page.slint";
 export { CurvePoint } from "curve_editor.slint";
 export { LedColor } from "rgb_strip.slint";
@@ -78,7 +78,6 @@ export component App inherits Window {
     // `Setup.games`).
     in property <[SetupGame]> setup-games: [];
     in property <bool> setup-games-scanned: false;
-    in property <[SetupCompatRow]> setup-compat-rows: [];
     // Simulated TrueForce (see `Setup`'s tf-* properties): the resolved
     // logi-tf-sim binary, the daemon's run state, the tf-sim.conf master
     // values, and the test sweep's run state + output.
@@ -415,7 +414,6 @@ export component App inherits Window {
                     sdk-status: root.setup-sdk-status;
                     games: root.setup-games;
                     games-scanned: root.setup-games-scanned;
-                    compat-rows: root.setup-compat-rows;
                     tf-found: root.setup-tf-found;
                     tf-path: root.setup-tf-path;
                     tf-running: root.setup-tf-running;
