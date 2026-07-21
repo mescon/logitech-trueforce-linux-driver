@@ -2,6 +2,7 @@ use crate::color_picker::{ColorPicker, PickerOutcome};
 use crate::curve_editor::CurveEditor;
 use crate::edit;
 use crate::wheel_test::{SimKind, TestView};
+use logi_dd_core::games::{self, SetupAction};
 use logi_dd_core::profiles;
 use logi_dd_core::setting::Access;
 use logi_dd_core::shaping::{self, ShapingRole};
@@ -110,26 +111,26 @@ pub enum Focus {
 pub enum SetupSection {
     Ffb,
     Sdk,
-    Games,
-    Compat,
     SimTf,
+    Games,
 }
 
 impl SetupSection {
-    pub const ALL: [SetupSection; 5] = [
+    // Global helpers first (logi-ffb, the TrueForce files folder, the
+    // Simulated TrueForce daemon), then the per-game action list, matching
+    // the GUI Setup page's top-down order.
+    pub const ALL: [SetupSection; 4] = [
         SetupSection::Ffb,
         SetupSection::Sdk,
-        SetupSection::Games,
-        SetupSection::Compat,
         SetupSection::SimTf,
+        SetupSection::Games,
     ];
     pub fn label(&self) -> &'static str {
         match self {
-            SetupSection::Ffb => "Force feedback in games (logi-ffb)",
-            SetupSection::Sdk => "TrueForce SDK shim",
-            SetupSection::Games => "Proton games",
-            SetupSection::Compat => "Game compatibility",
+            SetupSection::Ffb => "Force feedback helper (logi-ffb)",
+            SetupSection::Sdk => "TrueForce files folder",
             SetupSection::SimTf => "Simulated TrueForce",
+            SetupSection::Games => "Your games",
         }
     }
 }
@@ -932,6 +933,13 @@ impl<S: SysfsIo> App<S> {
     /// The Setup view's selected game, if the list has any.
     pub fn selected_game(&self) -> Option<&SteamGame> {
         self.games.get(self.game_idx)
+    }
+
+    /// The enablement action the selected game needs (see
+    /// [`games::GameCompat::setup_action`]), or `None` when no game is
+    /// selected or the registry does not know it.
+    pub fn selected_game_action(&self) -> Option<SetupAction> {
+        self.selected_game().and_then(|g| games::match_title(&g.name)).map(|c| c.setup_action())
     }
 
     /// Take the shim run the last key press queued, if any; see
@@ -1816,7 +1824,7 @@ impl<S: SysfsIo> App<S> {
                     }
                     SetupSection::SimTf => self.setup_inside = true,
                     SetupSection::Sdk => self.sdk_edit = Some(self.sdk_dir.clone()),
-                    SetupSection::Ffb | SetupSection::Compat => {}
+                    SetupSection::Ffb => {}
                 },
                 // PgUp/PgDn keep scrolling as the fallback everywhere.
                 PageUp => self.scroll_view(-self.scroll_page()),
@@ -1863,8 +1871,8 @@ impl<S: SysfsIo> App<S> {
                 // not run here: the main loop draws a "running..." status
                 // line before the blocking run (see `pending_shim`).
                 Char('i') if inside && section == SetupSection::Games => {
-                    match self.selected_game() {
-                        Some(game) => {
+                    match (self.selected_game(), self.selected_game_action()) {
+                        (Some(game), Some(SetupAction::InstallShim)) => {
                             let pfx = game.prefix.to_string_lossy().into_owned();
                             // The RESOLVED dir goes along explicitly, i.e.
                             // exactly what the SDK status line reports;
@@ -1874,17 +1882,27 @@ impl<S: SysfsIo> App<S> {
                                 steam::shim_install_args(&pfx, self.sdk_resolved.as_deref());
                             self.pending_shim = Some((args, "install"));
                         }
-                        None => self.status = "shim install: no game selected".to_string(),
+                        (Some(_), _) => {
+                            self.status =
+                                "TrueForce files are only for games with built-in TrueForce"
+                                    .to_string()
+                        }
+                        (None, _) => self.status = "install: no game selected".to_string(),
                     }
                 }
                 Char('u') if inside && section == SetupSection::Games => {
-                    match self.selected_game() {
-                        Some(game) => {
+                    match (self.selected_game(), self.selected_game_action()) {
+                        (Some(game), Some(SetupAction::InstallShim)) => {
                             let pfx = game.prefix.to_string_lossy().into_owned();
                             self.pending_shim =
                                 Some((vec!["--uninstall-prefix".to_string(), pfx], "uninstall"));
                         }
-                        None => self.status = "shim uninstall: no game selected".to_string(),
+                        (Some(_), _) => {
+                            self.status =
+                                "TrueForce files are only for games with built-in TrueForce"
+                                    .to_string()
+                        }
+                        (None, _) => self.status = "remove: no game selected".to_string(),
                     }
                 }
                 Char('g') if inside && section == SetupSection::Games => {
@@ -2573,16 +2591,19 @@ mod tests {
             a.move_cat(1);
         }
         assert!(a.is_setup());
+        // Two games with built-in TrueForce (the shim action), so the
+        // install/remove keys have something to queue; the sim-TF tests
+        // push a telemetry-driven title of their own.
         a.games = vec![
             SteamGame {
                 appid: 100,
-                name: "ACC".to_string(),
+                name: "Assetto Corsa Competizione".to_string(),
                 prefix: PathBuf::from("/lib/steamapps/compatdata/100/pfx"),
                 shim_installed: false,
             },
             SteamGame {
                 appid: 400,
-                name: "LMU".to_string(),
+                name: "Assetto Corsa EVO".to_string(),
                 prefix: PathBuf::from("/lib/steamapps/compatdata/400/pfx"),
                 shim_installed: true,
             },
@@ -2611,12 +2632,12 @@ mod tests {
         for _ in 0..10 {
             a.on_key(KeyCode::Down);
         }
-        assert_eq!(a.setup_section(), SetupSection::SimTf, "clamps at the bottom");
+        assert_eq!(a.setup_section(), SetupSection::Games, "clamps at the bottom");
         // Enter steps inside; Up/Down stop moving the section cursor.
         a.on_key(KeyCode::Enter);
         assert!(a.setup_inside);
         a.on_key(KeyCode::Up);
-        assert_eq!(a.setup_section(), SetupSection::SimTf, "the cursor stays while inside");
+        assert_eq!(a.setup_section(), SetupSection::Games, "the cursor stays while inside");
         // Esc leaves the section first, then hands focus to the sidebar.
         a.on_key(KeyCode::Esc);
         assert!(!a.setup_inside, "Esc closes the section level first");
@@ -3377,7 +3398,7 @@ mod tests {
         use crossterm::event::KeyCode;
         let mut a = tf_setup_app();
         enter_setup(&mut a, SetupSection::Games);
-        // The selected fixture game (ACC) has no tf-sim id.
+        // The selected fixture game (ACC, a shim title) has no tf-sim id.
         a.on_key(KeyCode::Char('g'));
         assert!(a.status.contains("no per-game support"), "status: {}", a.status);
         assert!(a.tf_cfg.games.is_empty(), "nothing written");
@@ -3743,7 +3764,7 @@ mod tests {
         assert!(a.is_setup());
         a.games = vec![SteamGame {
             appid: 100,
-            name: "ACC".to_string(),
+            name: "Assetto Corsa Competizione".to_string(),
             prefix: PathBuf::from("/lib/steamapps/compatdata/100/pfx"),
             shim_installed: false,
         }];
@@ -3823,7 +3844,7 @@ mod tests {
         for _ in 0..SetupSection::ALL.len() {
             a.on_key(KeyCode::Down);
         }
-        assert_eq!(a.setup_section(), SetupSection::SimTf);
+        assert_eq!(a.setup_section(), SetupSection::Games);
         assert!(
             a.setup_scroll > 0,
             "moving to the last section scrolled the view down"
