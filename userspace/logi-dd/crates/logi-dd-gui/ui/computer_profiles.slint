@@ -52,27 +52,44 @@ export component ComputerProfiles inherits Rectangle {
             vertical-stretch: 1;
 
             for name in root.profiles: Rectangle {
-                height: 40px;
+                height: 52px;
 
-                HorizontalLayout {
-                    padding-top: 4px;
-                    padding-bottom: 4px;
-                    spacing: 8px;
+                // Each profile is its own card (mockup's card list).
+                Rectangle {
+                    y: 4px;
+                    height: parent.height - 8px;
+                    background: Theme.control-background;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.panel-border;
 
-                    Text {
-                        horizontal-stretch: 1;
-                        text: name;
-                        vertical-alignment: center;
-                        color: Theme.text-color;
-                        overflow: elide;
-                    }
-                    Button {
-                        text: "Apply";
-                        clicked => { root.apply-profile(name); }
-                    }
-                    Button {
-                        text: "Delete";
-                        clicked => { root.delete-profile(name); }
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            horizontal-stretch: 1;
+                            text: name;
+                            vertical-alignment: center;
+                            font-weight: 600;
+                            color: Theme.text-color;
+                            overflow: elide;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: "Apply";
+                                clicked => { root.apply-profile(name); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: "Delete";
+                                clicked => { root.delete-profile(name); }
+                            }
+                        }
                     }
                 }
             }

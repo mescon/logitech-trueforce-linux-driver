@@ -1,5 +1,6 @@
 import { Button, Slider, LineEdit, ComboBox, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { Segmented } from "components.slint";
 
 // One LED swatch color, as plain 0..255 channel ints so this file can build
 // its background with Slint's builtin `rgb()` function without ever
@@ -176,7 +177,10 @@ export component RgbStrip inherits Rectangle {
             }
 
             // Direction: staged on the Rust side, written on commit. The
-            // entries are the wheel_led_direction enum in value order.
+            // entries are the wheel_led_direction enum in value order. A
+            // segmented pill group (the redesign's control for short
+            // enums); the custom Segmented never self-assigns `current`, so
+            // a pushed direction always wins with no re-seed dance.
             HorizontalLayout {
                 spacing: 8px;
                 Text {
@@ -185,14 +189,10 @@ export component RgbStrip inherits Rectangle {
                     vertical-alignment: center;
                     color: Theme.text-color;
                 }
-                ComboBox {
-                    width: 160px;
-                    model: ["Left to right", "Right to left", "Inside out", "Outside in"];
-                    current-index: root.direction;
-                    // Re-seed on every push; selecting severs the binding.
-                    property <int> model-dir: root.direction;
-                    changed model-dir => { self.current-index = self.model-dir; }
-                    selected(v) => { root.set-direction(self.current-index); }
+                Segmented {
+                    options: ["L to R", "R to L", "Inside out", "Outside in"];
+                    current: root.direction;
+                    selected(v) => { root.set-direction(v); }
                 }
             }
 
