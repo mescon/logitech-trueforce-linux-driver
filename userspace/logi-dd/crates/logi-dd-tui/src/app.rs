@@ -2340,7 +2340,7 @@ mod tests {
         let popup = a.info_popup.as_ref().expect("popup opens");
         assert_eq!(popup.title, "FFB strength");
         assert!(
-            popup.lines.iter().any(|l| l.contains("Overall force output")),
+            popup.lines.iter().any(|l| l.contains("Overall strength of every force")),
             "registry help shown: {:?}",
             popup.lines
         );

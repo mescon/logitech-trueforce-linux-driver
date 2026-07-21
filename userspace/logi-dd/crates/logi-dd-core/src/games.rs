@@ -139,6 +139,26 @@ impl Confidence {
     }
 }
 
+/// What a game needs to get the best out of the wheel: the single
+/// enablement action the Setup page's "Your games" list offers for it.
+/// Derived from a title's [`Ffb`] and [`SimTf`] (see
+/// [`GameCompat::setup_action`]) so both front-ends classify a game the
+/// same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupAction {
+    /// A native-TrueForce sim (ACC, AC EVO): install the TrueForce shim so
+    /// the game's own TrueForce reaches the wheel.
+    InstallShim,
+    /// An older DirectInput game (Le Mans Ultimate, rFactor 2): launch it
+    /// with the logi-ffb helper so it gets force feedback at all.
+    UseLogiFfb,
+    /// A game logi-tf-sim can drive from telemetry today: offer its
+    /// per-game simulated-TrueForce switch.
+    SimulatedTrueForce,
+    /// Plain force feedback works with nothing to install.
+    WorksOutOfBox,
+}
+
 /// One title's compatibility facts.
 #[derive(Debug, Clone, Copy)]
 pub struct GameCompat {
