@@ -1,4 +1,4 @@
-import { Palette } from "std-widgets.slint";
+import { Palette, SpinBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // The redesign's shared building blocks: a titled card, a setting-row
@@ -133,12 +133,25 @@ export component ValueSlider inherits Rectangle {
 
         if root.show-value: VerticalLayout {
             alignment: center;
-            Text {
-                width: 46px;
-                horizontal-alignment: right;
-                text: root.shown + (root.percent ? "%" : (root.unit != "" ? " " + root.unit : ""));
-                color: Theme.text-color;
-                font-size: 13px;
+            HorizontalLayout {
+                spacing: 6px;
+
+                SpinBox {
+                    width: 84px;
+                    minimum: root.minimum;
+                    maximum: root.maximum;
+                    value: root.value;
+                    step-size: max(1, root.step);
+                    enabled: root.enabled;
+                    property <int> rev: root.revision;
+                    changed rev => { self.value = root.value; }
+                    edited(v) => { root.released(v); }
+                }
+                Text {
+                    text: root.percent ? "%" : (root.unit != "" ? " " + root.unit : "");
+                    color: Theme.muted-text-color;
+                    vertical-alignment: center;
+                }
             }
         }
     }
