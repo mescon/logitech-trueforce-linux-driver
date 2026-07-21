@@ -755,8 +755,11 @@ mod tests {
             live,
             vec![
                 ("Automobilista 2".to_string(), "ams2-pcars2".to_string()),
+                ("BeamNG.drive *".to_string(), "beamng".to_string()),
                 ("DiRT 4".to_string(), "codemasters".to_string()),
                 ("DiRT Rally 2.0".to_string(), "dirt-rally-2".to_string()),
+                ("EA Sports F1 (F1 22-25) *".to_string(), "f1".to_string()),
+                ("EA Sports WRC".to_string(), "ea-wrc".to_string()),
                 ("Project CARS 2".to_string(), "ams2-pcars2".to_string()),
             ],
             "only the ids the daemon detects go live; everything else stays static (sorted)"

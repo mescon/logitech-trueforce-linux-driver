@@ -255,8 +255,8 @@ pub const GAMES: &[GameCompat] = &[
         linux: Linux::Proton,
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::Expected,
-        simulated_tf: SimTf::PossibleWithParser,
-        setup: "Plain force feedback; for simulated TrueForce, enable OutGauge to 127.0.0.1:4444 once a parser lands.",
+        simulated_tf: SimTf::LiveNow("beamng"),
+        setup: "Plain force feedback; for simulated TrueForce, enable OutGauge to 127.0.0.1:4444 and run logi-tf-sim.",
         confidence: Confidence::Expected,
     },
     GameCompat {
@@ -282,8 +282,8 @@ pub const GAMES: &[GameCompat] = &[
         linux: Linux::Proton,
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
-        simulated_tf: SimTf::PossibleWithParser,
-        setup: "Enable UDP in config.json (port 20777); run logi-tf-sim (needs a WRC parser).",
+        simulated_tf: SimTf::LiveNow("ea-wrc"),
+        setup: "Add the logi-tf-sim WRC packet to config.json (UDP to 127.0.0.1:20777); run logi-tf-sim.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -291,8 +291,8 @@ pub const GAMES: &[GameCompat] = &[
         linux: Linux::Proton,
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
-        simulated_tf: SimTf::PossibleWithParser,
-        setup: "Enable in-game UDP telemetry (F1 format, port 20777); run logi-tf-sim (needs an F1 parser).",
+        simulated_tf: SimTf::LiveNow("f1"),
+        setup: "Enable in-game UDP telemetry (F1 format, port 20777); run logi-tf-sim.",
         confidence: Confidence::Expected,
     },
     GameCompat {
@@ -472,6 +472,9 @@ mod tests {
             ("Project CARS 2", "ams2-pcars2"),
             ("DiRT Rally 2.0", "dirt-rally-2"),
             ("DiRT 4", "codemasters"),
+            ("BeamNG.drive", "beamng"),
+            ("EA Sports F1 (F1 22-25)", "f1"),
+            ("EA Sports WRC", "ea-wrc"),
         ]
         .into_iter()
         .collect();
