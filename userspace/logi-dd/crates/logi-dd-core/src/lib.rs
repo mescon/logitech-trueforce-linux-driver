@@ -22,6 +22,7 @@ pub mod steam;
 pub mod tfsim;
 pub mod device;
 pub use device::{Device, DeviceInfo};
+pub mod games;
 
 /// Project home, shown in the Info view of both front-ends so users know
 /// where to find the documentation and source.

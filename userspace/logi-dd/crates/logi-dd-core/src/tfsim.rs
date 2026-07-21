@@ -249,15 +249,28 @@ pub fn set_game_intensity_in(path: &Path, id: &str, intensity: u8) -> Result<(),
     write_key_in(path, &format!("game.{id}.intensity"), &intensity.min(100).to_string())
 }
 
+/// The per-game ids the daemon's telemetry parsers actually emit, as
+/// documented in tf-sim's own `--help` (`dirt-rally-2` and the `codemasters`
+/// family from the Codemasters classic parser, `ams2-pcars2` from the
+/// Project CARS 2 / Automobilista 2 parser). A front-end's live per-game
+/// cell must key off one of these: `game.<id>.*` for anything else is a key
+/// the daemon would never read. Mirrored here because the front-ends cannot
+/// link the tf-sim crate (a GPL-2.0-only / GPL-3.0-or-later boundary), same
+/// reason [`game_id_for_title`] hardcodes the ids.
+pub const DAEMON_GAME_IDS: &[&str] = &["dirt-rally-2", "codemasters", "ams2-pcars2"];
+
 /// The tf-sim game id for a games-list title, or `None` when the daemon
 /// has no per-game id for it. Deliberately conservative: only titles whose
 /// ids actually exist in the daemon's telemetry detection map here
 /// (matching is case-insensitive but otherwise exact, so "DiRT Rally 2.0"
 /// from Steam and "Dirt Rally 2.0" from the compatibility tables both
-/// match while remasters or sequels never do).
+/// match while remasters or sequels never do). DiRT 4 rides the
+/// `codemasters` family id: its packets are not the DR2 signature, so the
+/// daemon's classic parser reports the family id for it.
 pub fn game_id_for_title(title: &str) -> Option<&'static str> {
     match title.trim().to_lowercase().as_str() {
         "dirt rally 2.0" => Some("dirt-rally-2"),
+        "dirt 4" => Some("codemasters"),
         "automobilista 2" | "project cars 2" => Some("ams2-pcars2"),
         _ => None,
     }
@@ -482,10 +495,16 @@ mod tests {
         assert_eq!(game_id_for_title("DiRT Rally 2.0"), Some("dirt-rally-2"), "Steam's casing");
         assert_eq!(game_id_for_title("Automobilista 2"), Some("ams2-pcars2"));
         assert_eq!(game_id_for_title("Project CARS 2"), Some("ams2-pcars2"));
+        assert_eq!(game_id_for_title("DiRT 4"), Some("codemasters"), "family id via classic parser");
         assert_eq!(game_id_for_title("DiRT Rally"), None, "predecessor never matches");
         assert_eq!(game_id_for_title("EA SPORTS WRC"), None);
         assert_eq!(game_id_for_title("Le Mans Ultimate"), None);
         assert_eq!(game_id_for_title(""), None);
+        // Every id the mapping can produce must be one the daemon reads.
+        for title in ["Dirt Rally 2.0", "DiRT 4", "Automobilista 2", "Project CARS 2"] {
+            let id = game_id_for_title(title).unwrap();
+            assert!(DAEMON_GAME_IDS.contains(&id), "{title} maps to unknown id {id}");
+        }
     }
 
     #[test]
