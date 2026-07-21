@@ -752,6 +752,39 @@ pub fn setup_games(games: &[SteamGame], cfg: &tfsim::Config) -> Vec<SetupGame> {
         .collect()
 }
 
+/// Whether a "Your games" row still needs a setup step: a shim game whose
+/// TrueForce files are not installed, an older DirectInput game (its launch
+/// option always has to be set by hand), or a simulated-TrueForce game with
+/// its switch still off. Out-of-box and unknown games need nothing.
+fn game_needs_setup(g: &SetupGame) -> bool {
+    if g.action == ACTION_SHIM {
+        !g.installed
+    } else if g.action == ACTION_LOGI_FFB {
+        true
+    } else if g.action == ACTION_SIM_TF {
+        !g.sim_enabled
+    } else {
+        false
+    }
+}
+
+/// The "Your games" accordion header's one-line summary: the installed
+/// count and how many still need a setup step (see `game_needs_setup`),
+/// e.g. "5 installed, 2 need setup". Built from the same list the rows
+/// render from, so header and rows can never disagree.
+pub fn games_summary(games: &[SetupGame]) -> String {
+    if games.is_empty() {
+        return "none found".to_string();
+    }
+    let installed = games.len();
+    let need = games.iter().filter(|g| game_needs_setup(g)).count();
+    if need == 0 {
+        format!("{installed} installed, all set")
+    } else {
+        format!("{installed} installed, {need} need setup")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,6 +875,31 @@ mod tests {
         assert!(rows.iter().all(|r| r.action == ACTION_SIM_TF && r.sim_id == "ams2-pcars2"));
         assert!(rows.iter().all(|r| r.sim_enabled));
         assert!(rows.iter().all(|r| r.sim_intensity == 100));
+    }
+
+    #[test]
+    fn games_summary_counts_installed_and_the_ones_needing_setup() {
+        // Empty: the "Your games" header says so.
+        assert_eq!(games_summary(&[]), "none found");
+
+        // A shim game without its files, an out-of-box game, and a shim
+        // game already installed: 3 installed, 1 needs setup.
+        let mut cfg = tfsim::Config::default();
+        cfg.games.insert(
+            "dirt-rally-2".to_string(),
+            tfsim::GameConfig { enabled: true, intensity: 40 },
+        );
+        let steam = vec![
+            steam_game("Assetto Corsa Competizione", false), // shim, not installed -> needs setup
+            steam_game("Wreckfest", false),                  // out of the box
+            steam_game("Assetto Corsa EVO", true),           // shim, installed
+        ];
+        let rows = setup_games(&steam, &cfg);
+        assert_eq!(games_summary(&rows), "3 installed, 1 need setup");
+
+        // Nothing outstanding reads as "all set".
+        let done = vec![steam_game("Wreckfest", false), steam_game("Assetto Corsa EVO", true)];
+        assert_eq!(games_summary(&setup_games(&done, &cfg)), "2 installed, all set");
     }
 
     #[test]
