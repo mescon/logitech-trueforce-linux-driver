@@ -179,6 +179,11 @@ fn load_rows(
     // toggle row heading each axis block, and each axis shows either its
     // sensitivity row or its curve row, never both.
     let items = bridge::compose_shaping(items, shaping_toggles);
+    // The page's ordered distinct card titles for this composed row set (see
+    // `bridge::row_groups`); the settings list groups its rows by these.
+    // Recomputed on every reload so a shaping toggle that changes which rows
+    // show still yields a coherent set of cards.
+    app.set_row_groups(slint::ModelRc::new(slint::VecModel::from(bridge::row_groups(&items))));
     let model = app.get_rows();
     if model.row_count() == items.len() {
         for (i, mut item) in items.into_iter().enumerate() {

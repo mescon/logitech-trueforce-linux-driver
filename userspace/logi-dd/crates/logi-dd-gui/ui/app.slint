@@ -147,6 +147,9 @@ export component App inherits Window {
     // Content: the selected category's rows, same as Task 4.
     in property <string> category-label: "Force feedback";
     in property <[SettingRow]> rows: [];
+    // The current page's ordered distinct group titles (see
+    // `bridge::row_groups`); each becomes one card in the settings list.
+    in property <[string]> row-groups: [];
 
     // Mode-coupled Profiles page: while the wheel is in desktop mode the
     // page shows the computer-side profile store below the Mode row
@@ -510,11 +513,12 @@ export component App inherits Window {
 
                     SettingsList {
                         // Just the Mode row (`compose_profiles` filters the
-                        // rest away in desktop mode): a fixed height a hair
-                        // above `Theme.row-height` so the row shows in full
-                        // and the profile store gets the remaining space.
-                        height: 76px;
+                        // rest away in desktop mode), rendered as the "Mode"
+                        // card; a fixed height that fits the card so the
+                        // computer profile store gets the remaining space.
+                        height: 120px;
                         rows: root.rows;
+                        groups: root.row-groups;
                         edit-choice(attr, v) => { root.edit-choice(attr, v); }
                         switch-mode() => { root.toggle-mode(); }
                     }
@@ -548,6 +552,7 @@ export component App inherits Window {
                     SettingsList {
                         vertical-stretch: 1;
                         rows: root.rows;
+                        groups: root.row-groups;
                         edit-slider(attr, v) => { root.edit-slider(attr, v); }
                         edit-choice(attr, v) => { root.edit-choice(attr, v); }
                         edit-switch(attr, v) => { root.edit-switch(attr, v); }
@@ -570,6 +575,7 @@ export component App inherits Window {
                     // empty void beneath it.
                     vertical-stretch: 1;
                     rows: root.rows;
+                    groups: root.row-groups;
                     edit-slider(attr, v) => { root.edit-slider(attr, v); }
                     edit-choice(attr, v) => { root.edit-choice(attr, v); }
                     edit-switch(attr, v) => { root.edit-switch(attr, v); }
