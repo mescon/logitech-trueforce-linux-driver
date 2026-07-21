@@ -28,8 +28,12 @@ proxy (see below).
   effect, brightness and animation direction, composed per onboard slot.
 - **Onboard profile renaming**: pick a slot and type a new name.
 - **Combined pedals** toggle and per-pedal / handbrake sensitivity sliders.
-- **A Setup section**: per-game TrueForce shim management over Steam/Proton
-  game discovery (with an SDK directory picker), plus logi-ffb helper setup.
+- **A Setup section**: a per-game action panel. It lists your installed
+  Steam/Proton games, matches each to the compatibility registry, and shows
+  only the control that game needs (install/remove TrueForce, a logi-ffb
+  launch option, a simulated-TrueForce switch, or nothing), alongside the
+  global helpers (logi-ffb, the TrueForce files folder, the simulated-
+  TrueForce daemon). The full compatibility list lives in the project wiki.
 - **A Test section**: a live input monitor and guarded force-feedback
   simulations.
 
@@ -117,9 +121,11 @@ strip and the palette, arrows move, Enter paints the selected LED (`a` paints
 all, `p` the LED and its mirror pair, `x` opens hex entry), `w` writes the
 strip to the wheel, Esc cancels.
 
-**Setup and Info / Testing** are sectioned views with their own keys (per-game
-shim install / remove, simulated-TrueForce daemon controls, guarded force
-simulations); the footer shows the most useful ones and `?` lists them all.
+**Setup and Info / Testing** are sectioned views with their own keys (in the
+Setup "Your games" list `i`/`u` install or remove TrueForce and `g` toggles
+simulated TrueForce; the daemon section has its master controls; Info /
+Testing has the guarded force simulations); the footer shows the most useful
+ones and `?` lists them all.
 
 ## DirectInput force feedback (`logi-ffb`)
 
