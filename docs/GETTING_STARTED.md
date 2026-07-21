@@ -150,8 +150,9 @@ cargo build --release
 ./target/release/logi-dd
 ```
 
-Changing settings needs your user to be in the `input` group (a one-time
-`sudo usermod -aG input "$USER"`, then log out and back in). Full features,
+Changing settings needs no special permission: the udev rule the package
+installs makes the wheel settings writable for you automatically (no group
+membership, no terminal step). Full features,
 keys and permissions are in
 [`userspace/logi-dd/README.md`](../userspace/logi-dd/README.md).
 

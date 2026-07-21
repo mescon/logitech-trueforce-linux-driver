@@ -95,9 +95,8 @@ in [**docs/GETTING_STARTED.md**](docs/GETTING_STARTED.md).
 
 The AUR and Debian packages are DKMS-based and rebuild automatically on kernel
 upgrades. After installing, plug in the wheel and check `dmesg` for a line naming
-your wheel model. Add yourself to the `input` group once
-(`sudo usermod -aG input "$USER"`, then log out and back in) so settings and the
-tools work without root.
+your wheel model. The wheel settings are writable with no extra setup once the udev rule is
+installed (it needs no group membership).
 
 ## Force feedback in games
 

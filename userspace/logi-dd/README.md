@@ -65,18 +65,11 @@ that follows the repository's release tag; bump it as part of cutting a release.
 ```
 
 logi-dd finds the wheel automatically (it looks for the driver's sysfs
-attributes). Writing settings needs permission to the `wheel_*` sysfs files,
-which the driver's udev rule makes group-writable by the `input` group. Add
-yourself to that group once:
-
-```bash
-sudo usermod -aG input "$USER"     # then log out and back in
-```
-
-Without it, reads work but writes return "permission denied"; running under
-`sudo` also works but is not needed once you are in the `input` group. If no
-wheel is found, logi-dd prints `no wheel found` and exits (check the driver is
-loaded and bound).
+attributes). The driver's udev rule makes the `wheel_*` settings files
+writable for the local user automatically, so no group membership or terminal
+step is needed - reads and writes both work as your normal user. If no wheel
+is found, logi-dd prints `no wheel found` and exits (check the driver is loaded
+and bound).
 
 ## Keys
 

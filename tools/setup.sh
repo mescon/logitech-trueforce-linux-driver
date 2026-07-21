@@ -137,7 +137,7 @@ doctor() {
 		if [ -w "$W/wheel_range" ] && [ -w "$W/range" ]; then
 			ok "settings writable as $USER"
 		else
-			wrn "settings not writable as $USER - replug the wheel after installing the udev rule, and check 'groups' includes input"
+			wrn "settings not writable as $USER - replug the wheel so the udev rule reapplies (it makes the wheel settings writable with no group setup)"
 		fi
 	fi
 

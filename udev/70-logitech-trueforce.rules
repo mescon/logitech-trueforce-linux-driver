@@ -1,14 +1,18 @@
 # Logitech TrueForce wheels: hidraw + wheel_* sysfs access
 #
-# Grants the currently-logged-in session user (via systemd-logind
-# uaccess) and anyone in the "input" group access to:
+# Grants the currently-logged-in desktop user access, with no group
+# membership required (systemd-logind uaccess for the hidraw device node;
+# world-writable mode on the wheel_* sysfs knobs, which uaccess does not
+# cover). This is why the settings apps work with no terminal setup.
 #   - /dev/hidraw*  for libtrueforce / userspace tooling and the
 #     Logitech SDK DLLs' TrueForce stream under Proton
 #   - /sys/class/hidraw/hidrawN/device/wheel_*  for Oversteer, the
 #     in-tree sysfs knobs, and user scripts
 #
 # Without this rule the sysfs knobs are mode 0664 root:root and every
-# wheel_* write needs sudo.
+# wheel_* write needs sudo. Mode 0666 lets any local user change wheel
+# settings; on a single-user desktop (the norm for a personal wheel) this
+# is the friction-free default, matching other Linux wheel udev rules.
 #
 # Supported USB product IDs (VID 046D), grouped by capability - all get
 # the same hidraw access:
@@ -42,7 +46,7 @@ GOTO="trueforce_end"
 LABEL="trueforce_apply"
 
 # /dev/hidraw* for libtrueforce and direct userspace tooling.
-TAG+="uaccess", GROUP="input", MODE="0660"
+TAG+="uaccess", MODE="0660"
 
 # wheel_* sysfs attributes (only exist on the HID++ interface's hidraw
 # node; the RUN invocation is a no-op on interfaces that lack them).
@@ -50,6 +54,6 @@ TAG+="uaccess", GROUP="input", MODE="0660"
 # marker, so a literal shell "$f" must be written "$$f" (passes
 # udevadm verify; on lenient udev versions "$f" happened to survive
 # as a literal, but that is non-portable).
-RUN+="/bin/sh -c 'for f in /sys/class/hidraw/%k/device/wheel_* /sys/class/hidraw/%k/device/range /sys/class/hidraw/%k/device/gain /sys/class/hidraw/%k/device/autocenter /sys/class/hidraw/%k/device/combine_pedals /sys/class/hidraw/%k/device/damper_level /sys/class/hidraw/%k/device/spring_level /sys/class/hidraw/%k/device/friction_level; do [ -e \"$$f\" ] || continue; chgrp input \"$$f\"; chmod g+w \"$$f\"; done'"
+RUN+="/bin/sh -c 'for f in /sys/class/hidraw/%k/device/wheel_* /sys/class/hidraw/%k/device/range /sys/class/hidraw/%k/device/gain /sys/class/hidraw/%k/device/autocenter /sys/class/hidraw/%k/device/combine_pedals /sys/class/hidraw/%k/device/damper_level /sys/class/hidraw/%k/device/spring_level /sys/class/hidraw/%k/device/friction_level; do [ -e \"$$f\" ] || continue; chmod 0666 \"$$f\"; done'"
 
 LABEL="trueforce_end"
