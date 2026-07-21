@@ -40,8 +40,9 @@ on one path and missing on the other.
 
 - The `hid-logitech-dd` driver loaded, with the wheel plugged in and bound to
   it.
-- Access to `/dev/uhid`. The packaged udev rule grants this to the `input`
-  group; if you have not set that up, run `logi-ffb` as root instead.
+- Access to `/dev/uhid`. The packaged udev rule grants this to every local
+  user directly, no group membership needed; if you have not set that up, run
+  `logi-ffb` as root instead.
 
 ## Build
 
@@ -64,6 +65,8 @@ logi-ffb <game command>
 
 `logi-ffb` brings up the virtual wheel, steers the game away from seeing the
 real wheel a second time (so it does not enumerate two look-alike devices),
+sets `PROTON_ENABLE_HIDRAW=1` on the launched game so Wine drives the virtual
+wheel's PID collection over hidraw (you do not set that variable yourself),
 runs the game command to completion, and tears the virtual wheel down when the
 game exits.
 

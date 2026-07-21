@@ -69,8 +69,8 @@ Six pieces, all built from this repository:
   haptics from a game's own UDP telemetry, for titles with no native
   TrueForce - and feeds the same telemetry to the wheel's rev-light strip as
   a live RPM display. Auto-detects supported games (DiRT Rally 2.0 and the
-  classic Codemasters format, Automobilista 2 / Project CARS 2); enable and
-  tune it per game from the Setup page.
+  classic Codemasters format, Automobilista 2 / Project CARS 2, F1, BeamNG.drive
+  and EA Sports WRC); enable and tune it per game from the Setup page.
 
 - **libtrueforce**, a native-Linux C library reimplementing Logitech's TrueForce
   SDK, for apps that want to drive TrueForce without Wine (a telemetry-driven
@@ -110,13 +110,14 @@ installed (it needs no group membership).
   Corsa Competizione** and **Assetto Corsa EVO**.
 
 - **DirectInput sims** (Le Mans Ultimate, for example) lose force feedback with
-  `PROTON_ENABLE_HIDRAW=1` because the wheel advertises no PID collection. Two
-  fixes: run them with `PROTON_ENABLE_HIDRAW=0` (feedback routes through evdev),
-  or prepend **`logi-ffb`** to the launch command (`logi-ffb %command%` in Steam
-  launch options), which presents a virtual wheel that catches the DirectInput
-  effects and forwards them to the real one. The virtual wheel appears as
-  "logi-ffb Virtual Wheel" (its own name and IDs, not the real wheel's), so a
-  game may need a one-time manual binding to it. `logi-ffb` is
+  `PROTON_ENABLE_HIDRAW=1` because the real wheel advertises no PID collection.
+  The fix is to prepend **`logi-ffb`** to the launch command (`logi-ffb
+  %command%` in Steam launch options): it presents a virtual wheel that does
+  carry a PID collection, sets `PROTON_ENABLE_HIDRAW=1` on the game itself so
+  Wine drives that PID collection directly, and forwards the effects to the
+  real wheel. You do not set the hidraw variable by hand. The virtual wheel
+  appears as "logi-ffb Virtual Wheel" (its own name and IDs, not the real
+  wheel's), so a game may need a one-time manual binding to it. `logi-ffb` is
   hardware-validated but wants an in-game tester; if you have such a sim,
   reports are very welcome.
 
