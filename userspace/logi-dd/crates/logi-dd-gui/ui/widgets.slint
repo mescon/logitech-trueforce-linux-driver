@@ -173,11 +173,29 @@ export component SettingsList inherits ScrollView {
                                 HorizontalLayout {
                                     alignment: start;
                                     spacing: 4px;
-                                    Text {
-                                        text: row.int-value;
-                                        font-size: 28px;
-                                        font-weight: 700;
-                                        color: Theme.text-color;
+                                    VerticalLayout {
+                                        alignment: end;
+                                        range-input := TextInput {
+                                            width: 96px;
+                                            text: row.int-value;
+                                            font-size: 28px;
+                                            font-weight: 700;
+                                            color: Theme.text-color;
+                                            input-type: number;
+                                            single-line: true;
+                                            enabled: row.available && row.mode-ok;
+                                            property <int> rev: row.revision;
+                                            changed rev => { self.text = "\{row.int-value}"; }
+                                            property <int> typed: clamp(round(self.text.to-float()), row.min, row.max);
+                                            accepted => {
+                                                self.clear-focus();
+                                                edit-slider(row.attr, self.typed);
+                                            }
+                                        }
+                                        Rectangle {
+                                            height: 1px;
+                                            background: Theme.panel-border;
+                                        }
                                     }
                                     Text {
                                         text: row.unit;
