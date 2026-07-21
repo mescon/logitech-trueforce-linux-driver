@@ -502,6 +502,19 @@ fn draw_help<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
 /// One Setup section's header line: the cursor marker, the numbered
 /// label (reverse-video while selected) and, while selected, its key
 /// hints, so every action is discoverable right where it applies.
+/// Clip `s` to at most `max` characters, marking a cut with a trailing
+/// ellipsis (so the last visible char is the ellipsis, keeping the total at
+/// `max`). Character-based so multibyte game names never split mid-glyph.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push('\u{2026}');
+    out
+}
+
 fn setup_header(label: &str, selected: bool, hint: &str) -> Line<'static> {
     let mut spans = vec![Span::styled(
         format!("{}{}", if selected { "> " } else { "  " }, label),
@@ -703,48 +716,42 @@ fn setup_sections<S: SysfsIo>(
             }
             SetupSection::Compat => {
                 lines.push(setup_header(section.label(), selected, ""));
-                // "*" marks titles not verified on this driver yet; the
-                // last column is the per-game "Simulated TF" state (live
-                // where the daemon can identify the title, "planned" for
-                // the other FFB-only titles, "native TF" where the shim
-                // already delivers the real thing). Mirrors the GUI Setup
-                // page's `compat_rows`.
-                let compat_rows: [(&str, &str, &str); 14] = [
-                    ("ACC", "TrueForce (shim)", "native TF"),
-                    ("AC EVO", "TrueForce (shim)", "native TF"),
-                    ("iRacing", "FFB (native)", "planned"),
-                    ("Le Mans Ultimate", "FFB (logi-ffb)", "planned"),
-                    ("Automobilista 2", "FFB (logi-ffb)", "planned"),
-                    ("rFactor 2", "FFB (logi-ffb)", "planned"),
-                    ("Assetto Corsa", "FFB (logi-ffb) *", "planned"),
-                    ("Project CARS 2", "FFB (logi-ffb) *", "planned"),
-                    ("Dirt Rally 2.0", "FFB (native)", "planned"),
-                    ("EA SPORTS WRC", "FFB *", "planned"),
-                    ("F1 series", "FFB *", "planned"),
-                    ("Euro Truck Simulator 2", "FFB (native Linux)", "planned"),
-                    ("American Truck Simulator", "FFB (native Linux)", "planned"),
-                    ("BeamNG.drive", "FFB (native)", "planned"),
-                ];
+                // The compatibility registry, shared with the GUI Setup
+                // page (`logi_dd_core::games`). Per title: a columnar line
+                // (game, force feedback, native TrueForce, simulated TF)
+                // plus a dimmed "what to do" line. The simulated-TF cell is
+                // live where the daemon can identify the title, else the
+                // static enum label. "*" marks the softer expected/unknown
+                // titles.
+                let games = logi_dd_core::games::sorted_by_name();
                 if selected {
                     for text in [
-                        "FFB (logi-ffb) = launch with logi-ffb %command%.",
+                        "logi-ffb = launch with logi-ffb %command%.",
+                        "Native TF = the game's own built-in TrueForce.",
                         "Simulated TF = telemetry haptics via logi-tf-sim,",
                         "live values where the daemon knows the title.",
-                        "native TF = the shim delivers real TrueForce.",
                         "* = expected to work, not verified on this driver.",
                     ] {
                         lines.push(Line::from(Span::styled(format!("  {text}"), dim)));
                     }
                     lines.push(Line::from(Span::styled(
-                        format!("  {:<25}{:<19}{}", "Game", "Force feedback", "Simulated TF"),
+                        format!(
+                            "  {:<22}{:<15}{:<9}{}",
+                            "Game", "Force feedback", "Native", "Simulated TF"
+                        ),
                         Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
                     )));
-                    for (game, how, tf) in compat_rows {
+                    for g in &games {
+                        let name = if g.confidence.is_provisional() {
+                            format!("{} *", g.name)
+                        } else {
+                            g.name.to_string()
+                        };
                         // Titles with a tf-sim game id show that game's
-                        // live tf-sim.conf state instead of the static text
-                        // (AMS2 and Project CARS 2 share one id, so they
-                        // always agree).
-                        let cell = match logi_dd_core::tfsim::game_id_for_title(game) {
+                        // live tf-sim.conf state instead of the static
+                        // label (AMS2 and Project CARS 2 share one id, so
+                        // they always agree).
+                        let cell = match g.simulated_tf.live_id() {
                             Some(id) => {
                                 let sim = app.tf_cfg.game(id);
                                 if sim.enabled {
@@ -756,17 +763,22 @@ fn setup_sections<S: SysfsIo>(
                                     Span::styled("off".to_string(), dim)
                                 }
                             }
-                            None => Span::styled(tf.to_string(), dim),
+                            None => Span::styled(g.simulated_tf.label().to_string(), dim),
                         };
                         lines.push(Line::from(vec![
-                            Span::raw(format!("  {game:<25}")),
-                            Span::styled(format!("{how:<19}"), Style::default().fg(Color::Gray)),
+                            Span::raw(format!("  {:<22}", truncate(&name, 21))),
+                            Span::styled(format!("{:<15}", g.ffb_cell()), Style::default().fg(Color::Gray)),
+                            Span::styled(
+                                format!("{:<9}", g.native_trueforce.label()),
+                                Style::default().fg(Color::Gray),
+                            ),
                             cell,
                         ]));
+                        lines.push(Line::from(Span::styled(format!("    {}", g.setup), dim)));
                     }
                 } else {
                     lines.push(Line::from(Span::styled(
-                        format!("  {} known titles", compat_rows.len()),
+                        format!("  {} known titles", games.len()),
                         dim,
                     )));
                 }
@@ -1337,7 +1349,8 @@ mod tests {
         let text = screen(&term);
         assert!(text.contains("more above"), "the scrolled state is flagged:\n{text}");
         assert!(!text.contains("more below"), "nothing is clipped below any more:\n{text}");
-        assert!(text.contains("BeamNG.drive"), "scrolling reaches the bottom:\n{text}");
+        // The registry is sorted by name, so the last row is "Wreckfest".
+        assert!(text.contains("Wreckfest"), "scrolling reaches the bottom:\n{text}");
     }
 
     #[test]
