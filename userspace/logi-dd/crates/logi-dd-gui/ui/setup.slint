@@ -129,6 +129,39 @@ export component Setup inherits Rectangle {
             color: Theme.text-color;
         }
 
+        // Plain-English primer on the two things this page sets up. Most
+        // users have never been told the difference, so it leads the page.
+        Rectangle {
+            background: Theme.panel-background;
+            border-radius: Theme.panel-radius;
+            border-width: 1px;
+            border-color: Theme.panel-border;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 6px;
+
+                Text {
+                    text: "Force feedback vs TrueForce";
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text-color;
+                }
+                Text {
+                    text: "Force feedback is the physical force on the wheel: the weight of the car, the pull of the road, kerbs and impacts. Every game with wheel support has it, and it works with no setup.";
+                    font-size: 12px;
+                    color: Theme.muted-text-color;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "TrueForce is Logitech's extra detail on top: fine high-frequency vibration driven by the game's engine and surfaces (engine growl, tyre scrub, road texture). Some games have it built in; for the rest, this app can simulate it from the game's live telemetry.";
+                    font-size: 12px;
+                    color: Theme.muted-text-color;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
         // The page content scrolls: at small window sizes (or with a long
         // games list) the columns are taller than the window, and without
         // a scroll surface the lower panels (e.g. Game compatibility) were
@@ -260,7 +293,7 @@ export component Setup inherits Rectangle {
                                     color: Theme.text-color;
                                 }
                                 Text {
-                                    text: "\"logi-ffb\" means launch with logi-ffb %command%. \"Native TF\" is the game's own built-in TrueForce. \"Simulated TF\" synthesizes TrueForce from the game's telemetry (see the Simulated TrueForce panel): titles the daemon can identify get a live per-game toggle + intensity here; \"possible (needs a parser)\" needs telemetry support added; \"n/a (native)\" already gets the real thing via the shim. Each game's recommended setup is the muted line under its name. * = expected to work, not verified on this driver yet.";
+                                    text: "Three columns, three kinds of feedback. \"Force feedback\" is the physical force every wheel-enabled game already provides (\"logi-ffb\" means launch it with logi-ffb %command%). \"Native TF\" is the game's own built-in TrueForce. \"Simulated TF\" is TrueForce this app synthesizes from the game's telemetry (see the Simulated TrueForce panel): titles the daemon can identify get a live per-game toggle + intensity here; \"possible (needs a parser)\" needs telemetry support added; \"n/a (native)\" already gets the real thing via the shim. Each game's recommended setup is the muted line under its name. * = expected to work, not verified on this driver yet.";
                                     font-size: 11px;
                                     color: Theme.muted-text-color;
                                     wrap: word-wrap;

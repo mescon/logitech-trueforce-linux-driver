@@ -553,6 +553,20 @@ fn setup_sections<S: SysfsIo>(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut starts = [0u16; SetupSection::ALL.len()];
 
+    // Plain-English primer on the two kinds of feedback this page sets up;
+    // always shown. Kept to two hand-wrapped lines (under ~58 columns) so
+    // the compact page still fits every section header on an 80x24 / 100x30
+    // terminal.
+    lines.push(Line::from(Span::styled(
+        "Force feedback = physical force, every wheel game has it.",
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        "TrueForce = fine extra vibration; built in, or simulated here.",
+        dim,
+    )));
+    lines.push(Line::from(""));
+
     for (i, section) in SetupSection::ALL.iter().enumerate() {
         starts[i] = lines.len() as u16;
         let selected = app.setup_section_idx == i;
@@ -726,7 +740,8 @@ fn setup_sections<S: SysfsIo>(
                 let games = logi_dd_core::games::sorted_by_name();
                 if selected {
                     for text in [
-                        "logi-ffb = launch with logi-ffb %command%.",
+                        "Force feedback = the physical force (logi-ffb =",
+                        "launch with logi-ffb %command%).",
                         "Native TF = the game's own built-in TrueForce.",
                         "Simulated TF = telemetry haptics via logi-tf-sim,",
                         "live values where the daemon knows the title.",
