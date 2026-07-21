@@ -52,4 +52,12 @@ export global Theme {
     // Sidebar selection highlight.
     out property <brush> selected-background: Palette.accent-background;
     out property <brush> selected-foreground: Palette.accent-foreground;
+
+    // Redesign accent + control tokens (see `ui/components.slint`): the
+    // filled slider track / segmented selection use the style's accent, the
+    // empty track is a faint neutral that reads on light and dark, and card
+    // rows are divided by the same border brush the panels use.
+    out property <brush> accent: Palette.accent-background;
+    out property <brush> track: Palette.foreground.with-alpha(0.16);
+    out property <brush> row-divider: Palette.border.with-alpha(0.6);
 }

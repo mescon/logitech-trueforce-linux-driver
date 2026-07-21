@@ -1,0 +1,343 @@
+import { Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// The redesign's shared building blocks: a titled card, a setting-row
+// shell, and the leaf controls (custom slider, segmented pill group, the
+// steering dial, a curve thumbnail and a profile slot card). Every colour
+// comes from `Theme`/`Palette` so both light and dark schemes read right.
+//
+// The custom ValueSlider and Segmented never assign their own bound `in`
+// properties internally: they read `value`/`current` for display and keep
+// drag state in a private property, so a pushed model update always wins
+// (no severed-binding problem, unlike the std widgets kept for toggles,
+// combos, text and the deadzone pair). The revision counter still flows in
+// for parity and future use.
+
+// A titled group card: an uppercase header over a rounded panel that holds
+// its child rows (passed as `@children`).
+export component SettingGroup inherits Rectangle {
+    in property <string> title;
+
+    background: Theme.panel-background;
+    border-radius: Theme.panel-radius;
+    border-width: 1px;
+    border-color: Theme.panel-border;
+
+    VerticalLayout {
+        padding: 4px;
+
+        if root.title != "": Text {
+            text: root.title;
+            font-size: 11px;
+            letter-spacing: 1.4px;
+            font-weight: 700;
+            color: Theme.faint-text-color;
+        }
+
+        VerticalLayout {
+            @children
+        }
+    }
+}
+
+// A slim filled track with a round knob and a live value readout. Commits
+// on release (drag end / keyboard nudge), matching the std Slider it
+// replaces; the fill and knob follow the pushed `value` except while the
+// user is actively dragging, when they track `live`.
+export component ValueSlider inherits Rectangle {
+    in property <int> minimum;
+    in property <int> maximum;
+    in property <int> value;
+    in property <int> step: 1;
+    in property <string> unit;
+    in property <bool> percent;
+    in property <bool> enabled: true;
+    // The steering range row shows its value as a large readout beside the
+    // dial, so it hides the slider's own inline value.
+    in property <bool> show-value: true;
+    in property <int> revision;
+    callback released(int);
+
+    // Drag scratch value; only consulted while `dragging`.
+    property <bool> dragging: false;
+    property <int> live: root.value;
+    property <int> shown: root.dragging ? root.live : root.value;
+    property <int> span: max(1, root.maximum - root.minimum);
+    property <float> frac: (root.shown - root.minimum) / root.span;
+
+    property <int> eff-step: max(1, root.step);
+    pure function quantize(f: float) -> int {
+        return clamp(round((root.minimum + f * root.span) / root.eff-step) * root.eff-step,
+                     root.minimum, root.maximum);
+    }
+
+    height: max(28px, layout.min-height);
+
+    layout := HorizontalLayout {
+        spacing: 12px;
+
+        track := Rectangle {
+            horizontal-stretch: 1;
+            height: 22px;
+
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.track;
+
+                fill := Rectangle {
+                    x: 0;
+                    width: parent.width * clamp(root.frac, 0.0, 1.0);
+                    height: parent.height;
+                    border-radius: 3px;
+                    background: root.enabled ? Theme.accent : Theme.track;
+                }
+            }
+
+            knob := Rectangle {
+                width: 15px;
+                height: 15px;
+                border-radius: 7.5px;
+                x: clamp(root.frac, 0.0, 1.0) * (parent.width - self.width);
+                y: (parent.height - self.height) / 2;
+                background: white;
+                border-width: 1px;
+                border-color: #00000026;
+                drop-shadow-blur: 3px;
+                drop-shadow-color: #00000059;
+                visible: root.enabled;
+            }
+
+            ta := TouchArea {
+                enabled: root.enabled;
+                property <float> pos: (self.mouse-x - knob.width / 2) / max(1px, track.width - knob.width);
+                moved => {
+                    if (self.pressed) {
+                        root.dragging = true;
+                        root.live = root.quantize(self.pos);
+                    }
+                }
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        root.dragging = true;
+                        root.live = root.quantize(self.pos);
+                    }
+                    if (e.kind == PointerEventKind.up) {
+                        root.dragging = false;
+                        root.released(root.live);
+                    }
+                }
+            }
+        }
+
+        if root.show-value: VerticalLayout {
+            alignment: center;
+            Text {
+                width: 46px;
+                horizontal-alignment: right;
+                text: root.shown + (root.percent ? "%" : (root.unit != "" ? " " + root.unit : ""));
+                color: Theme.text-color;
+                font-size: 13px;
+            }
+        }
+    }
+}
+
+// A pill group where the selected option is filled with the accent. Reads
+// `current` for its highlight and fires `selected(index)` on tap; the
+// caller commits, and the pushed update moves the highlight.
+export component Segmented inherits Rectangle {
+    in property <[string]> options;
+    in property <int> current;
+    in property <bool> enabled: true;
+    in property <int> revision;
+    callback selected(int);
+
+    height: 30px;
+    horizontal-stretch: 0;
+
+    HorizontalLayout {
+        alignment: start;
+
+        Rectangle {
+            background: Theme.control-background;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.panel-border;
+
+            HorizontalLayout {
+                padding: 2px;
+                spacing: 2px;
+
+                for opt[i] in root.options: Rectangle {
+                    property <bool> on: i == root.current;
+                    border-radius: 6px;
+                    background: on ? Theme.accent : transparent;
+                    opacity: root.enabled ? 1.0 : 0.5;
+
+                    HorizontalLayout {
+                        padding-left: 11px;
+                        padding-right: 11px;
+                        padding-top: 5px;
+                        padding-bottom: 5px;
+                        Text {
+                            text: opt;
+                            font-size: 12px;
+                            font-weight: on ? 600 : 500;
+                            color: on ? Theme.selected-foreground : Theme.muted-text-color;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    TouchArea {
+                        enabled: root.enabled;
+                        clicked => { root.selected(i); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A semicircular gauge: a grey track arc, an accent fill up to the current
+// fraction, and a needle. Self-contained (draws from value/min/max with
+// trig), so nothing extra has to be plumbed from Rust.
+export component RotationDial inherits Rectangle {
+    in property <int> value;
+    in property <int> minimum;
+    in property <int> maximum;
+
+    width: 116px;
+    height: 100px;
+
+    property <angle> a0: -220deg;
+    property <angle> a1: 40deg;
+    property <int> span: max(1, root.maximum - root.minimum);
+    property <float> frac: clamp((root.value - root.minimum) / root.span, 0.0, 1.0);
+    property <angle> acur: root.a0 + (root.a1 - root.a0) * root.frac;
+
+    // Arc geometry in the 120x120 viewbox both Paths share.
+    pure function px(a: angle) -> float { return 60 + 44 * cos(a); }
+    pure function py(a: angle) -> float { return 60 + 44 * sin(a); }
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 120;
+        viewbox-height: 120;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        fill: transparent;
+        stroke: Theme.track;
+        stroke-width: 8px;
+        commands: "M \{root.px(root.a0)} \{root.py(root.a0)} A 44 44 0 1 1 \{root.px(root.a1)} \{root.py(root.a1)}";
+    }
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 120;
+        viewbox-height: 120;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        fill: transparent;
+        stroke: Theme.accent;
+        stroke-width: 8px;
+        commands: "M \{root.px(root.a0)} \{root.py(root.a0)} A 44 44 0 \{root.frac > 0.5 ? 1 : 0} 1 \{root.px(root.acur)} \{root.py(root.acur)}";
+    }
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 120;
+        viewbox-height: 120;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        fill: transparent;
+        stroke: Theme.text-color;
+        stroke-width: 3px;
+        commands: "M 60 60 L \{root.px(root.acur)} \{root.py(root.acur)}";
+    }
+
+    Rectangle {
+        width: 11px;
+        height: 11px;
+        border-radius: 5.5px;
+        x: (parent.width - self.width) / 2;
+        y: 60 / 120 * parent.height - self.height / 2;
+        background: Theme.panel-background;
+        border-width: 2px;
+        border-color: Theme.panel-border;
+    }
+}
+
+// A mini curve plot from a precomputed screen-fraction path string (the
+// same 0..1 space the curve editor uses); Rust fills `commands` from the
+// row's current curve.
+export component CurveThumb inherits Rectangle {
+    in property <string> commands;
+
+    width: 112px;
+    height: 60px;
+    background: Theme.control-background;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.panel-border;
+
+    Path {
+        x: 6px;
+        y: 6px;
+        width: parent.width - 12px;
+        height: parent.height - 12px;
+        viewbox-width: 1;
+        viewbox-height: 1;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        fill: transparent;
+        stroke: Theme.accent;
+        stroke-width: 2px;
+        commands: root.commands;
+    }
+}
+
+// One onboard-profile slot: a number over a name, highlighted when active.
+export component SlotCard inherits Rectangle {
+    in property <string> number;
+    in property <string> name;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    border-radius: 10px;
+    border-width: root.active ? 2px : 1px;
+    border-color: root.active ? Theme.accent : Theme.panel-border;
+    background: Theme.control-background;
+    opacity: root.enabled ? 1.0 : 0.5;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 4px;
+        alignment: center;
+
+        if root.number != "": Text {
+            text: root.number;
+            font-size: 11px;
+            color: Theme.faint-text-color;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.name;
+            font-size: 13px;
+            font-weight: 650;
+            color: Theme.text-color;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
