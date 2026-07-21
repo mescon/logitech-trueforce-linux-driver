@@ -71,6 +71,88 @@ fn is_read_only(attr: &str) -> bool {
     REGISTRY.iter().any(|s| s.attr == attr && s.access == Access::ReadOnly)
 }
 
+/// The uppercase group title a setting's row is bucketed under in the
+/// redesigned GUI pages (see `SettingGroup` in `ui/components.slint`). The
+/// grouping lives here rather than in `logi-dd-core`'s registry so the TUI
+/// (which renders one flat list per category) stays untouched. Consecutive
+/// rows sharing a title render inside one card; `row_groups` derives the
+/// page's ordered distinct titles from the composed rows. Synthetic rows
+/// (the per-axis shaping toggle, the LIGHTSYNC "Edit slot" button) are
+/// grouped with their block. An unknown attr returns "" (no card header).
+pub fn attr_group(attr: &str) -> &'static str {
+    if let Some(ax) = shaping::toggle_axis(attr) {
+        return axis_group(ax);
+    }
+    if attr == LIGHT_EDIT_SLOT_ATTR {
+        return "CUSTOM SLOT";
+    }
+    match attr {
+        "wheel_strength" | "wheel_ffb_filter" | "wheel_ffb_filter_auto" => "STRENGTH",
+        "wheel_damping" | "wheel_spring_damping" => "FEEL",
+        "wheel_trueforce" | "wheel_texture_route" => "TRUEFORCE",
+        "wheel_ffb_constant_sign" => "ADVANCED",
+        "wheel_range" | "wheel_range_restore" => "ROTATION",
+        "wheel_sensitivity" | "wheel_response_curve" | "wheel_calibrate_here" => "RESPONSE",
+        "wheel_rev_level" => "REV LIGHTS",
+        "wheel_combined_pedals" | "wheel_brake_force" => "GENERAL",
+        "wheel_throttle_sensitivity" | "wheel_throttle_curve" | "wheel_throttle_deadzone" => {
+            "THROTTLE"
+        }
+        "wheel_brake_sensitivity" | "wheel_brake_curve" | "wheel_brake_deadzone" => "BRAKE",
+        "wheel_clutch_sensitivity" | "wheel_clutch_curve" | "wheel_clutch_deadzone" => "CLUTCH",
+        "wheel_handbrake_sensitivity" | "wheel_handbrake_curve" => "HANDBRAKE",
+        "wheel_led_effect" | "wheel_led_brightness" => "STRIP",
+        "wheel_led_slot" | "wheel_led_slot_name" | "wheel_led_colors" | "wheel_led_direction"
+        | "wheel_led_slot_brightness" | "wheel_led_apply" => "SLOT",
+        "wheel_mode" => "MODE",
+        "wheel_profile" | "wheel_profile_names" => "ONBOARD PROFILES",
+        "wheel_serial" | "wheel_firmware" => "THIS WHEEL",
+        _ => "",
+    }
+}
+
+/// The group title of one shaping axis's block (its sensitivity/curve/
+/// deadzone rows and the injected toggle). Steering's shaping lives under
+/// the steering "Response" card; each pedal has its own card.
+fn axis_group(ax: shaping::Axis) -> &'static str {
+    match ax {
+        shaping::Axis::Steering => "RESPONSE",
+        shaping::Axis::Throttle => "THROTTLE",
+        shaping::Axis::Brake => "BRAKE",
+        shaping::Axis::Clutch => "CLUTCH",
+        shaping::Axis::Handbrake => "HANDBRAKE",
+    }
+}
+
+/// The ordered distinct group titles present in a page's composed rows, for
+/// `SettingsList.groups`. First-seen order, skipping the empty "" title;
+/// each becomes one `SettingGroup` card that pulls its matching rows.
+pub fn row_groups(items: &[SettingRow]) -> Vec<slint::SharedString> {
+    let mut out: Vec<slint::SharedString> = Vec::new();
+    for it in items {
+        if !it.group.is_empty() && !out.iter().any(|g| g == &it.group) {
+            out.push(it.group.clone());
+        }
+    }
+    out
+}
+
+/// The SVG path-commands string a curve row's `CurveThumb` draws: one
+/// `M`/`L` per control point in the editor's 0..1 screen-fraction space
+/// (same space `curve_plot_commands` uses). An empty/degenerate curve falls
+/// back to the linear diagonal so the thumbnail is never blank.
+pub fn curve_thumb_commands(points: &[(u16, u16)]) -> String {
+    let linear = [(0u16, 0u16), (FULL, FULL)];
+    let pts: &[(u16, u16)] = if points.len() >= 2 { points } else { &linear };
+    let mut out = String::new();
+    for (i, &(input, output)) in pts.iter().enumerate() {
+        let (x, y) = to_screen_frac(input, output);
+        let op = if i == 0 { 'M' } else { 'L' };
+        out.push_str(&format!("{op} {x:.5} {y:.5} "));
+    }
+    out.trim_end().to_string()
+}
+
 fn kind_tag(attr: &str, kind: &Kind) -> i32 {
     if is_read_only(attr) {
         return KIND_READONLY;
@@ -131,6 +213,13 @@ pub fn to_setting_row(row: &Row) -> SettingRow {
 
     let bool_value = matches!(row.value, Some(Value::Bool(true)));
 
+    // Curve rows carry a thumbnail path; everything else leaves it empty.
+    let plot = match (&kind, &row.value) {
+        (Kind::Curve, Some(Value::Curve(pts))) => curve_thumb_commands(pts),
+        (Kind::Curve, _) => curve_thumb_commands(&[]),
+        _ => String::new(),
+    };
+
     let text_value = match &row.value {
         Some(Value::Text(s)) => s.clone(),
         _ => String::new(),
@@ -166,6 +255,8 @@ pub fn to_setting_row(row: &Row) -> SettingRow {
         available: row.available,
         mode_ok: row.mode_ok,
         error: slint::SharedString::new(),
+        group: attr_group(row.attr).into(),
+        plot: plot.into(),
         // Freshly built rows start at revision 0; `main.rs` bumps this on
         // every in-place push so touched widgets re-assert their display
         // (see `SettingRow`'s doc in `ui/widgets.slint`).
@@ -299,6 +390,8 @@ fn light_slot_row(effect: i32, available: bool, mode_ok: bool) -> SettingRow {
         available,
         mode_ok,
         error: slint::SharedString::new(),
+        group: attr_group(LIGHT_EDIT_SLOT_ATTR).into(),
+        plot: slint::SharedString::new(),
         revision: 0,
     }
 }
@@ -359,6 +452,8 @@ fn shaping_toggle_row(axis: shaping::Axis, curve: bool) -> SettingRow {
         available: true,
         mode_ok: true,
         error: slint::SharedString::new(),
+        group: axis_group(axis).into(),
+        plot: slint::SharedString::new(),
         revision: 0,
     }
 }
@@ -1852,5 +1947,85 @@ mod tests {
             Value::SlotNames(names) => assert_eq!(names[1], "GT7"),
             other => panic!("expected SlotNames, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn attr_group_buckets_each_page_into_its_cards() {
+        // A representative attr from each card; the grouping is what the GUI
+        // renders as titled cards.
+        assert_eq!(attr_group("wheel_strength"), "STRENGTH");
+        assert_eq!(attr_group("wheel_damping"), "FEEL");
+        assert_eq!(attr_group("wheel_trueforce"), "TRUEFORCE");
+        assert_eq!(attr_group("wheel_ffb_constant_sign"), "ADVANCED");
+        assert_eq!(attr_group("wheel_range"), "ROTATION");
+        assert_eq!(attr_group("wheel_response_curve"), "RESPONSE");
+        assert_eq!(attr_group("wheel_rev_level"), "REV LIGHTS");
+        assert_eq!(attr_group("wheel_throttle_deadzone"), "THROTTLE");
+        assert_eq!(attr_group("wheel_brake_curve"), "BRAKE");
+        assert_eq!(attr_group("wheel_clutch_sensitivity"), "CLUTCH");
+        assert_eq!(attr_group("wheel_handbrake_curve"), "HANDBRAKE");
+        assert_eq!(attr_group("wheel_mode"), "MODE");
+        assert_eq!(attr_group("wheel_profile"), "ONBOARD PROFILES");
+        assert_eq!(attr_group("wheel_led_brightness"), "STRIP");
+        assert_eq!(attr_group(LIGHT_EDIT_SLOT_ATTR), "CUSTOM SLOT");
+        // The synthetic per-axis shaping toggle rows join their axis block.
+        assert_eq!(attr_group(shaping::toggle_attr(shaping::Axis::Steering)), "RESPONSE");
+        assert_eq!(attr_group(shaping::toggle_attr(shaping::Axis::Brake)), "BRAKE");
+        // Unknown attrs carry no card header.
+        assert_eq!(attr_group("nope"), "");
+    }
+
+    #[test]
+    fn every_registry_attr_has_a_group() {
+        // No device setting should land header-less in the GUI.
+        for s in REGISTRY {
+            assert!(!attr_group(s.attr).is_empty(), "no group for {}", s.attr);
+        }
+    }
+
+    #[test]
+    fn row_groups_are_distinct_in_first_seen_order() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let rows = vm.rows_for(Category::Ffb);
+        let items = setting_rows(&rows);
+        let groups: Vec<String> = row_groups(&items).iter().map(|s| s.to_string()).collect();
+        assert_eq!(groups, vec!["STRENGTH", "FEEL", "TRUEFORCE", "ADVANCED"]);
+    }
+
+    #[test]
+    fn to_setting_row_carries_the_group_and_a_curve_thumbnail() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_response_curve", "reset");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm
+            .rows_for(Category::Steering)
+            .into_iter()
+            .find(|r| r.attr == "wheel_response_curve")
+            .expect("no row for wheel_response_curve");
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.group, "RESPONSE");
+        // A curve row always draws something (linear fallback when reset).
+        assert!(sr.plot.starts_with('M'), "curve row has no thumbnail path: {:?}", sr.plot);
+        // A non-curve row leaves the thumbnail empty.
+        let strength = vm
+            .rows_for(Category::Ffb)
+            .into_iter()
+            .find(|r| r.attr == "wheel_strength")
+            .unwrap();
+        assert_eq!(to_setting_row(&strength).plot, "");
+    }
+
+    #[test]
+    fn curve_thumb_commands_traces_points_and_falls_back_to_linear() {
+        // A degenerate curve still yields the linear diagonal (top-left to
+        // bottom-right in screen-fraction space: y is flipped).
+        let linear = curve_thumb_commands(&[]);
+        assert_eq!(linear, "M 0.00000 1.00000 L 1.00000 0.00000");
+        // A two-point curve traces those points, in order.
+        let traced = curve_thumb_commands(&[(0, 0), (FULL, FULL)]);
+        assert_eq!(traced, linear);
     }
 }
