@@ -863,9 +863,10 @@ fn setup_sections<S: SysfsIo>(
     (lines, starts)
 }
 
-/// Render the Setup body: the sectioned page `setup_sections` builds
-/// (logi-ffb, the SDK shim, the Proton games, the compatibility table,
-/// Simulated TrueForce). Shown instead of the settings list whenever
+/// Render the Setup body: the sectioned page `setup_sections` builds (the
+/// primer, then Your games, the logi-ffb helper, the TrueForce files
+/// folder, and Simulated TrueForce, then the wiki compatibility link).
+/// Shown instead of the settings list whenever
 /// `app.is_setup()`. Renders into `draw_scrolled`'s buffer: `area` is the
 /// view's full content height, not the viewport.
 fn draw_setup<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
@@ -1307,19 +1308,24 @@ mod tests {
         // rendering; the unselected compatibility table shows only its
         // one-line summary.
         for header in [
-            "Force feedback helper (logi-ffb)",
-            "TrueForce files folder",
-            "Simulated TrueForce",
             "Your games",
+            "Force feedback helper (logi-ffb)",
+            "TrueForce files",
+            "Simulated TrueForce",
         ] {
             assert!(text.contains(header), "missing header {header}:\n{text}");
         }
         // The full compatibility list is a wiki link now, not a table.
         assert!(text.contains("Full game compatibility list"), "wiki link present:\n{text}");
-        // Ffb is selected by default, so its body is expanded.
-        assert!(text.contains("virtual wheel"), "the selected section is expanded:\n{text}");
-        // Selecting the Simulated TrueForce section expands its controls.
+        // Your games leads the accordion and is selected by default, so its
+        // list body is expanded.
+        assert!(
+            text.contains("Your installed Proton games"),
+            "the selected section is expanded:\n{text}"
+        );
+        // Selecting the Simulated TrueForce section (last) expands its controls.
         use crossterm::event::KeyCode;
+        a.on_key(KeyCode::Down); // Ffb
         a.on_key(KeyCode::Down); // Sdk
         a.on_key(KeyCode::Down); // SimTf
         assert_eq!(a.setup_section(), crate::app::SetupSection::SimTf);

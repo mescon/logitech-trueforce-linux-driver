@@ -116,21 +116,22 @@ pub enum SetupSection {
 }
 
 impl SetupSection {
-    // Global helpers first (logi-ffb, the TrueForce files folder, the
-    // Simulated TrueForce daemon), then the per-game action list, matching
-    // the GUI Setup page's top-down order.
+    // The per-game action list first (the main task, selected and expanded
+    // on entry), then the global helpers (logi-ffb, the TrueForce files
+    // folder, the Simulated TrueForce daemon), matching the GUI Setup
+    // page's accordion order.
     pub const ALL: [SetupSection; 4] = [
+        SetupSection::Games,
         SetupSection::Ffb,
         SetupSection::Sdk,
         SetupSection::SimTf,
-        SetupSection::Games,
     ];
     pub fn label(&self) -> &'static str {
         match self {
-            SetupSection::Ffb => "Force feedback helper (logi-ffb)",
-            SetupSection::Sdk => "TrueForce files folder",
-            SetupSection::SimTf => "Simulated TrueForce",
             SetupSection::Games => "Your games",
+            SetupSection::Ffb => "Force feedback helper (logi-ffb)",
+            SetupSection::Sdk => "TrueForce files",
+            SetupSection::SimTf => "Simulated TrueForce",
         }
     }
 }
@@ -2626,18 +2627,18 @@ mod tests {
     fn setup_sections_move_clamp_and_enter() {
         use crossterm::event::KeyCode;
         let mut a = setup_app();
-        assert_eq!(a.setup_section(), SetupSection::Ffb, "starts on the first section");
+        assert_eq!(a.setup_section(), SetupSection::Games, "starts on the first section");
         a.on_key(KeyCode::Up);
-        assert_eq!(a.setup_section(), SetupSection::Ffb, "clamps at the top");
+        assert_eq!(a.setup_section(), SetupSection::Games, "clamps at the top");
         for _ in 0..10 {
             a.on_key(KeyCode::Down);
         }
-        assert_eq!(a.setup_section(), SetupSection::Games, "clamps at the bottom");
+        assert_eq!(a.setup_section(), SetupSection::SimTf, "clamps at the bottom");
         // Enter steps inside; Up/Down stop moving the section cursor.
         a.on_key(KeyCode::Enter);
         assert!(a.setup_inside);
         a.on_key(KeyCode::Up);
-        assert_eq!(a.setup_section(), SetupSection::Games, "the cursor stays while inside");
+        assert_eq!(a.setup_section(), SetupSection::SimTf, "the cursor stays while inside");
         // Esc leaves the section first, then hands focus to the sidebar.
         a.on_key(KeyCode::Esc);
         assert!(!a.setup_inside, "Esc closes the section level first");
@@ -2663,7 +2664,7 @@ mod tests {
     fn setup_sim_tf_keys_only_act_inside_their_section() {
         use crossterm::event::KeyCode;
         let mut a = tf_setup_app();
-        // At the section level (Ffb selected) the SimTf keys are inert.
+        // At the section level (Your games selected) the SimTf keys are inert.
         a.on_key(KeyCode::Char('m'));
         assert!(a.tf_cfg.enabled, "m does nothing at the section level");
         a.on_key(KeyCode::Char('e'));
@@ -3844,7 +3845,7 @@ mod tests {
         for _ in 0..SetupSection::ALL.len() {
             a.on_key(KeyCode::Down);
         }
-        assert_eq!(a.setup_section(), SetupSection::Games);
+        assert_eq!(a.setup_section(), SetupSection::SimTf);
         assert!(
             a.setup_scroll > 0,
             "moving to the last section scrolled the view down"
