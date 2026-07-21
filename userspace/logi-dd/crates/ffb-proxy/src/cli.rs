@@ -120,6 +120,14 @@ fn run_game(cmd: Vec<String>) -> crate::Result<ExitCode> {
         command.env(k, v);
     }
 
+    // Route the game's DirectInput force feedback through Wine's own PID stack
+    // over hidraw. The virtual wheel's descriptor carries a full PID output
+    // collection for Wine to drive, and the proxy forwards the decoded effects
+    // to the real wheel (issue #50). The proxy only works on this path, so set
+    // it unconditionally: a value the user left over from the non-proxy recipe
+    // (where DirectInput sims wanted hidraw off) would otherwise break FFB.
+    command.env("PROTON_ENABLE_HIDRAW", "1");
+
     let spawn_result = command.spawn().and_then(|mut child| child.wait());
 
     stop.store(true, Ordering::SeqCst);

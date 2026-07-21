@@ -169,13 +169,11 @@ const PID_COLLECTION: &[u8] = &[
 ];
 
 // PID Block Free output report (usage 0x90), report id 0x5B: the host frees
-// one effect block by index. NOT part of the driver's hidpp_dd_pid_rdesc[]
-// (Wine's PID stack tolerates its absence), but the kernel's PID FF layer
-// (drivers/hid/usbhid/hid-pidff.c) lists Block Free among its REQUIRED
-// reports and refuses to initialize without it; the hid-logitech-dd driver
-// attaches that layer to this virtual device to give it evdev FF (issue
-// #50). Report id 0x5B is the one id in the 0x50..0x5D block the driver
-// collection leaves unused as a report id.
+// one effect block by index. Declaring it lets Wine's PID force-feedback
+// stack (driven over hidraw, issue #50) release effect blocks cleanly; the
+// proxy decodes report id 0x5B and destroys the matching block on the real
+// wheel (see pidff::decode and sink). Report id 0x5B is the one id in the
+// 0x50..0x5D block the driver collection leaves unused as a report id.
 #[rustfmt::skip]
 const BLOCK_FREE_COLLECTION: &[u8] = &[
     0x05, 0x0F,             // Usage Page (Physical Interface Device)
@@ -246,9 +244,9 @@ mod tests {
 
     #[test]
     fn report_descriptor_declares_pid_block_free() {
-        // The kernel's PID FF layer (attached to this device by the
-        // hid-logitech-dd driver, issue #50) treats Block Free (PID usage
-        // 0x90) as a required report and refuses to init without it.
+        // Block Free (PID usage 0x90) lets Wine's PID stack free effect
+        // blocks over the hidraw route (issue #50); the proxy decodes it
+        // and destroys the matching block.
         let d = report_descriptor();
         assert!(d.windows(2).any(|w| w == [0x09, 0x90]), "PID Block Free usage missing");
         assert!(d.windows(2).any(|w| w == [0x85, 0x5B]), "Block Free report id missing");
