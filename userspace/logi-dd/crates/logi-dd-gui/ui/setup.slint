@@ -12,17 +12,20 @@ export struct SetupGame {
 }
 
 // One row of the compatibility table, built on the Rust side
-// (`bridge::compat_rows`): the game, how force feedback reaches it today,
-// and the "Simulated TF" cell. Titles the tf-sim daemon can identify from
+// (`bridge::compat_rows`): the game, how force feedback reaches it, whether
+// it carries native TrueForce, the "Simulated TF" cell, and a one-line
+// plain-English "what to do". Titles the tf-sim daemon can identify from
 // their telemetry carry their tf-sim game id in `sim-id` and render a
 // live per-game toggle + intensity (from tf-sim.conf, `sim-enabled` /
-// `sim-intensity`); every other row keeps the static `tf` text ("planned"
-// for FFB-only titles, "n/a (native)" where the shim already delivers
-// real TrueForce).
+// `sim-intensity`); every other row keeps the static `tf` text ("possible
+// (needs a parser)" for FFB-only titles, "n/a (native)" where the shim
+// already delivers real TrueForce, "no" where there is no telemetry).
 export struct SetupCompatRow {
     game: string,
     how: string,
+    native-tf: string,
     tf: string,
+    setup: string,
     sim-id: string,
     sim-enabled: bool,
     sim-intensity: int,
@@ -257,28 +260,30 @@ export component Setup inherits Rectangle {
                                     color: Theme.text-color;
                                 }
                                 Text {
-                                    text: "\"FFB (logi-ffb)\" means launch with logi-ffb %command%. \"Simulated TF\" synthesizes TrueForce from the game's telemetry (see the Simulated TrueForce panel): titles the daemon can identify get a live per-game toggle + intensity here; other FFB-only titles are planned; \"n/a (native)\" titles already get the real thing via the shim. * = expected to work, not verified on this driver yet.";
+                                    text: "\"logi-ffb\" means launch with logi-ffb %command%. \"Native TF\" is the game's own built-in TrueForce. \"Simulated TF\" synthesizes TrueForce from the game's telemetry (see the Simulated TrueForce panel): titles the daemon can identify get a live per-game toggle + intensity here; \"possible (needs a parser)\" needs telemetry support added; \"n/a (native)\" already gets the real thing via the shim. Each game's recommended setup is the muted line under its name. * = expected to work, not verified on this driver yet.";
                                     font-size: 11px;
                                     color: Theme.muted-text-color;
                                     wrap: word-wrap;
                                 }
-                                // Header row, then one row per title. The
-                                // middle and right columns get fixed widths
-                                // so the three columns line up as a table
-                                // (the right one is wide enough for the
-                                // live toggle + intensity cells).
+                                // Column header for the per-game blocks
+                                // below. The game name sits on its own full-
+                                // width line inside each block (long titles
+                                // would elide to nothing in this narrow left
+                                // column), so the header only labels the
+                                // three fixed-width columns beneath it. A
+                                // trailing filler keeps them left-aligned.
                                 HorizontalLayout {
                                     spacing: 8px;
                                     Text {
-                                        horizontal-stretch: 1;
-                                        text: "Game";
+                                        width: 118px;
+                                        text: "Force feedback";
                                         font-size: 11px;
                                         font-weight: 600;
                                         color: Theme.muted-text-color;
                                     }
                                     Text {
-                                        width: 112px;
-                                        text: "Force feedback";
+                                        width: 60px;
+                                        text: "Native TF";
                                         font-size: 11px;
                                         font-weight: 600;
                                         color: Theme.muted-text-color;
@@ -290,60 +295,86 @@ export component Setup inherits Rectangle {
                                         font-weight: 600;
                                         color: Theme.muted-text-color;
                                     }
+                                    Rectangle { horizontal-stretch: 1; }
                                 }
-                                // Fixed row height: without it the layout
-                                // hands the panel's spare vertical space to
-                                // whichever rows hold widgets, ballooning
-                                // the live rows' Switch/SpinBox to comic
-                                // size (user screenshot, 2026-07-20).
-                                for row in root.compat-rows: HorizontalLayout {
-                                    spacing: 8px;
-                                    height: 30px;
+                                // One block per title: the game name (its own
+                                // full-width line), a fixed-height columns row
+                                // (fixed so the live Switch/SpinBox cannot
+                                // balloon into spare vertical space, user
+                                // screenshot 2026-07-20), then the wrapping
+                                // "what to do" line.
+                                for row in root.compat-rows: VerticalLayout {
+                                    spacing: 1px;
+                                    padding-bottom: 8px;
                                     Text {
-                                        horizontal-stretch: 1;
                                         text: row.game;
-                                        font-size: 12px;
+                                        font-size: 13px;
+                                        font-weight: 600;
                                         color: Theme.text-color;
                                         overflow: elide;
-                                        vertical-alignment: center;
                                     }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        height: 30px;
+                                        Text {
+                                            width: 118px;
+                                            text: row.how;
+                                            font-size: 12px;
+                                            color: Theme.muted-text-color;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            width: 60px;
+                                            text: row.native-tf;
+                                            font-size: 12px;
+                                            color: Theme.muted-text-color;
+                                            vertical-alignment: center;
+                                        }
+                                        // The "Simulated TF" cell: live for
+                                        // rows carrying a tf-sim game id
+                                        // (toggle + per-game intensity
+                                        // writing tf-sim.conf), static text
+                                        // otherwise.
+                                        if row.sim-id == "": Text {
+                                            width: 175px;
+                                            text: row.tf;
+                                            font-size: 12px;
+                                            color: Theme.muted-text-color;
+                                            vertical-alignment: center;
+                                        }
+                                        if row.sim-id != "": HorizontalLayout {
+                                            // Fluent SpinBox min-width is
+                                            // 112px; the cell must be wide
+                                            // enough for Switch+SpinBox so
+                                            // it does not spill past the
+                                            // panel edge (user screenshot
+                                            // 2026-07-20).
+                                            width: 175px;
+                                            spacing: 4px;
+                                            Switch {
+                                                checked: row.sim-enabled;
+                                                toggled => { root.sim-game-enabled(row.sim-id, self.checked); }
+                                            }
+                                            SpinBox {
+                                                horizontal-stretch: 1;
+                                                minimum: 0;
+                                                maximum: 100;
+                                                value: row.sim-intensity;
+                                                enabled: row.sim-enabled;
+                                                edited(v) => { root.sim-game-intensity(row.sim-id, v); }
+                                            }
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                    }
+                                    // The one-line recommended setup, spanning
+                                    // the full panel width so it wraps
+                                    // readably instead of being squeezed into
+                                    // a narrow column.
                                     Text {
-                                        width: 112px;
-                                        text: row.how;
-                                        font-size: 12px;
+                                        text: row.setup;
+                                        font-size: 11px;
                                         color: Theme.muted-text-color;
-                                        vertical-alignment: center;
-                                    }
-                                    // The "Simulated TF" cell: live for
-                                    // rows carrying a tf-sim game id
-                                    // (toggle + per-game intensity writing
-                                    // tf-sim.conf), static text otherwise.
-                                    if row.sim-id == "": Text {
-                                        width: 175px;
-                                        text: row.tf;
-                                        font-size: 12px;
-                                        color: Theme.muted-text-color;
-                                        vertical-alignment: center;
-                                    }
-                                    if row.sim-id != "": HorizontalLayout {
-                                        // Fluent SpinBox min-width is 112px;
-                                        // 140px could not hold Switch+SpinBox
-                                        // and the cell spilled past the panel
-                                        // edge (user screenshot 2026-07-20).
-                                        width: 175px;
-                                        spacing: 4px;
-                                        Switch {
-                                            checked: row.sim-enabled;
-                                            toggled => { root.sim-game-enabled(row.sim-id, self.checked); }
-                                        }
-                                        SpinBox {
-                                            horizontal-stretch: 1;
-                                            minimum: 0;
-                                            maximum: 100;
-                                            value: row.sim-intensity;
-                                            enabled: row.sim-enabled;
-                                            edited(v) => { root.sim-game-intensity(row.sim-id, v); }
-                                        }
+                                        wrap: word-wrap;
                                     }
                                 }
                             }
