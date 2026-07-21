@@ -8,8 +8,6 @@
 //! dataset; this is a faithful transcription, never a place to claim more
 //! support than has actually been established.
 
-use crate::tfsim;
-
 /// Whether a title runs on Linux, and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Linux {
@@ -78,7 +76,7 @@ impl Support {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimTf {
     /// Works today; carries the daemon's per-game id (one of
-    /// [`tfsim::DAEMON_GAME_IDS`]) so a front-end can render its live
+    /// [`crate::tfsim::DAEMON_GAME_IDS`]) so a front-end can render its live
     /// per-game toggle.
     LiveNow(&'static str),
     /// A telemetry source exists, but the daemon needs a new parser first.
@@ -429,13 +427,14 @@ pub const GAMES: &[GameCompat] = &[
 /// lookup table (a user hunting one game reads alphabetically).
 pub fn sorted_by_name() -> Vec<&'static GameCompat> {
     let mut games: Vec<&'static GameCompat> = GAMES.iter().collect();
-    games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    games.sort_by_key(|g| g.name.to_lowercase());
     games
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tfsim;
     use std::collections::BTreeSet;
 
     #[test]
