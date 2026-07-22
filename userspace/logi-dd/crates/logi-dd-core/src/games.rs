@@ -210,7 +210,7 @@ impl GameCompat {
 /// "dirt-rally-2-0") all pass through this before they are compared, so
 /// "Assetto Corsa EVO" matches "Assetto Corsa EVO (early access)" and
 /// "dirt rally 2 0" matches "DiRT Rally 2.0".
-fn normalize_title(title: &str) -> String {
+pub(crate) fn normalize_title(title: &str) -> String {
     let mut out = String::with_capacity(title.len());
     let mut depth: i32 = 0;
     for ch in title.chars() {
