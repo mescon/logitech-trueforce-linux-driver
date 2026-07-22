@@ -4,12 +4,12 @@ import { SettingRow, SettingsList } from "widgets.slint";
 import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
-import { Setup, SetupGame } from "setup.slint";
+import { Setup, SetupGame, AddableGame } from "setup.slint";
 import { InfoPage, TestButton, TestAxis, TestCallout } from "info_page.slint";
 import { ComputerProfiles } from "computer_profiles.slint";
 import { LedPreview } from "led_preview.slint";
 export { SettingRow } from "widgets.slint";
-export { SetupGame } from "setup.slint";
+export { SetupGame, AddableGame } from "setup.slint";
 export { TestButton, TestAxis, TestCallout } from "info_page.slint";
 export { CurvePoint } from "curve_editor.slint";
 export { LedColor } from "rgb_strip.slint";
@@ -81,6 +81,12 @@ export component App inherits Window {
     // The "Your games" accordion header's one-line count (installed / need
     // setup), built in Rust alongside the list (see `bridge::games_summary`).
     in property <string> setup-games-summary: "";
+    // The "Add a game" dialog's picker list: unrecognised, unshimmed Wine
+    // games the launcher scan found (see `bridge::addable_games`).
+    in property <[AddableGame]> addable-games: [];
+    // Fired by the dialog's confirm button with the chosen (or typed) wine
+    // prefix; runs the shim installer, then rescans.
+    callback add-game(string);
     // Simulated TrueForce (see `Setup`'s tf-* properties): the resolved
     // logi-tf-sim binary, the daemon's run state, the tf-sim.conf master
     // values, and the test sweep's run state + output.
@@ -421,6 +427,7 @@ export component App inherits Window {
                     games: root.setup-games;
                     games-scanned: root.setup-games-scanned;
                     games-summary: root.setup-games-summary;
+                    addable-games: root.addable-games;
                     tf-found: root.setup-tf-found;
                     tf-path: root.setup-tf-path;
                     tf-running: root.setup-tf-running;
@@ -434,6 +441,7 @@ export component App inherits Window {
                     install-game(pfx) => { root.setup-install-game(pfx); }
                     remove-game(pfx) => { root.setup-remove-game(pfx); }
                     rescan-games() => { root.setup-rescan-games(); }
+                    add-game(pfx) => { root.add-game(pfx); }
                     tf-set-enabled(v) => { root.setup-tf-set-enabled(v); }
                     tf-set-intensity(v) => { root.setup-tf-set-intensity(v); }
                     tf-set-pitch(v) => { root.setup-tf-set-pitch(v); }

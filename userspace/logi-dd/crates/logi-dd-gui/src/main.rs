@@ -418,6 +418,7 @@ fn refresh_games(app: &App, cache: &GamesCache) {
     let items = bridge::setup_games(&games, &cfg);
     app.set_setup_games_summary(bridge::games_summary(&items).into());
     app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
+    app.set_addable_games(slint::ModelRc::new(slint::VecModel::from(bridge::addable_games(&games))));
 }
 
 /// Rescan the installed games across every launcher off the UI thread (the
@@ -442,9 +443,33 @@ fn scan_games(app_weak: slint::Weak<App>, cache: GamesCache) {
             let items = bridge::setup_games(&games, &cfg);
             app.set_setup_games_summary(bridge::games_summary(&items).into());
             app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
+            app.set_addable_games(slint::ModelRc::new(slint::VecModel::from(bridge::addable_games(&games))));
             app.set_setup_games_scanned(true);
         });
     });
+}
+
+/// Resolve the SDK directory from `sdk_dir`'s current text (the exact
+/// resolution the status line reports) and run the shim installer for
+/// `prefix` off the UI thread via `run_shim_command`. Shared by the
+/// per-game "Install TrueForce" button and the "Add a game" dialog's
+/// confirm button, so a manually added game installs exactly the same way
+/// a recognised one does.
+fn install_shim_for(
+    app_weak: slint::Weak<App>,
+    prefix: String,
+    sdk_dir: &Arc<Mutex<String>>,
+    installer_path: &Option<std::path::PathBuf>,
+    shim_binary: &Option<String>,
+    games_cache: &GamesCache,
+) {
+    let Some(app) = app_weak.upgrade() else { return };
+    app.set_setup_shim_output("Running...".into());
+    app.set_setup_shim_running(true);
+    let dir = sdk_dir.lock().unwrap().clone();
+    let resolved = logi_dd_core::steam::resolve_sdk_dir(&dir, installer_path.as_deref());
+    let args = logi_dd_core::steam::shim_install_args(&prefix, resolved.as_deref());
+    run_shim_command(app_weak, shim_binary.clone(), args, games_cache.clone());
 }
 
 /// Run the TrueForce SDK shim installer with `args` (a per-game install,
@@ -1800,16 +1825,20 @@ fn main() -> Result<(), slint::PlatformError> {
         let games_cache = games_cache.clone();
         let app_weak = app.as_weak();
         app.on_setup_install_game(move |prefix| {
-            let Some(app) = app_weak.upgrade() else { return };
-            app.set_setup_shim_output("Running...".into());
-            app.set_setup_shim_running(true);
-            let dir = sdk_dir.lock().unwrap().clone();
             // The install passes the RESOLVED dir explicitly, i.e. exactly
             // the directory the status line reports; nothing resolved
             // omits the flag and the installer's own error guidance runs.
-            let resolved = logi_dd_core::steam::resolve_sdk_dir(&dir, installer_path.as_deref());
-            let args = logi_dd_core::steam::shim_install_args(&prefix, resolved.as_deref());
-            run_shim_command(app_weak.clone(), shim_binary.clone(), args, games_cache.clone());
+            install_shim_for(app_weak.clone(), prefix.to_string(), &sdk_dir, &installer_path, &shim_binary, &games_cache);
+        });
+    }
+    {
+        let sdk_dir = sdk_dir.clone();
+        let installer_path = installer_path.clone();
+        let shim_binary = shim_binary.clone();
+        let games_cache = games_cache.clone();
+        let app_weak = app.as_weak();
+        app.on_add_game(move |prefix| {
+            install_shim_for(app_weak.clone(), prefix.to_string(), &sdk_dir, &installer_path, &shim_binary, &games_cache);
         });
     }
     {

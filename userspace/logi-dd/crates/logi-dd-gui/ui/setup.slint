@@ -26,6 +26,15 @@ export struct SetupGame {
     sim-intensity: int,
 }
 
+// One entry in the "Add a game" dialog's picker: a discovered Wine game the
+// compatibility registry does not recognise and that is not shimmed yet
+// (`bridge::addable_games`). `prefix` is the shim installer's target.
+export struct AddableGame {
+    name: string,
+    source: string,
+    prefix: string,
+}
+
 // One collapsible Setup section: a clickable header row (title + a short
 // muted status/summary on the right + a chevron that points right when
 // closed and down when open) with the section body shown only while
@@ -162,6 +171,18 @@ export component Setup inherits Rectangle {
     in property <[SetupGame]> games: [];
     in property <bool> games-scanned: false;
     in property <string> games-summary: "";
+    // The "Add a game" dialog's picker list: Wine games the launcher scan
+    // found but the compatibility registry does not recognise, and that are
+    // not shimmed yet (see `bridge::addable_games`).
+    in property <[AddableGame]> addable-games: [];
+    // Fired by the dialog's confirm button with the chosen (or typed) wine
+    // prefix; runs the same shim install the per-game button above runs.
+    callback add-game(string);
+    private property <bool> add-game-open: false;
+    // Index into `addable-games` of the picked entry, or -1 while nothing
+    // is picked (typing in the manual prefix field clears this back to -1).
+    private property <int> add-game-selected: -1;
+    private property <string> add-game-manual-prefix: "";
     // Simulated TrueForce (the logi-tf-sim daemon): the resolved binary
     // ("" while not found), whether the daemon is running, the master
     // switch/intensity/pitch from tf-sim.conf, and the test sweep's
@@ -308,6 +329,11 @@ export component Setup inherits Rectangle {
                             color: Theme.muted-text-color;
                             wrap: word-wrap;
                             vertical-alignment: center;
+                        }
+                        Button {
+                            text: "Add a game";
+                            enabled: !root.shim-running;
+                            clicked => { root.add-game-open = true; }
                         }
                         Button {
                             text: "Rescan";
@@ -750,6 +776,128 @@ export component Setup inherits Rectangle {
                         clicked => {
                             root.tf-sweep();
                             root.tf-confirm-open = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // "Add a game" dialog: lets the user point the shim installer at a Wine
+    // prefix the launcher scan did not recognise, either by picking one of
+    // the discovered-but-unrecognised games or by typing a prefix directly.
+    // Confirm runs the same TrueForce-files install the per-game button
+    // above runs; a rescan afterwards picks the game back up into "Your
+    // games" once its shim is installed.
+    if root.add-game-open: Rectangle {
+        background: Theme.scrim;
+
+        // Swallow clicks outside the dialog panel, same as the sweep
+        // consent dialog above.
+        TouchArea { }
+
+        Rectangle {
+            width: min(parent.width - 40px, 460px);
+            height: min(add-game-layout.preferred-height, parent.height - 40px);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: Theme.panel-background;
+            border-radius: Theme.panel-radius;
+            border-width: 1px;
+            border-color: Theme.panel-border;
+
+            add-game-layout := VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                Text {
+                    text: "Add a game";
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text-color;
+                }
+                Text {
+                    text: "Have a racing sim we do not recognise? Pick it here to install the TrueForce files into its prefix. If it uses Logitech's TrueForce SDK you get TrueForce; if not, the files sit unused and do no harm.";
+                    font-size: 12px;
+                    color: Theme.muted-text-color;
+                    wrap: word-wrap;
+                }
+
+                if root.addable-games.length > 0: VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Discovered but not recognised:";
+                        font-size: 12px;
+                        color: Theme.muted-text-color;
+                    }
+                    ScrollView {
+                        height: min(140px, picker.preferred-height);
+                        viewport-width: self.visible-width;
+                        picker := VerticalLayout {
+                            spacing: 2px;
+                            for g[i] in root.addable-games: Rectangle {
+                                background: i == root.add-game-selected ? Theme.selected-background : Theme.control-background;
+                                border-radius: Theme.panel-radius;
+
+                                Text {
+                                    text: g.name + " (" + g.source + ")";
+                                    font-size: 12px;
+                                    color: i == root.add-game-selected ? Theme.selected-foreground : Theme.text-color;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: left;
+                                    overflow: elide;
+                                }
+
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.add-game-selected = i;
+                                        root.add-game-manual-prefix = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    text: "Or point at a Wine prefix:";
+                    font-size: 12px;
+                    color: Theme.muted-text-color;
+                }
+                LineEdit {
+                    text: root.add-game-manual-prefix;
+                    placeholder-text: "/path/to/steamapps/compatdata/<id>/pfx";
+                    edited(text) => {
+                        root.add-game-manual-prefix = text;
+                        root.add-game-selected = -1;
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancel";
+                        clicked => {
+                            root.add-game-open = false;
+                            root.add-game-selected = -1;
+                            root.add-game-manual-prefix = "";
+                        }
+                    }
+                    Button {
+                        text: "Install TrueForce files";
+                        primary: true;
+                        enabled: root.add-game-selected >= 0 || root.add-game-manual-prefix != "";
+                        clicked => {
+                            root.add-game(
+                                root.add-game-selected >= 0
+                                    ? root.addable-games[root.add-game-selected].prefix
+                                    : root.add-game-manual-prefix
+                            );
+                            root.add-game-open = false;
+                            root.add-game-selected = -1;
+                            root.add-game-manual-prefix = "";
                         }
                     }
                 }

@@ -13,7 +13,7 @@ use logi_dd_core::launchers::DiscoveredGame;
 use logi_dd_core::tfsim;
 
 use crate::viewmodel::Row;
-use crate::{CurvePoint, LedColor, SettingRow, SetupGame, SlotNameRow};
+use crate::{AddableGame, CurvePoint, LedColor, SettingRow, SetupGame, SlotNameRow};
 
 // Stable `SettingRow.kind` tag numbering; keep in sync with the doc comment
 // on `SettingRow` and the per-kind branches in `ui/widgets.slint`.
@@ -853,6 +853,28 @@ pub fn setup_games(games: &[DiscoveredGame], cfg: &tfsim::Config) -> Vec<SetupGa
         .collect()
 }
 
+/// Build the "Add a game" dialog's picker list: the discovered Wine games
+/// (a wine prefix is the shim installer's target, so a native game never
+/// qualifies) that `setup_games` dropped because the registry does not
+/// recognise them, and that are not already shimmed (once installed, the
+/// game reappears in "Your games" itself instead). Sorted by name so the
+/// picker is stable across rescans. Recognised, native and already-shimmed
+/// games are all excluded, same rule `setup_games` uses to keep a game off
+/// this list once it is manageable elsewhere.
+pub fn addable_games(all: &[DiscoveredGame]) -> Vec<AddableGame> {
+    let mut out: Vec<AddableGame> = all
+        .iter()
+        .filter(|g| g.prefix().is_some() && games::match_title(&g.name).is_none() && !g.shim_installed)
+        .map(|g| AddableGame {
+            name: g.name.as_str().into(),
+            source: g.source.label().into(),
+            prefix: g.prefix().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default().into(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 /// Whether a "Your games" row still needs a setup step: a shim game whose
 /// TrueForce files are not installed, an older DirectInput game (its launch
 /// option always has to be set by hand), or a simulated-TrueForce game with
@@ -992,6 +1014,27 @@ mod tests {
         let unknown = &rows[2];
         assert_eq!(unknown.action, ACTION_SHIM);
         assert!(unknown.installed);
+    }
+
+    #[test]
+    fn addable_games_keeps_only_unrecognised_unshimmed_wine_titles() {
+        let games = vec![
+            // Recognised Wine game: already manageable from "Your games".
+            wine_game("Assetto Corsa Competizione", Source::Steam, false),
+            // Unrecognised, unshimmed Wine game: the one this list is for.
+            wine_game("TEKKEN 8", Source::Lutris, false),
+            // Unrecognised native game: no prefix, shim never applies.
+            native_game("Some Native Sim", Source::Heroic),
+            // Unrecognised but already shimmed: manageable from "Your
+            // games" already, so it should not double up here.
+            wine_game("Some Unknown Sim", Source::Steam, true),
+        ];
+        let addable = addable_games(&games);
+        assert_eq!(addable.len(), 1, "only TEKKEN 8 qualifies");
+        let tekken = &addable[0];
+        assert_eq!(tekken.name, "TEKKEN 8");
+        assert_eq!(tekken.source, "Lutris");
+        assert_eq!(tekken.prefix, "/pfx/TEKKEN 8");
     }
 
     #[test]
