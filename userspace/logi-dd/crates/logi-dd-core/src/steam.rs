@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 
 /// The marker file the shim installer drops into a prefix, relative to the
 /// prefix root. Mirrors `tools/install-tf-shim.sh`'s `TF_PFX_DIR` layout.
-const SHIM_MARKER: &str = "drive_c/Program Files/Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll";
+/// `pub(crate)` so the `launchers` backends can flag the shim the same way.
+pub(crate) const SHIM_MARKER: &str = "drive_c/Program Files/Logi/Trueforce/1_3_11/trueforce_sdk_x64.dll";
 
 /// The marker file a populated SDK directory must contain, relative to the
 /// SDK directory root. Same layout Logitech ships on Windows and the same
@@ -78,8 +79,34 @@ pub fn library_roots(home: &Path) -> Vec<PathBuf> {
 /// Whether an app manifest's name is Steam tooling rather than a game
 /// (Proton builds, the Steam Linux Runtime containers, redistributables):
 /// none of them wants the shim, so the Setup pages hide them.
-fn is_runtime_tooling(name: &str) -> bool {
+pub(crate) fn is_runtime_tooling(name: &str) -> bool {
     ["Proton", "Steam Linux Runtime", "Steamworks Common"].iter().any(|p| name.starts_with(p))
+}
+
+/// Parse an `appmanifest_*.acf` file's appid and display name, or `None`
+/// when either field is missing or unparseable. Shared by [`installed_games`]
+/// and the `launchers::steam` backend, which also walks app manifests but
+/// keeps native (non-Proton) games too.
+pub(crate) fn parse_manifest(path: &Path) -> Option<(u32, String)> {
+    let text = fs::read_to_string(path).ok()?;
+    let mut appid = None;
+    let mut name = None;
+    for line in text.lines() {
+        if appid.is_none() {
+            if let Some(v) = vdf_string(line, "appid") {
+                appid = v.parse::<u32>().ok();
+            }
+        }
+        if name.is_none() {
+            if let Some(v) = vdf_string(line, "name") {
+                name = Some(v.to_string());
+            }
+        }
+        if appid.is_some() && name.is_some() {
+            break;
+        }
+    }
+    Some((appid?, name?))
 }
 
 /// Every installed Proton game across `roots` (see [`library_roots`]),
@@ -99,25 +126,7 @@ pub fn installed_games(roots: &[PathBuf]) -> Vec<SteamGame> {
             if !fname.starts_with("appmanifest_") || !fname.ends_with(".acf") {
                 continue;
             }
-            let Ok(text) = fs::read_to_string(&path) else { continue };
-            let mut appid = None;
-            let mut name = None;
-            for line in text.lines() {
-                if appid.is_none() {
-                    if let Some(v) = vdf_string(line, "appid") {
-                        appid = v.parse::<u32>().ok();
-                    }
-                }
-                if name.is_none() {
-                    if let Some(v) = vdf_string(line, "name") {
-                        name = Some(v.to_string());
-                    }
-                }
-                if appid.is_some() && name.is_some() {
-                    break;
-                }
-            }
-            let (Some(appid), Some(name)) = (appid, name) else { continue };
+            let Some((appid, name)) = parse_manifest(&path) else { continue };
             if is_runtime_tooling(&name) || !seen.insert(appid) {
                 continue;
             }
