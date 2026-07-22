@@ -8,7 +8,7 @@
 # ##  module loads (modprobe hid-logitech-dd) and registers the logitech-dd ##
 # ##  driver with the 3 wheel modaliases. A wheel physically binding was    ##
 # ##  not tested in the VM (none attached), but that path is proven on bare ##
-# ##  metal. Full user steps: docs/GETTING_STARTED.md.                      ##
+# ##  metal. Full user steps: the project wiki (Installation).                      ##
 # ##  NOTE: a static kmod does NOT auto-rebuild on kernel updates - rebuild ##
 # ##  and re-layer after each kernel bump (or publish an akmod/COPR).       ##
 # ############################################################################
@@ -44,7 +44,7 @@ BuildRequires:  pkgconfig(fontconfig)
 # Two build modes from one spec, selected by whether `kernels` is defined:
 #   * kernels defined      -> compile per-kernel kmod-%%{kmod_name}-<kver>
 #     packages for exactly those kernels. This is the toolbox / atomic
-#     static-kmod path (see docs/GETTING_STARTED.md section 1a); it needs
+#     static-kmod path (see the wiki's Installation page); it needs
 #     kernel-devel for each listed kernel but no RPM Fusion buildsys.
 #   * kernels NOT defined   -> emit the akmod-%%{kmod_name} package only. It
 #     embeds the SRPM and rebuilds on the user's machine via the akmods

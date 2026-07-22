@@ -79,8 +79,6 @@ package_logitech-trueforce-dkms() {
 	# Docs + license.
 	install -Dm644 "$_src/README.md" \
 		"$pkgdir/usr/share/doc/$pkgname/README.md"
-	install -Dm644 "$_src/docs/GETTING_STARTED.md" \
-		"$pkgdir/usr/share/doc/$pkgname/GETTING_STARTED.md"
 	install -Dm644 "$_src/COPYING" \
 		"$pkgdir/usr/share/licenses/$pkgname/COPYING"
 }

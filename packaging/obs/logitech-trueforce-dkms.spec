@@ -199,7 +199,7 @@ install -D -m 0644 desktop/logi-dd-gui.svg \
 
 %files
 %license COPYING
-%doc README.md docs/GETTING_STARTED.md
+%doc README.md
 %{_usrsrc}/%{module}-%{modver}/
 %{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules
 %{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
