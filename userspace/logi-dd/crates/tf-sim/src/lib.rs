@@ -19,8 +19,11 @@
 //! - [`leds`]: the rev-display feeder (`wheel_rev_level` via sysfs).
 //! - [`daemon`]: the UDP listen / synthesize / watchdog loop.
 //! - [`sweep`]: the `--sweep` hardware-test mode (synthetic RPM sweep).
+//! - [`capture`]: the `capture` subcommand, for recording an unsupported
+//!   game's raw telemetry so its wire format can be added later.
 
 pub mod beamng;
+pub mod capture;
 pub mod codemasters;
 pub mod config;
 pub mod daemon;
