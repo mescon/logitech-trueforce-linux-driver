@@ -8,10 +8,16 @@ name: Publish release packages
 #   * Debian/Ubuntu .deb  -> built here, attached to the release (no secret)
 #   * Fedora COPR akmod   -> SRPM submitted to copr (needs secret COPR_CONFIG)
 #   * openSUSE OBS RPM    -> committed to home:mescon (needs secret OSC_CONFIG)
+#   * Arch AUR            -> logitech-trueforce-dkms/logi-dd/logi-dd-gui
+#                            pushed to the split package repo (needs secret
+#                            AUR_SSH_KEY)
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   COPR_CONFIG  the contents of your ~/.config/copr
 #   OSC_CONFIG   the contents of your ~/.config/osc/oscrc
+#   AUR_SSH_KEY  a dedicated AUR CI SSH private key; the public half is
+#                added to the maintainer's AUR account as an authorized
+#                key, so it can be revoked independently of the personal key
 
 on:
   release:
@@ -211,3 +217,56 @@ jobs:
           cp "/tmp/logi-dd-vendor-${VERSION}.tar.zst" .
           osc addremove
           osc commit -m "logitech-trueforce-dkms ${VERSION} (from tag ${TAG})"
+
+  aur:
+    name: Arch AUR
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Configure SSH for the AUR git host
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -eu
+          mkdir -p ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
+      - name: Stamp version and checksum, push to the split AUR package
+        run: |
+          set -eu
+          VERSION="${TAG#v}"
+          curl -fsSL -o src.tar.gz "https://github.com/mescon/logitech-trueforce-linux-driver/archive/refs/tags/${TAG}.tar.gz"
+          SHA=$(sha256sum src.tar.gz | cut -d' ' -f1)
+
+          PKG=packaging/aur/logitech-trueforce-dkms
+          # Same three fields as the copr/obs stamping: version, pkgrel reset
+          # to 1, and the checksum of the tarball this release actually is.
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" "$PKG/PKGBUILD"
+          sed -i "s/^pkgrel=.*/pkgrel=1/" "$PKG/PKGBUILD"
+          sed -i "s/^sha256sums=(.*)/sha256sums=('${SHA}')/" "$PKG/PKGBUILD"
+          sed -i "s/^\tpkgver = .*/\tpkgver = ${VERSION}/" "$PKG/.SRCINFO"
+          sed -i "s/^\tpkgrel = .*/\tpkgrel = 1/" "$PKG/.SRCINFO"
+          sed -i "s/^\tsha256sums = .*/\tsha256sums = ${SHA}/" "$PKG/.SRCINFO"
+
+          # logitech-trueforce-dkms is a split package: PKGBUILD's pkgname
+          # array lists it plus logi-dd and logi-dd-gui, so this one push
+          # updates all three AUR pages at once.
+          work="$(mktemp -d)"
+          git clone ssh://aur@aur.archlinux.org/logitech-trueforce-dkms.git "$work/aur"
+          cp "$PKG/PKGBUILD" "$PKG/.SRCINFO" "$PKG/logitech-trueforce-dkms.install" "$work/aur/"
+
+          cd "$work/aur"
+          git add PKGBUILD .SRCINFO logitech-trueforce-dkms.install
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "AUR package already at ${VERSION}; nothing to push"
+            exit 0
+          fi
+          git -c user.name="logitech-trueforce release" \
+              -c user.email="5875228+mescon@users.noreply.github.com" \
+              commit -m "Update to ${VERSION}"
+          git push

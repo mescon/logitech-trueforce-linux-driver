@@ -11,6 +11,10 @@
 # Normal rules (sorted alphabetically)
 #
 .*
+# AUR package metadata: a real tracked file, not a build artifact; the
+# release workflow's aur job stamps it in a checkout of the release tag,
+# so it has to be in the tree.
+!/packaging/aur/logitech-trueforce-dkms/.SRCINFO
 *.a
 *.asn1.[ch]
 *.bin
