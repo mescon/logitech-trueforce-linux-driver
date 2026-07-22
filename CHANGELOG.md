@@ -5,6 +5,21 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.18.0 - 2026-07-22
+
+### Added
+- **Game detection across launchers.** The Setup "Your games" list now finds
+  sims installed through Steam (Proton and native Linux builds), Lutris and
+  Heroic, each tagged with its source. Native Linux sims (Euro Truck Simulator
+  2, American Truck Simulator, and more as the registry grows) are listed too.
+- **Add a game.** For a racing sim the registry does not recognise, Setup can
+  set it up: pick it from your detected games or point at its Wine prefix, and
+  the TrueForce files are installed into it. It then stays in the list to manage.
+
+### Changed
+- **Setup shows only recognised sims** (plus any game you added), instead of
+  every installed title, so non-wheel games no longer clutter the list.
+
 ## 0.17.0 - 2026-07-22
 
 ### Added
