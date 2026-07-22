@@ -56,9 +56,11 @@ Six pieces, all built from this repository:
 - **logi-dd-gui**, the same settings surface as a desktop app (Slint): every
   wheel setting, a LIGHTSYNC editor with per-slot colors and animation
   direction (changes apply to the wheel immediately), per-game TrueForce shim
-  and simulated-TrueForce management on the Setup page, computer-side profile presets, and an
-  Info / Testing page with a live input tester (rotating wheel diagram,
-  button and pedal readouts) and guarded, cancelable force simulations.
+  and simulated-TrueForce management on a Setup page that finds your sims across
+  Steam (Proton and native), Lutris and Heroic and lets you add one it does not
+  recognise, computer-side profile presets, and an Info / Testing page with a
+  live input tester (rotating wheel diagram, button and pedal readouts) and
+  guarded, cancelable force simulations.
 
   ![logi-dd-gui settings](docs/images/logi-dd.png)
 
