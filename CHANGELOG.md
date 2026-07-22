@@ -5,6 +5,28 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.19.0 - 2026-07-22
+
+### Added
+- **Telemetry capture tool.** `logi-tf-sim capture --port <port>` records a
+  game's UDP telemetry to a file so its format can be added to the simulated
+  TrueForce support. See the wiki's "Add a game" page; this lets any
+  UDP-telemetry sim be supported from a short recording.
+- **Relay listener for shared-memory sims.** `logi-tf-sim` now also listens for
+  a small relay protocol (default port 20780) that feeds the same simulated
+  TrueForce and rev-light pipeline, so shared-memory sims (iRacing, rFactor 2
+  and similar) can be driven by a Wine-side relay. The relay itself is in
+  progress.
+
+### Fixed
+- **Rev lights track RPM at the full ~60 Hz** G HUB uses. The feeder was capped
+  near 6 Hz, so rev sweeps lagged well behind the engine; the correct cadence
+  was measured from a hardware capture (issue #20).
+
+### Changed
+- The release workflow now publishes the Arch AUR package on every tag,
+  alongside the existing Debian, Fedora COPR and openSUSE OBS channels.
+
 ## 0.18.0 - 2026-07-22
 
 ### Added
