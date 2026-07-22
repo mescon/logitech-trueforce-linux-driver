@@ -1,8 +1,9 @@
-//! Unified game-discovery data model. Each launcher backend (Steam, Lutris
-//! here; Heroic follows) scans its own install for games and reports them
-//! as [`DiscoveredGame`]s; an aggregator merges the backends' results for
-//! the Setup pages, which offer a shim install for any Wine game.
+//! Unified game-discovery data model. Each launcher backend (Steam, Lutris,
+//! Heroic) scans its own install for games and reports them as
+//! [`DiscoveredGame`]s; an aggregator merges the backends' results for the
+//! Setup pages, which offer a shim install for any Wine game.
 
+pub mod heroic;
 pub mod lutris;
 pub mod steam;
 
