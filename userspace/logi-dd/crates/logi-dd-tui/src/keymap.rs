@@ -143,6 +143,33 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, Scope) {
             Scope::Modal,
         );
     }
+    if let Some(picker) = &app.add_game {
+        if picker.manual.is_some() {
+            return (
+                Section {
+                    title: "Add a game: prefix path",
+                    bindings: vec![
+                        bf("type", "text"),
+                        b("Backspace", "erase"),
+                        bf("Enter", "install"),
+                        bf("Esc", "back to the list"),
+                    ],
+                },
+                Scope::TextEntry,
+            );
+        }
+        return (
+            Section {
+                title: "Add a game",
+                bindings: vec![
+                    bf("Up/Down", "select"),
+                    bf("Enter", "install / type a path"),
+                    bf("Esc", "cancel"),
+                ],
+            },
+            Scope::Modal,
+        );
+    }
     if app.edit.is_some() {
         return (
             Section {
@@ -249,6 +276,7 @@ fn setup_section<S: SysfsIo>(app: &App<S>) -> Section {
                 keys.push(bfs("i", "install the SDK shim", "install"));
                 keys.push(bfs("u", "remove the SDK shim", "remove"));
                 keys.push(bfs("g", "toggle simulated TF for the game", "sim TF"));
+                keys.push(bfs("a", "add an unrecognised Wine game", "add game"));
                 keys.push(bfs("Esc/Left", "back to the sections", "back"));
             }
             SetupSection::SimTf => {

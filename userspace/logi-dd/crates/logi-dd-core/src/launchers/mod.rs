@@ -116,6 +116,23 @@ pub fn is_recognized(name: &str) -> bool {
     crate::games::match_title(name).is_some()
 }
 
+/// Whether a discovered game belongs on the Setup pages' "Your games" list:
+/// the compat registry recognises it, or it already has the shim installed
+/// (added manually, so it stays manageable). An unrecognised, unshimmed
+/// title has no action on these pages; see [`is_addable`].
+pub fn keep_for_setup(game: &DiscoveredGame) -> bool {
+    is_recognized(&game.name) || game.shim_installed
+}
+
+/// Whether a discovered game qualifies for the "Add a game" picker: a Wine
+/// game (its prefix is the shim installer's target; a native game never
+/// qualifies) that the compat registry does not recognise and that is not
+/// already shimmed. Once installed it moves to [`keep_for_setup`]'s list
+/// instead, so the two never overlap.
+pub fn is_addable(game: &DiscoveredGame) -> bool {
+    game.prefix().is_some() && !is_recognized(&game.name) && !game.shim_installed
+}
+
 /// `$XDG_CONFIG_HOME` if set and non-empty, else `home/.config`.
 fn config_dir(home: &Path) -> PathBuf {
     config_dir_in(home, std::env::var_os("XDG_CONFIG_HOME").as_deref())
@@ -176,6 +193,44 @@ mod tests {
     fn is_recognized_matches_the_compat_registry() {
         assert!(is_recognized("Assetto Corsa Competizione"));
         assert!(!is_recognized("TEKKEN 8"));
+    }
+
+    /// A Wine game reported by `source` (has a wine prefix the shim
+    /// installer can target).
+    fn wine_game(name: &str, source: Source, shim_installed: bool) -> DiscoveredGame {
+        DiscoveredGame {
+            name: name.to_string(),
+            source,
+            kind: GameKind::Wine { prefix: PathBuf::from(format!("/pfx/{name}")) },
+            shim_installed,
+        }
+    }
+
+    /// A native Linux game (no wine prefix, shim never applies).
+    fn native_game(name: &str, source: Source) -> DiscoveredGame {
+        DiscoveredGame { name: name.to_string(), source, kind: GameKind::Native, shim_installed: false }
+    }
+
+    #[test]
+    fn keep_for_setup_keeps_recognised_or_shimmed_games_only() {
+        assert!(keep_for_setup(&wine_game("Assetto Corsa Competizione", Source::Steam, false)), "recognised");
+        assert!(keep_for_setup(&wine_game("TEKKEN 8", Source::Steam, true)), "unrecognised but shimmed");
+        assert!(!keep_for_setup(&wine_game("TEKKEN 8", Source::Steam, false)), "unrecognised, unshimmed");
+        assert!(keep_for_setup(&native_game("Euro Truck Simulator 2", Source::Steam)), "recognised native");
+    }
+
+    #[test]
+    fn is_addable_keeps_only_unrecognised_unshimmed_wine_titles() {
+        assert!(
+            !is_addable(&wine_game("Assetto Corsa Competizione", Source::Steam, false)),
+            "recognised: already manageable from Your games"
+        );
+        assert!(is_addable(&wine_game("TEKKEN 8", Source::Lutris, false)), "the one this list is for");
+        assert!(!is_addable(&native_game("Some Native Sim", Source::Heroic)), "no prefix, shim never applies");
+        assert!(
+            !is_addable(&wine_game("Some Unknown Sim", Source::Steam, true)),
+            "already shimmed: manageable from Your games already"
+        );
     }
 
     #[test]

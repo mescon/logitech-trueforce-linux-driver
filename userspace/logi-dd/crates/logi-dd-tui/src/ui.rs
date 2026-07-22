@@ -138,6 +138,11 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
         draw_info_popup(f, popup, root[1]);
     }
 
+    // The "Add a game" picker floats centered over the body when active.
+    if let Some(picker) = &app.add_game {
+        draw_add_game_picker(f, app, picker, root[1]);
+    }
+
     // The `?` help overlay floats over everything; any key closes it.
     if app.help {
         draw_help(f, app, root[1]);
@@ -683,7 +688,7 @@ fn setup_sections<S: SysfsIo>(
             }
             SetupSection::Games => {
                 let hint = if inside {
-                    "[i/u install/remove  g sim TF  Esc back]"
+                    "[i/u install/remove  g sim TF  a add  Esc back]"
                 } else {
                     "[Enter opens the list]"
                 };
@@ -696,9 +701,9 @@ fn setup_sections<S: SysfsIo>(
                     if app.games.is_empty() {
                         lines.push(Line::from(Span::styled(
                             if app.games_scanned {
-                                "  No Steam games that run through Proton were found (r rescans)"
+                                "  No known games found (r rescans, a adds one by hand)"
                             } else {
-                                "  Scanning your Steam library..."
+                                "  Scanning your game launchers..."
                             },
                             dim,
                         )));
@@ -745,20 +750,33 @@ fn setup_sections<S: SysfsIo>(
                             Some(logi_dd_core::games::SetupAction::WorksOutOfBox) => {
                                 Span::styled("works out of the box", Style::default().fg(Color::Green))
                             }
-                            None => Span::styled("no special setup needed", dim),
+                            // Unrecognised titles are filtered out of this
+                            // list unless they already carry the shim (see
+                            // `launchers::keep_for_setup`), so `None` here
+                            // always means "added by hand".
+                            None => Span::styled(
+                                "TrueForce added by you (u removes)",
+                                Style::default().fg(Color::Green),
+                            ),
                         };
                         lines.push(Line::from(vec![
                             Span::styled(
-                                format!("  {}{:<26}", if cursor { "> " } else { "  " }, truncate(&g.name, 24)),
+                                format!("  {}{:<20}", if cursor { "> " } else { "  " }, truncate(&g.name, 18)),
                                 name_style,
                             ),
-                            Span::raw(" "),
+                            Span::styled(format!(" [{:<6}] ", g.source.label()), dim),
                             status,
                         ]));
                         // The plain-English "what makes it best" line from
-                        // the registry, dimmed under the game.
+                        // the registry, dimmed under the game; an added-by-
+                        // hand title gets its own short explainer instead.
                         if let Some(c) = compat {
                             lines.push(Line::from(Span::styled(format!("    {}", c.setup), dim)));
+                        } else {
+                            lines.push(Line::from(Span::styled(
+                                "    Added by you; remove if this game does not use TrueForce.",
+                                dim,
+                            )));
                         }
                     }
                 } else {
@@ -1200,6 +1218,84 @@ fn draw_info_popup(f: &mut Frame, popup: &crate::app::InfoPopup, area: Rect) {
     );
 }
 
+/// Render the "Add a game" picker: `App::addable`'s unrecognised Wine
+/// games, plus a trailing "type a path" row that swaps to a text field
+/// once selected. The selected row (or the manual field, while typing)
+/// wears reverse video, same convention as every other list in this TUI.
+fn draw_add_game_picker<S: SysfsIo>(
+    f: &mut Frame,
+    app: &App<S>,
+    picker: &crate::app::AddGamePicker,
+    area: Rect,
+) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let width = area.width.saturating_sub(6).clamp(30, 64).min(area.width);
+    let manual_row = app.addable.len();
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "Install the TrueForce SDK shim into a game this list did not recognise.",
+        dim,
+    )));
+    lines.push(Line::from(""));
+    if app.addable.is_empty() {
+        lines.push(Line::from(Span::styled("  No unrecognised Wine games were found.", dim)));
+    }
+    for (i, g) in app.addable.iter().enumerate() {
+        let cursor = picker.manual.is_none() && picker.idx == i;
+        let style =
+            if cursor { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{}{:<28} [{}]",
+                if cursor { "> " } else { "  " },
+                truncate(&g.name, 26),
+                g.source.label()
+            ),
+            style,
+        )));
+    }
+    match &picker.manual {
+        Some(draft) => lines.push(Line::from(vec![
+            Span::raw("> prefix path: "),
+            Span::styled(
+                format!("{draft}_"),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        None => {
+            let cursor = picker.idx == manual_row;
+            let style =
+                if cursor { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
+            lines.push(Line::from(Span::styled(
+                format!("{}type a wine prefix path...", if cursor { "> " } else { "  " }),
+                style,
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        if picker.manual.is_some() {
+            "[Enter installs  Esc back to the list]"
+        } else {
+            "[Up/Down select  Enter installs  Esc cancels]"
+        },
+        dim,
+    )));
+
+    let height = (lines.len() as u16).saturating_add(2).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Add a game ")),
+        rect,
+    );
+}
+
 /// A pane's bordered block: the focused pane's border wears the accent
 /// colour and a bold title, so the pane Up/Down act on is always visible.
 fn pane_block(title: &str, focused: bool) -> Block<'static> {
@@ -1332,6 +1428,57 @@ mod tests {
         term.draw(|f| draw(f, &a)).unwrap();
         let text = screen(&term);
         assert!(text.contains("master:"), "the selected section expands:\n{text}");
+    }
+
+    #[test]
+    fn games_list_shows_the_source_tag_and_an_added_by_hand_row() {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut a = setup_view_app();
+        a.focus = Focus::Content;
+        a.games = vec![
+            logi_dd_core::launchers::DiscoveredGame {
+                name: "Assetto Corsa Competizione".to_string(),
+                source: logi_dd_core::launchers::Source::Steam,
+                kind: logi_dd_core::launchers::GameKind::Wine {
+                    prefix: std::path::PathBuf::from("/pfx/acc"),
+                },
+                shim_installed: false,
+            },
+            logi_dd_core::launchers::DiscoveredGame {
+                name: "TEKKEN 8".to_string(),
+                source: logi_dd_core::launchers::Source::Lutris,
+                kind: logi_dd_core::launchers::GameKind::Wine {
+                    prefix: std::path::PathBuf::from("/pfx/tekken"),
+                },
+                shim_installed: true,
+            },
+        ];
+        term.draw(|f| draw(f, &a)).unwrap();
+        let text = screen(&term);
+        assert!(text.contains("[Steam"), "the recognised game's source tag:\n{text}");
+        assert!(text.contains("[Lutris"), "the added-by-hand game's source tag:\n{text}");
+        assert!(text.contains("added by you"), "the added-by-hand explainer:\n{text}");
+    }
+
+    #[test]
+    fn add_game_picker_renders_the_addable_list_and_the_manual_row() {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut a = setup_view_app();
+        a.focus = Focus::Content;
+        a.addable = vec![logi_dd_core::launchers::DiscoveredGame {
+            name: "TEKKEN 8".to_string(),
+            source: logi_dd_core::launchers::Source::Lutris,
+            kind: logi_dd_core::launchers::GameKind::Wine {
+                prefix: std::path::PathBuf::from("/pfx/tekken"),
+            },
+            shim_installed: false,
+        }];
+        a.add_game = Some(crate::app::AddGamePicker { idx: 0, manual: None });
+        term.draw(|f| draw(f, &a)).unwrap();
+        let text = screen(&term);
+        assert!(text.contains("Add a game"), "the picker's title:\n{text}");
+        assert!(text.contains("TEKKEN 8"), "the addable row:\n{text}");
+        assert!(text.contains("type a wine prefix path"), "the trailing manual row:\n{text}");
     }
 
     #[test]

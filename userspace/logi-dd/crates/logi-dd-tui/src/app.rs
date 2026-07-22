@@ -6,13 +6,14 @@ use logi_dd_core::games::{self, SetupAction};
 use logi_dd_core::profiles;
 use logi_dd_core::setting::Access;
 use logi_dd_core::shaping::{self, ShapingRole};
+use logi_dd_core::launchers::{self, DiscoveredGame};
 use logi_dd_core::lightsync;
-use logi_dd_core::steam::{self, SteamGame};
+use logi_dd_core::steam;
 use logi_dd_core::sysfs::SysfsIo;
 use logi_dd_core::tfsim;
 use logi_dd_core::{Category, Device, Error, Kind, Mode, ModeReq, Value, REGISTRY};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// One rendered settings row. `attr`/`label` are owned strings rather than
 /// registry `&'static str`s because the desktop Profiles page also renders
@@ -55,6 +56,18 @@ pub struct EffectEdit {
 pub struct InfoPopup {
     pub title: String,
     pub lines: Vec<String>,
+}
+
+/// The "Add a game" picker's modal state, active while browsing
+/// unrecognised Wine games to shim (the `a` key inside Setup > Your
+/// games). `idx` selects a row in `App::addable`, with one trailing row
+/// (index `addable.len()`) for typing a prefix path by hand; `manual` is
+/// `Some` while that row's text field is open. Enter on a picked row (or
+/// on the committed manual path) installs via the same shim path the `i`
+/// key uses; Esc backs out one level, then closes the picker.
+pub struct AddGamePicker {
+    pub idx: usize,
+    pub manual: Option<String>,
 }
 
 /// The one-line range/unit/choices summary a `Kind` contributes to the
@@ -177,6 +190,9 @@ pub struct App<S: SysfsIo> {
     /// it is on screen; any key closes it. Settings views only: Setup's
     /// `i` keeps its game-install meaning.
     pub info_popup: Option<InfoPopup>,
+    /// The "Add a game" picker, `Some` while it is on screen; see
+    /// `AddGamePicker`.
+    pub add_game: Option<AddGamePicker>,
     pub quit: bool,
     /// `logi-ffb`'s resolved path (`PATH`, else next to this executable;
     /// see `logi_dd_core::helpers`), or `None` if it was not found at
@@ -218,14 +234,19 @@ pub struct App<S: SysfsIo> {
     /// (Enter/Right on Games or Simulated TF): the section's own keys only
     /// act inside, and Esc/Left steps back to the section level first.
     pub setup_inside: bool,
-    /// The installed Proton games the Setup view lists, `scan_games`'s
-    /// last result; `game_idx` is the selected row.
-    pub games: Vec<SteamGame>,
+    /// The games the Setup view lists, `scan_games`'s last result: every
+    /// launcher-discovered game (`launchers::discover`) the compat registry
+    /// recognises, plus any unrecognised one that already has the shim
+    /// (`launchers::keep_for_setup`); `game_idx` is the selected row.
+    pub games: Vec<DiscoveredGame>,
     pub game_idx: usize,
     /// Whether `scan_games` ran at least once, so the view can tell "no
-    /// Steam games found" apart from "not scanned yet" (the scan is lazy:
-    /// it first runs when the Setup view is entered).
+    /// games found" apart from "not scanned yet" (the scan is lazy: it
+    /// first runs when the Setup view is entered).
     pub games_scanned: bool,
+    /// The unrecognised, unshimmed Wine games the "Add a game" picker (`a`)
+    /// offers (`launchers::is_addable`), same scan as `games`.
+    pub addable: Vec<DiscoveredGame>,
     /// `logi-tf-sim`'s resolved path (`PATH`, else next to this
     /// executable), or `None` if it was not found at startup. The Setup
     /// body's Simulated TrueForce block shows the path; start/test do
@@ -341,6 +362,7 @@ impl<S: SysfsIo> App<S> {
             color_picker: None,
             effect_edit: None,
             info_popup: None,
+            add_game: None,
             quit: false,
             shaping_toggles: shaping::AxisToggles::default(),
             ffb_path: logi_dd_core::helpers::ffb_path(),
@@ -353,6 +375,7 @@ impl<S: SysfsIo> App<S> {
             games: Vec::new(),
             game_idx: 0,
             games_scanned: false,
+            addable: Vec::new(),
             tf_bin: logi_dd_core::helpers::tf_sim_path(),
             tf_conf: tfsim::default_path(),
             tf_cfg: tfsim::Config::load(),
@@ -541,6 +564,7 @@ impl<S: SysfsIo> App<S> {
             || self.color_picker.is_some()
             || self.effect_edit.is_some()
             || self.info_popup.is_some()
+            || self.add_game.is_some()
             || self.help
             || self.sdk_edit.is_some()
             || self.profile_name_edit.is_some()
@@ -917,22 +941,30 @@ impl<S: SysfsIo> App<S> {
         }
     }
 
-    /// Rescan the Steam libraries for installed Proton games (the Setup
-    /// view's list). Blocking, like every other fs access in this
-    /// synchronous TUI; a scan is a handful of small file reads.
+    /// Rescan the launchers (Steam, Lutris, Heroic; see `launchers::
+    /// discover`) for installed games, splitting the result into the
+    /// Setup view's "Your games" list (`launchers::keep_for_setup`) and
+    /// the "Add a game" picker's candidates (`launchers::is_addable`).
+    /// Blocking, like every other fs access in this synchronous TUI; a
+    /// scan is a handful of small file reads.
     pub fn scan_games(&mut self) {
-        self.games = match std::env::var_os("HOME") {
-            Some(home) => steam::installed_games(&steam::library_roots(Path::new(&home))),
-            None => Vec::new(),
-        };
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let found = launchers::discover(&home);
+        self.games = found.iter().filter(|&g| launchers::keep_for_setup(g)).cloned().collect();
+        self.addable = found.iter().filter(|&g| launchers::is_addable(g)).cloned().collect();
         self.games_scanned = true;
         if self.game_idx >= self.games.len() {
             self.game_idx = self.games.len().saturating_sub(1);
         }
+        if let Some(picker) = self.add_game.as_mut() {
+            if picker.idx > self.addable.len() {
+                picker.idx = self.addable.len();
+            }
+        }
     }
 
     /// The Setup view's selected game, if the list has any.
-    pub fn selected_game(&self) -> Option<&SteamGame> {
+    pub fn selected_game(&self) -> Option<&DiscoveredGame> {
         self.games.get(self.game_idx)
     }
 
@@ -1416,6 +1448,32 @@ impl<S: SysfsIo> App<S> {
         self.reload();
     }
 
+    /// Commit the "Add a game" picker: queue a shim install for the picked
+    /// row's prefix, or (the trailing manual entry) the typed path, exactly
+    /// the same `pending_shim` path the per-game `i` key uses. An empty
+    /// manual path re-opens the picker on that field instead of installing
+    /// nothing.
+    pub fn commit_add_game(&mut self) {
+        let Some(picker) = self.add_game.take() else { return };
+        let pfx = match picker.manual {
+            Some(draft) => {
+                let trimmed = draft.trim().to_string();
+                if trimmed.is_empty() {
+                    self.status = "add a game: enter a wine prefix path".to_string();
+                    self.add_game = Some(AddGamePicker { idx: picker.idx, manual: Some(draft) });
+                    return;
+                }
+                trimmed
+            }
+            None => match self.addable.get(picker.idx).and_then(|g| g.prefix()) {
+                Some(prefix) => prefix.to_string_lossy().into_owned(),
+                None => return,
+            },
+        };
+        let args = steam::shim_install_args(&pfx, self.sdk_resolved.as_deref());
+        self.pending_shim = Some((args, "install"));
+    }
+
     /// Commit the color picker's working strip: the same write path the
     /// old raw hex editor used, so a mirrored direction still mirrors the
     /// left half before the write.
@@ -1654,6 +1712,35 @@ impl<S: SysfsIo> App<S> {
             }
             return;
         }
+        if let Some(picker) = self.add_game.as_mut() {
+            // The manual-path row swallows every key while its text field
+            // is open, same rule as every other line editor here.
+            if let Some(draft) = picker.manual.as_mut() {
+                match key {
+                    Enter => self.commit_add_game(),
+                    Esc => picker.manual = None,
+                    Backspace => {
+                        draft.pop();
+                    }
+                    Char(c) => draft.push(c),
+                    _ => {}
+                }
+                return;
+            }
+            // One past the last addable row is the trailing "type a path
+            // manually" entry.
+            let manual_row = self.addable.len();
+            match key {
+                Up => picker.idx = picker.idx.saturating_sub(1),
+                Down => picker.idx = (picker.idx + 1).min(manual_row),
+                Enter if picker.idx == manual_row => picker.manual = Some(String::new()),
+                Enter => self.commit_add_game(),
+                Esc => self.add_game = None,
+                Char('?') => self.help = true,
+                _ => {}
+            }
+            return;
+        }
         if let Some(ed) = self.edit.as_mut() {
             match key {
                 Enter => self.commit_edit(),
@@ -1873,16 +1960,19 @@ impl<S: SysfsIo> App<S> {
                 // line before the blocking run (see `pending_shim`).
                 Char('i') if inside && section == SetupSection::Games => {
                     match (self.selected_game(), self.selected_game_action()) {
-                        (Some(game), Some(SetupAction::InstallShim)) => {
-                            let pfx = game.prefix.to_string_lossy().into_owned();
-                            // The RESOLVED dir goes along explicitly, i.e.
-                            // exactly what the SDK status line reports;
-                            // nothing resolved omits the flag and the
-                            // installer's own error guidance runs.
-                            let args =
-                                steam::shim_install_args(&pfx, self.sdk_resolved.as_deref());
-                            self.pending_shim = Some((args, "install"));
-                        }
+                        (Some(game), Some(SetupAction::InstallShim)) => match game.prefix() {
+                            Some(prefix) => {
+                                let pfx = prefix.to_string_lossy().into_owned();
+                                // The RESOLVED dir goes along explicitly, i.e.
+                                // exactly what the SDK status line reports;
+                                // nothing resolved omits the flag and the
+                                // installer's own error guidance runs.
+                                let args =
+                                    steam::shim_install_args(&pfx, self.sdk_resolved.as_deref());
+                                self.pending_shim = Some((args, "install"));
+                            }
+                            None => self.status = "install: this game has no wine prefix".to_string(),
+                        },
                         (Some(_), _) => {
                             self.status =
                                 "TrueForce files are only for games with built-in TrueForce"
@@ -1892,22 +1982,42 @@ impl<S: SysfsIo> App<S> {
                     }
                 }
                 Char('u') if inside && section == SetupSection::Games => {
-                    match (self.selected_game(), self.selected_game_action()) {
-                        (Some(game), Some(SetupAction::InstallShim)) => {
-                            let pfx = game.prefix.to_string_lossy().into_owned();
-                            self.pending_shim =
-                                Some((vec!["--uninstall-prefix".to_string(), pfx], "uninstall"));
+                    match self.selected_game() {
+                        // Removable either because the registry says so, or
+                        // (an unrecognised title added via the picker) it
+                        // already carries the shim: it stays manageable.
+                        Some(game)
+                            if matches!(
+                                self.selected_game_action(),
+                                Some(SetupAction::InstallShim)
+                            ) || game.shim_installed =>
+                        {
+                            match game.prefix() {
+                                Some(prefix) => {
+                                    let pfx = prefix.to_string_lossy().into_owned();
+                                    self.pending_shim = Some((
+                                        vec!["--uninstall-prefix".to_string(), pfx],
+                                        "uninstall",
+                                    ));
+                                }
+                                None => {
+                                    self.status = "remove: this game has no wine prefix".to_string()
+                                }
+                            }
                         }
-                        (Some(_), _) => {
+                        Some(_) => {
                             self.status =
                                 "TrueForce files are only for games with built-in TrueForce"
                                     .to_string()
                         }
-                        (None, _) => self.status = "remove: no game selected".to_string(),
+                        None => self.status = "remove: no game selected".to_string(),
                     }
                 }
                 Char('g') if inside && section == SetupSection::Games => {
                     self.tf_toggle_selected_game()
+                }
+                Char('a') if inside && section == SetupSection::Games => {
+                    self.add_game = Some(AddGamePicker { idx: 0, manual: None });
                 }
                 _ => {}
             }
@@ -2583,6 +2693,17 @@ mod tests {
         assert!(a.curve_edit.is_none());
     }
 
+    /// A Wine game with a wine prefix at `prefix` (Steam sourced, the shape
+    /// most Setup tests need); `shim_installed` drives the row's status.
+    fn wine_game(name: &str, prefix: &str, shim_installed: bool) -> DiscoveredGame {
+        DiscoveredGame {
+            name: name.to_string(),
+            source: launchers::Source::Steam,
+            kind: launchers::GameKind::Wine { prefix: PathBuf::from(prefix) },
+            shim_installed,
+        }
+    }
+
     /// A Setup-view app with two fake games in the list (no real Steam
     /// scan results are asserted on; the scan the view entry triggers is
     /// simply overwritten).
@@ -2596,18 +2717,12 @@ mod tests {
         // install/remove keys have something to queue; the sim-TF tests
         // push a telemetry-driven title of their own.
         a.games = vec![
-            SteamGame {
-                appid: 100,
-                name: "Assetto Corsa Competizione".to_string(),
-                prefix: PathBuf::from("/lib/steamapps/compatdata/100/pfx"),
-                shim_installed: false,
-            },
-            SteamGame {
-                appid: 400,
-                name: "Assetto Corsa EVO".to_string(),
-                prefix: PathBuf::from("/lib/steamapps/compatdata/400/pfx"),
-                shim_installed: true,
-            },
+            wine_game(
+                "Assetto Corsa Competizione",
+                "/lib/steamapps/compatdata/100/pfx",
+                false,
+            ),
+            wine_game("Assetto Corsa EVO", "/lib/steamapps/compatdata/400/pfx", true),
         ];
         a.game_idx = 0;
         a.games_scanned = true;
@@ -2757,6 +2872,117 @@ mod tests {
         assert!(a.status.contains("no Proton games"), "status: {}", a.status);
         a.on_key(KeyCode::Char('i'));
         assert_eq!(a.take_pending_shim(), None, "i is inert outside the list");
+    }
+
+    #[test]
+    fn setup_u_removes_the_shim_from_an_unrecognised_but_added_game() {
+        // A title the registry does not know, added earlier via the
+        // picker: not a shim action per the registry, but its files are
+        // installed, so u must still offer to remove them.
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.games.push(wine_game("Some Unknown Sim", "/lib/steamapps/compatdata/900/pfx", true));
+        a.game_idx = 2;
+        enter_setup(&mut a, SetupSection::Games);
+        a.game_idx = 2;
+        a.on_key(KeyCode::Char('u'));
+        assert_eq!(
+            a.take_pending_shim(),
+            Some((
+                vec!["--uninstall-prefix".to_string(), "/lib/steamapps/compatdata/900/pfx".to_string()],
+                "uninstall"
+            )),
+            "status: {}",
+            a.status
+        );
+    }
+
+    #[test]
+    fn add_game_key_opens_the_picker_over_the_addable_list() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.addable = vec![
+            wine_game("TEKKEN 8", "/pfx/tekken", false),
+            wine_game("Some Unknown Sim", "/pfx/unknown", false),
+        ];
+        enter_setup(&mut a, SetupSection::Games);
+        a.on_key(KeyCode::Char('a'));
+        let picker = a.add_game.as_ref().expect("a opens the picker");
+        assert_eq!(picker.idx, 0);
+        assert!(picker.manual.is_none());
+    }
+
+    #[test]
+    fn add_game_picker_up_down_clamp_across_the_trailing_manual_row() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.addable = vec![wine_game("TEKKEN 8", "/pfx/tekken", false)];
+        enter_setup(&mut a, SetupSection::Games);
+        a.on_key(KeyCode::Char('a'));
+        a.on_key(KeyCode::Up);
+        assert_eq!(a.add_game.as_ref().unwrap().idx, 0, "up from the top stays");
+        a.on_key(KeyCode::Down);
+        assert_eq!(a.add_game.as_ref().unwrap().idx, 1, "the trailing manual-entry row");
+        a.on_key(KeyCode::Down);
+        assert_eq!(a.add_game.as_ref().unwrap().idx, 1, "down from the manual row stays");
+        a.on_key(KeyCode::Esc);
+        assert!(a.add_game.is_none(), "Esc closes the picker");
+    }
+
+    #[test]
+    fn add_game_picker_enter_on_a_row_queues_the_shim_install_and_closes() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.addable = vec![wine_game("TEKKEN 8", "/pfx/tekken", false)];
+        a.sdk_resolved = None;
+        enter_setup(&mut a, SetupSection::Games);
+        a.on_key(KeyCode::Char('a'));
+        a.on_key(KeyCode::Enter);
+        assert!(a.add_game.is_none(), "the picker closes on install");
+        assert_eq!(
+            a.take_pending_shim(),
+            Some((vec!["--prefix".to_string(), "/pfx/tekken".to_string()], "install"))
+        );
+    }
+
+    #[test]
+    fn add_game_picker_manual_entry_types_and_commits() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.addable = Vec::new();
+        a.sdk_resolved = None;
+        enter_setup(&mut a, SetupSection::Games);
+        a.on_key(KeyCode::Char('a'));
+        // No addable rows: the trailing manual row is already selected.
+        assert_eq!(a.add_game.as_ref().unwrap().idx, 0);
+        a.on_key(KeyCode::Enter);
+        assert!(a.add_game.as_ref().unwrap().manual.is_some(), "Enter opens the text field");
+        for c in "/home/me/.wine".chars() {
+            a.on_key(KeyCode::Char(c));
+        }
+        a.on_key(KeyCode::Backspace);
+        a.on_key(KeyCode::Char('e'));
+        a.on_key(KeyCode::Enter);
+        assert!(a.add_game.is_none(), "a non-empty path commits");
+        assert_eq!(
+            a.take_pending_shim(),
+            Some((vec!["--prefix".to_string(), "/home/me/.wine".to_string()], "install"))
+        );
+    }
+
+    #[test]
+    fn add_game_picker_rejects_an_empty_manual_path() {
+        use crossterm::event::KeyCode;
+        let mut a = setup_app();
+        a.addable = Vec::new();
+        enter_setup(&mut a, SetupSection::Games);
+        a.on_key(KeyCode::Char('a'));
+        a.on_key(KeyCode::Enter); // opens the manual field, empty
+        a.on_key(KeyCode::Enter); // commit with nothing typed
+        assert!(a.add_game.is_some(), "the picker stays open on an empty path");
+        assert!(a.add_game.as_ref().unwrap().manual.is_some(), "still on the text field");
+        assert_eq!(a.take_pending_shim(), None, "nothing queued");
+        assert!(a.status.contains("prefix path"), "status: {}", a.status);
     }
 
     #[test]
@@ -3404,12 +3630,7 @@ mod tests {
         assert!(a.status.contains("no per-game support"), "status: {}", a.status);
         assert!(a.tf_cfg.games.is_empty(), "nothing written");
         // A mapped title (Steam's own casing) toggles its daemon id.
-        a.games.push(SteamGame {
-            appid: 690790,
-            name: "DiRT Rally 2.0".to_string(),
-            prefix: PathBuf::from("/lib/steamapps/compatdata/690790/pfx"),
-            shim_installed: false,
-        });
+        a.games.push(wine_game("DiRT Rally 2.0", "/lib/steamapps/compatdata/690790/pfx", false));
         a.game_idx = 2;
         a.on_key(KeyCode::Char('g'));
         assert!(!a.tf_cfg.game("dirt-rally-2").enabled);
@@ -3763,12 +3984,7 @@ mod tests {
             a.move_cat(1);
         }
         assert!(a.is_setup());
-        a.games = vec![SteamGame {
-            appid: 100,
-            name: "Assetto Corsa Competizione".to_string(),
-            prefix: PathBuf::from("/lib/steamapps/compatdata/100/pfx"),
-            shim_installed: false,
-        }];
+        a.games = vec![wine_game("Assetto Corsa Competizione", "/lib/steamapps/compatdata/100/pfx", false)];
         a.games_scanned = true;
         // Pinned rather than resolved: the real resolution reads this
         // machine's environment (repo sdk/, env var).
