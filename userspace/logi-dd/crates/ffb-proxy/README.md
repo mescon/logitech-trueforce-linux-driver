@@ -40,9 +40,13 @@ on one path and missing on the other.
 
 - The `hid-logitech-dd` driver loaded, with the wheel plugged in and bound to
   it.
-- Access to `/dev/uhid`. The packaged udev rule grants this to every local
-  user directly, no group membership needed; if you have not set that up, run
-  `logi-ffb` as root instead.
+- Access to `/dev/uhid` and to the virtual wheel's own `/dev/hidrawN` node.
+  The packaged udev rules grant both to the session user directly, no group
+  membership needed; if you have not installed them, run `logi-ffb` as root
+  instead. If the hidraw rule is missing, `logi-ffb` warns about it on
+  startup rather than failing silently.
+- Proton 10, Proton Experimental, or GE-Proton 10 or newer. `PROTON_ENABLE_HIDRAW`,
+  the variable this tool relies on, does not exist in Proton 9.0 or earlier.
 
 ## Build
 
@@ -65,10 +69,10 @@ logi-ffb <game command>
 
 `logi-ffb` brings up the virtual wheel, steers the game away from seeing the
 real wheel a second time (so it does not enumerate two look-alike devices),
-sets `PROTON_ENABLE_HIDRAW=1` on the launched game so Wine drives the virtual
-wheel's PID collection over hidraw (you do not set that variable yourself),
-runs the game command to completion, and tears the virtual wheel down when the
-game exits.
+enables Wine's hidraw path for the virtual wheel only (via
+`PROTON_ENABLE_HIDRAW`, set on the launched process; any value you already
+have in the environment is preserved, not clobbered), runs the game command
+to completion, and tears the virtual wheel down when the game exits.
 
 In Steam, put the whole thing in the title's launch options:
 

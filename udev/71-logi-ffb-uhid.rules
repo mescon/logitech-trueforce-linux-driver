@@ -4,3 +4,9 @@
 # posture chosen for the wheel settings - fine for a personal desktop.)
 # force-feedback proxy can create its virtual wheel without root. The same
 KERNEL=="uhid", MODE="0666"
+
+# The logi-ffb virtual wheel's hidraw node. It is a uhid device with no USB
+# parent, so the USB-attribute rules never match it; grant the session user
+# access by the parent HID device id instead, so Wine's hidraw backend can
+# open it and drive DirectInput force feedback (issue #50).
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="0003:046D:C2DD.*", TAG+="uaccess", MODE="0660"

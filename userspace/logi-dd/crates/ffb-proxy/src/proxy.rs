@@ -11,13 +11,27 @@
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+use nix::unistd::{access, AccessFlags};
 use std::os::fd::BorrowedFd;
 
 use crate::{descriptor, pidff, sink, source, uhid, Error, Result};
 
 const SYSFS_INPUT: &str = "/sys/class/input";
+
+/// Where the kernel lists every bound HID device, one directory per device
+/// named after its bus/vendor/product/uniq id (e.g. `0003:046D:C2DD.0007`).
+const SYSFS_HID_DEVICES: &str = "/sys/bus/hid/devices";
+
+/// How many times [`warn_if_virtual_wheel_hidraw_inaccessible`] retries
+/// before giving up on finding the virtual wheel's sysfs entry, and how long
+/// it waits between tries: the entry can appear a moment after
+/// `UHID_CREATE2` returns, since binding the hidraw driver to the new device
+/// happens asynchronously.
+const HIDRAW_PROBE_ATTEMPTS: u32 = 5;
+const HIDRAW_PROBE_INTERVAL: Duration = Duration::from_millis(20);
 
 /// How long each `poll()` call blocks before re-checking the stop flag.
 const POLL_TIMEOUT_MS: u16 = 200;
@@ -134,6 +148,71 @@ fn assign_block(next_block: &mut u8) -> u8 {
     block
 }
 
+/// Find the `/dev/hidrawN` node that belongs to the virtual wheel, if the
+/// hidraw driver has bound to it yet.
+///
+/// The uhid device registers on the `hid` bus under our vendor/virtual
+/// product id, so its sysfs device directory name contains
+/// `0003:046D:C2DD` (bus 3 == USB, matching `uhid::BUS_USB`); the hidraw
+/// child node under `<device>/hidraw/` is named after the `/dev` entry
+/// itself (e.g. `hidraw7`).
+fn find_virtual_wheel_hidraw_node() -> Option<String> {
+    let want = format!("{:04X}:{:04X}", descriptor::VENDOR, descriptor::VIRTUAL_PRODUCT);
+    let devices = fs::read_dir(SYSFS_HID_DEVICES).ok()?;
+    for device in devices.filter_map(|e| e.ok()) {
+        let device_name = device.file_name().to_string_lossy().into_owned();
+        if !device_name.to_uppercase().contains(&want) {
+            continue;
+        }
+        let hidraw_dir = device.path().join("hidraw");
+        let Ok(hidraw_entries) = fs::read_dir(&hidraw_dir) else { continue };
+        for hidraw_entry in hidraw_entries.filter_map(|e| e.ok()) {
+            let node_name = hidraw_entry.file_name().to_string_lossy().into_owned();
+            if node_name.starts_with("hidraw") {
+                return Some(node_name);
+            }
+        }
+    }
+    None
+}
+
+/// Warn on stderr if this process cannot read and write the virtual wheel's
+/// own hidraw node. Wine's hidraw backend needs that access to relay
+/// DirectInput force feedback onto the virtual device at all (issue #50);
+/// without it, a game silently falls back to a backend with no force
+/// feedback, and this was previously the only symptom.
+///
+/// Retries briefly, since the hidraw driver binds to a freshly created uhid
+/// device asynchronously and may not have a sysfs entry yet the instant
+/// [`uhid::Device::create`] returns. If no matching entry ever turns up, this
+/// does nothing: that is not necessarily a permissions problem, and this
+/// check must never block startup or fail it either way.
+fn warn_if_virtual_wheel_hidraw_inaccessible() {
+    for attempt in 0..HIDRAW_PROBE_ATTEMPTS {
+        if let Some(node) = find_virtual_wheel_hidraw_node() {
+            let dev_path = format!("/dev/{node}");
+            if access(dev_path.as_str(), AccessFlags::R_OK | AccessFlags::W_OK).is_err() {
+                eprintln!(
+                    "logi-ffb: warning: the virtual wheel's hidraw node ({dev_path}) is not \
+                     user-accessible; DirectInput force feedback will not work. Install the \
+                     71-logi-ffb-uhid.rules udev rule (issue #50)."
+                );
+            }
+            return;
+        }
+        if attempt + 1 < HIDRAW_PROBE_ATTEMPTS {
+            std::thread::sleep(HIDRAW_PROBE_INTERVAL);
+        }
+    }
+}
+
+/// True when `LOGI_FFB_DEBUG` is set in the environment. Gates the run loop's
+/// per-event debug logging, which exists to prove whether a game's
+/// DirectInput force feedback is actually arriving over hidraw at all.
+fn debug_logging_enabled() -> bool {
+    std::env::var_os("LOGI_FFB_DEBUG").is_some()
+}
+
 /// Ties the virtual device, the real-wheel input source, and the real-wheel
 /// FF sink together and drives the poll loop between them.
 ///
@@ -189,6 +268,7 @@ impl Proxy {
     /// an input source, and spawn the FF sink worker against the same node.
     pub fn new(paths: WheelPaths) -> Result<Proxy> {
         let device = uhid::Device::create()?;
+        warn_if_virtual_wheel_hidraw_inaccessible();
         let source = source::Source::open(&paths.evdev)?;
         let sink = sink::Sink::open(&paths.evdev)?;
 
@@ -237,6 +317,7 @@ impl Proxy {
     /// ended because `stop` was set or because the wheel disappeared.
     pub fn run(&mut self, stop: &AtomicBool) -> Result<()> {
         let mut report = descriptor::InputReport::default();
+        let debug = debug_logging_enabled();
 
         let outcome = loop {
             if stop.load(Ordering::Relaxed) {
@@ -287,6 +368,13 @@ impl Proxy {
             if device_revents.contains(PollFlags::POLLIN) {
                 match self.device.read_event() {
                     Ok(uhid::Event::Output(bytes)) => {
+                        if debug {
+                            let report_id = bytes.first().copied().unwrap_or(0);
+                            eprintln!(
+                                "logi-ffb: debug: uhid Output len={} report_id={report_id:#04x}",
+                                bytes.len()
+                            );
+                        }
                         if let Some(op) = pidff::decode(&bytes) {
                             self.dispatch(op);
                         }
@@ -302,7 +390,10 @@ impl Proxy {
                     // An unrecognized type byte or short body still gets an ack
                     // (err 0) so the host is never left blocked on this request;
                     // we simply skip creating a block for it.
-                    Ok(uhid::Event::SetReport { rnum: 0x54, data, id, .. }) => {
+                    Ok(uhid::Event::SetReport { rnum: 0x54, rtype, data, id }) => {
+                        if debug {
+                            eprintln!("logi-ffb: debug: uhid SetReport rnum=0x54 rtype={rtype}");
+                        }
                         if let Some(kind) = data.get(1).and_then(|&b| pidff::effect_kind_from_type_byte(b)) {
                             let block = assign_block(&mut self.next_block);
                             self.last_created_block = block;
@@ -325,7 +416,10 @@ impl Proxy {
                     // decoder keys on, so it is passed as-is (not
                     // re-prefixed). Apply if it decodes to something, then
                     // ack regardless so the kernel is never left waiting.
-                    Ok(uhid::Event::SetReport { data, id, .. }) => {
+                    Ok(uhid::Event::SetReport { rnum, rtype, data, id }) => {
+                        if debug {
+                            eprintln!("logi-ffb: debug: uhid SetReport rnum={rnum:#04x} rtype={rtype}");
+                        }
                         if let Some(op) = pidff::decode(&data) {
                             self.dispatch(op);
                         }
@@ -337,7 +431,10 @@ impl Proxy {
                     // PID Block Load (0x56): report the block just assigned
                     // by the most recent 0x54, load success, and a nonzero
                     // RAM pool so the host does not treat us as full.
-                    Ok(uhid::Event::GetReport { rnum: 0x56, id, .. }) => {
+                    Ok(uhid::Event::GetReport { rnum: 0x56, rtype, id }) => {
+                        if debug {
+                            eprintln!("logi-ffb: debug: uhid GetReport rnum=0x56 rtype={rtype}");
+                        }
                         let reply = pidff::pid_block_load_reply(self.last_created_block);
                         if let Err(e) = self.device.send_get_report_reply(id, 0, &reply) {
                             break Err(e);
@@ -348,7 +445,10 @@ impl Proxy {
                     // the descriptor's field layout (see
                     // pidff::pid_pool_reply's doc comment for how each byte
                     // was derived and what is still unconfirmed).
-                    Ok(uhid::Event::GetReport { rnum: 0x57, id, .. }) => {
+                    Ok(uhid::Event::GetReport { rnum: 0x57, rtype, id }) => {
+                        if debug {
+                            eprintln!("logi-ffb: debug: uhid GetReport rnum=0x57 rtype={rtype}");
+                        }
                         let reply = pidff::pid_pool_reply();
                         if let Err(e) = self.device.send_get_report_reply(id, 0, &reply) {
                             break Err(e);
@@ -360,9 +460,24 @@ impl Proxy {
                     // so the host is never left blocking on a request we do not
                     // specifically implement, and never sees the reply body
                     // shifted into the report-id position.
-                    Ok(uhid::Event::GetReport { rnum, id, .. }) => {
+                    Ok(uhid::Event::GetReport { rnum, rtype, id }) => {
+                        if debug {
+                            eprintln!("logi-ffb: debug: uhid GetReport rnum={rnum:#04x} rtype={rtype}");
+                        }
                         if let Err(e) = self.device.send_get_report_reply(id, 0, &[rnum]) {
                             break Err(e);
+                        }
+                    }
+
+                    Ok(uhid::Event::Open) => {
+                        if debug {
+                            eprintln!("logi-ffb: debug: uhid Open");
+                        }
+                    }
+
+                    Ok(uhid::Event::Close) => {
+                        if debug {
+                            eprintln!("logi-ffb: debug: uhid Close");
                         }
                     }
 
