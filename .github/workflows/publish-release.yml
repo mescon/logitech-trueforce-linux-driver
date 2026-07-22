@@ -240,7 +240,7 @@ jobs:
         run: |
           set -eu
           VERSION="${TAG#v}"
-          curl -fsSL -o src.tar.gz "https://github.com/mescon/logitech-trueforce-linux-driver/archive/refs/tags/${TAG}.tar.gz"
+          curl --proto '=https' --proto-redir '=https' -fsSL -o src.tar.gz "https://github.com/mescon/logitech-trueforce-linux-driver/archive/refs/tags/${TAG}.tar.gz"
           SHA=$(sha256sum src.tar.gz | cut -d' ' -f1)
 
           PKG=packaging/aur/logitech-trueforce-dkms
