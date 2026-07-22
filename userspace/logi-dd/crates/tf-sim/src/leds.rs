@@ -4,10 +4,11 @@
 //! on the RS50 the fill uses the active LIGHTSYNC slot's colours and
 //! direction, on a real G PRO rim the onboard profile owns the colours).
 //!
-//! Pacing: the protocol docs require rev-level writes no faster than
-//! ~160 ms apart (faster bursts starve the wheel's shared HID++ command
-//! processor and can cut FFB), so [`RevLeds::update`] rate-limits itself
-//! and only writes when the level actually changed. Everything here is
+//! Pacing: writes are rate-limited to match G HUB's measured rev cadence
+//! (~60 Hz, ~16 ms per level update in the issue #20 iRacing capture; the
+//! driver coalesces writes and enforces its own ~10 ms floor), so
+//! [`RevLeds::update`] rate-limits itself and only writes when the level
+//! actually changed. Everything here is
 //! best-effort: a wheel without the attribute, a failed write or a missing
 //! driver never disturbs the TrueForce stream that rides alongside.
 
@@ -23,9 +24,11 @@ const IDLE_ATTR: &str = "wheel_led_effect";
 /// Where the driver's per-device attribute directories live.
 const SYSFS_ROOT: &str = "/sys/bus/hid/devices";
 
-/// Minimum spacing between two rev-level writes (the ~160 ms floor from
-/// the protocol docs).
-pub const MIN_WRITE_INTERVAL: Duration = Duration::from_millis(160);
+/// Minimum spacing between two rev-level writes. ~16 ms (~60 Hz) mirrors
+/// G HUB's measured rev cadence and clears the driver's own ~10 ms floor;
+/// the old 160 ms was a protocol-doc misread that made a full 0->10 sweep
+/// crawl (~1.6 s).
+pub const MIN_WRITE_INTERVAL: Duration = Duration::from_millis(16);
 
 /// The rev level for `rpm` out of `max_rpm`: `round(10 * rpm / max_rpm)`
 /// clamped to 0-10. A zero (or negative, or NaN) `max_rpm` reads as 0 so
@@ -179,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn update_respects_the_160ms_floor() {
+    fn update_respects_the_pacing_floor() {
         let dir = tempdir();
         let attr = dir.join(ATTR);
         fs::write(&attr, "").unwrap();
@@ -190,12 +193,12 @@ mod tests {
         assert_eq!(read(&attr), "2");
 
         // A changed level inside the floor is skipped...
-        leds.update(50.0, 100.0, t0 + Duration::from_millis(50));
-        assert_eq!(read(&attr), "2", "no write 50 ms after the last one");
+        leds.update(50.0, 100.0, t0 + Duration::from_millis(8));
+        assert_eq!(read(&attr), "2", "no write 8 ms after the last one");
 
         // ...and picked up by the next call past it (the level still
         // differs from the last WRITTEN one).
-        leds.update(50.0, 100.0, t0 + Duration::from_millis(160));
+        leds.update(50.0, 100.0, t0 + MIN_WRITE_INTERVAL);
         assert_eq!(read(&attr), "5");
     }
 
