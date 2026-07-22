@@ -5,6 +5,21 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.19.1 - 2026-07-23
+
+### Fixed
+- **DirectInput force feedback in Le Mans Ultimate and other DirectInput sims**
+  (issue #50), confirmed on hardware. The `logi-ffb` virtual wheel's hidraw node
+  was owned by root, so Wine could not open it and silently fell back to a path
+  with no force feedback. A udev rule now grants the session user access to that
+  node. The proxy also narrows `PROTON_ENABLE_HIDRAW` to the virtual wheel only
+  (preserving any value you set) and warns when the node is inaccessible instead
+  of failing silently. This path needs Proton 10 / Experimental / GE-Proton 10
+  or newer.
+- **Packaging: the retired `GETTING_STARTED.md` broke the AUR and OBS builds.**
+  The AUR PKGBUILD, its post-install message, the OBS spec and the akmods
+  comments still referenced the removed file; they now point at the wiki.
+
 ## 0.19.0 - 2026-07-22
 
 ### Added
