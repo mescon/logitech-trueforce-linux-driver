@@ -162,14 +162,16 @@ names, so it recognizes the basics here too.
 ## Verified game support
 
 **Assetto Corsa Competizione** and **Assetto Corsa EVO** are verified end to end
-under Proton: steering, full force feedback, and TrueForce all at once (with
-`PROTON_ENABLE_HIDRAW=1` and Steam Input disabled). Other Logitech-SDK sims (Le
-Mans Ultimate, AMS2, Assetto Corsa, rFactor 2, iRacing) share the same SDK and are
-expected to work; a confirmation for any of them is welcome.
+under Proton: steering, full force feedback, and TrueForce at once (with
+`PROTON_ENABLE_HIDRAW=1` and Steam Input disabled). Most other sims either work
+out of the box with standard force feedback or need the `logi-ffb` proxy for
+their DirectInput feedback; the full per-game table, and which needs what, is on
+the [Force feedback in games](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Force-Feedback-in-Games)
+wiki page.
 
-A couple of game-side behaviors to know about (rotation-range reset at session
-start, and keeping hands clear during AC EVO map loads) are documented in
-[Troubleshooting](#troubleshooting) and GETTING_STARTED.
+A couple of game-side behaviors (rotation-range reset at session start, and
+keeping hands clear during AC EVO map loads) are covered under
+[Troubleshooting](#troubleshooting) below.
 
 ## Troubleshooting
 
@@ -185,8 +187,9 @@ start, and keeping hands clear during AC EVO map loads) are documented in
   path; the driver restores your range automatically within 20 seconds. Re-apply
   the game's own steering-lock setting so it stops pushing 90°.
 
-More cases, with commands, are in
-[GETTING_STARTED](docs/GETTING_STARTED.md).
+More cases, with commands, are on the
+[Troubleshooting](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Troubleshooting)
+wiki page.
 
 ## Documentation
 
@@ -197,20 +200,11 @@ in games, configuring the wheel, simulated TrueForce, troubleshooting) and a
 specification, libtrueforce, and the internals of `logi-ffb` and the
 simulated-TrueForce daemon).
 
-The reference documents below live in the repository, versioned with the code:
-
-- [**GETTING_STARTED.md**](docs/GETTING_STARTED.md) - install, TrueForce SDK
-  setup, per-distro notes, troubleshooting.
-- [**SYSFS_API.md**](docs/SYSFS_API.md) - every `wheel_*` sysfs attribute.
-- [**BUTTON_MAPPING.md**](docs/BUTTON_MAPPING.md) - which button index is which
-  physical control, for binding in games (with a layout diagram).
-- [**PROTOCOL_SPECIFICATION.md**](docs/PROTOCOL_SPECIFICATION.md) - the full USB /
-  HID++ / force-feedback / LED protocol.
-- [**TRUEFORCE_PROTOCOL.md**](docs/TRUEFORCE_PROTOCOL.md) - the TrueForce haptic
-  stream format.
-- [`userspace/logi-dd/README.md`](userspace/logi-dd/README.md) and
-  [`userspace/logi-dd/crates/ffb-proxy/README.md`](userspace/logi-dd/crates/ffb-proxy/README.md)
-  - the settings app and the FFB proxy.
+A few references are versioned in the repo alongside the code: the install
+walkthrough with the TrueForce SDK setup in
+[**docs/GETTING_STARTED.md**](docs/GETTING_STARTED.md), the exact `wheel_*`
+attribute list for scripting in [**docs/SYSFS_API.md**](docs/SYSFS_API.md), and
+the remaining protocol and button-mapping references under [`docs/`](docs/).
 
 ## Contributing
 
@@ -233,10 +227,10 @@ redistributed here; you supply them from your own G HUB installation.
 
 ## Acknowledgments
 
-- RS50 USB protocol reverse-engineered from Wireshark captures of G HUB on Windows.
 - Based on [JacKeTUs/hid-logitech-hidpp](https://github.com/JacKeTUs/hid-logitech-hidpp),
   which adds G PRO wheel support and improved force feedback.
 - Upstream Linux [hid-logitech-hidpp](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-logitech-hidpp.c)
   by Benjamin Tissoires and contributors.
-- [Oversteer](https://github.com/berarma/oversteer) by Bernat Arlandis for the
-  wheel configuration GUI.
+- [Oversteer](https://github.com/berarma/oversteer) by Bernat Arlandis, prior art
+  for Linux wheel configuration; this driver exposes Oversteer-compatible
+  attribute names.
