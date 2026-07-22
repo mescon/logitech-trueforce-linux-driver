@@ -10018,7 +10018,7 @@ static DEVICE_ATTR(wheel_led_effect, 0664, wheel_led_effect_show, wheel_led_effe
  */
 #define HIDPP_DD_REV_SWID		0x0d	/* G HUB's sw-id, kept verbatim */
 #define HIDPP_DD_REV_MAX_LEVEL		10
-#define HIDPP_DD_REV_MIN_GAP_MS		10	/* ~100 Hz. G HUB drives rev lights at ~127 Hz (~7.5 ms per pair); the old 160 ms was a misread and made a full 0->10 sweep take ~1.6 s. */
+#define HIDPP_DD_REV_MIN_GAP_MS		10	/* ~100 Hz. G HUB drives rev lights at ~60 Hz (~16.5 ms per pair, measured from the issue #20 iRacing capture); the old 160 ms was a misread and made a full 0->10 sweep take ~1.6 s. The 10 ms cap comfortably clears the observed rate. */
 #define HIDPP_DD_REV_ARM_GAP_MS	4
 
 static int hidpp_dd_rev_send_short(struct hidpp_device *hidpp, u8 idx, u8 fn,
