@@ -2,18 +2,21 @@ import { Button, LineEdit, TextEdit, ScrollView, Slider, SpinBox, Switch, Palett
 import { Theme } from "theme.slint";
 
 // One row of the Setup page's "Your games" list, built on the Rust side
-// (`bridge::setup_games`) from `logi_dd_core::steam::installed_games`
-// matched against the compatibility registry. It carries the game's
-// display name, the wine prefix the shim installer targets, a one-line
-// plain-English summary of what makes it best on this wheel, and the
-// single enablement action the row offers (`action`, matching
-// `bridge::ACTION_*`): install the TrueForce shim, launch with logi-ffb,
-// toggle simulated TrueForce, works out of the box, or an unknown game
-// that needs nothing. `installed` reflects the shim marker DLL (shim
-// action); `sim-id`/`sim-enabled`/`sim-intensity` carry the live
-// tf-sim.conf state (simulated-TrueForce action).
+// (`bridge::setup_games`) from `logi_dd_core::launchers::discover` (Steam,
+// Lutris, Heroic) matched against the compatibility registry; a game that
+// registry does not know is only listed if it already has the shim
+// installed. It carries the game's display name, which launcher reported
+// it (`source`, e.g. "Steam"), the wine prefix the shim installer targets
+// (empty for a native game), a one-line plain-English summary of what
+// makes it best on this wheel, and the single enablement action the row
+// offers (`action`, matching `bridge::ACTION_*`): install the TrueForce
+// shim, launch with logi-ffb, toggle simulated TrueForce, or works out of
+// the box. `installed` reflects the shim marker DLL (shim action);
+// `sim-id`/`sim-enabled`/`sim-intensity` carry the live tf-sim.conf state
+// (simulated-TrueForce action).
 export struct SetupGame {
     name: string,
+    source: string,
     prefix: string,
     summary: string,
     action: int,
@@ -190,7 +193,6 @@ export component Setup inherits Rectangle {
     private property <int> action-logi-ffb: 1;
     private property <int> action-sim-tf: 2;
     private property <int> action-out-of-box: 3;
-    private property <int> action-unknown: 4;
 
     // The full game-compatibility list now lives in the project wiki; the
     // page links there instead of carrying a static table.
@@ -335,13 +337,25 @@ export component Setup inherits Rectangle {
                             spacing: 6px;
 
                             // Name on its own full-width line so long
-                            // titles never elide next to the controls.
-                            Text {
-                                text: game.name;
-                                font-size: 14px;
-                                font-weight: 600;
-                                color: Theme.text-color;
-                                wrap: word-wrap;
+                            // titles never elide next to the controls, with
+                            // the launcher that found it as a small muted
+                            // tag alongside.
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: game.name;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: Theme.text-color;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: game.source;
+                                    font-size: 11px;
+                                    color: Theme.muted-text-color;
+                                    vertical-alignment: center;
+                                }
                             }
                             Text {
                                 text: game.summary;

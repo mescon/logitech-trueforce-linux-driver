@@ -9,7 +9,7 @@ use logi_dd_core::shaping::{self, ShapingRole};
 use logi_dd_core::{lightsync, Access, Category, Color, Error, Kind, Value, REGISTRY};
 
 use logi_dd_core::games::{self, SetupAction};
-use logi_dd_core::steam::SteamGame;
+use logi_dd_core::launchers::DiscoveredGame;
 use logi_dd_core::tfsim;
 
 use crate::viewmodel::Row;
@@ -786,8 +786,6 @@ pub const ACTION_LOGI_FFB: i32 = 1;
 pub const ACTION_SIM_TF: i32 = 2;
 /// Native force feedback, nothing to install.
 pub const ACTION_OUT_OF_BOX: i32 = 3;
-/// A game the compatibility registry does not know: no special setup.
-pub const ACTION_UNKNOWN: i32 = 4;
 
 /// The Slint action tag for a matched registry entry's [`SetupAction`].
 fn action_tag(action: SetupAction) -> i32 {
@@ -799,21 +797,26 @@ fn action_tag(action: SetupAction) -> i32 {
     }
 }
 
-/// Build the Setup page's "Your games" list from the installed Proton
-/// games (`games`, from [`logi_dd_core::steam::installed_games`]) matched
-/// against the compatibility registry, plus `cfg` (the current
-/// tf-sim.conf). Each row carries the single enablement action its game
-/// needs (see [`GameCompat::setup_action`](games::GameCompat::setup_action)):
-/// a title with built-in TrueForce gets the shim install/remove (its
-/// `installed` flag drives the button), an older DirectInput title gets
-/// the logi-ffb launch-option hint, a title logi-tf-sim can drive today
-/// carries its tf-sim game id plus that game's live switch + strength, and
-/// everything else works out of the box. A game the registry does not know
-/// is shown as needing no special setup.
-pub fn setup_games(games: &[SteamGame], cfg: &tfsim::Config) -> Vec<SetupGame> {
+/// Build the Setup page's "Your games" list from the games discovered
+/// across all launchers (`games`, from [`logi_dd_core::launchers::discover`])
+/// matched against the compatibility registry, plus `cfg` (the current
+/// tf-sim.conf). A game is kept only if the registry recognises it or it
+/// already has the shim installed (an unrecognised, unshimmed title like
+/// TEKKEN 8 is dropped: nothing on this page applies to it). Each kept row
+/// carries the single enablement action its game needs (see
+/// [`GameCompat::setup_action`](games::GameCompat::setup_action)): a title
+/// with built-in TrueForce gets the shim install/remove (its `installed`
+/// flag drives the button), an older DirectInput title gets the logi-ffb
+/// launch-option hint, a title logi-tf-sim can drive today carries its
+/// tf-sim game id plus that game's live switch + strength, everything else
+/// recognised works out of the box, and an unrecognised game with the shim
+/// already installed (added manually) gets the same shim action so it stays
+/// manageable.
+pub fn setup_games(games: &[DiscoveredGame], cfg: &tfsim::Config) -> Vec<SetupGame> {
+    let prefix_of = |g: &DiscoveredGame| g.prefix().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     games
         .iter()
-        .map(|g| match games::match_title(&g.name) {
+        .filter_map(|g| match games::match_title(&g.name) {
             Some(compat) => {
                 let action = compat.setup_action();
                 let sim_id = if action == SetupAction::SimulatedTrueForce {
@@ -822,27 +825,30 @@ pub fn setup_games(games: &[SteamGame], cfg: &tfsim::Config) -> Vec<SetupGame> {
                     ""
                 };
                 let sim = cfg.game(sim_id);
-                SetupGame {
+                Some(SetupGame {
                     name: g.name.as_str().into(),
-                    prefix: g.prefix.to_string_lossy().as_ref().into(),
+                    prefix: prefix_of(g).into(),
                     summary: compat.setup.into(),
                     action: action_tag(action),
                     installed: g.shim_installed,
                     sim_id: sim_id.into(),
                     sim_enabled: sim.enabled,
                     sim_intensity: i32::from(sim.intensity),
-                }
+                    source: g.source.label().into(),
+                })
             }
-            None => SetupGame {
+            None if g.shim_installed => Some(SetupGame {
                 name: g.name.as_str().into(),
-                prefix: g.prefix.to_string_lossy().as_ref().into(),
-                summary: "No special setup needed: play it and adjust the wheel settings to taste.".into(),
-                action: ACTION_UNKNOWN,
-                installed: g.shim_installed,
+                prefix: prefix_of(g).into(),
+                summary: "Added by you. TrueForce files are installed; remove them if this game does not use TrueForce.".into(),
+                action: ACTION_SHIM,
+                installed: true,
                 sim_id: String::new().into(),
                 sim_enabled: false,
                 sim_intensity: 0,
-            },
+                source: g.source.label().into(),
+            }),
+            None => None,
         })
         .collect()
 }
@@ -883,6 +889,7 @@ pub fn games_summary(games: &[SetupGame]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use logi_dd_core::launchers::{GameKind, Source};
     use logi_dd_core::sysfs::FakeSysfs;
     use logi_dd_core::{Category, Device};
     use slint::Model as _;
@@ -904,31 +911,37 @@ mod tests {
             .unwrap_or_else(|| panic!("no row for {attr}"))
     }
 
-    fn steam_game(name: &str, shim_installed: bool) -> SteamGame {
-        SteamGame {
-            appid: 1,
+    /// A Wine game reported by `source` (a Steam/Proton title, in the old
+    /// fixtures' spirit: it has a wine prefix the shim installer can target).
+    fn wine_game(name: &str, source: Source, shim_installed: bool) -> DiscoveredGame {
+        DiscoveredGame {
             name: name.to_string(),
-            prefix: std::path::PathBuf::from(format!("/pfx/{name}")),
+            source,
+            kind: GameKind::Wine { prefix: std::path::PathBuf::from(format!("/pfx/{name}")) },
             shim_installed,
         }
     }
 
+    /// A native Linux game (no wine prefix, shim never applies).
+    fn native_game(name: &str, source: Source) -> DiscoveredGame {
+        DiscoveredGame { name: name.to_string(), source, kind: GameKind::Native, shim_installed: false }
+    }
+
     #[test]
-    fn setup_games_classifies_each_game_type() {
+    fn setup_games_classifies_each_recognised_game_type() {
         let mut cfg = tfsim::Config::default();
         cfg.games.insert(
             "dirt-rally-2".to_string(),
             tfsim::GameConfig { enabled: false, intensity: 40 },
         );
-        let steam = vec![
-            steam_game("Assetto Corsa Competizione", true),
-            steam_game("Le Mans Ultimate", false),
-            steam_game("DiRT Rally 2.0", false),
-            steam_game("Wreckfest", false),
-            steam_game("TEKKEN 8", false),
+        let games = vec![
+            wine_game("Assetto Corsa Competizione", Source::Steam, true),
+            wine_game("Le Mans Ultimate", Source::Steam, false),
+            wine_game("DiRT Rally 2.0", Source::Steam, false),
+            wine_game("Wreckfest", Source::Steam, false),
         ];
-        let rows = setup_games(&steam, &cfg);
-        assert_eq!(rows.len(), steam.len(), "one row per installed game, order preserved");
+        let rows = setup_games(&games, &cfg);
+        assert_eq!(rows.len(), games.len(), "one row per recognised game, order preserved");
 
         // Built-in TrueForce -> shim action, its installed flag carried.
         let acc = &rows[0];
@@ -936,6 +949,7 @@ mod tests {
         assert!(acc.installed);
         assert!(acc.sim_id.is_empty());
         assert!(!acc.summary.is_empty());
+        assert_eq!(acc.source, "Steam");
 
         // DirectInput -> logi-ffb action.
         assert_eq!(rows[1].action, ACTION_LOGI_FFB);
@@ -949,12 +963,35 @@ mod tests {
 
         // Plain native force feedback -> works out of the box.
         assert_eq!(rows[3].action, ACTION_OUT_OF_BOX);
+    }
 
-        // A game the registry does not know -> no special setup.
-        let tekken = &rows[4];
-        assert_eq!(tekken.action, ACTION_UNKNOWN);
-        assert!(tekken.sim_id.is_empty());
-        assert!(!tekken.summary.is_empty());
+    #[test]
+    fn setup_games_filters_unrecognised_titles_but_keeps_shimmed_ones() {
+        let cfg = tfsim::Config::default();
+        let games = vec![
+            wine_game("Assetto Corsa Competizione", Source::Steam, false),
+            native_game("Euro Truck Simulator 2", Source::Steam),
+            wine_game("TEKKEN 8", Source::Steam, false),
+            wine_game("Some Unknown Sim", Source::Steam, true),
+        ];
+        let rows = setup_games(&games, &cfg);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Assetto Corsa Competizione", "Euro Truck Simulator 2", "Some Unknown Sim"],
+            "TEKKEN 8 is unrecognised and unshimmed, so it is dropped"
+        );
+        assert!(rows.iter().all(|r| r.source == "Steam"));
+
+        // A recognised out-of-box native game: no shim action.
+        let ets2 = &rows[1];
+        assert_ne!(ets2.action, ACTION_SHIM);
+
+        // An unrecognised game the user shimmed manually: kept, shim action,
+        // already installed.
+        let unknown = &rows[2];
+        assert_eq!(unknown.action, ACTION_SHIM);
+        assert!(unknown.installed);
     }
 
     #[test]
@@ -962,11 +999,11 @@ mod tests {
         // AMS2 and Project CARS 2 are one daemon id: both show the same
         // (here default) live state.
         let cfg = tfsim::Config::default();
-        let steam = vec![
-            steam_game("Automobilista 2", false),
-            steam_game("Project CARS 2", false),
+        let games = vec![
+            wine_game("Automobilista 2", Source::Steam, false),
+            wine_game("Project CARS 2", Source::Steam, false),
         ];
-        let rows = setup_games(&steam, &cfg);
+        let rows = setup_games(&games, &cfg);
         assert!(rows.iter().all(|r| r.action == ACTION_SIM_TF && r.sim_id == "ams2-pcars2"));
         assert!(rows.iter().all(|r| r.sim_enabled));
         assert!(rows.iter().all(|r| r.sim_intensity == 100));
@@ -984,16 +1021,16 @@ mod tests {
             "dirt-rally-2".to_string(),
             tfsim::GameConfig { enabled: true, intensity: 40 },
         );
-        let steam = vec![
-            steam_game("Assetto Corsa Competizione", false), // shim, not installed -> needs setup
-            steam_game("Wreckfest", false),                  // out of the box
-            steam_game("Assetto Corsa EVO", true),           // shim, installed
+        let games = vec![
+            wine_game("Assetto Corsa Competizione", Source::Steam, false), // shim, not installed -> needs setup
+            wine_game("Wreckfest", Source::Steam, false),                  // out of the box
+            wine_game("Assetto Corsa EVO", Source::Steam, true),           // shim, installed
         ];
-        let rows = setup_games(&steam, &cfg);
+        let rows = setup_games(&games, &cfg);
         assert_eq!(games_summary(&rows), "3 installed, 1 need setup");
 
         // Nothing outstanding reads as "all set".
-        let done = vec![steam_game("Wreckfest", false), steam_game("Assetto Corsa EVO", true)];
+        let done = vec![wine_game("Wreckfest", Source::Steam, false), wine_game("Assetto Corsa EVO", Source::Steam, true)];
         assert_eq!(games_summary(&setup_games(&done, &cfg)), "2 installed, all set");
     }
 

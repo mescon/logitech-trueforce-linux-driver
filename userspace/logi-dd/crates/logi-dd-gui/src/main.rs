@@ -401,17 +401,17 @@ fn sdk_status(field: &str, installer: Option<&std::path::Path>) -> (Option<std::
     }
 }
 
-/// The scanned installed-games cache, shared between the Steam scan (which
-/// writes it) and the per-game "Your games" list rebuilds (which read it
-/// with a fresh tf-sim.conf). Caching the scan means a simulated-TrueForce
-/// toggle can refresh the list instantly without re-walking slow Steam
-/// libraries.
-type GamesCache = Arc<Mutex<Vec<logi_dd_core::steam::SteamGame>>>;
+/// The scanned discovered-games cache, shared between the launcher scan
+/// (which writes it) and the per-game "Your games" list rebuilds (which
+/// read it with a fresh tf-sim.conf). Caching the scan means a
+/// simulated-TrueForce toggle can refresh the list instantly without
+/// re-walking slow Steam/Lutris/Heroic libraries.
+type GamesCache = Arc<Mutex<Vec<logi_dd_core::launchers::DiscoveredGame>>>;
 
-/// Rebuild the "Your games" model from the cached Steam scan plus a fresh
-/// tf-sim.conf, and push it into `setup-games`. Called on the UI thread
-/// after every per-game simulated-TrueForce edit so both titles sharing a
-/// daemon id show the new value at once.
+/// Rebuild the "Your games" model from the cached launcher scan plus a
+/// fresh tf-sim.conf, and push it into `setup-games`. Called on the UI
+/// thread after every per-game simulated-TrueForce edit so both titles
+/// sharing a daemon id show the new value at once.
 fn refresh_games(app: &App, cache: &GamesCache) {
     let cfg = logi_dd_core::tfsim::Config::load();
     let games = cache.lock().unwrap();
@@ -420,22 +420,19 @@ fn refresh_games(app: &App, cache: &GamesCache) {
     app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
 }
 
-/// Rescan the installed Proton games off the UI thread (the Steam
-/// libraries can live on slow external drives), match each against the
-/// compatibility registry (`bridge::setup_games`), and push the result
-/// into `setup-games` via `slint::invoke_from_event_loop`, the same
-/// worker-thread-to-UI pattern `Worker::spawn`'s response closure uses.
-/// The raw scan is stored in `cache` so later per-game edits can rebuild
-/// the list without re-walking Steam. Runs at startup, on the Rescan
-/// button, and after every install/remove so the per-row status reflects
-/// what just happened.
+/// Rescan the installed games across every launcher off the UI thread (the
+/// Steam/Lutris/Heroic libraries can live on slow external drives), match
+/// each against the compatibility registry (`bridge::setup_games`), and
+/// push the result into `setup-games` via `slint::invoke_from_event_loop`,
+/// the same worker-thread-to-UI pattern `Worker::spawn`'s response closure
+/// uses. The raw scan is stored in `cache` so later per-game edits can
+/// rebuild the list without re-walking every launcher. Runs at startup, on
+/// the Rescan button, and after every install/remove so the per-row status
+/// reflects what just happened.
 fn scan_games(app_weak: slint::Weak<App>, cache: GamesCache) {
     std::thread::spawn(move || {
         let games = match std::env::var_os("HOME") {
-            Some(home) => {
-                let roots = logi_dd_core::steam::library_roots(std::path::Path::new(&home));
-                logi_dd_core::steam::installed_games(&roots)
-            }
+            Some(home) => logi_dd_core::launchers::discover(std::path::Path::new(&home)),
             None => Vec::new(),
         };
         let cfg = logi_dd_core::tfsim::Config::load();
@@ -843,7 +840,7 @@ fn main() -> Result<(), slint::PlatformError> {
         app.set_setup_sdk_valid(resolved.is_some());
         app.set_setup_sdk_status(message.into());
     }
-    // The installed-games scan cache, shared by the Steam scan and every
+    // The installed-games scan cache, shared by the launcher scan and every
     // per-game "Your games" rebuild (see `GamesCache`).
     let games_cache: GamesCache = Arc::new(Mutex::new(Vec::new()));
     scan_games(app.as_weak(), games_cache.clone());
