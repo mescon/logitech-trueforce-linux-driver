@@ -82,15 +82,17 @@ The distribution packages install the driver plus the `logi-dd`, `logi-dd-gui`,
 
 ## Install
 
-Pick your distribution. Full step-by-step (including the TrueForce SDK setup) is
-in [**docs/GETTING_STARTED.md**](docs/GETTING_STARTED.md).
+Pick your distribution. The full step-by-step is on the
+[**Installation**](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Installation)
+wiki page, and the one-time TrueForce SDK setup is on
+[**Force feedback in games**](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Force-Feedback-in-Games).
 
 | Distribution | Install |
 |---|---|
 | Arch, CachyOS, Manjaro | `paru -S logi-dd-gui` (AUR, or your AUR helper; pulls `logi-dd` and the driver. Headless box: `paru -S logi-dd`) |
 | Debian, Ubuntu, Mint, Pop!_OS | download the `.deb`s from [Releases](https://github.com/mescon/logitech-trueforce-linux-driver/releases), then `sudo apt install ./logitech-trueforce-dkms_*.deb ./logi-dd_*.deb ./logi-dd-gui_*.deb` (skip the gui one on a headless box) |
 | Fedora, Nobara | COPR akmod: `sudo dnf copr enable mescon/logitech-trueforce && sudo dnf install akmod-logitech-trueforce logi-dd-gui` (headless box: `logi-dd` instead of `logi-dd-gui`) |
-| openSUSE | OBS repo `home:mescon` (see GETTING_STARTED) |
+| openSUSE | OBS repo `home:mescon` (see the [Installation](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Installation) page) |
 | From source (any distro) | `git clone` this repo, then `sudo ./tools/setup.sh` (DKMS build, udev rule, everything). `./tools/setup.sh doctor` health-checks it. |
 
 The AUR and Debian packages are DKMS-based and rebuild automatically on kernel
@@ -105,9 +107,10 @@ installed (it needs no group membership).
 
 - **TrueForce haptics** (the high-frequency texture layer, on top of normal FFB)
   in SDK-aware sims needs Logitech's signed SDK DLLs staged into the game's Proton
-  prefix, plus `PROTON_ENABLE_HIDRAW=1`. The one-time recipe is in
-  [GETTING_STARTED](docs/GETTING_STARTED.md). Verified end to end on **Assetto
-  Corsa Competizione** and **Assetto Corsa EVO**.
+  prefix, plus `PROTON_ENABLE_HIDRAW=1`. The one-time recipe is on the
+  [Force feedback in games](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Force-Feedback-in-Games)
+  wiki page. Verified end to end on **Assetto Corsa Competizione** and
+  **Assetto Corsa EVO**.
 
 - **DirectInput sims** (Le Mans Ultimate, for example) lose force feedback with
   `PROTON_ENABLE_HIDRAW=1` because the real wheel advertises no PID collection.
@@ -200,11 +203,10 @@ in games, configuring the wheel, simulated TrueForce, troubleshooting) and a
 specification, libtrueforce, and the internals of `logi-ffb` and the
 simulated-TrueForce daemon).
 
-A few references are versioned in the repo alongside the code: the install
-walkthrough with the TrueForce SDK setup in
-[**docs/GETTING_STARTED.md**](docs/GETTING_STARTED.md), the exact `wheel_*`
-attribute list for scripting in [**docs/SYSFS_API.md**](docs/SYSFS_API.md), and
-the remaining protocol and button-mapping references under [`docs/`](docs/).
+One reference is worth pinning to your installed version, so it stays in the
+repo: the exact `wheel_*` attribute list for scripting in
+[**docs/SYSFS_API.md**](docs/SYSFS_API.md). The protocol and button-mapping
+references live under [`docs/`](docs/) as well.
 
 ## Contributing
 

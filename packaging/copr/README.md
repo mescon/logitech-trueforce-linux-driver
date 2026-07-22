@@ -85,4 +85,4 @@ kernel installed afterwards). `logi-dd-gui` pulls `logi-dd`, which
 installs `logi-dd`, `logi-ffb`, `logi-tf-sim`, and
 `logitech-trueforce-install-shim` to `/usr/bin`, built from the same repo
 checkout; skip `logi-dd-gui` on a headless box and install `logi-dd`
-instead. See `docs/GETTING_STARTED.md` for the full flow.
+instead. See the [Installation](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Installation) wiki page for the full flow.

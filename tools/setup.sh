@@ -153,7 +153,7 @@ doctor() {
 	if [ "$dll_missing" -eq 0 ]; then
 		ok "all four SDK DLLs staged in the repo"
 	else
-		wrn "$dll_missing of 4 SDK DLLs not staged (see docs/GETTING_STARTED.md section 2; standard FFB works without them)"
+		wrn "$dll_missing of 4 SDK DLLs not staged (see the wiki's Force-feedback-in-games page; standard FFB works without them)"
 	fi
 
 	echo
@@ -302,7 +302,7 @@ setup() {
 		do_shim || true
 	else
 		echo "  SDK DLLs not staged - skipped (standard FFB works without them;"
-		echo "  see docs/GETTING_STARTED.md section 2 for TrueForce)"
+		echo "  see the wiki's Force-feedback-in-games page for TrueForce)"
 	fi
 
 	say "[5/5] Doctor"
@@ -317,7 +317,7 @@ setup() {
 	say "Remaining manual steps (per game, in Steam):"
 	echo "  1. Properties > Launch Options:  PROTON_ENABLE_HIDRAW=1 %command%"
 	echo "  2. Properties > Controller:     Disable Steam Input"
-	echo "  (both needed for TrueForce; see docs/GETTING_STARTED.md section 3)"
+	echo "  (both needed for TrueForce; see the wiki's Force-feedback-in-games page)"
 }
 
 case "${1:-setup}" in
