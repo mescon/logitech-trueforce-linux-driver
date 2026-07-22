@@ -1038,6 +1038,32 @@ mod tests {
     }
 
     #[test]
+    fn setup_games_leaves_prefix_empty_for_a_shim_game_never_launched() {
+        // Installed but never launched: Steam has not created its wine
+        // prefix yet, so `steam_games` reports it as `GameKind::Native`
+        // (see the module doc). The row must carry an empty prefix and
+        // `installed: false` so the GUI can hide the Install button
+        // instead of running the installer with `--prefix ""`.
+        let cfg = tfsim::Config::default();
+        let games = vec![native_game("Assetto Corsa Competizione", Source::Steam)];
+        let rows = setup_games(&games, &cfg);
+        assert_eq!(rows.len(), 1);
+        let acc = &rows[0];
+        assert_eq!(acc.action, ACTION_SHIM);
+        assert!(acc.prefix.is_empty());
+        assert!(!acc.installed);
+
+        // Same title, but launched at least once: a normal Wine game with
+        // a prefix still gets the enabled install path.
+        let launched = vec![wine_game("Assetto Corsa Competizione", Source::Steam, false)];
+        let rows2 = setup_games(&launched, &cfg);
+        let acc2 = &rows2[0];
+        assert_eq!(acc2.action, ACTION_SHIM);
+        assert!(!acc2.prefix.is_empty());
+        assert!(!acc2.installed);
+    }
+
+    #[test]
     fn setup_games_shares_sim_state_across_titles_with_one_id() {
         // AMS2 and Project CARS 2 are one daemon id: both show the same
         // (here default) live state.

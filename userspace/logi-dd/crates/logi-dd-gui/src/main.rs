@@ -454,7 +454,11 @@ fn scan_games(app_weak: slint::Weak<App>, cache: GamesCache) {
 /// `prefix` off the UI thread via `run_shim_command`. Shared by the
 /// per-game "Install TrueForce" button and the "Add a game" dialog's
 /// confirm button, so a manually added game installs exactly the same way
-/// a recognised one does.
+/// a recognised one does. An empty `prefix` (a game with no wine prefix
+/// yet, e.g. installed but never launched) is refused defensively: the
+/// Setup row's Install button is already hidden for that case
+/// (`setup.slint`), but this guard keeps a stray call from feeding the
+/// installer a bare `--prefix ""`, which it rejects.
 fn install_shim_for(
     app_weak: slint::Weak<App>,
     prefix: String,
@@ -464,6 +468,13 @@ fn install_shim_for(
     games_cache: &GamesCache,
 ) {
     let Some(app) = app_weak.upgrade() else { return };
+    if prefix.is_empty() {
+        app.set_setup_shim_output(
+            "This game has no wine prefix yet. Launch it once under Proton, then install."
+                .into(),
+        );
+        return;
+    }
     app.set_setup_shim_output("Running...".into());
     app.set_setup_shim_running(true);
     let dir = sdk_dir.lock().unwrap().clone();

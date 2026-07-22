@@ -34,12 +34,32 @@ struct Entry {
 /// installed-games manifest, tolerant of either key spelling, of both the
 /// array-of-objects and object-of-objects shapes Heroic has used, and of
 /// either field coming first within a game's block: each pair is emitted
-/// as soon as both fields have been seen since the last pair.
+/// as soon as both fields have been seen since the last pair. Pairing is
+/// scoped to a single JSON object via a brace-depth count: entering a
+/// nested object (e.g. a DLC entry with its own `title`) pushes the
+/// pending fields aside so a nested `title` cannot pair with the outer
+/// `app_name`, and they are restored on leaving that object so a `title`
+/// seen before `app_name` within the same game block still pairs.
 fn scrape_entries(content: &str) -> Vec<Entry> {
     let mut entries = Vec::new();
     let mut pending_id: Option<String> = None;
     let mut pending_title: Option<String> = None;
+    // One saved (pending_id, pending_title) per enclosing object, pushed on
+    // `{` and popped on `}`, so a nested object starts with a clean slate.
+    let mut stack: Vec<(Option<String>, Option<String>)> = Vec::new();
     for line in content.lines() {
+        for ch in line.chars() {
+            match ch {
+                '{' => stack.push((pending_id.take(), pending_title.take())),
+                '}' => {
+                    if let Some((id, title)) = stack.pop() {
+                        pending_id = id;
+                        pending_title = title;
+                    }
+                }
+                _ => {}
+            }
+        }
         if let Some(id) = scrape_str_field(line, "app_name").or_else(|| scrape_str_field(line, "appName")) {
             pending_id = Some(id);
         }
@@ -133,6 +153,31 @@ mod tests {
     fn write(path: &Path, content: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn scrape_entries_scopes_pairing_to_each_objects_own_braces() {
+        // game1's title comes before its app_name (still pairs); game2
+        // has a nested object with its own title in between (must not
+        // steal game2's app_name).
+        let content = r#"{
+  "game1": {
+    "title": "Title Before AppName",
+    "app_name": "game1",
+    "install_path": "/games/g1"
+  },
+  "game2": {
+    "app_name": "game2",
+    "dlc": {
+      "title": "Nested DLC Title"
+    },
+    "title": "Game Two"
+  }
+}"#;
+        let entries = scrape_entries(content);
+        let pairs: Vec<(&str, &str)> =
+            entries.iter().map(|e| (e.app_name.as_str(), e.title.as_str())).collect();
+        assert_eq!(pairs, vec![("game1", "Title Before AppName"), ("game2", "Game Two")]);
     }
 
     #[test]

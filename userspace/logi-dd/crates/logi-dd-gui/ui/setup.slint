@@ -398,12 +398,14 @@ export component Setup inherits Rectangle {
                                     horizontal-stretch: 1;
                                     text: game.installed
                                         ? "TrueForce files installed for this game"
-                                        : "TrueForce files not installed yet";
+                                        : (game.prefix == ""
+                                            ? "Launch it once under Proton so its files folder exists, then install."
+                                            : "TrueForce files not installed yet");
                                     font-size: 12px;
                                     vertical-alignment: center;
                                     color: game.installed ? Theme.ok-color : Theme.muted-text-color;
                                 }
-                                Button {
+                                if game.installed || game.prefix != "": Button {
                                     text: game.installed ? "Remove TrueForce" : "Install TrueForce";
                                     enabled: !root.shim-running;
                                     clicked => {
