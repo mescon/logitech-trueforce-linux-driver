@@ -204,10 +204,12 @@ impl GameCompat {
 
 /// Normalize a game title for fuzzy matching: lower-cased, trademark marks
 /// removed, any parenthetical suffix (e.g. "(early access)", "(original)")
-/// dropped, and whitespace collapsed. Steam's display name and the
-/// registry name both pass through this before they are compared, so
-/// "Assetto Corsa EVO" from Steam matches "Assetto Corsa EVO (early
-/// access)" here.
+/// dropped, and every run of non-alphanumeric characters (spaces, dots,
+/// dashes, colons, ...) collapsed to a single space. Steam's display name,
+/// the registry name, and a launcher slug (e.g. a Lutris file stem like
+/// "dirt-rally-2-0") all pass through this before they are compared, so
+/// "Assetto Corsa EVO" matches "Assetto Corsa EVO (early access)" and
+/// "dirt rally 2 0" matches "DiRT Rally 2.0".
 fn normalize_title(title: &str) -> String {
     let mut out = String::with_capacity(title.len());
     let mut depth: i32 = 0;
@@ -217,7 +219,8 @@ fn normalize_title(title: &str) -> String {
             ')' | ']' => depth = (depth - 1).max(0),
             '\u{2122}' | '\u{00ae}' | '\u{00a9}' => {} // (TM) (R) (C)
             _ if depth > 0 => {}
-            _ => out.extend(ch.to_lowercase()),
+            _ if ch.is_alphanumeric() => out.extend(ch.to_lowercase()),
+            _ => out.push(' '),
         }
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -630,6 +633,14 @@ mod tests {
                 "{title} should ride the EA Sports F1 row"
             );
         }
+    }
+
+    #[test]
+    fn normalize_title_is_punctuation_insensitive() {
+        // A launcher slug like a Lutris file stem ("dirt-rally-2-0",
+        // hyphens replaced with spaces) must normalize the same as the
+        // registry's punctuated name.
+        assert_eq!(normalize_title("DiRT Rally 2.0"), normalize_title("dirt rally 2 0"));
     }
 
     #[test]
