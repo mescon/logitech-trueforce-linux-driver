@@ -17,6 +17,10 @@
 //! - [`config`]: `~/.config/logi-dd/tf-sim.conf` key=value store.
 //! - [`tf`]: safe wrapper over the libtrueforce FFI (stream lifecycle).
 //! - [`leds`]: the rev-display feeder (`wheel_rev_level` via sysfs).
+//! - [`relay`]: the shared-memory telemetry relay wire format, for sims
+//!   (iRacing, rF2/LMU, ...) that only publish telemetry through a
+//!   Windows SDK the daemon cannot reach directly; see
+//!   `dev/docs/shared-memory-telemetry-plan.md`.
 //! - [`daemon`]: the UDP listen / synthesize / watchdog loop.
 //! - [`sweep`]: the `--sweep` hardware-test mode (synthetic RPM sweep).
 //! - [`capture`]: the `capture` subcommand, for recording an unsupported
@@ -31,6 +35,7 @@ pub mod error;
 pub mod f1;
 pub mod leds;
 pub mod pcars;
+pub mod relay;
 pub mod sweep;
 pub mod synth;
 pub mod telemetry;

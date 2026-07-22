@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! The daemon loop: listen on both telemetry ports, synthesize while
+//! The daemon loop: listen on every telemetry port (the native UDP game
+//! formats plus the shared-memory relay format), synthesize while
 //! telemetry flows, stop within [`SILENCE_TIMEOUT_MS`] of it stopping.
 //!
-//! One `poll(2)` over both UDP sockets with a short timeout drives
+//! One `poll(2)` over all the UDP sockets with a short timeout drives
 //! everything: packet parsing, sample generation paced by wall clock
 //! (1 sample per elapsed millisecond, capped so scheduling stalls never
 //! burst-force the wheel), the silence watchdog, and the SIGINT/SIGTERM
@@ -21,7 +22,7 @@ use crate::leds::RevLeds;
 use crate::synth::EngineSynth;
 use crate::telemetry::Telemetry;
 use crate::tf::TfStream;
-use crate::{beamng, codemasters, f1, pcars, wrc};
+use crate::{beamng, codemasters, f1, pcars, relay, wrc};
 
 /// Stop the stream after this much telemetry silence (spec safety rail).
 pub const SILENCE_TIMEOUT_MS: u64 = 500;
@@ -151,11 +152,13 @@ pub fn run(cfg: &Config) -> Result<()> {
     let cm_sock = bind(cfg.codemasters_port)?;
     let pc_sock = bind(cfg.pcars_port)?;
     let bn_sock = bind(cfg.beamng_port)?;
+    let relay_sock = bind(cfg.relay_port)?;
     install_signal_handlers()?;
 
     eprintln!(
-        "logi-tf-sim: listening (codemasters/F1/WRC on udp/{}, pcars2/ams2 on udp/{}, beamng on udp/{})",
-        cfg.codemasters_port, cfg.pcars_port, cfg.beamng_port
+        "logi-tf-sim: listening (codemasters/F1/WRC on udp/{}, pcars2/ams2 on udp/{}, \
+         beamng on udp/{}, shared-memory relay on udp/{})",
+        cfg.codemasters_port, cfg.pcars_port, cfg.beamng_port, cfg.relay_port
     );
     if !cfg.enabled {
         eprintln!("logi-tf-sim: master switch is off in the config; listening but not synthesizing");
@@ -167,12 +170,13 @@ pub fn run(cfg: &Config) -> Result<()> {
     let mut buf = [0u8; 2048];
 
     while !STOP.load(Ordering::SeqCst) {
-        poll_sockets(&[&cm_sock, &pc_sock, &bn_sock]);
+        poll_sockets(&[&cm_sock, &pc_sock, &bn_sock, &relay_sock]);
 
         let mut latest: Option<(&'static str, Telemetry)> = None;
         drain(&cm_sock, &mut buf, |p| decoders.parse_codemasters_port(p), &mut latest);
         drain(&pc_sock, &mut buf, pcars::parse, &mut latest);
         drain(&bn_sock, &mut buf, |p| decoders.beamng.parse(p), &mut latest);
+        drain(&relay_sock, &mut buf, relay::parse, &mut latest);
 
         let now = Instant::now();
 
