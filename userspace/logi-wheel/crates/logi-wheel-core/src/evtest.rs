@@ -358,8 +358,10 @@ pub fn hat_label(x: i32, y: i32) -> &'static str {
 /// ffb-proxy crate uses for its own discovery.
 pub fn is_wheel_name(name: &str) -> bool {
     let upper = name.to_uppercase();
-    let looks_like_wheel =
-        upper.contains("RS50") || upper.contains("G PRO") || upper.contains("G923");
+    let looks_like_wheel = upper.contains("RS50")
+        || upper.contains("PRO RACING WHEEL")
+        || upper.contains("G PRO")
+        || upper.contains("G923");
     let excluded = upper.contains("CONSUMER CONTROL")
         || upper.contains("KEYBOARD")
         || upper.contains("MOUSE")
@@ -647,6 +649,8 @@ mod tests {
     fn wheel_name_heuristic_matches_ffb_proxys() {
         assert!(is_wheel_name("Logitech RS50 Base for PlayStation/PC"));
         assert!(is_wheel_name("Logitech G PRO Racing Wheel"));
+        assert!(is_wheel_name("Logitech  PRO Racing Wheel"));
+        assert!(is_wheel_name("PRO Racing Wheel"));
         assert!(is_wheel_name("Logitech G923 Racing Wheel"));
         assert!(!is_wheel_name("Logi Litra Glow Consumer Control"));
         assert!(!is_wheel_name("RS50 Wireless Keyboard"));
