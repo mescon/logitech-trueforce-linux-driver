@@ -268,6 +268,7 @@ export component App inherits Window {
     in property <int> leds-index: -1;
     in property <[LedColor]> lightsync-leds: [];
     in property <int> lightsync-direction: 0;
+    in property <bool> lightsync-builtin: false;
 
     callback edit-slider(string, int);
     callback edit-choice(string, int);
@@ -676,6 +677,7 @@ export component App inherits Window {
                         vertical-stretch: 0;
                         leds: root.lightsync-leds;
                         direction: root.lightsync-direction;
+                        builtin-effect: root.lightsync-builtin;
                     }
 
                     SettingsList {

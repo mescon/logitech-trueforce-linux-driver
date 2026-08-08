@@ -20,6 +20,14 @@ export component LedPreview inherits Rectangle {
     // The slot's `wheel_led_direction` enum value (0 = left to right,
     // 1 = right to left, 2 = inside-out, 3 = outside-in).
     in property <int> direction: 0;
+    // True while one of the four built-in sweeps (wheel_led_effect 1-4) is
+    // selected. Those render a palette held inside the wheel's firmware:
+    // it is in no slot, nothing on the host sends it, and no function in
+    // 0x807A/0x807B reports it (G HUB never asks for it either). So the
+    // strip's real colours are unknowable here, and showing the active
+    // slot's colours instead would assert something false. The sweep is
+    // shown in a neutral tone and the caption says why.
+    in property <bool> builtin-effect: false;
 
     // Animation state: `phase` ticks 0..19 and folds into `count`, the
     // number of lit LEDs (0 -> 10 -> 0, the grow-and-shrink RPM sweep).
@@ -64,7 +72,8 @@ export component LedPreview inherits Rectangle {
         spacing: 8px;
 
         Text {
-            text: "Strip preview (active slot)";
+            text: root.builtin-effect ? "Strip preview (built-in effect)"
+                                      : "Strip preview (active slot)";
             font-size: 13px;
             font-weight: 700;
             color: Theme.text-color;
@@ -105,7 +114,9 @@ export component LedPreview inherits Rectangle {
         }
 
         Text {
-            text: "Effect changes apply to the wheel immediately. The physical strip is a rev-light display, RPM-driven by a game or telemetry bridge, and shows a static idle pattern otherwise; the animation preview above shows on screen how a custom slot's direction behaves.";
+            text: root.builtin-effect
+                ? "Effect changes apply to the wheel immediately. This is one of the wheel's four built-in sweeps: it plays a colour pattern stored in the wheel's own firmware, which the wheel does not report, so only the motion is previewed here and not the colours. Pick a custom slot to choose colours yourself."
+                : "Effect changes apply to the wheel immediately. The physical strip is a rev-light display, RPM-driven by a game or telemetry bridge, and shows a static idle pattern otherwise; the animation preview above shows on screen how a custom slot's direction behaves.";
             font-size: 11px;
             color: Theme.muted-text-color;
             wrap: word-wrap;

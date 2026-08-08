@@ -307,9 +307,9 @@ fn refresh_profile_row(app: &App, names: &[String]) {
 /// wheel plays, same rule as the slot editor. Called on every Leds reload
 /// and whenever a colors/direction row update lands.
 fn push_led_preview(app: &App, known_values: &Arc<Mutex<HashMap<String, Value>>>) {
-    let (mut colors, direction) = {
+    let (mut colors, direction, builtin) = {
         let kv = known_values.lock().unwrap();
-        let colors = match kv.get("wheel_led_colors") {
+        let mut colors = match kv.get("wheel_led_colors") {
             Some(Value::Rgb(cs)) => cs.clone(),
             _ => bridge::default_rgb("wheel_led_colors"),
         };
@@ -326,13 +326,22 @@ fn push_led_preview(app: &App, known_values: &Arc<Mutex<HashMap<String, Value>>>
             _ => 0,
         };
         let direction = lightsync::effect_direction(effect).unwrap_or(slot_direction);
-        (colors, direction)
+        // A built-in sweep renders a firmware palette the wheel never
+        // reports, so the slot's colours are not what is on the strip.
+        // Show a neutral strip rather than asserting the wrong ones; the
+        // caption explains it.
+        let builtin = lightsync::effect_direction(effect).is_some();
+        if builtin {
+            colors = vec![logi_wheel_core::Color { r: 0x60, g: 0x60, b: 0x60 }; colors.len()];
+        }
+        (colors, direction, builtin)
     };
     if lightsync::mirrored(direction) {
         lightsync::mirror_left_half(&mut colors);
     }
     app.set_lightsync_leds(bridge::rgb_leds_model(&colors));
     app.set_lightsync_direction(i32::from(direction));
+    app.set_lightsync_builtin(builtin);
 }
 
 /// Read the `Category`/`Mode` out of one of the `Arc<Mutex<_>>` cells below.
