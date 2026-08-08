@@ -51,8 +51,15 @@ some.** The tick emits four texture samples and spaced them by the period it
 believed it had. Believing 1 ms while delivering 2 meant generating one
 millisecond of waveform for every two milliseconds of real time, so texture
 played an octave low everywhere, not only on the `CONFIG_HZ=250` kernels
-Debian and Ubuntu ship. If you have tuned a pitch setting by ear, expect it
-to want revisiting: the baseline it was tuned against was wrong.
+Debian and Ubuntu ship.
+
+What this affects is periodic force feedback a game uploads through evdev:
+anything faster than the 50 ms crossover is rendered as TrueForce texture by
+this tick, so kerb rumble, road surface and engine vibration from a game's
+own effects were all played at half their intended frequency. It does not
+affect simulated TrueForce, which writes its own 4 kHz stream to the wheel
+over hidraw and never passes through this tick, so the `pitch` setting and
+anything tuned around it are unchanged.
 
 The tick also computes the steering force sum, so this triples the rate at
 which game force is sampled. Under a steering force and a TrueForce stream
