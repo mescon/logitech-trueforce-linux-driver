@@ -442,6 +442,7 @@ Other diagnostics, when a specific question comes up:
 | `logi-wheel --hidpp-features` | which HID++ features the wheel implements |
 | `logi-wheel --led-probe` | which rev-light command a wheel obeys |
 | `./tools/setup.sh doctor` | whether the install is complete |
+| open logi-wheel with no wheel found | the app says which check failed and offers the fix |
 | `tools/hidpp-feature-probe.py` | feature list without building anything |
 | `tools/wheel-rotation-watch.py` | measures how far the wheel actually moved |
 
@@ -449,9 +450,11 @@ The driver also logs, once per plug-in, which HID++ features your wheel has
 and the effect timer's rate. `sudo dmesg | grep -i logitech | grep -v serial`.
 
 - **No force feedback / no `wheel_*` files (`range`/`gain` on a G923; wheel
-  stuck on `hid-generic`):** the driver did not bind. Run `./tools/setup.sh
-  doctor` to diagnose, or check by hand: `lsmod | grep hid_logitech_dd`,
-  replug the wheel, read `dmesg`.
+  stuck on `hid-generic`):** the driver did not bind. Run `sudo
+  logi-rebind-wheel`, which moves the wheel onto this driver without a
+  replug. If that does not do it, `./tools/setup.sh doctor` from a checkout
+  says which part of the install is missing, or check by hand: `lsmod | grep
+  hid_logitech_dd`, replug the wheel, read `dmesg`.
 - **Force feedback pulls the wrong way** (native and Wine/Proton games can
   disagree about direction): toggle **Invert constant force** in logi-wheel
   (the `wheel_ffb_constant_sign` attribute).
