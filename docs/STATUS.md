@@ -1,0 +1,101 @@
+# Where this driver is, and what it still cannot do
+
+Written 2026-08-08 for 0.30.0. A companion to
+[FEATURE_MATRIX.md](FEATURE_MATRIX.md), which says what the wheels report;
+this one says what we have done with that, and what we have not.
+
+The point of it is that the honest answer to "does this work?" is different
+for each wheel and each claim, and a reader deserves to know which parts are
+measured, which are argued, and which are hoped.
+
+## Wheels
+
+| wheel | force feedback | TrueForce | settings | rev lights |
+|---|---|---|---|---|
+| RS50 (`c276`) | yes, native path | yes | full `wheel_*` surface | yes |
+| G PRO (`c272`/`c268`) | yes, same path | yes | full surface | level-based, see below |
+| G923 PS (`c266`) | yes, classic path | simulated only | **none** | yes, classic command |
+| G923 Xbox (`c26e`) | yes, HID++ 0x8123 | simulated only | **none** | **no** |
+
+The G923 exposes no `wheel_*` attributes at all. That is not an oversight
+this release can fix: it takes the classic force-feedback path, which has no
+settings surface, no feature discovery and no sysfs group to hang them on.
+Its response curves would also need `0x80A3`, a page this driver does not
+implement, because the direct-drive wheels use `0x80A4` instead.
+
+## What is measured, what is argued
+
+Everything in 0.30.0 was tested somehow. The distinction that matters is
+how.
+
+**Measured on hardware.** The 4 kHz stream rate on both transports (1000
+packets/sec sustained, no drops, matching Logitech's stated 1 ms interval).
+The direct-drive stability fix (steering-axis travel 1258-1703 degrees
+before, 204-488 after). No steering regression from doubling the kernel
+effect tick (within 2% across three force levels, three passes each). The
+rev-rate default (899 degrees of travel at 25 against 611 at 35). Which
+rev-light command each wheel obeys. Which HID++ features each wheel has.
+
+**Argued from the code, not exercised.** The `CONFIG_HZ` texture-spacing
+fix: no kernel with `HZ != 1000` was available, and the affected users are
+Debian and Ubuntu, the largest group. The rev-limiter dwell fix is
+unit-tested against a simulated clock but its end-to-end timing was never
+trustworthily measured, because the bench instrument for it turned out to
+have six stages between cause and observation.
+
+**Not confirmed at all.** Whether Assetto Corsa Competizione populates
+`wheelLoad`, which decides whether the new airborne flag ever fires. The
+airborne haptic layer's gain, which has never been heard because nothing
+could reach the layer until now. The in-kernel 4 kHz texture has not been
+driven in a game.
+
+## Known problems we have not fixed
+
+**Simulated TrueForce is stronger than one owner wants.** The default
+intensity is 60. Measured on an RS50, dropping it to 30 cuts wheel travel by
+about 65%, more than the entire rev-rate range does. Unchanged because how
+strong it *should* feel is a judgement, not a measurement, and 15 may be too
+faint to feel at all.
+
+**The force-feedback keepalive is best-effort.** If the wheel's evdev node
+cannot be opened, a direct-drive wheel can still drive itself into its stops
+while TrueForce streams. The self-test refuses to run in that state; the
+daemon carries on.
+
+**Low-frequency haptic layers move the wheel rather than buzzing it.** The
+pit limiter is 10 Hz, ABS 15 Hz, the rev limiter 25 Hz, and excursion for a
+given torque goes roughly as 1/f^2. Their gains were chosen as torque levels
+while what is felt is excursion. Deliberately not "fixed" with a frequency
+curve: see the reasoning in `effects.rs`, which is that the wheel is
+normally held and a hand already damps exactly those frequencies.
+
+**The KF/TF crossover admits texture the wheel can follow.** Anything at or
+above 20 Hz routes to the texture channel, and 20-40 Hz is where these
+wheels still track the waveform. Flagged rather than moved, because
+changing it changes which effects route where.
+
+**Four features the wheels have and this driver does not use.**
+`DUAL_CLUTCH`, `GAMING_ATTACHMENTS`, `DISPLAY_GAME_DATA` (the RS50's OLED,
+largely decoded in the specification but unimplemented) and `AXIS_MAPPING`.
+Each needs a capture of G HUB exercising the control, and each would be a
+non-force write to the HID++ endpoint, which specification 12.5 says cuts
+live force.
+
+## Waiting on other people
+
+- **#27**, Xbox G923 rev lights. The driver now reports which features that
+  wheel has; the reporter has not run it yet. Even a positive answer is not
+  sufficient, because that wheel's force rides HID++ and 12.5 applies.
+- **#52**, Xbox G923 force feedback. Fixed on the `g923-xbox-ffb-retry`
+  branch, unmerged, because no `c26e` exists here to test it on.
+- **#8**, a G PRO capture, which is what would let the real-G-PRO rev-light
+  work start.
+
+## Coverage numbers, for honesty about the compatibility table
+
+Of the games listed: 6 verified end to end by this project, 18 documented
+from a vendor or reliable source, 10 expected, 8 genuinely unknown.
+Simulated TrueForce is live for 23 titles, impossible for 12 (no usable
+telemetry), and possible-with-a-parser for 4.
+
+So the table is mostly *not* first-party tested, and says so per row.

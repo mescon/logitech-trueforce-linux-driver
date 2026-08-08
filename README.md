@@ -498,9 +498,11 @@ The `wheel_*` attribute reference for scripting,
 [**docs/SYSFS_API.md**](docs/SYSFS_API.md), ships in the repo so it always
 matches your installed version. The protocol and button-mapping references
 live under [`docs/`](docs/) as well, including
-[**docs/FEATURE_MATRIX.md**](docs/FEATURE_MATRIX.md): what each wheel
-reports it can do, measured rather than assumed, against what this driver
-uses.
+[**docs/FEATURE_MATRIX.md**](docs/FEATURE_MATRIX.md), what each wheel
+reports it can do against what this driver uses, and
+[**docs/STATUS.md**](docs/STATUS.md), which says plainly which claims here
+are measured, which are argued from the code, and which are neither, along
+with the problems we know about and have not fixed.
 
 ## Contributing
 
