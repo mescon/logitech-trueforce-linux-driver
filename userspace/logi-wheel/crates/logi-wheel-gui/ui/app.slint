@@ -473,12 +473,17 @@ export component App inherits Window {
             }
         }
 
-        // No-wheel banner: slim, under the header, with the discovery
-        // error and a Retry button. The rest of the shell stays usable.
+        // No-wheel banner: under the header, leading with the first thing
+        // actually wrong and the command that fixes it. The rest of the
+        // shell stays usable.
         if root.no-wheel: Rectangle {
             background: Theme.panel-background;
+            // Bound to the content, because a Rectangle does not grow to fit
+            // a child layout. Without this, expanding the checks list drew it
+            // over the page underneath instead of pushing the page down.
+            height: banner.preferred-height;
 
-            HorizontalLayout {
+            banner := HorizontalLayout {
                 padding: Theme.gutter;
                 spacing: Theme.gutter;
 
@@ -558,9 +563,15 @@ export component App inherits Window {
                         }
                     }
                 }
-                Button {
-                    text: "Retry";
-                    clicked => { root.retry-discover(); }
+                // Wrapped so it keeps its natural height: a
+                // HorizontalLayout stretches its children to fill the cross
+                // axis, which rendered Retry as a full-height slab.
+                VerticalLayout {
+                    Button {
+                        text: "Retry";
+                        clicked => { root.retry-discover(); }
+                    }
+                    Rectangle { vertical-stretch: 1; }
                 }
             }
 

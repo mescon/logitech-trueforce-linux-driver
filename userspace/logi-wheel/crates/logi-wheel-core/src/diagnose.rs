@@ -493,47 +493,45 @@ mod tests {
     }
 
     /// Collect every command any finding can offer, by driving `diagnose_in`
-    /// through each failure state.
+    /// through each failure state in turn.
     fn all_offered_commands() -> Vec<String> {
         let mut cmds = Vec::new();
-        let states: Vec<(&str, Box<dyn Fn(&Fixture)>)> = vec![
-            ("none", Box::new(|_: &Fixture| {})),
-            ("console", Box::new(|f: &Fixture| f.usb(G923_XBOX_CONSOLE_PID))),
-            ("no-module", Box::new(|f: &Fixture| f.usb(0xc276))),
-            (
-                "misbound",
-                Box::new(|f: &Fixture| {
-                    f.usb(0xc276);
-                    f.module();
-                    f.hid(0xc276, Some("hid-generic"));
-                }),
-            ),
-            (
-                "unbound",
-                Box::new(|f: &Fixture| {
-                    f.usb(0xc276);
-                    f.module();
-                    f.hid(0xc276, None);
-                }),
-            ),
-            (
-                "no-rules",
-                Box::new(|f: &Fixture| {
-                    f.usb(0xc276);
-                    f.module();
-                    f.hid(0xc276, Some("logitech-dd"));
-                }),
-            ),
-        ];
-        for (name, build) in states {
-            let f = Fixture::new(name);
-            build(&f);
+        let mut collect = |f: &Fixture| {
             for finding in diagnose_in(&f.sys(), &f.root()) {
                 if let Some(fix) = finding.fix {
                     cmds.push(fix.command);
                 }
             }
-        }
+        };
+
+        collect(&Fixture::new("no-wheel"));
+
+        let f = Fixture::new("console");
+        f.usb(G923_XBOX_CONSOLE_PID);
+        collect(&f);
+
+        let f = Fixture::new("no-module");
+        f.usb(0xc276);
+        collect(&f);
+
+        let f = Fixture::new("misbound");
+        f.usb(0xc276);
+        f.module();
+        f.hid(0xc276, Some("hid-generic"));
+        collect(&f);
+
+        let f = Fixture::new("unbound");
+        f.usb(0xc276);
+        f.module();
+        f.hid(0xc276, None);
+        collect(&f);
+
+        let f = Fixture::new("no-rules");
+        f.usb(0xc276);
+        f.module();
+        f.hid(0xc276, Some("logitech-dd"));
+        collect(&f);
+
         cmds
     }
 
