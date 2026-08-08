@@ -215,6 +215,8 @@ fn sdk_field_prefill() -> String {
 
 pub struct App<S: SysfsIo> {
     pub device: Device<S>,
+    /// Set by `w`; cleared by the caller once it has switched wheels.
+    pub next_wheel_requested: bool,
     pub cat_idx: usize,
     /// Which pane the arrow keys act on; see `Focus`. Starts on the
     /// sidebar so Up/Down browse the categories right away.
@@ -443,6 +445,7 @@ impl<S: SysfsIo> App<S> {
             effect_edit: None,
             info_popup: None,
             add_game: None,
+            next_wheel_requested: false,
             quit: false,
             shaping_toggles: shaping::AxisToggles::default(),
             ffb_path: logi_wheel_core::helpers::ffb_path(),
@@ -1345,7 +1348,14 @@ impl<S: SysfsIo> App<S> {
     /// wheel input exists).
     pub fn rescan_input(&mut self) {
         let range = self.wheel_range();
-        self.test.rescan(range, self.device.model());
+        // Scoped to the managed wheel: with two attached, the unscoped scan
+        // returns whichever enumerated first, so the live monitor would show
+        // one wheel's steering while this app managed the other.
+        let usb = self
+            .device
+            .sysfs_key()
+            .and_then(|k| logi_wheel_core::device::usb_device_dir(&k));
+        self.test.rescan_under(range, self.device.model(), usb.as_deref());
         if self.test.dev.is_some() {
             self.test.start_monitor();
         }
@@ -2216,6 +2226,14 @@ impl<S: SysfsIo> App<S> {
             }
             Char('q') => {
                 self.quit = true;
+                true
+            }
+            Char('w') => {
+                // Recorded rather than acted on: swapping the device needs
+                // a concrete backend, and this impl is generic over it so
+                // the fake-sysfs tests can drive the whole app. `run()`
+                // takes the request, exactly like `quit`.
+                self.next_wheel_requested = true;
                 true
             }
             _ => false,

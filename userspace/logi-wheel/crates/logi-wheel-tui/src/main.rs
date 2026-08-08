@@ -62,6 +62,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run(app)
 }
 
+/// Manage the next attached wheel, wrapping round.
+///
+/// Rediscovers rather than trusting a remembered list: wheels get unplugged
+/// mid-session, and switching to one that has gone is worse than staying
+/// put. With a single wheel this says so rather than appearing to do
+/// nothing.
+fn next_wheel(app: &mut App<RealSysfs>) {
+    let mut all = Device::discover_all();
+    if all.len() < 2 {
+        app.status = "only one wheel attached".to_string();
+        return;
+    }
+    let current = app.device.sysfs_key();
+    let at = all.iter().position(|d| d.sysfs_key() == current).unwrap_or(0);
+    let next = (at + 1) % all.len();
+    let label = all[next]
+        .info()
+        .ok()
+        .map(|i| i.name)
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| {
+            logi_wheel_core::device::short_model_label(all[next].model()).to_string()
+        });
+    app.device = all.remove(next);
+    app.status = format!("managing {label}");
+    // Everything downstream is per-wheel: the cached values, the rows the
+    // views build from them, and the evdev node the monitor reads.
+    app.reload();
+    app.rescan_input();
+}
+
 fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut out = io::stdout();
@@ -105,7 +136,12 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
         };
         if key_ready {
             match event::read() {
-                Ok(Event::Key(k)) if k.kind == event::KeyEventKind::Press => app.on_key(k.code),
+                Ok(Event::Key(k)) if k.kind == event::KeyEventKind::Press => {
+                    app.on_key(k.code);
+                    if std::mem::take(&mut app.next_wheel_requested) {
+                        next_wheel(&mut app);
+                    }
+                }
                 Ok(_) => {}
                 Err(e) => break Err(e.into()),
             }

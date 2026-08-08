@@ -44,6 +44,7 @@ fn globals() -> Section {
             b("Tab", "switch focus: sidebar / content"),
             b("Esc", "close topmost, else back to the sidebar"),
             b("?", "this key list"),
+            b("w", "next wheel (only with more than one attached)"),
             b("q", "quit"),
         ],
     }

@@ -114,9 +114,15 @@ impl TestView {
     /// `model` are the wheel's configured rotation range and model, read
     /// by the caller through its `Device` (the sysfs side and the evdev
     /// side are independent).
-    pub fn rescan(&mut self, range: u32, model: WheelModel) {
+    /// Restricted to the wheel at `usb_dir`, or unscoped when it is `None`.
+    ///
+    /// There is deliberately no unscoped convenience wrapper: with two
+    /// wheels attached an unscoped scan returns whichever enumerated first,
+    /// so the live monitor would show one wheel's steering while the app
+    /// managed the other. Callers should say which wheel they mean.
+    pub fn rescan_under(&mut self, range: u32, model: WheelModel, usb_dir: Option<&std::path::Path>) {
         self.stop_monitor();
-        self.dev = evtest::discover_wheel_input();
+        self.dev = evtest::discover_wheel_input_under(usb_dir);
         self.scanned = true;
         self.range = range;
         self.model = model;
