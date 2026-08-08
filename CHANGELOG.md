@@ -46,20 +46,17 @@ It is now an hrtimer, programmed against the clock hardware, and `CONFIG_HZ`
 does not enter into it. Measured on hardware: 1000.2 Hz, median period
 1.000 ms, 99th percentile 1.003 ms, no tick longer than 1.046 ms.
 
-**That fixed texture pitch as a side effect, on every kernel rather than
-some.** The tick emits four texture samples and spaced them by the period it
-believed it had. Believing 1 ms while delivering 2 meant generating one
-millisecond of waveform for every two milliseconds of real time, so texture
-played an octave low everywhere, not only on the `CONFIG_HZ=250` kernels
-Debian and Ubuntu ship.
+**Texture is sampled across the whole timeline now, not half of it.** The
+tick emits four texture samples a quarter-millisecond apart, which covers
+one millisecond. While the tick actually ran every two, that left every
+other millisecond with no samples in it, and the wheel had to hold or repeat
+through the gap.
 
-What this affects is periodic force feedback a game uploads through evdev:
-anything faster than the 50 ms crossover is rendered as TrueForce texture by
-this tick, so kerb rumble, road surface and engine vibration from a game's
-own effects were all played at half their intended frequency. It does not
-affect simulated TrueForce, which writes its own 4 kHz stream to the wheel
-over hidraw and never passes through this tick, so the `pitch` setting and
-anything tuned around it are unchanged.
+The frequency was never wrong. Measured on an RS50 by capturing the steering
+encoder during a periodic effect and reading the dominant frequency off it,
+both the old and the new build render a requested 50 Hz at 50.0 Hz and a
+requested 100 Hz at 100.0 Hz. What changed is how much of the waveform the
+wheel is given to reconstruct from, not what note it plays.
 
 The tick also computes the steering force sum, so this triples the rate at
 which game force is sampled. Under a steering force and a TrueForce stream

@@ -5119,10 +5119,15 @@ struct hidpp_dd_lightsync_slot {
  * delivered, and so on. A self-rearming jiffies timer bottoms out at two
  * jiffies, which is 2 ms where HZ is 1000 and 8 ms where HZ is 250.
  *
- * That mattered twice over. The rate was half what it claimed, and the
- * texture sample spacing was derived from the nominal period rather than
- * the delivered one, so the driver generated 1 ms of waveform for every
- * 2 ms of real time and the texture played an octave low.
+ * That mattered twice over. The rate was half what it claimed, and since
+ * the tick's four texture samples span one millisecond between them, a
+ * two-millisecond tick left every other millisecond with no samples in it
+ * for the wheel to hold through.
+ *
+ * It did not shift pitch, which an earlier version of this comment claimed:
+ * the phase comes from real elapsed time, so each sample sits where it
+ * belongs and only the density changes. Measured from the steering encoder
+ * on an RS50, both builds render a requested 50 Hz and 100 Hz exactly.
  */
 #define HIDPP_DD_FF_TICK_MS		HIDPP_DD_FF_TIMER_INTERVAL_MS
 /* The same period as a ktime_t, which is what the hrtimer is armed with. */

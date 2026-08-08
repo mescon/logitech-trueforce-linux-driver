@@ -63,10 +63,12 @@ the thing it compensated for is gone rather than fixed. The tick was a
 jiffies timer that re-armed itself for the next jiffy, and the timer wheel
 never fires a timer early, so the expiry always slipped to the jiffy after:
 1 ms asked, 2 ms delivered, measured across four nominal intervals. The
-stream ran at half its stated rate and the texture spacing was derived from
-the nominal period rather than the delivered one, so the texture played an
-octave low on every kernel, not only on the `HZ=250` ones the caveat
-worried about. An hrtimer is programmed against the clock hardware, so the
+stream ran at half its stated rate, and because texture samples span only
+one millisecond per tick, a two-millisecond tick left every other
+millisecond unsampled. Note that this did not shift pitch: measured from the
+steering encoder, both builds render a requested 50 Hz and 100 Hz exactly,
+so an earlier claim in this file that texture played an octave low was
+wrong. An hrtimer is programmed against the clock hardware, so the
 period is the one requested and `CONFIG_HZ` does not enter into it.
 
 **Not confirmed at all.** Whether Assetto Corsa Competizione populates
