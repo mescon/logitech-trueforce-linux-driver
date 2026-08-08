@@ -27,7 +27,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use logi_wheel_core::sysfs::SysfsIo;
+use logi_wheel_core::sysfs::{RealSysfs, SysfsIo};
 use logi_wheel_core::{Category, Device, DeviceInfo, Error, Mode, Value, WheelModel};
 
 use crate::viewmodel::{Row, ViewModel, WidgetInput};
@@ -78,6 +78,11 @@ pub enum Request {
     /// (Re-)attempt `Device::discover()`. Sent once implicitly at startup
     /// and again whenever the no-wheel screen's Retry button is pressed.
     Discover,
+    /// Manage a different attached wheel. The index is into the list last
+    /// sent as `Response::Wheels`; anything out of range is ignored rather
+    /// than treated as "no wheel", since a stale index from a wheel that
+    /// was unplugged mid-click should not blank the window.
+    SelectWheel(usize),
     /// Save the wheel's current settings as computer profile `name`
     /// (desktop-mode Profiles page). Replied with `Response::Profiles`.
     ProfileSave(String),
@@ -132,6 +137,19 @@ pub enum Response {
     /// No device reachable right now (discovery failed, or has not been
     /// retried since the last failure). Carries the error text for display.
     NoWheel(String),
+    /// Every wheel attached, and which one is being managed. Sent after
+    /// discovery and after a `SelectWheel`, so the picker always reflects
+    /// what is really plugged in rather than what was there at startup.
+    /// One entry is the normal case and the UI is expected to hide the
+    /// picker entirely then.
+    Wheels {
+        names: Vec<String>,
+        active: usize,
+        /// The active wheel's USB device directory, so anything that reads
+        /// the hardware directly (the live input monitor) can follow the
+        /// picker instead of taking whichever wheel enumerated first.
+        active_usb: Option<std::path::PathBuf>,
+    },
     /// The computer-side profile store's state: the saved names (sorted)
     /// plus the outcome line of the request that triggered this reply
     /// ("" for a plain page load). `error` says whether `status` reports
@@ -160,9 +178,20 @@ impl Worker {
     pub fn spawn(on_response: impl Fn(Response) + Send + 'static) -> Worker {
         let (tx, rx) = mpsc::channel::<Request>();
         thread::spawn(move || {
-            let (mut vm, resp) = discover_outcome(Device::discover());
+            // The full attached set, so the UI can offer a choice instead
+            // of being handed whichever wheel sysfs listed first. Rebuilt on
+            // every (re-)discovery, because wheels come and go.
+            let mut wheels = Device::discover_all();
+            let mut active = 0usize;
+            let mut active_usb = usb_of(&wheels, active);
+            let (mut vm, resp) = discover_outcome(pick(&mut wheels, active));
             let mut no_wheel_msg = no_wheel_message(&resp);
+            let mut active_model = match &resp {
+                Response::Info(i) => i.model,
+                _ => WheelModel::default(),
+            };
             on_response(resp);
+            announce_wheels(&wheels, active, active_model, active_usb.clone(), &on_response);
             // What the drift watcher needs between requests: the category
             // the UI is looking at (tracked from the requests themselves,
             // starting at the UI's own startup default) and the last-seen
@@ -180,11 +209,59 @@ impl Worker {
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
+                // Both of these replace the managed device wholesale, so
+                // they are handled here rather than in `handle()`, which
+                // borrows the viewmodel it cannot swap.
                 if matches!(req, Request::Discover) {
-                    let (new_vm, resp) = discover_outcome(Device::discover());
+                    wheels = Device::discover_all();
+                    active = 0;
+                    active_usb = usb_of(&wheels, active);
+                    let (new_vm, resp) = discover_outcome(pick(&mut wheels, active));
                     vm = new_vm;
                     no_wheel_msg = no_wheel_message(&resp);
+                    active_model = match &resp {
+                        Response::Info(i) => i.model,
+                        _ => WheelModel::default(),
+                    };
                     on_response(resp);
+                    announce_wheels(&wheels, active, active_model, active_usb.clone(), &on_response);
+                    last_seen = drift_baseline(&vm);
+                    continue;
+                }
+                if let Request::SelectWheel(index) = req {
+                    // Rediscover rather than reuse the remembered list: a
+                    // wheel may have been unplugged since it was built, and
+                    // acting on a stale entry would manage a device that is
+                    // no longer there.
+                    wheels = Device::discover_all();
+                    if index >= wheels.len() {
+                        // Out of range: say what is actually attached and
+                        // keep managing the current wheel, rather than
+                        // blanking the window over a stale click.
+                        announce_wheels(
+                            &wheels,
+                            active.min(wheels.len()),
+                            active_model,
+                            active_usb.clone(),
+                            &on_response,
+                        );
+                        continue;
+                    }
+                    active = index;
+                    active_usb = usb_of(&wheels, active);
+                    let (new_vm, resp) = discover_outcome(pick(&mut wheels, active));
+                    vm = new_vm;
+                    no_wheel_msg = no_wheel_message(&resp);
+                    active_model = match &resp {
+                        Response::Info(i) => i.model,
+                        _ => WheelModel::default(),
+                    };
+                    on_response(resp);
+                    announce_wheels(&wheels, active, active_model, active_usb.clone(), &on_response);
+                    // The new wheel's rows are a different set entirely
+                    // (a G923 hides most of them), so reload what is on
+                    // screen instead of leaving the previous wheel's rows.
+                    dispatch(&vm, &no_wheel_msg, Request::LoadCategory(on_screen), &on_response);
                     last_seen = drift_baseline(&vm);
                     continue;
                 }
@@ -214,6 +291,49 @@ impl Worker {
 /// testable without a thread or a real hidraw device: a `FakeSysfs` device
 /// wrapped in `Ok`, or a plain `Err`, stand in for what `discover()` would
 /// have produced.
+/// Take the wheel at `index` out of `wheels`, or report no wheel.
+///
+/// Takes rather than clones because a `Device` owns its io handle. The
+/// list is rebuilt on every rediscovery, so removing the chosen entry is
+/// harmless and keeps the remaining ones available for a later switch.
+fn pick(wheels: &mut Vec<Device<RealSysfs>>, index: usize) -> Result<Device<RealSysfs>, Error> {
+    if index < wheels.len() {
+        Ok(wheels.remove(index))
+    } else {
+        Err(Error::NoWheel)
+    }
+}
+
+/// Tell the UI what is attached and which one is being managed.
+///
+/// `wheels` here is the set MINUS the active one (it was taken by `pick`),
+/// so the active wheel's name is reinstated at its own index to rebuild the
+/// full list in its original order. Without that the picker would be one
+/// entry short and every index after the active one would be off by one.
+fn announce_wheels(
+    remaining: &[Device<RealSysfs>],
+    active: usize,
+    active_model: WheelModel,
+    active_usb: Option<std::path::PathBuf>,
+    on_response: &impl Fn(Response),
+) {
+    let mut models: Vec<WheelModel> = remaining.iter().map(|d| d.model()).collect();
+    let at = active.min(models.len());
+    models.insert(at, active_model);
+    on_response(Response::Wheels {
+        names: logi_wheel_core::device::short_labels(&models),
+        active: at,
+        active_usb,
+    });
+}
+
+/// The USB device directory of the wheel at `index`, read before `pick`
+/// removes it from the list.
+fn usb_of(wheels: &[Device<RealSysfs>], index: usize) -> Option<std::path::PathBuf> {
+    let key = wheels.get(index)?.sysfs_key()?;
+    logi_wheel_core::device::usb_device_dir(&key)
+}
+
 fn discover_outcome<S: SysfsIo>(result: Result<Device<S>, Error>) -> (Option<ViewModel<S>>, Response) {
     match result {
         Ok(device) => {
@@ -290,7 +410,7 @@ fn request_category(req: &Request) -> Option<Category> {
         | Request::OnboardRevert
         | Request::OnboardCopyProfile(_)
         | Request::OnboardExit { .. } => Some(Category::Profiles),
-        Request::SetMode(_) | Request::Discover => None,
+        Request::SetMode(_) | Request::Discover | Request::SelectWheel(_) => None,
     }
 }
 
@@ -647,7 +767,9 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
         }
         // Handled in `spawn`'s loop before `handle` is ever called, so that
         // it can replace `vm` itself; `handle` only ever borrows it.
-        Request::Discover => unreachable!("Discover is intercepted before handle()"),
+        Request::Discover | Request::SelectWheel(_) => {
+            unreachable!("device-swapping requests are intercepted before handle()")
+        }
     }
 }
 

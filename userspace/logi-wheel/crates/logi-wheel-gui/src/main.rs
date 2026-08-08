@@ -804,10 +804,16 @@ fn start_test_monitor(
     reader_cell: Arc<Mutex<Option<testio::Reader>>>,
     device_cell: Arc<Mutex<Option<evtest::WheelInput>>>,
     model_cell: Arc<Mutex<WheelModel>>,
+    // The USB device of the wheel currently selected, so the live input
+    // monitor follows the picker. Without it the monitor showed whichever
+    // wheel enumerated first: selecting the RS50 while turning the G923
+    // animated the RS50's picture.
+    usb_cell: Arc<Mutex<Option<std::path::PathBuf>>>,
 ) {
     stop_test_monitor(&reader_cell);
     std::thread::spawn(move || {
-        let found = evtest::discover_wheel_input();
+        let usb = usb_cell.lock().unwrap().clone();
+        let found = evtest::discover_wheel_input_under(usb.as_deref());
         // The configured rotation range, and the wheel's model (which
         // button code list/labels to use, see `evtest::button_codes_for_
         // model`), read once through the same sysfs plumbing the settings
@@ -1010,6 +1016,17 @@ fn main() -> Result<(), slint::PlatformError> {
         return Ok(());
     }
 
+    // Must precede the first window, and must match the basename of the
+    // installed desktop entry (`logi-wheel-gui.desktop`). Without it a
+    // Wayland compositor has nothing to tie the window to that entry, so
+    // GNOME shows a generic placeholder in the taskbar and the switcher
+    // instead of the app's own icon. `StartupWMClass` in the desktop file
+    // only covers the X11 side of the same problem.
+    //
+    // Best-effort: a platform where this does not apply returns an error
+    // that says only that, and is not a reason to refuse to start.
+    let _ = slint::set_xdg_app_id("logi-wheel-gui");
+
     let app = App::new()?;
     // Which categories the connected wheel has content for: starts at
     // every category (`WheelModel::default()` is `Unknown`, treated as a
@@ -1115,6 +1132,16 @@ fn main() -> Result<(), slint::PlatformError> {
     // writes; instead every name that flows past (paired with the slot it
     // belonged to at read time) is remembered here, and unseen slots show
     // the plain "CUSTOM N" fallback.
+    // The Info page's live input monitor: its reader, the evdev node the
+    // sim buttons play against, the selected wheel's USB device (so the
+    // monitor follows the wheel picker) and the model at last discovery.
+    // Declared here rather than beside the Test page wiring because the
+    // worker's response handler restarts the monitor when the active wheel
+    // changes.
+    let test_reader: Arc<Mutex<Option<testio::Reader>>> = Arc::new(Mutex::new(None));
+    let test_device: Arc<Mutex<Option<evtest::WheelInput>>> = Arc::new(Mutex::new(None));
+    let test_usb: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
+    let test_model: Arc<Mutex<WheelModel>> = Arc::new(Mutex::new(WheelModel::default()));
     let led_slot_names: Arc<Mutex<Vec<String>>> =
         Arc::new(Mutex::new(vec![String::new(); lightsync::CUSTOM_SLOTS]));
     // The per-axis shaping view toggles: pure per-session view state (never
@@ -1156,6 +1183,10 @@ fn main() -> Result<(), slint::PlatformError> {
         let last_rows = last_rows.clone();
         let visible_categories = visible_categories.clone();
         let onboard_name_rev = onboard_name_rev.clone();
+        let test_usb_outer = test_usb.clone();
+        let test_reader_outer = test_reader.clone();
+        let test_device_outer = test_device.clone();
+        let test_model_outer = test_model.clone();
         Worker::spawn(move |response| {
             let app_weak = app_weak.clone();
             let current_category = current_category.clone();
@@ -1167,9 +1198,43 @@ fn main() -> Result<(), slint::PlatformError> {
             let last_rows = last_rows.clone();
             let visible_categories = visible_categories.clone();
             let onboard_name_rev = onboard_name_rev.clone();
+            let test_usb_resp = test_usb_outer.clone();
+            let test_reader_resp = test_reader_outer.clone();
+            let test_device_resp = test_device_outer.clone();
+            let test_model_resp = test_model_outer.clone();
+            let current_category_resp = current_category.clone();
+            let app_weak_resp = app_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(app) = app_weak.upgrade() else { return };
                 match response {
+                    Response::Wheels { names, active, active_usb } => {
+                        // A switch changes which hardware the Info page's
+                        // live monitor should be reading, so restart it
+                        // when the active wheel's USB device moves.
+                        let changed = {
+                            let mut slot = test_usb_resp.lock().unwrap();
+                            let differs = *slot != active_usb;
+                            *slot = active_usb;
+                            differs
+                        };
+                        if changed && get(&current_category_resp) == Category::Info {
+                            start_test_monitor(
+                                app_weak_resp.clone(),
+                                test_reader_resp.clone(),
+                                test_device_resp.clone(),
+                                test_model_resp.clone(),
+                                test_usb_resp.clone(),
+                            );
+                        }
+                        let model = std::rc::Rc::new(slint::VecModel::from(
+                            names
+                                .iter()
+                                .map(|n| slint::SharedString::from(n.as_str()))
+                                .collect::<Vec<_>>(),
+                        ));
+                        app.set_wheel_names(model.into());
+                        app.set_active_wheel(active as i32);
+                    }
                     Response::Rows { category, rows } => {
                         // A category switch (or a slow edit reply racing a
                         // later switch) can make this response stale;
@@ -1432,9 +1497,6 @@ fn main() -> Result<(), slint::PlatformError> {
     // wheel's model at last discovery (needed to resolve a sim step's
     // direction against the right engine - see `fftest::resolve_
     // direction`), and the playing sim's cancel flag (see `SimCancelCell`).
-    let test_reader: Arc<Mutex<Option<testio::Reader>>> = Arc::new(Mutex::new(None));
-    let test_device: Arc<Mutex<Option<evtest::WheelInput>>> = Arc::new(Mutex::new(None));
-    let test_model: Arc<Mutex<WheelModel>> = Arc::new(Mutex::new(WheelModel::default()));
     let test_sim_cancel: SimCancelCell = Arc::new(Mutex::new(None));
 
     {
@@ -1445,6 +1507,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let test_reader = test_reader.clone();
         let test_device = test_device.clone();
         let test_model = test_model.clone();
+        let test_usb = test_usb.clone();
         app.on_select_category(move |index| {
             let Some(app) = app_weak.upgrade() else { return };
             // The trailing "Setup" row: show that page and stop, without
@@ -1472,6 +1535,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     test_reader.clone(),
                     test_device.clone(),
                     test_model.clone(),
+                    test_usb.clone(),
                 );
             } else {
                 stop_test_monitor(&test_reader);
@@ -1495,6 +1559,17 @@ fn main() -> Result<(), slint::PlatformError> {
         let current_category = current_category.clone();
         app.on_refresh(move || {
             worker.request(Request::Refresh(get(&current_category)));
+        });
+    }
+    {
+        let worker = worker.clone();
+        // The worker reloads the on-screen category itself after a switch,
+        // because the new wheel's row set is a different shape (a G923 has
+        // most of them hidden) and the old rows must not linger.
+        app.on_select_wheel(move |index| {
+            if index >= 0 {
+                worker.request(Request::SelectWheel(index as usize));
+            }
         });
     }
     {
@@ -2440,12 +2515,14 @@ fn main() -> Result<(), slint::PlatformError> {
         let test_reader = test_reader.clone();
         let test_device = test_device.clone();
         let test_model = test_model.clone();
+        let test_usb = test_usb.clone();
         app.on_test_rescan(move || {
             start_test_monitor(
                 app_weak.clone(),
                 test_reader.clone(),
                 test_device.clone(),
                 test_model.clone(),
+                test_usb.clone(),
             );
         });
     }
@@ -2489,7 +2566,13 @@ fn main() -> Result<(), slint::PlatformError> {
     // the way in, so start the reader here too, or the page would sit on
     // "Scanning /dev/input for the wheel..." forever.
     if get(&current_category) == Category::Info {
-        start_test_monitor(app.as_weak(), test_reader.clone(), test_device.clone(), test_model.clone());
+        start_test_monitor(
+            app.as_weak(),
+            test_reader.clone(),
+            test_device.clone(),
+            test_model.clone(),
+            test_usb.clone(),
+        );
     }
 
     let outcome = app.run();

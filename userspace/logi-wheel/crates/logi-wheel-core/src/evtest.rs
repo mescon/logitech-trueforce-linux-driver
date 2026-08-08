@@ -425,8 +425,55 @@ pub fn scan_wheel_input(sysfs_input: &Path) -> Option<WheelInput> {
 }
 
 /// Find the wheel's evdev node, or `None` when no wheel is connected.
+///
+/// Returns whichever wheel appears first, which is only correct when there
+/// is one. Prefer [`discover_wheel_input_under`] whenever the caller knows
+/// which wheel it means.
 pub fn discover_wheel_input() -> Option<WheelInput> {
     scan_wheel_input(Path::new("/sys/class/input"))
+}
+
+/// The evdev node belonging to the wheel at `usb_dir`, or `None`.
+///
+/// With two wheels attached, "the wheel's input node" is not a question
+/// with one answer, and the unscoped scan answers it with whichever
+/// enumerated first. That made the app's live input monitor show a G923's
+/// steering while the RS50 was selected: the settings followed the choice
+/// and the input monitor did not.
+///
+/// Falls back to the unscoped scan when `usb_dir` is unknown, so a caller
+/// without a discovered sysfs path behaves exactly as before.
+pub fn discover_wheel_input_under(usb_dir: Option<&Path>) -> Option<WheelInput> {
+    let Some(usb) = usb_dir else {
+        return discover_wheel_input();
+    };
+    scan_wheel_input_under(Path::new("/sys/class/input"), usb)
+}
+
+/// [`scan_wheel_input`] restricted to input nodes under `usb`.
+pub fn scan_wheel_input_under(sysfs_input: &Path, usb: &Path) -> Option<WheelInput> {
+    let mut entries: Vec<_> = fs::read_dir(sysfs_input)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("event"))
+        .collect();
+    entries.sort_by_key(|e| event_index(&e.file_name().to_string_lossy()));
+
+    for entry in entries {
+        let Ok(real) = fs::canonicalize(entry.path()) else { continue };
+        if !real.starts_with(usb) {
+            continue;
+        }
+        let event_name = entry.file_name().to_string_lossy().into_owned();
+        let name = match fs::read_to_string(entry.path().join("device/name")) {
+            Ok(s) => s.trim().to_string(),
+            Err(_) => continue,
+        };
+        if is_wheel_name(&name) {
+            return Some(WheelInput { event_path: format!("/dev/input/{event_name}"), name });
+        }
+    }
+    None
 }
 
 #[cfg(test)]

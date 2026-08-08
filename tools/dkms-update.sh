@@ -115,12 +115,50 @@ dkms install -m "$PKG" -v "$VER"
 # Install / refresh udev rule so wheel_* sysfs attrs and hidraw nodes
 # are writable by the logged-in session user (or members of "input"),
 # not just root. Without this every Oversteer knob and every echo >
+# A rule in /etc/udev/rules.d takes precedence over the same filename in
+# /usr/lib/udev/rules.d, which is where the distribution packages put
+# theirs. Installing from a checkout on top of a packaged install therefore
+# SHADOWS the package: identical today, but the next package upgrade
+# updates /usr/lib while the stale copy in /etc keeps winning, and the
+# upgrade silently does nothing.
+#
+# So: skip when the packaged copy is already identical, and say plainly
+# what is happening when it is not.
+#
+#   needs_rule <source> <dest>   -> 0 to install, 1 to skip
+needs_rule() {
+	local src="$1" dst="$2"
+	local packaged="/usr/lib/udev/rules.d/$(basename "$dst")"
+
+	if cmp -s "$src" "$dst" 2>/dev/null; then
+		echo "udev rule up to date ($dst)"
+		return 1
+	fi
+	if [ -f "$packaged" ]; then
+		if cmp -s "$src" "$packaged" 2>/dev/null; then
+			echo "udev rule already provided by the package ($packaged); not shadowing it"
+			# An older checkout may have left one behind; take it away
+			# so the package's copy is the one that applies.
+			if [ -f "$dst" ]; then
+				echo "== removing the checkout copy that shadowed it: $dst =="
+				rm -f "$dst"
+				udevadm control --reload
+			fi
+			return 1
+		fi
+		echo "NOTE: $packaged exists and differs from this checkout."
+		echo "      Installing to $dst, which OVERRIDES the packaged rule."
+		echo "      Remove $dst to go back to the packaged one."
+	fi
+	return 0
+}
+
 # wheel_* needs sudo.
 if [ -f "$UDEV_SRC" ]; then
 	# Pre-rename installs used this filename; drop it so the rules
 	# don't run twice.
 	rm -f /etc/udev/rules.d/70-logitech-rs50.rules
-	if ! cmp -s "$UDEV_SRC" "$UDEV_DST" 2>/dev/null; then
+	if needs_rule "$UDEV_SRC" "$UDEV_DST"; then
 		echo "== installing udev rule to $UDEV_DST =="
 		install -m 0644 "$UDEV_SRC" "$UDEV_DST"
 		udevadm control --reload
@@ -133,7 +171,7 @@ fi
 # Same for the logi-ffb rule, which opens /dev/uhid to the "input" group
 # so the DirectInput FFB proxy can create its virtual wheel without sudo.
 if [ -f "$UDEV_FFB_SRC" ]; then
-	if ! cmp -s "$UDEV_FFB_SRC" "$UDEV_FFB_DST" 2>/dev/null; then
+	if needs_rule "$UDEV_FFB_SRC" "$UDEV_FFB_DST"; then
 		echo "== installing udev rule to $UDEV_FFB_DST =="
 		install -m 0644 "$UDEV_FFB_SRC" "$UDEV_FFB_DST"
 		udevadm control --reload
@@ -146,7 +184,7 @@ fi
 # Same for the G923 (c266/c267/c26e) bind-race rebind rule: it fires on
 # SUBSYSTEM=="hid" add/bind, not hidraw, so it needs its own trigger match.
 if [ -f "$UDEV_G923_SRC" ]; then
-	if ! cmp -s "$UDEV_G923_SRC" "$UDEV_G923_DST" 2>/dev/null; then
+	if needs_rule "$UDEV_G923_SRC" "$UDEV_G923_DST"; then
 		echo "== installing udev rule to $UDEV_G923_DST =="
 		install -m 0644 "$UDEV_G923_SRC" "$UDEV_G923_DST"
 		udevadm control --reload
@@ -175,7 +213,7 @@ fi
 # SUBSYSTEM=="usb" add/change, on the raw USB device, not the HID
 # interfaces the other two rules watch.
 if [ -f "$UDEV_G923_XBOX_SRC" ]; then
-	if ! cmp -s "$UDEV_G923_XBOX_SRC" "$UDEV_G923_XBOX_DST" 2>/dev/null; then
+	if needs_rule "$UDEV_G923_XBOX_SRC" "$UDEV_G923_XBOX_DST"; then
 		echo "== installing udev rule to $UDEV_G923_XBOX_DST =="
 		install -m 0644 "$UDEV_G923_XBOX_SRC" "$UDEV_G923_XBOX_DST"
 		udevadm control --reload

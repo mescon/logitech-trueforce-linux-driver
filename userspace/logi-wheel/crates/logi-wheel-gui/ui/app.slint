@@ -135,6 +135,13 @@ export component App inherits Window {
     // Wheel for PlayStation 4 and PC"), or "" while no wheel is bound - the
     // Wheel row shows a "No wheel detected" state for that itself. Pushed
     // from `Response::Info` (`bridge`/`main.rs`), same as serial/firmware.
+    // Every wheel attached, and which one is being managed. One entry is
+    // the normal case, and the picker hides itself then: a chooser with a
+    // single choice is noise. Pushed from `Response::Wheels`.
+    in property <[string]> wheel-names: [];
+    in property <int> active-wheel: 0;
+    callback select-wheel(int);
+
     in property <string> info-wheel-name: "";
     in property <string> info-serial: "";
     in property <string> info-firmware: "";
@@ -386,6 +393,37 @@ export component App inherits Window {
                     font-weight: 700;
                     color: Theme.text-color;
                     vertical-alignment: center;
+                }
+
+                // Wheel tabs, next to the title, shown only with more than
+                // one attached: a chooser with a single choice is noise.
+                // Short model labels ("RS50", "G923") rather than the full
+                // product names, which are far too long to sit in a header.
+                if root.wheel-names.length > 1: HorizontalLayout {
+                    padding-left: 16px;
+                    spacing: 6px;
+                    for name[w] in root.wheel-names: Rectangle {
+                        height: 26px;
+                        width: label.preferred-width + 22px;
+                        border-radius: 13px;
+                        background: w == root.active-wheel ? Theme.selected-background
+                                                           : Palette.alternate-background;
+                        border-width: 1px;
+                        border-color: w == root.active-wheel ? Theme.selected-background
+                                                             : Palette.border;
+                        TouchArea {
+                            clicked => { root.select-wheel(w); }
+                        }
+                        label := Text {
+                            text: name;
+                            font-size: 12px;
+                            font-weight: w == root.active-wheel ? 700 : 400;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                            color: w == root.active-wheel ? Theme.selected-foreground
+                                                          : Palette.foreground;
+                        }
+                    }
                 }
 
                 Rectangle { horizontal-stretch: 1; }

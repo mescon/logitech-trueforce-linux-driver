@@ -169,6 +169,39 @@ pub fn wheel_display_name_at(sysfs_input: &Path, model: WheelModel) -> String {
 }
 
 /// [`wheel_display_name_at`] against the real `/sys/class/input`.
+/// A short label for a wheel, for a tab or picker where the full product
+/// name ("Logitech G923 Racing Wheel for PlayStation 4 and PC") would be
+/// truncated into uselessness.
+pub fn short_model_label(model: WheelModel) -> &'static str {
+    match model {
+        WheelModel::Rs50 => "RS50",
+        WheelModel::GPro => "G PRO",
+        WheelModel::G923 => "G923",
+        WheelModel::Unknown => "Wheel",
+    }
+}
+
+/// Short labels for `models`, made unique.
+///
+/// Two wheels of the same model is a real configuration, and two tabs both
+/// reading "G923" would be unusable, so repeats are numbered in the order
+/// they were discovered. A model that appears once is left alone: "RS50"
+/// reads better than "RS50 1" when there is only one.
+pub fn short_labels(models: &[WheelModel]) -> Vec<String> {
+    let mut out = Vec::with_capacity(models.len());
+    for (i, m) in models.iter().enumerate() {
+        let base = short_model_label(*m);
+        let repeats = models.iter().filter(|o| *o == m).count();
+        if repeats <= 1 {
+            out.push(base.to_string());
+        } else {
+            let nth = models[..i].iter().filter(|o| *o == m).count() + 1;
+            out.push(format!("{base} {nth}"));
+        }
+    }
+    out
+}
+
 /// The model a discovered device really is, resolving the one case where
 /// the product id lies.
 ///
@@ -1424,6 +1457,26 @@ mod tests {
 #[cfg(test)]
 mod discover_all_tests {
     use super::*;
+
+    #[test]
+    fn short_labels_stay_distinguishable_with_duplicates() {
+        use WheelModel::*;
+        // The common case: one of each, no numbering noise.
+        assert_eq!(short_labels(&[Rs50, G923]), vec!["RS50", "G923"]);
+        // Two of a kind must not produce two identical tabs.
+        assert_eq!(short_labels(&[G923, G923]), vec!["G923 1", "G923 2"]);
+        // Mixed: only the repeated model is numbered.
+        assert_eq!(
+            short_labels(&[G923, Rs50, G923]),
+            vec!["G923 1", "RS50", "G923 2"]
+        );
+        // Three of a kind, because someone will.
+        assert_eq!(
+            short_labels(&[GPro, GPro, GPro]),
+            vec!["G PRO 1", "G PRO 2", "G PRO 3"]
+        );
+        assert!(short_labels(&[]).is_empty());
+    }
 
     /// An RS50 in G PRO compatibility mode borrows the G PRO's product id.
     /// Trusting the id alone labels it a G PRO, which is wrong on the one
