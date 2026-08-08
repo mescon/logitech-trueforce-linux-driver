@@ -1346,6 +1346,22 @@ impl<S: SysfsIo> App<S> {
     /// and start monitoring right away when one is found (the monitor is
     /// not toggled by hand; it runs whenever the Info view is open and a
     /// wheel input exists).
+    /// Cycle which wheel simulated TrueForce drives.
+    ///
+    /// The daemon prefers a G923 whenever it finds one, which is right with
+    /// a single wheel and would otherwise leave a direct-drive wheel
+    /// unreachable on a rig with both. This writes the `wheel` config key
+    /// the daemon reads, so the choice survives a restart and does not
+    /// depend on anyone knowing an environment variable exists.
+    pub fn tf_cycle_wheel(&mut self) {
+        use logi_wheel_core::tfsim::WheelChoice;
+        let cfg = logi_wheel_core::tfsim::Config::load_from(&self.tf_conf);
+        let at = WheelChoice::ALL.iter().position(|c| *c == cfg.wheel).unwrap_or(0);
+        let next = WheelChoice::ALL[(at + 1) % WheelChoice::ALL.len()];
+        let outcome = logi_wheel_core::tfsim::set_wheel_in(&self.tf_conf, next);
+        self.tf_report(&format!("wheel: {}", next.label()), outcome);
+    }
+
     pub fn rescan_input(&mut self) {
         let range = self.wheel_range();
         // Scoped to the managed wheel: with two attached, the unscoped scan
@@ -2594,6 +2610,9 @@ impl<S: SysfsIo> App<S> {
                 }
                 Char('l') if inside && section == SetupSection::SimTf => {
                     self.tf_effects_open = !self.tf_effects_open;
+                }
+                Char('h') if inside && section == SetupSection::SimTf => {
+                    self.tf_cycle_wheel()
                 }
                 // `[` and `]` rather than Up/Down, which belong to moving
                 // between Setup sections and must keep working from here.

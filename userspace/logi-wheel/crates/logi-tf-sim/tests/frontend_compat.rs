@@ -51,6 +51,7 @@ fn full_config() -> Config {
     Config {
         enabled: false,
         intensity: 42,
+        wheel: logi_wheel_core::tfsim::WheelChoice::Auto,
         pitch_pct: 50,
         cylinders: 8,
         leds: false,
@@ -234,4 +235,46 @@ fn scalar_defaults_match_the_daemon() {
     assert_eq!(mirror.intensity, daemon.intensity, "intensity");
     assert_eq!(mirror.enabled, daemon.enabled, "master enable");
     assert_eq!(mirror.leds, daemon.leds, "rev-LED feeder");
+}
+
+/// The `wheel` key must mean the same thing on both sides.
+///
+/// The daemon reads it to decide which attached wheel to drive, and the
+/// front-ends write it. Two independent implementations of the same file
+/// format is the whole reason this test file exists, and a key that one
+/// side writes and the other ignores would silently strand a wheel.
+#[test]
+fn wheel_key_round_trips_between_daemon_and_frontends() {
+    use logi_wheel_core::tfsim::WheelChoice;
+
+    for choice in WheelChoice::ALL {
+        let tree = TempTree::new();
+        let path = tree.path().join("tf-sim.conf");
+
+        // The front-end writes it...
+        logi_wheel_core::tfsim::set_wheel_in(&path, choice).expect("front-end write");
+        // ...and the daemon must read back exactly that.
+        let daemon = Config::load_from(&path);
+        assert_eq!(
+            daemon.wheel, choice,
+            "the daemon read {:?} where the front-end wrote {choice:?}",
+            daemon.wheel
+        );
+        // And the front-end's own reader must agree with both.
+        let frontend = logi_wheel_core::tfsim::Config::load_from(&path);
+        assert_eq!(frontend.wheel, choice);
+    }
+}
+
+/// An unset key means automatic on both sides, not "whatever the struct
+/// default happened to be".
+#[test]
+fn wheel_key_absent_means_auto_on_both_sides() {
+    use logi_wheel_core::tfsim::WheelChoice;
+    let tree = TempTree::new();
+    let path = tree.path().join("tf-sim.conf");
+    fs::write(&path, "intensity = 40\n").expect("write");
+
+    assert_eq!(Config::load_from(&path).wheel, WheelChoice::Auto);
+    assert_eq!(logi_wheel_core::tfsim::Config::load_from(&path).wheel, WheelChoice::Auto);
 }

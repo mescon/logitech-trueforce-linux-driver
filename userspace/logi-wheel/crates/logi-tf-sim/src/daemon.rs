@@ -153,14 +153,39 @@ pub(crate) fn open_wheel_stream(cfg: &Config) -> Result<WheelStream> {
 /// correlates the TrueForce interface with its interface-0 sibling to find
 /// `ffb_output`. That sibling is the device carrying the rev LEDs.
 pub(crate) fn open_wheel_stream_with_leds(cfg: &Config) -> Result<(WheelStream, Option<String>)> {
-    // A G923 is preferred whenever one is present, which is right for the
-    // overwhelmingly common case of a single wheel and wrong for a rig with
-    // both: the direct-drive wheel becomes unreachable, because nothing
-    // below is ever consulted. LOGI_TF_SIM_WHEEL=dd forces the DD path so
-    // that rig can still be driven and measured.
-    let forced = std::env::var("LOGI_TF_SIM_WHEEL").unwrap_or_default();
-    if forced.eq_ignore_ascii_case("dd") {
+    // Which wheel to drive. `auto` prefers a G923 whenever one is present,
+    // which is right for the overwhelmingly common case of a single wheel
+    // and wrong for a rig with both: the direct-drive wheel would be
+    // unreachable, because nothing below is ever consulted.
+    //
+    // The `wheel` config key is the answer to that, and is what the apps
+    // set. LOGI_TF_SIM_WHEEL still overrides it for a one-off run without
+    // editing anyone's configuration, which is what it was always for.
+    use logi_wheel_core::tfsim::WheelChoice;
+    let choice = match std::env::var("LOGI_TF_SIM_WHEEL") {
+        Ok(v) if !v.trim().is_empty() => WheelChoice::parse(&v).unwrap_or(cfg.wheel),
+        _ => cfg.wheel,
+    };
+    if choice == WheelChoice::DirectDrive {
         return TfStream::open(0).map(|s| (WheelStream::Dd(s), None));
+    }
+    if choice == WheelChoice::G923 {
+        let paths = g923::discover().ok_or_else(|| {
+            Error::Io(
+                "no G923 found, and the configuration asks for one (wheel = g923)".into(),
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+            )
+        })?;
+        let led_owner = paths
+            .ffb_output
+            .as_deref()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned());
+        let sign = g923::Sign::resolve(cfg.g923_ffb_invert);
+        let stream = g923::G923Stream::open(&paths, sign)
+            .map_err(|e| Error::Io("open G923 TrueForce stream".into(), e))?;
+        return Ok((WheelStream::G923(stream), led_owner));
     }
     if let Some(paths) = g923::discover() {
         let led_owner = paths

@@ -226,6 +226,62 @@ impl EffectGains {
     }
 }
 
+/// Which attached wheel simulated TrueForce should drive.
+///
+/// Exists because "the wheel" stops being a single thing the moment two are
+/// plugged in. The daemon prefers a G923 whenever it finds one, which is
+/// right for one wheel and leaves a direct-drive wheel unreachable on a rig
+/// with both. Before this the only way out was an environment variable,
+/// which nobody discovers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WheelChoice {
+    /// Whatever the daemon finds, preferring a G923. The right answer with
+    /// one wheel attached, and the reason this is the default.
+    #[default]
+    Auto,
+    /// A direct-drive wheel: RS50 or G PRO.
+    DirectDrive,
+    /// A G923.
+    G923,
+}
+
+impl WheelChoice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WheelChoice::Auto => "auto",
+            WheelChoice::DirectDrive => "dd",
+            WheelChoice::G923 => "g923",
+        }
+    }
+
+    /// Parse a config value. Accepts the wheel names people actually type
+    /// as well as the stored spellings, because "rs50" in a config file
+    /// silently meaning "auto" is worse than any parsing strictness.
+    pub fn parse(raw: &str) -> Option<WheelChoice> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" | "" => Some(WheelChoice::Auto),
+            "dd" | "rs50" | "gpro" | "g pro" | "g-pro" | "direct-drive" | "directdrive" => {
+                Some(WheelChoice::DirectDrive)
+            }
+            "g923" | "923" => Some(WheelChoice::G923),
+            _ => None,
+        }
+    }
+
+    /// The label the apps show.
+    pub fn label(self) -> &'static str {
+        match self {
+            WheelChoice::Auto => "Automatic",
+            WheelChoice::DirectDrive => "Direct drive (RS50 / G PRO)",
+            WheelChoice::G923 => "G923",
+        }
+    }
+
+    /// Every choice, in the order a picker should list them.
+    pub const ALL: [WheelChoice; 3] =
+        [WheelChoice::Auto, WheelChoice::DirectDrive, WheelChoice::G923];
+}
+
 /// The keys of tf-sim's configuration the front-ends edit. The `port.*`
 /// keys are intentionally absent: the front-ends never touch them, and
 /// [`write_key_in`] preserves them (and anything else) on every write.
@@ -237,6 +293,8 @@ pub struct Config {
     pub intensity: u8,
     /// Felt rev-rate scale in percent (10-200; 100 = the crank rate).
     pub pitch_pct: u8,
+    /// Which attached wheel to drive; see [`WheelChoice`].
+    pub wheel: WheelChoice,
     /// Whether the daemon also drives the wheel's rev display
     /// (`wheel_rev_level`) from telemetry RPM while streaming.
     pub leds: bool,
@@ -253,6 +311,7 @@ impl Default for Config {
         Config {
             enabled: true,
             intensity: DEFAULT_INTENSITY,
+            wheel: WheelChoice::default(),
             pitch_pct: DEFAULT_PITCH,
             leds: true,
             effects: true,
@@ -375,6 +434,11 @@ impl Config {
                         }
                     }
                 }
+                "wheel" => {
+                    if let Some(v) = WheelChoice::parse(raw) {
+                        cfg.wheel = v;
+                    }
+                }
                 "leds" => {
                     if let Some(v) = parse_bool(raw) {
                         cfg.leds = v;
@@ -472,6 +536,11 @@ pub fn set_pitch_in(path: &Path, pitch_pct: u8) -> Result<(), Error> {
 }
 
 /// Write the rev-display switch.
+/// Which wheel simulated TrueForce should drive.
+pub fn set_wheel_in(path: &Path, wheel: WheelChoice) -> Result<(), Error> {
+    write_key_in(path, "wheel", wheel.as_str())
+}
+
 pub fn set_leds_in(path: &Path, leds: bool) -> Result<(), Error> {
     write_key_in(path, "leds", if leds { "1" } else { "0" })
 }
@@ -899,5 +968,36 @@ mod tests {
         assert_eq!(pids_by_comm_in(proc_root, DAEMON_COMM), vec![90, 250]);
         assert_eq!(pids_by_comm_in(proc_root, "nothing-runs-this"), Vec::<i32>::new());
         assert_eq!(pids_by_comm_in(Path::new("/nonexistent-proc"), DAEMON_COMM), Vec::<i32>::new());
+    }
+}
+
+#[cfg(test)]
+mod wheel_choice_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_what_people_actually_type() {
+        // The stored spellings.
+        assert_eq!(WheelChoice::parse("auto"), Some(WheelChoice::Auto));
+        assert_eq!(WheelChoice::parse("dd"), Some(WheelChoice::DirectDrive));
+        assert_eq!(WheelChoice::parse("g923"), Some(WheelChoice::G923));
+        // The wheel names someone would reasonably write instead, because a
+        // config that silently means "auto" is worse than being lenient.
+        assert_eq!(WheelChoice::parse("RS50"), Some(WheelChoice::DirectDrive));
+        assert_eq!(WheelChoice::parse("G PRO"), Some(WheelChoice::DirectDrive));
+        assert_eq!(WheelChoice::parse(" G923 "), Some(WheelChoice::G923));
+        // Empty means unset, which is auto.
+        assert_eq!(WheelChoice::parse(""), Some(WheelChoice::Auto));
+        // Nonsense is rejected rather than silently becoming a default, so
+        // the parser leaves the previous value alone.
+        assert_eq!(WheelChoice::parse("g924"), None);
+    }
+
+    #[test]
+    fn round_trips_through_the_stored_form() {
+        for c in WheelChoice::ALL {
+            assert_eq!(WheelChoice::parse(c.as_str()), Some(c));
+            assert!(!c.label().is_empty());
+        }
     }
 }

@@ -288,6 +288,7 @@ fn setup_section<S: SysfsIo>(app: &App<S>) -> Section {
                 keys.push(bf("p", "pitch"));
                 keys.push(bfs("x", "extra effects on/off", "effects"));
                 keys.push(bfs("l", "show/hide the effect levels", "levels"));
+                keys.push(bfs("h", "which wheel it drives", "wheel"));
                 // Only once the list is on screen, or the footer advertises
                 // keys that do nothing.
                 if app.tf_layer_list_open() {

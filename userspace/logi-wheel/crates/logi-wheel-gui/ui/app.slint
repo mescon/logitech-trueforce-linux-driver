@@ -96,6 +96,11 @@ export component App inherits Window {
     in property <bool> setup-tf-running: false;
     in property <bool> setup-tf-enabled: false;
     in property <int> setup-tf-intensity: 30;
+    // The wheel simulated TrueForce should drive, and whether to offer the
+    // choice at all (only with more than one attached).
+    in property <[string]> setup-tf-wheel-choices: [];
+    in property <int> setup-tf-wheel: 0;
+    in property <bool> setup-tf-wheel-visible: false;
     in property <int> setup-tf-pitch: 35;
     in property <bool> setup-tf-effects: true;
     in property <[SetupEffect]> setup-tf-effect-rows: [];
@@ -115,6 +120,7 @@ export component App inherits Window {
     callback setup-rescan-games();
     callback setup-tf-set-enabled(bool);
     callback setup-tf-set-intensity(int);
+    callback setup-tf-set-wheel(int);
     callback setup-tf-set-pitch(int);
     callback setup-tf-set-effects(bool);
     callback setup-tf-set-effect-gain(string, int);
@@ -563,6 +569,9 @@ export component App inherits Window {
                     tf-running: root.setup-tf-running;
                     tf-enabled: root.setup-tf-enabled;
                     tf-intensity: root.setup-tf-intensity;
+                    tf-wheel-choices: root.setup-tf-wheel-choices;
+                    tf-wheel: root.setup-tf-wheel;
+                    tf-wheel-visible: root.setup-tf-wheel-visible;
                     tf-pitch: root.setup-tf-pitch;
                     tf-effects: root.setup-tf-effects;
                     tf-effect-rows: root.setup-tf-effect-rows;
@@ -578,6 +587,7 @@ export component App inherits Window {
                     add-game(pfx) => { root.add-game(pfx); }
                     tf-set-enabled(v) => { root.setup-tf-set-enabled(v); }
                     tf-set-intensity(v) => { root.setup-tf-set-intensity(v); }
+                    tf-set-wheel(v) => { root.setup-tf-set-wheel(v); }
                     tf-set-pitch(v) => { root.setup-tf-set-pitch(v); }
                     tf-set-effects(v) => { root.setup-tf-set-effects(v); }
                     tf-set-effect-gain(k, v) => { root.setup-tf-set-effect-gain(k, v); }

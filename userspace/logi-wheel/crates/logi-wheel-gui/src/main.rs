@@ -1101,6 +1101,21 @@ fn main() -> Result<(), slint::PlatformError> {
         app.set_setup_tf_effect_rows(slint::ModelRc::new(slint::VecModel::from(
             bridge::setup_effects(&cfg),
         )));
+        // The wheel the daemon should drive. Shown only with more than one
+        // attached: the daemon prefers a G923 when it finds one, which is
+        // right for a single wheel and would otherwise leave a direct-drive
+        // wheel unreachable without anyone knowing why.
+        use logi_wheel_core::tfsim::WheelChoice;
+        app.set_setup_tf_wheel_choices(slint::ModelRc::new(slint::VecModel::from(
+            WheelChoice::ALL
+                .iter()
+                .map(|c| slint::SharedString::from(c.label()))
+                .collect::<Vec<_>>(),
+        )));
+        app.set_setup_tf_wheel(
+            WheelChoice::ALL.iter().position(|c| *c == cfg.wheel).unwrap_or(0) as i32,
+        );
+        app.set_setup_tf_wheel_visible(logi_wheel_core::Device::discover_all().len() > 1);
     }
     refresh_tf_daemon(app.as_weak(), None);
     // Installed once, here, and never replaced: `load_rows`/`update_row`
@@ -2367,6 +2382,23 @@ fn main() -> Result<(), slint::PlatformError> {
             report_tf_write(
                 &app,
                 logi_wheel_core::tfsim::set_enabled_in(&logi_wheel_core::tfsim::default_path(), v),
+            );
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_setup_tf_set_wheel(move |index| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let choice = logi_wheel_core::tfsim::WheelChoice::ALL
+                .get(index.max(0) as usize)
+                .copied()
+                .unwrap_or_default();
+            report_tf_write(
+                &app,
+                logi_wheel_core::tfsim::set_wheel_in(
+                    &logi_wheel_core::tfsim::default_path(),
+                    choice,
+                ),
             );
         });
     }

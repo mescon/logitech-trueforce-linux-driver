@@ -11,6 +11,9 @@
 //! - `enabled` (0/1): master switch
 //! - `intensity` (0-100): master intensity
 //! - `cylinders` (1-16): sets the engine note's firing rate with the RPM
+//! - `wheel` (auto/dd/g923): which attached wheel to drive. `auto` prefers
+//!   a G923 when one is present, which is right with a single wheel and
+//!   leaves a direct-drive wheel unreachable on a rig with both
 //! - `leds` (0/1): drive the wheel's rev display from telemetry RPM
 //! - `effects` (0/1): the haptic layers beyond the engine note (limiters,
 //!   shifts, ABS, traction, surface, impacts). Off leaves only the engine,
@@ -87,6 +90,10 @@ pub struct Config {
     pub enabled: bool,
     /// Master intensity, 0-100.
     pub intensity: u8,
+    /// Which attached wheel to drive. Shared with the front-ends rather
+    /// than redefined here, so the value the apps write is exactly the
+    /// value this parses.
+    pub wheel: logi_wheel_core::tfsim::WheelChoice,
     /// Felt rev-rate scale in percent (10-200). 100 puts the fundamental at
     /// the engine's true firing rate for [`Config::cylinders`]; lower is
     /// slower and heavier. See `synth::firing_frequency`.
@@ -160,7 +167,8 @@ impl Default for Config {
             //
             // Existing users who have saved a config are unaffected: this
             // is the value for a config that does not set one.
-            pitch_pct: 35,
+            wheel: logi_wheel_core::tfsim::WheelChoice::Auto,
+        pitch_pct: 35,
             cylinders: crate::synth::DEFAULT_CYLINDERS,
             effects: true,
             effect_gains: crate::effects::EffectGains::default(),
@@ -294,6 +302,11 @@ impl Config {
                 "intensity" => {
                     if let Some(v) = parse_percent(raw) {
                         cfg.intensity = v;
+                    }
+                }
+                "wheel" => {
+                    if let Some(v) = logi_wheel_core::tfsim::WheelChoice::parse(raw) {
+                        cfg.wheel = v;
                     }
                 }
                 "pitch" => {
@@ -472,7 +485,8 @@ mod tests {
         let mut cfg = Config {
             enabled: false,
             intensity: 42,
-            pitch_pct: 50,
+            wheel: logi_wheel_core::tfsim::WheelChoice::Auto,
+        pitch_pct: 50,
             // Deliberately not the default: this field was written to the
             // parser but not to the writer, and a round-trip test that
             // happens to pick the default value cannot see that.

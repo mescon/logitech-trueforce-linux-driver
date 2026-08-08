@@ -1,4 +1,4 @@
-import { Button, LineEdit, TextEdit, ScrollView, Slider, SpinBox, Switch, Palette } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, TextEdit, ScrollView, Slider, SpinBox, Switch, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // One row of the Setup page's "Your games" list, built on the Rust side
@@ -286,6 +286,14 @@ export component Setup inherits Rectangle {
     callback open-url(string);
     // Simulated TrueForce edits, all writing tf-sim.conf on the Rust
     // side (one key per call, so hand-added lines survive).
+    // Which attached wheel simulated TrueForce drives. Only shown with
+    // more than one attached: with a single wheel "automatic" is always
+    // right and the control would be a question with one answer.
+    in property <[string]> tf-wheel-choices: [];
+    in property <int> tf-wheel: 0;
+    in property <bool> tf-wheel-visible: false;
+    callback tf-set-wheel(int);
+
     callback tf-set-enabled(bool);
     callback tf-set-intensity(int);
     callback tf-set-pitch(int);
@@ -684,6 +692,24 @@ export component Setup inherits Rectangle {
                         text: "Simulated TrueForce on (master switch)";
                         checked: root.tf-enabled;
                         toggled => { root.tf-set-enabled(self.checked); }
+                    }
+                    // Only with more than one wheel attached: otherwise
+                    // "automatic" is always right and this is a question
+                    // with a single answer.
+                    if root.tf-wheel-visible: HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            width: 70px;
+                            text: "Wheel";
+                            vertical-alignment: center;
+                            color: Theme.text-color;
+                        }
+                        ComboBox {
+                            horizontal-stretch: 1;
+                            model: root.tf-wheel-choices;
+                            current-index: root.tf-wheel;
+                            selected => { root.tf-set-wheel(self.current-index); }
+                        }
                     }
                     HorizontalLayout {
                         spacing: 8px;
