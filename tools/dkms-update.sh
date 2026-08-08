@@ -15,7 +15,42 @@
 
 set -euo pipefail
 
+# A packaged install registers under its real version (logitech-trueforce/
+# 0.30.0), this script under 1.0. Both build hid-logitech-dd.ko to the same
+# path, so with both registered a kernel upgrade rebuilds each and whichever
+# finishes last is the module that ends up loaded. That is not a failure
+# anyone would connect to this script weeks later, so say it now.
+warn_about_packaged_install() {
+	local other
+	other=$(dkms status 2>/dev/null \
+		| sed -n 's|^logitech-trueforce/\([^,]*\),.*|\1|p' \
+		| grep -v '^1\.0$' | sort -u | head -1) || true
+	[ -n "${other:-}" ] || return 0
+	cat >&2 <<EOF
+
+WARNING: a packaged build is already registered with DKMS:
+
+    logitech-trueforce/$other
+
+Installing this development build alongside it leaves two DKMS packages
+producing the same module. On the next kernel upgrade both rebuild and the
+one that finishes last is the module you get, which is not a coin toss worth
+debugging later.
+
+Remove the packaged one first if you mean to work from source:
+
+    sudo dkms remove -m logitech-trueforce -v $other --all
+    # and uninstall the distribution package, or it will come back
+
+Continuing in 5 seconds; Ctrl-C to stop.
+EOF
+	sleep 5
+}
+
 PKG="logitech-trueforce"
+# A fixed development slot, deliberately not the release version: this
+# script exists to be run repeatedly from a working tree, and a version that
+# moved would leave a trail of stale DKMS entries.
 VER="1.0"
 SRC_DIR="/usr/src/${PKG}-${VER}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -71,6 +106,7 @@ GIT_HASH=$(git -c "safe.directory=$REPO_ROOT" -C "$REPO_ROOT" describe --tags --
 echo "$GIT_HASH" > "$SRC_DIR/.git_hash"
 
 # Drop previous DKMS state for this version. Ignore "not found".
+warn_about_packaged_install
 dkms remove -m "$PKG" -v "$VER" --all >/dev/null 2>&1 || true
 
 echo "== dkms install -m $PKG -v $VER =="
