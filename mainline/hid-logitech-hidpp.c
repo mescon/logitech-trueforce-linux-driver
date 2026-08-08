@@ -4493,12 +4493,21 @@ static int g920_ff_set_autocenter(struct hidpp_device *hidpp,
 }
 
 /*
- * How long the whole feature scan may take. One HIDPP_SEND_TIMEOUT is
- * enough: every answer a responsive wheel gives, including "not
- * supported", comes back promptly, so exceeding this means it has stopped
- * answering rather than that it has many features.
+ * How long the whole feature scan may take when it runs from deferred
+ * init work, where waiting costs nobody anything. Callers in probe
+ * context pass a tighter budget of their own.
+ *
+ * One send timeout is not enough here, which is the mistake this replaces.
+ * Every answer a responsive wheel gives, including "not supported", comes
+ * back promptly, so a scan that runs to completion is fast: measured at
+ * 0.68 s for the whole list on an RS50. But a single page the wheel
+ * declines to answer costs a full timeout on its own, and with a budget of
+ * exactly one timeout that single page ended the scan. Four RS50 scans in
+ * five truncated that way, reporting between 3 and 15 features where the
+ * complete answer was 17. Room for a stalled page or two is the
+ * difference between a diagnostic and a coin toss.
  */
-#define HIDPP_DD_FEATURE_LOG_BUDGET	HIDPP_SEND_TIMEOUT
+#define HIDPP_DD_FEATURE_LOG_BUDGET	(3 * HIDPP_SEND_TIMEOUT)
 
 /*
  * Report which HID++ features a wheel implements.
@@ -4523,7 +4532,8 @@ static int g920_ff_set_autocenter(struct hidpp_device *hidpp,
  * already cost issue #27 a round trip, and a diagnostic nobody can reach is
  * not a diagnostic. Read-only, and issue #27 is what it is for.
  */
-static void hidpp_dd_log_features(struct hidpp_device *hidpp)
+static void hidpp_dd_log_features(struct hidpp_device *hidpp,
+				  unsigned long budget)
 {
 	static const u16 candidates[] = {
 		0x8040, 0x8060, 0x8061, 0x8070, 0x8071, 0x807A, 0x807B,
@@ -4536,6 +4546,8 @@ static void hidpp_dd_log_features(struct hidpp_device *hidpp)
 	unsigned long deadline;
 	int len = 0;
 	unsigned int i;
+	unsigned int scanned = 0;
+	bool truncated = false;
 
 	/*
 	 * Only what the wheel HAS is listed. The unsupported majority is
@@ -4544,24 +4556,30 @@ static void hidpp_dd_log_features(struct hidpp_device *hidpp)
 	 * index 0x04) error here rather than reporting themselves, so this
 	 * is the base device's capability set and not the wheel's.
 	 *
-	 * Bounded in TIME, not in failures. This runs in probe context on the
-	 * G920-class path, and each query can wait HIDPP_SEND_TIMEOUT, so a
-	 * wheel that stops answering part way through would hold the hid bus
-	 * and the udev worker for 29 * 5 seconds. Counting failures instead
-	 * would not do: a healthy RS50 answers "no" fast for several pages in
-	 * a row, and truncating on that would lose real capabilities. A wheel
-	 * that has gone quiet blows this budget on its first timeout, which
-	 * is exactly the case worth abandoning.
+	 * Bounded in TIME, not in failures. Each query can wait
+	 * HIDPP_SEND_TIMEOUT, so a wheel that stops answering part way
+	 * through would otherwise spend 29 * 5 seconds finding that out.
+	 * Counting failures instead would not do: a healthy RS50 answers
+	 * "no" fast for several pages in a row, and truncating on that would
+	 * lose real capabilities.
+	 *
+	 * The budget is several send timeouts because this no longer runs in
+	 * probe context, so a slow scan costs nobody a slow plug-in. It used
+	 * to run there with a budget of exactly one timeout, which meant a
+	 * single unanswered page consumed the whole allowance and truncated
+	 * the rest. Measured on an RS50: four scans in five truncated that
+	 * way, reporting between 3 and 15 features, where a scan that ran to
+	 * completion took 0.68 s and found 17.
 	 */
-	deadline = jiffies + HIDPP_DD_FEATURE_LOG_BUDGET;
+	deadline = jiffies + budget;
 	for (i = 0; i < ARRAY_SIZE(candidates); i++) {
 		u8 index = 0;
 
 		if (time_after(jiffies, deadline)) {
-			hid_info(hidpp->hid_dev,
-				 "HID++ feature scan stopped early: the wheel stopped answering\n");
+			truncated = true;
 			break;
 		}
+		scanned++;
 		if (hidpp_root_get_feature(hidpp, candidates[i], &index) ||
 		    !index)
 			continue;
@@ -4569,8 +4587,21 @@ static void hidpp_dd_log_features(struct hidpp_device *hidpp)
 				 len ? " " : "", candidates[i], index);
 	}
 
-	hid_info(hidpp->hid_dev, "HID++ features (base): %s\n",
-		 len ? buf : "none");
+	/*
+	 * Say so on the line itself, not on a neighbouring one. We ask people
+	 * to grep for this line and paste it, so a truncation warning printed
+	 * separately does not travel with it, and a short list then reads as
+	 * a complete answer. That is the exact inference this driver has been
+	 * careful to avoid elsewhere: a feature missing from the map may be
+	 * one the wheel denied, or one nobody got around to asking about.
+	 */
+	if (truncated)
+		hid_info(hidpp->hid_dev,
+			 "HID++ features (base): %s [INCOMPLETE: %u of %zu pages queried before the wheel stopped answering, absence below is not evidence]\n",
+			 len ? buf : "none", scanned, ARRAY_SIZE(candidates));
+	else
+		hid_info(hidpp->hid_dev, "HID++ features (base): %s\n",
+			 len ? buf : "none");
 }
 
 static int g920_get_config(struct hidpp_device *hidpp,
@@ -8041,7 +8072,7 @@ static void hidpp_dd_ff_discover_features(struct hidpp_dd_ff_data *ff)
 	 * what makes the function testable on hardware this project has:
 	 * nothing here takes the G920 path.
 	 */
-	hidpp_dd_log_features(ff->hidpp);
+	hidpp_dd_log_features(ff->hidpp, HIDPP_DD_FEATURE_LOG_BUDGET);
 	hidpp_dd_discover_lightsync_features(ff);
 	dd_dbg(hid, "Feature discovery completed\n");
 }
@@ -16413,8 +16444,14 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 				 * Only once HID++ has demonstrably answered:
 				 * asking before that would log five errors
 				 * that say nothing about the wheel.
+				 *
+				 * The tight budget is because this one runs
+				 * in probe context, unlike the direct-drive
+				 * path's, which runs from deferred init work
+				 * and can afford to wait.
 				 */
-				hidpp_dd_log_features(hidpp);
+				hidpp_dd_log_features(hidpp,
+						      HIDPP_SEND_TIMEOUT);
 				ret = hidpp_ff_init(hidpp, &data);
 				if (ret == -ENODEV) {
 					hid_info(hidpp->hid_dev,

@@ -1075,9 +1075,14 @@ Recommended initialization order:
 3. **Feature Discovery** - Use IRoot (index 0x00) to find feature indices
 4. **Read Settings** - Query current rotation, FFB gain
 5. **Start FFB Loop** - Begin sending force commands (the driver runs a
-   fixed 1 kHz timer; 500 Hz before 0.30.0). The period is a whole jiffy, so
-   a CONFIG_HZ below 1000 rounds it up and the driver spaces its texture
-   samples by the period actually delivered rather than the nominal one
+   fixed 1 kHz timer). It is an hrtimer, programmed against the clock
+   hardware, so the period is the one asked for and `CONFIG_HZ` does not
+   enter into it. It was a jiffies timer until 0.30.0, which could not
+   deliver this rate: the timer wheel never fires a timer early, so a
+   callback re-arming itself for the next jiffy always landed on the one
+   after, giving 2 ms where HZ is 1000 and 8 ms where HZ is 250. The
+   nominal 500 Hz of earlier releases was really 333 Hz for the same
+   reason
 
 ---
 
