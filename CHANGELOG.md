@@ -5,6 +5,49 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.31.0 - 2026-08-09
+
+**Every wheel you have plugged in, not just the first one.** The apps found
+one wheel and managed that; a rig with two showed one of them and silently
+ignored the other. Both apps now find all of them. The window puts a button
+for each next to the title, the terminal app switches with `w`, and the
+settings you see, the values you write, the live input monitor and the tests
+all follow the pick. Wheels of the same model are numbered so they can be
+told apart. Nothing is shared between them: each wheel keeps its own settings
+on its own hardware.
+
+**Simulated TrueForce can be told which wheel to drive.** It picks a G923
+whenever it finds one, which is right for a single wheel and wrong for a rig
+with a G923 and a direct-drive wheel together, where the direct-drive wheel
+was simply never reached. The Setup page has a picker, and `tf-sim.conf`
+takes `wheel = auto | dd | g923`. `LOGI_TF_SIM_WHEEL` still overrides it for
+a single run.
+
+**An app that cannot find a wheel now says why.** Both apps showed one line
+and a Retry button, which is no help to the person most likely to be reading
+it: someone who has just installed, has nothing working, and does not yet
+know what a udev rule is. They now run the same checks `setup.sh doctor`
+does, in the order that matters, and stop at the first thing that is actually
+wrong: nothing plugged in, a G923 still in console mode, the driver not
+loaded, another driver holding the wheel, permission rules missing. Each one
+comes with plain language about what it means and the single command that
+fixes it. The window offers to run it for you; both offer it to copy, and the
+full list of checks is one click away, which is also what belongs in a bug
+report.
+
+**`logi-rebind-wheel` ships with the packages.** The script that moves a
+wheel off `hid-generic` and onto this driver existed only in a git checkout,
+so it was unavailable to exactly the people who needed it: the boot race it
+fixes strands the wheel, and that is not a state you debug from source.
+
+**An RS50 in compatibility mode is no longer mistaken for a G PRO.** It
+borrows the G PRO's USB id in that mode but keeps its own product string, so
+it was named wrong wherever the id was trusted on its own.
+
+**The app has its own taskbar icon** instead of a generic cogwheel, and
+`tools/wheel-rotation-watch.py` now validates its arguments before handing
+them to another program.
+
 ## 0.30.0 - 2026-08-08
 
 **Simulated TrueForce is quieter by default: intensity 30, not 60.** An RS50

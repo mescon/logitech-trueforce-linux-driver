@@ -367,6 +367,11 @@ The short version is below.
   Only the engine layer is hardware-validated so far, so if something feels
   wrong, turn that one layer down and please say so in an issue.
 
+  With a G923 and a direct-drive wheel plugged in together, say which one
+  simulated TrueForce should drive: the Setup page has a picker, or set
+  `wheel=dd` or `wheel=g923` in `tf-sim.conf`. Left on `auto` it takes a G923
+  whenever it finds one, so the direct-drive wheel would never get it.
+
 ## Configuring the wheel
 
 Run **logi-wheel-gui** (or **logi-wheel** in a terminal) and edit settings live:
@@ -375,6 +380,13 @@ LEDs, profiles, and per-pedal / steering response curves through a G HUB-style
 curve editor.
 
 ![logi-wheel-gui curve editor](docs/images/logi-wheel-curve-editor.png)
+
+**More than one wheel plugged in?** Both apps manage all of them. The window
+puts a button for each next to the title; the terminal app switches with `w`.
+The settings you see, the values you write and the tests all belong to the
+wheel currently picked, and wheels of the same model are numbered so you can
+tell them apart. Nothing is shared between them: each wheel keeps its own
+settings on its own hardware.
 
 The **RS Shifter & Handbrake** is supported too. Plug it into the wheel base
 and its settings appear on their own; unplug it and they go away again. The
