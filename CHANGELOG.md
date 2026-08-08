@@ -44,9 +44,15 @@ fixes strands the wheel, and that is not a state you debug from source.
 borrows the G PRO's USB id in that mode but keeps its own product string, so
 it was named wrong wherever the id was trusted on its own.
 
-**The app has its own taskbar icon** instead of a generic cogwheel, and
-`tools/wheel-rotation-watch.py` now validates its arguments before handing
-them to another program.
+**The app has its own taskbar icon** instead of a generic cogwheel.
+
+`tools/wheel-rotation-watch.py --cmd` now runs a named test program with
+numeric arguments, instead of resolving whatever path it was handed through
+`$PATH`. The old form made "run the wheel test binary" and "run anything on
+this machine" the same operation, which is worth not having in a script that
+automation drives. Every test binary reads its arguments with `atoi`/`atof`,
+so nothing is lost; the invocation drops the directory prefix
+(`--cmd sine 50 2 0.3`).
 
 ## 0.30.0 - 2026-08-08
 
