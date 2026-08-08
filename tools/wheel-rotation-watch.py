@@ -25,7 +25,6 @@ Two limits worth knowing before trusting a run:
     watching another reads as a clean zero, which looks like a pass.
 """
 import argparse
-import shutil
 import os
 import subprocess
 import sys
@@ -91,26 +90,47 @@ def sweep_pitch(text):
         raise argparse.ArgumentTypeError(f"pitch must be a whole number, got {text!r}")
     if not 10 <= value <= 200:
         raise argparse.ArgumentTypeError(f"pitch must be 10-200, got {value}")
-    return str(value)
+    return value
 
 
 def resolved_command(argv):
-    """Resolve `argv` to a concrete executable path plus its arguments.
+    """Resolve `argv` to an executable inside this repository, plus its args.
 
-    --cmd exists to run an arbitrary test binary, so the program itself is
-    the caller's choice by design. What is checked is that it resolves to
-    something that exists and is executable, so a typo or a stray argument
-    fails here with a clear message instead of becoming an exec of whatever
-    that text happened to name. Nothing is ever passed to a shell: the
-    command is executed as an argument vector.
+    --cmd runs a test binary that drives the wheel, and every such binary
+    lives in this tree: the libtrueforce test programs and the built
+    userspace binaries. So the program is resolved against the repository
+    and required to stay inside it.
+
+    That restriction is the point. An earlier version resolved through
+    `$PATH`, which made "run the wheel test binary" indistinguishable from
+    "run anything on this machine, wherever $PATH happens to point". This
+    script is run by automation as well as by hand, and a bench tool has no
+    business being a general-purpose exec of whatever it is handed.
+
+    Symlinks are resolved before the check, so a link inside the tree
+    pointing out of it is rejected too. Nothing is ever passed to a shell:
+    the command is executed as an argument vector, so the arguments after
+    the program cannot become commands of their own.
     """
     if not argv:
         raise SystemExit("--cmd needs a program to run")
-    program = shutil.which(argv[0]) or (
-        os.path.abspath(argv[0]) if os.path.isfile(argv[0]) else None
-    )
-    if program is None or not os.access(program, os.X_OK):
-        raise SystemExit(f"--cmd: {argv[0]!r} is not an executable on PATH or a runnable file")
+    candidate = argv[0]
+    if os.path.isabs(candidate):
+        program = os.path.realpath(candidate)
+    else:
+        # Relative to the repository, then to the working directory, which
+        # is what the documented invocations use.
+        program = os.path.realpath(os.path.join(REPO, candidate))
+        if not os.path.isfile(program):
+            program = os.path.realpath(candidate)
+    root = os.path.realpath(REPO) + os.sep
+    if not program.startswith(root):
+        raise SystemExit(
+            f"--cmd: {candidate!r} resolves to {program!r}, outside the repository. "
+            "Only test binaries inside this tree can be run."
+        )
+    if not os.path.isfile(program) or not os.access(program, os.X_OK):
+        raise SystemExit(f"--cmd: {program!r} is not an executable file")
     return [program, *argv[1:]]
 
 
@@ -160,7 +180,7 @@ def main():
         env.setdefault("LOGI_TF_SIM_WHEEL", "dd" if pid != "c266" else "auto")
         if not os.access(SIM, os.X_OK):
             raise SystemExit(f"{SIM} is not built; run: cargo build --release")
-        cmd = [SIM, "--sweep", args.sweep]
+        cmd = [SIM, "--sweep", str(args.sweep)]
     else:
         cmd = resolved_command(args.cmd)
 
