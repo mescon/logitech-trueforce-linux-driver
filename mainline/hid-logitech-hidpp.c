@@ -25,6 +25,8 @@
 #include <linux/workqueue.h>
 #include <linux/atomic.h>
 #include <linux/fixp-arith.h>
+#include <linux/hrtimer.h>
+#include <linux/ktime.h>
 #include <linux/version.h>
 /*
  * linux/unaligned.h was introduced in kernel 6.12, older kernels use asm/unaligned.h
@@ -54,6 +56,25 @@
 #define HIDPP_REPORT_FIXUP_RETURN_TYPE u8 *
 #else
 #define HIDPP_REPORT_FIXUP_RETURN_TYPE const u8 *
+#endif
+
+/*
+ * hrtimer_setup() replaced hrtimer_init() plus a separate .function
+ * assignment in 6.15. Both forms arm the same timer; only the spelling
+ * of the initialisation differs.
+ */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 15, 0)
+static inline void hidpp_dd_hrtimer_setup(struct hrtimer *timer,
+					  enum hrtimer_restart (*fn)(struct hrtimer *),
+					  clockid_t clock,
+					  enum hrtimer_mode mode)
+{
+	hrtimer_init(timer, clock, mode);
+	timer->function = fn;
+}
+#else
+#define hidpp_dd_hrtimer_setup(timer, fn, clock, mode) \
+	hrtimer_setup(timer, fn, clock, mode)
 #endif
 /*
  * Upstream in-tree drivers include "usbhid/usbhid.h" to get
@@ -5053,17 +5074,28 @@ struct hidpp_dd_lightsync_slot {
 #define HIDPP_DD_FF_MAX_EFFECTS		63
 #define HIDPP_DD_FF_TIMER_INTERVAL_MS	1	/* 1 kHz update rate */
 /*
- * The tick period the timer will actually deliver, in milliseconds.
+ * The tick period the timer actually delivers, in milliseconds.
  *
- * This is a jiffies timer, so the nominal interval is rounded up to a whole
- * jiffy: 1 ms on a CONFIG_HZ=1000 kernel, but 4 ms where HZ is 250. The
- * texture sample spacing has to follow that, or the stream plays at the
- * wrong speed on kernels this was not tuned on. The old code assumed its
- * nominal 2 ms and generated two samples 1 ms apart, so on an HZ=250 kernel
- * it delivered 2 ms of audio every 4 ms and the texture ran at half pitch.
+ * This is an hrtimer, so it is the period asked for: the clock hardware is
+ * programmed directly and CONFIG_HZ does not enter into it.
+ *
+ * It used to be a jiffies timer, and that could not deliver this rate at
+ * all. The timer wheel guarantees a timer never fires early, so when the
+ * callback re-armed itself for jiffies + 1 the expiry landed partway into
+ * the current jiffy, was therefore too early, and got pushed to the next
+ * bucket. Measured on an HZ=1000 kernel, every nominal interval came back
+ * one millisecond long: 1 ms asked, 2 ms delivered; 2 ms asked, 3 ms
+ * delivered, and so on. A self-rearming jiffies timer bottoms out at two
+ * jiffies, which is 2 ms where HZ is 1000 and 8 ms where HZ is 250.
+ *
+ * That mattered twice over. The rate was half what it claimed, and the
+ * texture sample spacing was derived from the nominal period rather than
+ * the delivered one, so the driver generated 1 ms of waveform for every
+ * 2 ms of real time and the texture played an octave low.
  */
-#define HIDPP_DD_FF_TICK_MS \
-	jiffies_to_msecs(msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS))
+#define HIDPP_DD_FF_TICK_MS		HIDPP_DD_FF_TIMER_INTERVAL_MS
+/* The same period as a ktime_t, which is what the hrtimer is armed with. */
+#define HIDPP_DD_FF_TICK_KT		ms_to_ktime(HIDPP_DD_FF_TIMER_INTERVAL_MS)
 /*
  * Spacing between the tick's texture samples, in quarter-milliseconds:
  * the tick's own duration divided across the packet's sample slots, since
@@ -5186,7 +5218,7 @@ struct hidpp_dd_ff_data {
 	int init_retries;		/* Init retry counter */
 	struct delayed_work refresh_work; /* Periodic FFB refresh (05 07 cmd) */
 	struct work_struct settings_refresh_work; /* Re-query device settings after profile change */
-	struct timer_list effect_timer;	/* Timer for continuous FFB updates */
+	struct hrtimer effect_timer;	/* Timer for continuous FFB updates */
 	atomic_t sequence;
 	atomic_t pending_work;		/* Number of pending work items */
 	atomic_t stopping;		/* Set when driver is shutting down */
@@ -5455,7 +5487,7 @@ static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 static void hidpp_dd_tf_init_work_handler(struct work_struct *work);
 static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff);
 static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range);
-static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t);
+static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t);
 static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp, u8 *data, int size);
 static struct hidpp_dd_ff_data *hidpp_dd_find_ff_data(struct hid_device *hdev);
 static int hidpp_dd_response_curve_upload(struct hidpp_device *hidpp,
@@ -6012,7 +6044,7 @@ static u16 hidpp_dd_force_to_offset_binary(s32 force)
  * Timer callback - sends continuous force updates to the wheel.
  * Direct-drive wheels require periodic force commands to maintain FFB effect.
  */
-static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t)
+static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 {
 	struct hidpp_dd_ff_data *ff = container_of(t, struct hidpp_dd_ff_data, effect_timer);
 	s32 force = 0;
@@ -6026,7 +6058,7 @@ static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t)
 	int i;
 
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
-		return;
+		return HRTIMER_NORESTART;
 
 	route_tf = READ_ONCE(ff->texture_route) == HIDPP_DD_TEXTURE_ROUTE_TF;
 
@@ -6280,9 +6312,19 @@ static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t)
 	 */
 	if ((any_playing || ff->tf_streaming || READ_ONCE(ff->autocenter)) &&
 	    !atomic_read_acquire(&ff->stopping) &&
-	    atomic_read(&ff->initialized))
-		mod_timer(&ff->effect_timer,
-			  jiffies + msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS));
+	    atomic_read(&ff->initialized)) {
+		/*
+		 * Advance from the deadline that has just expired rather
+		 * than from now, so the time this callback spent working
+		 * does not accumulate into the period. The old jiffies
+		 * timer re-armed relative to now and drifted by exactly
+		 * that much.
+		 */
+		hrtimer_forward_now(t, HIDPP_DD_FF_TICK_KT);
+		return HRTIMER_RESTART;
+	}
+
+	return HRTIMER_NORESTART;
 }
 
 /*
@@ -6742,8 +6784,8 @@ static int hidpp_dd_ff_upload(struct input_dev *dev, struct ff_effect *effect,
 	spin_unlock_irqrestore(&ff->effects_lock, flags);
 
 	if (recompute && !atomic_read_acquire(&ff->stopping))
-		mod_timer(&ff->effect_timer,
-			  jiffies + msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS));
+		hrtimer_start(&ff->effect_timer, HIDPP_DD_FF_TICK_KT,
+			      HRTIMER_MODE_REL_SOFT);
 
 	/*
 	 * Log full effect parameters, not just the type: root-causing FFB
@@ -6884,10 +6926,10 @@ static int hidpp_dd_ff_playback(struct input_dev *dev, int id, int value)
 	if (atomic_read_acquire(&ff->stopping))
 		return 0;
 	if (any_playing)
-		mod_timer(&ff->effect_timer,
-			  jiffies + msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS));
+		hrtimer_start(&ff->effect_timer, HIDPP_DD_FF_TICK_KT,
+			      HRTIMER_MODE_REL_SOFT);
 	else if (ff->last_force != 0)
-		mod_timer(&ff->effect_timer, jiffies);
+		hrtimer_start(&ff->effect_timer, 0, HRTIMER_MODE_REL_SOFT);
 
 	return 0;
 }
@@ -6925,8 +6967,8 @@ static void hidpp_dd_ff_set_autocenter(struct input_dev *dev, u16 magnitude)
 	WRITE_ONCE(ff->autocenter, magnitude);
 	if (magnitude && !atomic_read_acquire(&ff->stopping) &&
 	    atomic_read(&ff->initialized))
-		mod_timer(&ff->effect_timer, jiffies +
-			  msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS));
+		hrtimer_start(&ff->effect_timer, HIDPP_DD_FF_TICK_KT,
+			      HRTIMER_MODE_REL_SOFT);
 	dd_dbg(ff->hidpp->hid_dev, "FF_AUTOCENTER set to %u\n",
 		magnitude);
 }
@@ -8584,8 +8626,7 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	 * Timer will be started by playback callback when needed.
 	 */
 	dd_info(hid, "Effect timer ready (interval=%ums, %u texture samples/tick, starts on effect play)\n",
-		jiffies_to_msecs(msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS)),
-		HIDPP_DD_TF_NEW_SAMPLES);
+		HIDPP_DD_FF_TICK_MS, HIDPP_DD_TF_NEW_SAMPLES);
 
 	/*
 	 * Re-open the HID device for IO before sending HID++ commands.
@@ -9172,8 +9213,8 @@ static ssize_t wheel_autocenter_store(struct device *dev, struct device_attribut
 
 	WRITE_ONCE(ff->autocenter, clamp(val, 0, 65535));
 	if (val && atomic_read(&ff->initialized))
-		mod_timer(&ff->effect_timer, jiffies +
-			  msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS));
+		hrtimer_start(&ff->effect_timer, HIDPP_DD_FF_TICK_KT,
+			      HRTIMER_MODE_REL_SOFT);
 	return count;
 }
 
@@ -13593,7 +13634,9 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	 * The timer callback checks 'initialized' and won't do anything
 	 * until hidpp_dd_ff_init_work() completes and calls mod_timer().
 	 */
-	timer_setup(&ff->effect_timer, hidpp_dd_ff_effect_timer_callback, 0);
+	hidpp_dd_hrtimer_setup(&ff->effect_timer,
+			       hidpp_dd_ff_effect_timer_callback,
+			       CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
 
 	/*
 	 * Initialize delayed works early so cancel_delayed_work_sync() in
@@ -13754,7 +13797,7 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 	cancel_work_sync(&ff->tf_init_work);
 
 	dd_dbg(hid, "Cancelling effect timer\n");
-	timer_delete_sync(&ff->effect_timer);
+	hrtimer_cancel(&ff->effect_timer);
 
 	dd_dbg(hid, "Draining workqueue\n");
 	/*
@@ -13770,7 +13813,7 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 	 * the first delete_sync runs. Redo it after drain_workqueue so any
 	 * such late re-arm is gone before we destroy the workqueue and kfree.
 	 */
-	timer_delete_sync(&ff->effect_timer);
+	hrtimer_cancel(&ff->effect_timer);
 
 	dd_dbg(hid, "Destroying workqueue\n");
 	/*
