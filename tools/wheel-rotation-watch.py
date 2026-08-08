@@ -9,7 +9,7 @@ hold a direct-drive wheel that may slam to its stop.
 
     tools/wheel-rotation-watch.py --sweep 40
     tools/wheel-rotation-watch.py --wheel g923 --sweep 40
-    tools/wheel-rotation-watch.py --cmd userspace/libtrueforce/tests/sine 50 2 0.3
+    tools/wheel-rotation-watch.py --cmd sine 50 2 0.3
 
 Reports the SHAPE of the motion, not a single number: peak excursion alone
 is unsigned and saturates at the range limit, so it renders a runaway and a
@@ -25,6 +25,7 @@ Two limits worth knowing before trusting a run:
     watching another reads as a clean zero, which looks like a pass.
 """
 import argparse
+import math
 import os
 import subprocess
 import sys
@@ -39,6 +40,7 @@ except ImportError:
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIM = os.path.join(REPO, "userspace/logi-wheel/target/release/logi-tf-sim")
+TESTS = os.path.join(REPO, "userspace/libtrueforce/tests")
 
 # Steering-wheel product ids: RS50, G PRO, G923 (PS), G923 (PS/alt), G923 (Xbox).
 WHEEL_IDS = {"rs50": ["c276"], "gpro": ["c272"], "g923": ["c266", "c267", "c26e"]}
@@ -93,45 +95,75 @@ def sweep_pitch(text):
     return value
 
 
+def test_programs():
+    """Name -> path for every built libtrueforce test binary.
+
+    This is the allowlist `--cmd` selects from. Both the keys and the values
+    come from reading a directory whose path is a constant, so the path that
+    eventually reaches `subprocess.run` is this dictionary's value and never
+    text the caller supplied.
+    """
+    programs = {}
+    if not os.path.isdir(TESTS):
+        return programs
+    for name in sorted(os.listdir(TESTS)):
+        path = os.path.join(TESTS, name)
+        if name.endswith(".c") or not os.path.isfile(path):
+            continue
+        if os.access(path, os.X_OK):
+            programs[name] = path
+    return programs
+
+
+def numeric_arg(text):
+    """One argument for a test program, as a number and nothing else.
+
+    Every test binary reads its arguments with `atoi`/`atof`, so numbers are
+    the only thing any of them can use. Parsing here and re-emitting the
+    parsed value means the string that reaches the argument vector is one
+    this script generated, not one the caller typed.
+    """
+    try:
+        return str(int(text, 10))
+    except ValueError:
+        pass
+    try:
+        value = float(text)
+    except ValueError:
+        raise SystemExit(
+            f"--cmd: {text!r} is not a number, and the test programs take numbers only"
+        )
+    if not math.isfinite(value):
+        raise SystemExit(f"--cmd: {text!r} is not a finite number")
+    return repr(value)
+
+
 def resolved_command(argv):
-    """Resolve `argv` to an executable inside this repository, plus its args.
+    """Turn `--cmd NAME [NUMBER...]` into a command vector.
 
-    --cmd runs a test binary that drives the wheel, and every such binary
-    lives in this tree: the libtrueforce test programs and the built
-    userspace binaries. So the program is resolved against the repository
-    and required to stay inside it.
+    `--cmd` used to take a path and resolve it through `$PATH`, which made
+    "run the wheel test binary" and "run anything on this machine" the same
+    operation. This script is driven by automation as well as by hand, and a
+    bench tool has no business being a general-purpose exec of whatever it
+    is handed.
 
-    That restriction is the point. An earlier version resolved through
-    `$PATH`, which made "run the wheel test binary" indistinguishable from
-    "run anything on this machine, wherever $PATH happens to point". This
-    script is run by automation as well as by hand, and a bench tool has no
-    business being a general-purpose exec of whatever it is handed.
-
-    Symlinks are resolved before the check, so a link inside the tree
-    pointing out of it is rejected too. Nothing is ever passed to a shell:
-    the command is executed as an argument vector, so the arguments after
-    the program cannot become commands of their own.
+    So the program is chosen by name from the binaries in this repository,
+    and the arguments are numbers. That covers every test program there is,
+    because all of them read numbers and nothing else. Nothing is passed to
+    a shell either way: the command runs as an argument vector.
     """
     if not argv:
         raise SystemExit("--cmd needs a program to run")
-    candidate = argv[0]
-    if os.path.isabs(candidate):
-        program = os.path.realpath(candidate)
-    else:
-        # Relative to the repository, then to the working directory, which
-        # is what the documented invocations use.
-        program = os.path.realpath(os.path.join(REPO, candidate))
-        if not os.path.isfile(program):
-            program = os.path.realpath(candidate)
-    root = os.path.realpath(REPO) + os.sep
-    if not program.startswith(root):
+    programs = test_programs()
+    if not programs:
         raise SystemExit(
-            f"--cmd: {candidate!r} resolves to {program!r}, outside the repository. "
-            "Only test binaries inside this tree can be run."
+            f"no test programs built in {TESTS}; run: make -C userspace/libtrueforce tests"
         )
-    if not os.path.isfile(program) or not os.access(program, os.X_OK):
-        raise SystemExit(f"--cmd: {program!r} is not an executable file")
-    return [program, *argv[1:]]
+    if argv[0] not in programs:
+        raise SystemExit(
+            f"--cmd: unknown test program {argv[0]!r}. Available: {', '.join(programs)}"
+        )
+    return [programs[argv[0]], *[numeric_arg(a) for a in argv[1:]]]
 
 
 def main():
@@ -144,7 +176,7 @@ def main():
                     help="seconds to keep sampling after the command exits "
                          "(motion often continues well past it)")
     ap.add_argument("--cmd", nargs=argparse.REMAINDER,
-                    help="run this instead: PROGRAM [ARGS...]")
+                    help="run a built test program instead: NAME [NUMBER...]")
     args = ap.parse_args()
 
     if not args.sweep and not args.cmd:
