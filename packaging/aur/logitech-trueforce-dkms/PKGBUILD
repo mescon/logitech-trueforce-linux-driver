@@ -153,6 +153,13 @@ package_logi-wheel() {
 	install -Dm755 "$_src/tools/install-tf-shim.sh" \
 		"$pkgdir/usr/bin/logi-shim"
 
+	# Rebinds a wheel that another driver claimed, which the settings apps'
+	# diagnostics offer as a fix. Kept as a script rather than a command in
+	# the app because a wheel presents several HID interfaces and all of them
+	# have to be moved.
+	install -Dm755 "$_src/tools/rebind-wheel.sh" \
+		"$pkgdir/usr/bin/logi-rebind-wheel"
+
 	# The rotation proxy the installer stages with --range-proxy. Shipped
 	# prebuilt because it is a Windows DLL and the people who need it are
 	# on Linux without a cross-compiler; without this, --range-proxy is

@@ -68,6 +68,12 @@ override_dh_install:
 	# run from the udev worker itself; see the rule's own comment.
 	install -D -m 0755 tools/g923-xbox-modeswitch.sh \
 		$(TUI)/usr/bin/logi-g923-modeswitch
+	# Rebinds a wheel that another driver claimed, which the settings apps'
+	# diagnostics offer as a fix. Kept as a script rather than a command in the
+	# app because a wheel presents several HID interfaces and all of them have
+	# to be moved.
+	install -D -m 0755 tools/rebind-wheel.sh \
+		$(TUI)/usr/bin/logi-rebind-wheel
 	# The transitional symlink for the pre-0.22.0 name is declared in
 	# debian/logi-wheel.links, next to the other rename's symlink.
 	# Everything else (udev rules, binaries, desktop entry, icon) comes

@@ -65,6 +65,8 @@ UDEV_G923_XBOX_SRC="$REPO_ROOT/udev/73-logitech-g923-xbox-modeswitch.rules"
 UDEV_G923_XBOX_DST="/etc/udev/rules.d/73-logitech-g923-xbox-modeswitch.rules"
 MODESWITCH_SRC="$REPO_ROOT/tools/g923-xbox-modeswitch.sh"
 MODESWITCH_DST="/usr/bin/logi-g923-modeswitch"
+REBIND_SRC="$REPO_ROOT/tools/rebind-wheel.sh"
+REBIND_DST="/usr/bin/logi-rebind-wheel"
 MODPROBE_SRC="$REPO_ROOT/packaging/modprobe.d/hid-logitech-dd.conf"
 MODPROBE_DST="/etc/modprobe.d/hid-logitech-dd.conf"
 
@@ -206,6 +208,19 @@ if [ -f "$MODESWITCH_SRC" ]; then
 		install -Dm 0755 "$MODESWITCH_SRC" "$MODESWITCH_DST"
 	else
 		echo "mode-switch helper up to date ($MODESWITCH_DST)"
+	fi
+fi
+
+# The rebind helper, which the settings apps' diagnostics offer by name
+# when another driver has claimed the wheel. Offering a command that is
+# not installed is worse than offering none, so it ships everywhere the
+# apps do: every distro package installs it, and so does this path.
+if [ -f "$REBIND_SRC" ]; then
+	if ! cmp -s "$REBIND_SRC" "$REBIND_DST" 2>/dev/null; then
+		echo "== installing $REBIND_DST =="
+		install -Dm 0755 "$REBIND_SRC" "$REBIND_DST"
+	else
+		echo "rebind helper up to date ($REBIND_DST)"
 	fi
 fi
 

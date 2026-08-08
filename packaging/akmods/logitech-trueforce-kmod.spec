@@ -123,6 +123,7 @@ Proton prefixes.
 %{_datadir}/logitech-trueforce/liblogi_tf_scs.so
 %{_datadir}/logitech-trueforce/logi-tf-relay.exe
 %{_bindir}/logi-g923-modeswitch
+%{_bindir}/logi-rebind-wheel
 %{_bindir}/logitech-trueforce-install-shim
 
 %package -n logi-wheel-gui
@@ -242,6 +243,12 @@ install -D -m 0644 tools/logi-tf-relay.exe \
 # G923 Xbox mode-switch helper, dispatched by udev rule 73.
 install -D -m 0755 tools/g923-xbox-modeswitch.sh \
     "%{buildroot}%{_bindir}/logi-g923-modeswitch"
+# Rebinds a wheel that another driver claimed, which the settings apps'
+# diagnostics offer as a fix. Kept as a script rather than a command in the
+# app because a wheel presents several HID interfaces and all of them have
+# to be moved.
+install -D -m 0755 tools/rebind-wheel.sh \
+    "%{buildroot}%{_bindir}/logi-rebind-wheel"
 # Transitional symlink for the pre-v0.22.0 name.
 ln -s logi-shim "%{buildroot}%{_bindir}/logitech-trueforce-install-shim"
 
