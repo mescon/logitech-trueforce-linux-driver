@@ -104,6 +104,30 @@ pub fn dropdown_labels(slot_names: &[String], current_effect: u8) -> Vec<String>
 /// Whether `direction` (a `wheel_led_direction` enum value: 0 = left to
 /// right, 1 = right to left, 2 = inside-out, 3 = outside-in) collapses the
 /// 10 LEDs into 5 mirrored pairs (1-10, 2-9, 3-8, 4-7, 5-6).
+/// The sweep direction effect `effect` plays, as a `wheel_led_direction`
+/// enum value, or `None` for the custom slots (5..=9), which carry their
+/// own direction in the slot.
+///
+/// Effects 1..=4 ARE the four sweeps: their labels in [`EFFECT_LABELS`] are
+/// the direction names. The two lists are in different orders, which is the
+/// whole reason this mapping is written out rather than computed:
+///
+/// | effect | label         | direction |
+/// |--------|---------------|-----------|
+/// | 1      | Inside out    | 2         |
+/// | 2      | Outside in    | 3         |
+/// | 3      | Right to left | 1         |
+/// | 4      | Left to right | 0         |
+pub fn effect_direction(effect: u8) -> Option<u8> {
+    match effect {
+        1 => Some(2),
+        2 => Some(3),
+        3 => Some(1),
+        4 => Some(0),
+        _ => None,
+    }
+}
+
 pub fn mirrored(direction: u8) -> bool {
     direction == 2 || direction == 3
 }
@@ -295,5 +319,33 @@ mod tests {
         let mut v = vec![1, 2, 3, 4, 5];
         mirror_left_half(&mut v);
         assert_eq!(v, vec![1, 2, 3, 2, 1]);
+    }
+}
+
+#[cfg(test)]
+mod effect_direction_tests {
+    use super::*;
+
+    #[test]
+    fn each_sweep_effect_maps_to_its_own_direction_name() {
+        // EFFECT_LABELS[n - 1] must name the same sweep the mapped
+        // direction does, or the preview animates the wrong way round.
+        const DIRECTION_NAMES: [&str; 4] =
+            ["Left to right", "Right to left", "Inside out", "Outside in"];
+        for effect in 1..=4u8 {
+            let dir = effect_direction(effect).expect("sweep effect maps");
+            assert_eq!(
+                EFFECT_LABELS[usize::from(effect) - 1].to_ascii_lowercase(),
+                DIRECTION_NAMES[usize::from(dir)].to_ascii_lowercase(),
+                "effect {effect} maps to direction {dir}, which names a different sweep"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_slots_have_no_effect_direction() {
+        for effect in 5..=9u8 {
+            assert_eq!(effect_direction(effect), None);
+        }
     }
 }

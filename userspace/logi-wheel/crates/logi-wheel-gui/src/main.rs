@@ -313,10 +313,19 @@ fn push_led_preview(app: &App, known_values: &Arc<Mutex<HashMap<String, Value>>>
             Some(Value::Rgb(cs)) => cs.clone(),
             _ => bridge::default_rgb("wheel_led_colors"),
         };
-        let direction = match kv.get("wheel_led_direction") {
+        let slot_direction = match kv.get("wheel_led_direction") {
             Some(Value::Enum(d)) => *d,
             _ => 0,
         };
+        // Effects 1-4 ARE the four sweeps, so when one of them is selected
+        // the preview must animate the way that effect plays rather than
+        // the way the slot's own direction would. The custom slots (5-9)
+        // have no sweep of their own and keep using the slot's direction.
+        let effect = match kv.get("wheel_led_effect") {
+            Some(Value::Int(e)) => (*e).clamp(0, u8::MAX as i32) as u8,
+            _ => 0,
+        };
+        let direction = lightsync::effect_direction(effect).unwrap_or(slot_direction);
         (colors, direction)
     };
     if lightsync::mirrored(direction) {
