@@ -31,17 +31,43 @@ how.
 **Measured on hardware.** The 4 kHz stream rate on both transports (1000
 packets/sec sustained, no drops, matching Logitech's stated 1 ms interval).
 The direct-drive stability fix (steering-axis travel 1258-1703 degrees
-before, 204-488 after). No steering regression from doubling the kernel
-effect tick (within 2% across three force levels, three passes each). The
-rev-rate default (899 degrees of travel at 25 against 611 at 35). Which
-rev-light command each wheel obeys. Which HID++ features each wheel has.
+before, 204-488 after). The rev-rate default (899 degrees of travel at 25
+against 611 at 35). Which rev-light command each wheel obeys. Which HID++
+features each wheel has.
 
-**Argued from the code, not exercised.** The `CONFIG_HZ` texture-spacing
-fix: no kernel with `HZ != 1000` was available, and the affected users are
-Debian and Ubuntu, the largest group. The rev-limiter dwell fix is
+The kernel effect tick, on an RS50 with a kprobe on the timer callback:
+1000.2 Hz on bare metal, median period 1.000 ms, p99 1.003 ms, no tick
+over 1.5 ms. Under a steering force and a TrueForce stream together, 990
+packets/sec with every one accepted at its full 64 bytes and no submission
+errors. That leaves no headroom: the wheel is full-speed USB with a
+`bInterval=1` interrupt OUT endpoint, which is exactly 1000 packets per
+second, so a future feature wanting a second packet per tick has to
+displace one rather than join it.
+
+The driver was validated on a KASAN, lockdep, RCU-proving and
+timer-object-debugging kernel with the wheel attached: no splats across
+probe, repeated bind and unbind, erase-while-playing, arm and disarm churn,
+twelve concurrent effects, attribute reads racing an unbind, module unload
+during an active stream, or hot-unplug during an active stream. Memory was
+flat across all of it.
+
+**Argued from the code, not exercised.** The rev-limiter dwell fix is
 unit-tested against a simulated clock but its end-to-end timing was never
 trustworthily measured, because the bench instrument for it turned out to
-have six stages between cause and observation.
+have six stages between cause and observation. The `hrtimer_init`
+compatibility path for kernels older than 6.15 compiles but has not run,
+because no such kernel was available.
+
+**No longer applicable.** The `CONFIG_HZ` texture-spacing caveat, because
+the thing it compensated for is gone rather than fixed. The tick was a
+jiffies timer that re-armed itself for the next jiffy, and the timer wheel
+never fires a timer early, so the expiry always slipped to the jiffy after:
+1 ms asked, 2 ms delivered, measured across four nominal intervals. The
+stream ran at half its stated rate and the texture spacing was derived from
+the nominal period rather than the delivered one, so the texture played an
+octave low on every kernel, not only on the `HZ=250` ones the caveat
+worried about. An hrtimer is programmed against the clock hardware, so the
+period is the one requested and `CONFIG_HZ` does not enter into it.
 
 **Not confirmed at all.** Whether Assetto Corsa Competizione populates
 `wheelLoad`, which decides whether the new airborne flag ever fires. The
