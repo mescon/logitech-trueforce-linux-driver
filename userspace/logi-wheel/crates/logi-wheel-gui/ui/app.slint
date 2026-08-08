@@ -38,6 +38,22 @@ export component App inherits Window {
     in property <bool> no-wheel: true;
     in property <string> no-wheel-message: "Looking for your wheel...";
     callback retry-discover();
+    // The diagnosis behind the banner: the first thing actually wrong, in
+    // the user's terms, with the one command that fixes it. Empty title
+    // means the checks found nothing to say, and the banner falls back to
+    // its plain message.
+    in property <string> diag-title: "";
+    in property <string> diag-detail: "";
+    in property <string> diag-command: "";
+    // Whether running it for the user is possible: it needs root and a
+    // pkexec on the system. Copying the command always works.
+    in property <bool> diag-can-run: false;
+    in property <string> diag-status: "";
+    in property <[string]> diag-all: [];
+    in property <bool> diag-expanded: false;
+    callback diag-run();
+    callback diag-copy();
+    callback diag-toggle-details();
 
     // Header: app name plus the desktop/onboard mode toggle. Device identity
     // (serial, firmware) lives in the Info category, not the header.
@@ -466,13 +482,81 @@ export component App inherits Window {
                 padding: Theme.gutter;
                 spacing: Theme.gutter;
 
-                Text {
+                VerticalLayout {
                     horizontal-stretch: 1;
-                    text: "No compatible wheel found - connect the wheel and press Retry. ("
-                        + root.no-wheel-message + ")";
-                    color: Theme.text-color;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
+                    spacing: 6px;
+
+                    Text {
+                        text: root.diag-title == "" ? "No compatible wheel found" : root.diag-title;
+                        font-weight: 700;
+                        color: Theme.text-color;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.diag-detail == ""
+                            ? "Connect the wheel and press Retry. (" + root.no-wheel-message + ")"
+                            : root.diag-detail;
+                        color: Theme.text-color;
+                        wrap: word-wrap;
+                    }
+                    if root.diag-command != "": HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            background: Palette.alternate-background;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: Palette.border;
+                            Text {
+                                x: 8px;
+                                width: parent.width - 16px;
+                                height: 26px;
+                                text: root.diag-command;
+                                font-family: "monospace";
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                color: Theme.text-color;
+                            }
+                        }
+                        // Offered only when it can actually be done: root is
+                        // needed and pkexec has to exist. Copying is always
+                        // available, for anyone who would rather look at a
+                        // command before running it.
+                        if root.diag-can-run: Button {
+                            text: "Fix this";
+                            primary: true;
+                            clicked => { root.diag-run(); }
+                        }
+                        Button {
+                            text: "Copy";
+                            clicked => { root.diag-copy(); }
+                        }
+                    }
+                    if root.diag-status != "": Text {
+                        text: root.diag-status;
+                        font-size: 12px;
+                        color: Theme.muted-text-color;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button {
+                            text: root.diag-expanded ? "Hide checks" : "Show all checks";
+                            clicked => { root.diag-toggle-details(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if root.diag-expanded: VerticalLayout {
+                        spacing: 2px;
+                        for line in root.diag-all: Text {
+                            text: line;
+                            font-family: "monospace";
+                            font-size: 12px;
+                            color: Theme.muted-text-color;
+                            wrap: word-wrap;
+                        }
+                    }
                 }
                 Button {
                     text: "Retry";

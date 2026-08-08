@@ -1010,6 +1010,68 @@ fn run_test_sim(
     });
 }
 
+/// Run the checks and push the result into the no-wheel banner.
+///
+/// Called whenever the app learns it has no wheel, so the banner explains
+/// the current state rather than whatever was true at startup.
+fn push_diagnosis(app: &App) {
+    use logi_wheel_core::diagnose;
+    let findings = diagnose::diagnose();
+    let all: Vec<slint::SharedString> = findings
+        .iter()
+        .map(|f| {
+            let tag = match f.severity {
+                diagnose::Severity::Blocking => "needs fixing",
+                diagnose::Severity::Warning => "worth fixing",
+                diagnose::Severity::Ok => "ok",
+            };
+            slint::SharedString::from(format!("[{tag}] {}", f.title))
+        })
+        .collect();
+    app.set_diag_all(slint::ModelRc::new(slint::VecModel::from(all)));
+
+    match diagnose::first_problem(&findings) {
+        Some(problem) => {
+            app.set_diag_title(problem.title.as_str().into());
+            app.set_diag_detail(problem.detail.as_str().into());
+            match &problem.fix {
+                Some(fix) => {
+                    app.set_diag_command(diagnose::copyable(fix).into());
+                    // Running it for the user is only offered when it can
+                    // actually be done: pkexec has to exist to ask for the
+                    // password. Copying always works.
+                    app.set_diag_can_run(fix.needs_root && which("pkexec").is_some());
+                }
+                None => {
+                    app.set_diag_command("".into());
+                    app.set_diag_can_run(false);
+                }
+            }
+        }
+        None => {
+            // Every check passed but there is still no wheel: say that
+            // rather than inventing a cause.
+            app.set_diag_title("Everything checks out, but no wheel is responding".into());
+            app.set_diag_detail(
+                "The driver is running and your wheel is claimed, yet it is not \
+                 answering. Unplug it, wait a moment, and plug it back in."
+                    .into(),
+            );
+            app.set_diag_command("".into());
+            app.set_diag_can_run(false);
+        }
+    }
+}
+
+/// Where `name` is on PATH, if anywhere.
+fn which(name: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())
+    })
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("logi-wheel-gui {}", env!("CARGO_PKG_VERSION"));
@@ -1457,6 +1519,10 @@ fn main() -> Result<(), slint::PlatformError> {
                     Response::NoWheel(message) => {
                         app.set_no_wheel(true);
                         app.set_no_wheel_message(message.into());
+                        // Explain it rather than just reporting it: the
+                        // person reading this has nothing working and needs
+                        // the next step, not the error text.
+                        push_diagnosis(&app);
                         // No sysfs identity to show; the Info page falls
                         // back to its "-"/"No wheel detected" placeholders.
                         app.set_info_wheel_name("".into());
@@ -1562,6 +1628,86 @@ fn main() -> Result<(), slint::PlatformError> {
             app.set_selected_category(bridge::index_of(&visible, cat));
             app.set_category_label(cat.label().into());
             worker.request(Request::LoadCategory(cat));
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_diag_toggle_details(move || {
+            let Some(app) = app_weak.upgrade() else { return };
+            app.set_diag_expanded(!app.get_diag_expanded());
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_diag_copy(move || {
+            let Some(app) = app_weak.upgrade() else { return };
+            let cmd = app.get_diag_command().to_string();
+            if logi_wheel_core::clipboard::copy(&cmd) {
+                app.set_diag_status("Command copied. Paste it into a terminal.".into());
+            } else {
+                app.set_diag_status(
+                    "Could not reach the clipboard; select the command above and copy it."
+                        .into(),
+                );
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        let worker_diag = worker.clone();
+        let current_category_diag = current_category.clone();
+        app.on_diag_run(move || {
+            let Some(app) = app_weak.upgrade() else { return };
+            // The command is stored in its copyable form ("sudo ..."); the
+            // prefix comes off because pkexec supplies the privilege.
+            let shown = app.get_diag_command().to_string();
+            let bare = shown.strip_prefix("sudo ").unwrap_or(&shown).to_string();
+            app.set_diag_status("Asking for permission...".into());
+
+            // Off the UI thread: pkexec puts a password prompt up and does
+            // not return until it is answered, which would freeze the
+            // window for as long as the user takes to type.
+            let back = app.as_weak();
+            let worker = worker_diag.clone();
+            let category = current_category_diag.clone();
+            std::thread::spawn(move || {
+                // Through a shell because some fixes are two commands
+                // joined by `&&`. These strings come from this program, not
+                // from anything the user typed.
+                let outcome = std::process::Command::new("pkexec")
+                    .arg("sh")
+                    .arg("-c")
+                    .arg(&bare)
+                    .output();
+                let (status, worked) = match outcome {
+                    Ok(o) if o.status.success() => ("Done. Checking again...".to_string(), true),
+                    Ok(o) => {
+                        // A dismissed password prompt exits 126. Calling
+                        // that a failure would be untrue and alarming.
+                        let msg = if o.status.code() == Some(126) {
+                            "Cancelled.".to_string()
+                        } else {
+                            let err = String::from_utf8_lossy(&o.stderr);
+                            let line = err.lines().next().unwrap_or("it did not succeed");
+                            format!("Did not work: {line}")
+                        };
+                        (msg, false)
+                    }
+                    Err(e) => (
+                        format!("Could not ask for permission ({e}). Copy the command instead."),
+                        false,
+                    ),
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(app) = back.upgrade() else { return };
+                    app.set_diag_status(status.into());
+                    if worked {
+                        worker.request(Request::Discover);
+                        worker.request(Request::LoadCategory(get(&category)));
+                        push_diagnosis(&app);
+                    }
+                });
+            });
         });
     }
     {
