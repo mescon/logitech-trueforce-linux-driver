@@ -7,6 +7,18 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## 0.30.0 - 2026-08-08
 
+**`logi-wheel --report` prints everything a bug report needs**, with the
+parts that identify you left out. Versions, which wheels are bound and to
+what, every wheel setting and its value, the simulated-TrueForce config, and
+which udev rules are installed.
+
+The alternative advice was "paste your dmesg", and that publishes your
+wheel's serial number: the driver logs it at probe, and it sits in sysfs
+right next to the settings worth reading. Your profile names and lighting
+slot names are worse, being whatever you called them. None of the three
+helps diagnose anything, so the report shows them as withheld rather than
+printing them, and the dmesg command it suggests filters the serial line out.
+
 **The kernel's own TrueForce stream now runs at 4 kHz too.** The effect tick
 was 2 ms emitting two texture samples, each held for two window slots, so the
 wheel received 1 kHz of texture in 2 kHz of slots while userspace had already

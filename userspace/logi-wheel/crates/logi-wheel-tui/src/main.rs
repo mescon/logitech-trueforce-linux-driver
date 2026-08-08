@@ -41,6 +41,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|a| a == "--led-probe") {
         return led_probe();
     }
+    if std::env::args().any(|a| a == "--report") {
+        return report();
+    }
 
     // No wheel is not fatal: start the shell anyway (red header note,
     // Setup fully usable, the Info monitor's empty state) with a
@@ -282,4 +285,150 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
         println!("What matters is which test number actually lit the strip.");
     }
     Ok(())
+}
+
+/// Everything a bug report needs, in one pasteable block, with the parts
+/// that identify a person left out.
+///
+/// This exists because the alternative advice is "paste your dmesg", and
+/// that publishes the wheel's serial number: the driver logs it at probe,
+/// and `wheel_serial` sits in sysfs next to the settings worth reading.
+/// `wheel_profile_names` is worse, being whatever the owner called their
+/// profiles. Neither helps diagnose anything, so neither is collected, and
+/// the dmesg command suggested at the end filters the serial line out.
+fn report() -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+    use std::fs;
+
+    /// Read a file, trimmed, or None.
+    fn slurp(p: impl AsRef<std::path::Path>) -> Option<String> {
+        fs::read_to_string(p).ok().map(|s| s.trim().to_string())
+    }
+
+    // Settings whose VALUE is the owner's, not the wheel's. Their presence
+    // is worth reporting; their contents are not.
+    const WITHHELD: &[&str] = &["wheel_serial", "wheel_profile_names", "wheel_led_slot_name"];
+
+    let mut out = String::new();
+    writeln!(out, "## logitech-trueforce diagnostic report")?;
+    writeln!(out)?;
+    writeln!(out, "app        {}", env!("CARGO_PKG_VERSION"))?;
+    writeln!(out, "kernel     {}", slurp("/proc/sys/kernel/osrelease").unwrap_or_default())?;
+    writeln!(out, "module     {}",
+             slurp("/sys/module/hid_logitech_dd/version")
+                 .unwrap_or_else(|| "not loaded".into()))?;
+    if let Some(os) = slurp("/etc/os-release") {
+        if let Some(line) = os.lines().find(|l| l.starts_with("PRETTY_NAME=")) {
+            writeln!(out, "distro     {}", line.trim_start_matches("PRETTY_NAME=").trim_matches('"'))?;
+        }
+    }
+
+    writeln!(out, "\n### wheels")?;
+    let base = std::path::Path::new("/sys/bus/hid/devices");
+    let mut found = 0;
+    if let Ok(entries) = fs::read_dir(base) {
+        let mut names: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        names.sort();
+        for name in names {
+            let n = name.to_string_lossy().into_owned();
+            // Logitech wheels only; other HID devices are not ours to report.
+            if !n.contains("046D:C2") {
+                continue;
+            }
+            found += 1;
+            let dir = base.join(&name);
+            let drv = fs::read_link(dir.join("driver")).ok()
+                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "none".into());
+            writeln!(out, "\n{n}  driver={drv}")?;
+            let mut attrs: Vec<String> = fs::read_dir(&dir).ok()
+                .map(|rd| rd.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|a| a.starts_with("wheel_") || a == "range")
+                    .collect())
+                .unwrap_or_default();
+            attrs.sort();
+            for a in attrs {
+                if WITHHELD.contains(&a.as_str()) {
+                    writeln!(out, "  {a:<26} <withheld: identifies you, not the wheel>")?;
+                    continue;
+                }
+                if let Some(v) = slurp(dir.join(&a)) {
+                    let v = v.replace('\n', " | ");
+                    let v = if v.len() > 70 { format!("{}...", &v[..70]) } else { v };
+                    writeln!(out, "  {a:<26} {v}")?;
+                }
+            }
+        }
+    }
+    if found == 0 {
+        writeln!(out, "  no Logitech wheel bound")?;
+    }
+
+    writeln!(out, "\n### simulated TrueForce config")?;
+    let cfg = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"))
+        .join("logi-wheel/tf-sim.conf");
+    match slurp(&cfg) {
+        Some(c) if !c.is_empty() => {
+            for line in c.lines().filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty()) {
+                writeln!(out, "  {line}")?;
+            }
+        }
+        _ => writeln!(out, "  none (defaults apply)")?,
+    }
+
+    writeln!(out, "\n### udev rules installed")?;
+    let mut any_rule = false;
+    for d in ["/etc/udev/rules.d", "/usr/lib/udev/rules.d", "/lib/udev/rules.d"] {
+        if let Ok(rd) = fs::read_dir(d) {
+            for e in rd.filter_map(|e| e.ok()) {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if n.contains("logi") || n.contains("trueforce") {
+                    writeln!(out, "  {d}/{n}")?;
+                    any_rule = true;
+                }
+            }
+        }
+    }
+    if !any_rule {
+        writeln!(out, "  none found (force feedback and LEDs will need root)")?;
+    }
+
+    writeln!(out, "\n### kernel log")?;
+    writeln!(out, "  Not readable without root. Add it with:")?;
+    writeln!(out)?;
+    writeln!(out, "    sudo dmesg | grep -i logitech | grep -v serial")?;
+    writeln!(out)?;
+    writeln!(out, "  The grep drops the line carrying your wheel's serial number.")?;
+    writeln!(out, "  The lines worth having are \"HID++ features\", \"Effect timer\",")?;
+    writeln!(out, "  and anything saying failed or error.")?;
+
+    print!("{out}");
+    Ok(())
+}
+
+#[cfg(test)]
+mod report_tests {
+    /// The withheld list is the whole point of the report existing rather
+    /// than telling people to paste dmesg, so it is worth a test that says
+    /// so. Each entry is a value that identifies the owner rather than the
+    /// hardware: the wheel's serial number, and the names they gave their
+    /// profiles and lighting slots.
+    ///
+    /// Add to it rather than removing: a field wrongly withheld costs a
+    /// round trip in a bug report, a field wrongly published cannot be
+    /// taken back.
+    #[test]
+    fn the_identifying_settings_stay_withheld() {
+        const WITHHELD: &[&str] = &["wheel_serial", "wheel_profile_names", "wheel_led_slot_name"];
+        let src = include_str!("main.rs");
+        for field in WITHHELD {
+            assert!(
+                src.contains(&format!("\"{field}\"")),
+                "{field} dropped out of the report's withheld list",
+            );
+        }
+    }
 }
