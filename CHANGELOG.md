@@ -65,6 +65,33 @@ accepted at its full 64 bytes with no submission errors. That is close to
 the ceiling by design: the wheel is full-speed USB with a `bInterval=1`
 interrupt OUT endpoint, which allows exactly one packet per millisecond.
 
+**LIGHTSYNC custom colours now actually appear on the strip.** They never
+have, on any RS50, in any release. Setting colours returned success, the
+wheel acknowledged every command, and the strip stayed dark, which made this
+look like hardware or a wheel-side setting rather than a bug here.
+
+Two faults in the same sequence. The apply switched every LED **off**
+immediately before uploading the colours meant to be displayed: it sent a
+`0x807A fn6` "pre-config" whose byte 5 is the rev-display *level*, not a LED
+count and not a flag, and it sent zero there. The same command shape with a
+level of 10 is what lights all ten LEDs for the rev display. Second, the slot
+the colours were written into was never activated, so the upload was stored
+and never shown. G HUB follows every colour upload with an activate on
+`0x807B fn3`, and the constant for it already existed in this driver with
+nothing calling it.
+
+Verified on an RS50 after the change: three, then seven, then one lit LED
+give three, then seven, then one; all-blue to all-yellow changes; half and
+half shows two distinct halves; and alternating neighbours is visible. Before
+it, the same sequence left the strip dark.
+
+Two things worth knowing if you go looking at this yourself. The colour
+upload is a **very long 64-byte report**, so a capture filter that matches
+only the 20-byte and 7-byte HID++ reports will not show it at all and will
+make the wire format look invented. And the strip only displays on some
+onboard profiles: on a profile that keeps it dark, every write still reports
+success.
+
 **The driver reports which HID++ features a wheel has**, one line at probe.
 Userspace cannot find this out: the driver parses HID++ replies and tells the
 kernel it consumed them, so a hidraw reader sees nothing on any wheel the
