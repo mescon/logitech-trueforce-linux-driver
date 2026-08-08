@@ -109,6 +109,21 @@ const OFF_RPMS: usize = 20;
 /// Through the last physics field read, `rpms`.
 const MIN_PHYSICS_LEN: usize = OFF_RPMS + 4;
 
+/// `wheelLoad[4]`, the vertical load on each tyre.
+///
+/// Offset computed from the documented field order (packetId, gas, brake,
+/// fuel, gear, rpms, steerAngle, speedKmh, velocity[3], accG[3],
+/// wheelSlip[4], then this), the same method the offsets above came from.
+const OFF_WHEEL_LOAD: usize = 72;
+/// Physics block long enough to contain it.
+const MIN_PHYSICS_AIRBORNE_LEN: usize = OFF_WHEEL_LOAD + 16;
+/// Below this, in newtons, a tyre is carrying nothing.
+///
+/// Deliberately not zero: a wheel barely kissing the road reads as a few
+/// newtons and is not airborne, and a float from a physics engine rarely
+/// lands on exact zero anyway.
+const WHEEL_LOAD_EPSILON: f32 = 1.0;
+
 /// EVO's redline, `currentMaxRpm`, which lives in the physics block rather
 /// than a static one and is republished every tick.
 const OFF_CURRENT_MAX_RPM: usize = 588;
@@ -181,7 +196,51 @@ pub fn decode(physics: &[u8], statics: &[u8], game_id: &'static str) -> Option<R
     }
 
     let (throttle, gear) = head_inputs(physics)?;
-    Some(RelayTelemetry { game_id, rpm, max_rpm, throttle, gear })
+    Some(RelayTelemetry {
+        game_id,
+        rpm,
+        max_rpm,
+        throttle,
+        gear,
+        airborne: airborne(physics),
+    })
+}
+
+/// All four wheels carrying no load.
+///
+/// Assetto Corsa's own documentation says `wheelLoad` is unused in
+/// Competizione, and if that is true here the field reads zero always and a
+/// naive test would report a car permanently airborne, which is worse than
+/// never reporting it at all: the airborne layer ducks the road surface, so
+/// a false positive silences haptics for the whole session.
+///
+/// So the reading is only trusted once the field has been seen carrying
+/// load. Any car that is driving has weight on its wheels within a moment,
+/// and a field that is never populated never passes that gate, so an
+/// unpopulated field yields a permanent `false` rather than a permanent
+/// `true`. The state is per-process, which suits a relay that runs for one
+/// session alongside one game.
+fn airborne(physics: &[u8]) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SEEN_LOAD: AtomicBool = AtomicBool::new(false);
+
+    if physics.len() < MIN_PHYSICS_AIRBORNE_LEN {
+        return false;
+    }
+    let mut loaded = 0;
+    for i in 0..4 {
+        match f32_at(physics, OFF_WHEEL_LOAD + i * 4) {
+            Some(v) if v.is_finite() && v > WHEEL_LOAD_EPSILON => loaded += 1,
+            Some(v) if v.is_finite() => {}
+            _ => return false,
+        }
+    }
+    if loaded > 0 {
+        SEEN_LOAD.store(true, Ordering::Relaxed);
+        return false;
+    }
+    // Nothing loaded. Only airborne if this field has ever meant anything.
+    SEEN_LOAD.load(Ordering::Relaxed)
 }
 
 /// Read throttle and gear from the physics head, which every Assetto Corsa
@@ -238,7 +297,7 @@ pub fn decode_evo(physics: &[u8]) -> Option<RelayTelemetry> {
         return None;
     }
     let (throttle, gear) = head_inputs(physics)?;
-    Some(RelayTelemetry { game_id: ID_EVO, rpm, max_rpm, throttle, gear })
+    Some(RelayTelemetry { game_id: ID_EVO, rpm, max_rpm, throttle, gear, airborne: false })
 }
 
 #[cfg(test)]
@@ -430,5 +489,59 @@ mod tests {
         assert_eq!(decode(&physics(f32::NAN, 3, 6000), &statics(7500), ID).unwrap().throttle, 0.0);
         assert_eq!(decode(&physics(5.0, 3, 6000), &statics(7500), ID).unwrap().throttle, 1.0);
         assert_eq!(decode(&physics(-5.0, 3, 6000), &statics(7500), ID).unwrap().throttle, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod airborne_tests {
+    use super::*;
+
+    /// A physics block long enough to carry wheelLoad, with the four loads set.
+    fn physics_with_loads(loads: [f32; 4]) -> Vec<u8> {
+        let mut b = vec![0u8; MIN_PHYSICS_AIRBORNE_LEN];
+        for (i, v) in loads.iter().enumerate() {
+            b[OFF_WHEEL_LOAD + i * 4..OFF_WHEEL_LOAD + i * 4 + 4]
+                .copy_from_slice(&v.to_le_bytes());
+        }
+        b
+    }
+
+    /// The failure this is built to make impossible.
+    ///
+    /// Assetto Corsa's docs say wheelLoad is unused in Competizione. If that
+    /// is true the field reads zero forever, and a naive all-zero test would
+    /// call the car airborne for the whole session, ducking the road surface
+    /// and silencing haptics. Zeros alone must never be enough.
+    #[test]
+    fn a_field_that_never_carries_load_never_reports_airborne() {
+        for _ in 0..50 {
+            assert!(
+                !airborne(&physics_with_loads([0.0; 4])),
+                "zeros alone must not be read as flight",
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_block_is_not_airborne() {
+        assert!(!airborne(&[0u8; MIN_PHYSICS_AIRBORNE_LEN - 1]));
+    }
+
+    #[test]
+    fn nonsense_loads_are_not_airborne() {
+        assert!(!airborne(&physics_with_loads([f32::NAN, 0.0, 0.0, 0.0])));
+    }
+
+    /// Ordering matters here and the test states it: load first, then flight.
+    /// Run as one test because the gate is process-wide state and separate
+    /// tests would race each other for it.
+    #[test]
+    fn flight_is_reported_only_after_the_field_has_proved_itself() {
+        // On the ground: loaded, so not airborne, and the gate opens.
+        assert!(!airborne(&physics_with_loads([3000.0, 3100.0, 2900.0, 3050.0])));
+        // Now all four unloaded, with the field proven: airborne.
+        assert!(airborne(&physics_with_loads([0.0; 4])));
+        // A tyre barely touching is not flight.
+        assert!(!airborne(&physics_with_loads([0.0, 0.0, 0.0, 40.0])));
     }
 }

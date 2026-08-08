@@ -18,7 +18,7 @@
 //! |--------|-----------|------|------------------------------------|
 //! | 0      | magic     | [u8;4] | `b"LTFR"`                        |
 //! | 4      | version   | u8   | 2 (this version)                    |
-//! | 5      | flags     | u8   | reserved, must be sent as 0         |
+//! | 5      | flags     | u8   | bit 0 = airborne; other bits reserved |
 //! | 6      | game_id   | [u8;8] | NUL-padded ASCII, e.g. `ets2`     |
 //! | 14     | rpm       | f32  | engine speed, rpm                   |
 //! | 18     | max_rpm   | f32  | engine redline, rpm                 |
@@ -65,6 +65,14 @@ pub const DEFAULT_PORT: u16 = 20780;
 /// is trusted.
 pub const MAGIC: [u8; 4] = *b"LTFR";
 
+/// Bit 0 of the flags byte: the car has all four wheels off the ground.
+///
+/// Added without a version bump because `decode` never read the byte, so an
+/// older listener ignores it and a newer one reading an older sender sees
+/// zero, which is the correct answer for a sender that cannot tell. The byte
+/// was reserved for exactly this.
+pub const FLAG_AIRBORNE: u8 = 1 << 0;
+
 /// The only wire version this daemon understands.
 pub const VERSION: u8 = 2;
 
@@ -86,6 +94,10 @@ pub struct RelayTelemetry {
     pub throttle: f32,
     /// Selected gear: -1 reverse, 0 neutral, 1..=N forward.
     pub gear: i16,
+    /// All four wheels off the ground, when the source can tell. Senders
+    /// that cannot leave this false, which is what a listener assumes of
+    /// any sender predating the flag.
+    pub airborne: bool,
 }
 
 impl RelayTelemetry {
@@ -104,6 +116,7 @@ impl RelayTelemetry {
             // beyond i8, and saturating keeps a corrupt packet from wrapping
             // a high gear round to reverse.
             gear: self.gear.clamp(i8::MIN as i16, i8::MAX as i16) as i8,
+            airborne: self.airborne,
             ..Default::default()
         }
     }
@@ -114,7 +127,7 @@ pub fn encode(t: &RelayTelemetry) -> [u8; PACKET_LEN] {
     let mut buf = [0u8; PACKET_LEN];
     buf[0..4].copy_from_slice(&MAGIC);
     buf[4] = VERSION;
-    buf[5] = 0; // flags, reserved
+    buf[5] = if t.airborne { FLAG_AIRBORNE } else { 0 };
     // NUL-padded, never NUL-terminated-and-truncated: an id longer than the
     // field would silently become a different id, so ids are kept short and
     // the excess is dropped rather than encoded wrong.
@@ -157,7 +170,8 @@ pub fn decode(pkt: &[u8]) -> Option<RelayTelemetry> {
     if !rpm.is_finite() || !max_rpm.is_finite() || !throttle.is_finite() {
         return None;
     }
-    Some(RelayTelemetry { game_id, rpm, max_rpm, throttle, gear })
+    let airborne = pkt[5] & FLAG_AIRBORNE != 0;
+    Some(RelayTelemetry { game_id, rpm, max_rpm, throttle, gear, airborne })
 }
 
 /// Decode one relay datagram straight to a pipeline sample, matching the
@@ -178,7 +192,7 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let rt = RelayTelemetry { game_id: "ets2", rpm: 4200.0, max_rpm: 8500.0, throttle: 0.42, gear: 4 };
+        let rt = RelayTelemetry { game_id: "ets2", rpm: 4200.0, max_rpm: 8500.0, throttle: 0.42, gear: 4 , airborne: false };
         let encoded = encode(&rt);
         assert_eq!(encoded.len(), PACKET_LEN);
         assert_eq!(decode(&encoded), Some(rt));
@@ -186,9 +200,9 @@ mod tests {
 
     #[test]
     fn round_trips_reverse_and_neutral_gear() {
-        let reverse = RelayTelemetry { game_id: "ets2", rpm: 1500.0, max_rpm: 7000.0, throttle: 0.1, gear: -1 };
+        let reverse = RelayTelemetry { game_id: "ets2", rpm: 1500.0, max_rpm: 7000.0, throttle: 0.1, gear: -1 , airborne: false };
         assert_eq!(decode(&encode(&reverse)), Some(reverse));
-        let neutral = RelayTelemetry { game_id: "ets2", rpm: 900.0, max_rpm: 7000.0, throttle: 0.0, gear: 0 };
+        let neutral = RelayTelemetry { game_id: "ets2", rpm: 900.0, max_rpm: 7000.0, throttle: 0.0, gear: 0 , airborne: false };
         assert_eq!(decode(&encode(&neutral)), Some(neutral));
     }
 
@@ -196,7 +210,7 @@ mod tests {
     /// module's doc comment against the encoder.
     #[test]
     fn golden_bytes() {
-        let rt = RelayTelemetry { game_id: "ets2", rpm: 6500.0, max_rpm: 7200.0, throttle: 0.5, gear: 3 };
+        let rt = RelayTelemetry { game_id: "ets2", rpm: 6500.0, max_rpm: 7200.0, throttle: 0.5, gear: 3 , airborne: false };
         let expected = [
             0x4c, 0x54, 0x46, 0x52, // magic "LTFR"
             0x02, // version
@@ -213,21 +227,21 @@ mod tests {
 
     #[test]
     fn bad_magic_is_rejected() {
-        let mut pkt = encode(&RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 0.0, gear: 0 });
+        let mut pkt = encode(&RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 0.0, gear: 0 , airborne: false });
         pkt[0] = b'X';
         assert!(decode(&pkt).is_none());
     }
 
     #[test]
     fn unsupported_version_is_rejected() {
-        let mut pkt = encode(&RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 0.0, gear: 0 });
+        let mut pkt = encode(&RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 0.0, gear: 0 , airborne: false });
         pkt[4] = VERSION + 1;
         assert!(decode(&pkt).is_none());
     }
 
     #[test]
     fn short_and_long_buffers_are_rejected() {
-        let pkt = encode(&RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 0.0, gear: 0 });
+        let pkt = encode(&RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 0.0, gear: 0 , airborne: false });
         assert!(decode(&pkt[..PACKET_LEN - 1]).is_none(), "truncated");
         let mut long = pkt.to_vec();
         long.push(0);
@@ -237,14 +251,14 @@ mod tests {
 
     #[test]
     fn nan_and_infinite_fields_are_rejected() {
-        let mut pkt = encode(&RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 0.0, gear: 0 });
+        let mut pkt = encode(&RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 0.0, gear: 0 , airborne: false });
         pkt[14..18].copy_from_slice(&f32::NAN.to_le_bytes());
         assert!(decode(&pkt).is_none());
     }
 
     #[test]
     fn to_telemetry_maps_fields_and_drops_gear() {
-        let rt = RelayTelemetry { game_id: "ets2", rpm: 3000.0, max_rpm: 7000.0, throttle: 0.8, gear: 2 };
+        let rt = RelayTelemetry { game_id: "ets2", rpm: 3000.0, max_rpm: 7000.0, throttle: 0.8, gear: 2 , airborne: false };
         let tel = rt.to_telemetry();
         assert_eq!(tel.rpm, 3000.0);
         assert_eq!(tel.max_rpm, 7000.0);
@@ -254,15 +268,15 @@ mod tests {
 
     #[test]
     fn to_telemetry_clamps_throttle() {
-        let over = RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 1.5, gear: 0 };
+        let over = RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 1.5, gear: 0 , airborne: false };
         assert_eq!(over.to_telemetry().throttle, 1.0);
-        let under = RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: -0.5, gear: 0 };
+        let under = RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: -0.5, gear: 0 , airborne: false };
         assert_eq!(under.to_telemetry().throttle, 0.0);
     }
 
     #[test]
     fn parse_reports_the_senders_game_id() {
-        let rt = RelayTelemetry { game_id: "ets2", rpm: 5000.0, max_rpm: 8000.0, throttle: 0.6, gear: 5 };
+        let rt = RelayTelemetry { game_id: "ets2", rpm: 5000.0, max_rpm: 8000.0, throttle: 0.6, gear: 5 , airborne: false };
         let pkt = encode(&rt);
         let (id, tel) = parse(&pkt).unwrap();
         assert_eq!(id, "ets2", "the sender's own id decides which settings gate it");
@@ -281,8 +295,7 @@ mod tests {
                 rpm: 3000.0,
                 max_rpm: 7000.0,
                 throttle: 0.5,
-                gear: 2,
-            };
+                gear: 2, airborne: false };
             assert_eq!(decode(&encode(&rt)).unwrap().game_id, *id, "{id}");
             assert!(id.len() <= GAME_ID_LEN, "{id} does not fit the wire field");
         }
@@ -297,8 +310,7 @@ mod tests {
             rpm: 3000.0,
             max_rpm: 7000.0,
             throttle: 0.5,
-            gear: 2,
-        };
+            gear: 2, airborne: false };
         let mut pkt = encode(&rt);
         pkt[6..14].copy_from_slice(b"wipeout\0");
         assert_eq!(parse(&pkt).unwrap().0, ID);
@@ -317,8 +329,7 @@ mod tests {
             rpm: 3000.0,
             max_rpm: 7000.0,
             throttle: 0.5,
-            gear: 2,
-        };
+            gear: 2, airborne: false };
         let mut pkt = encode(&rt);
         pkt[6..14].copy_from_slice(&[0xff, 0xfe, 0xfd, 0, 0, 0, 0, 0]);
         assert_eq!(parse(&pkt).unwrap().0, ID);
@@ -326,7 +337,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_menu_samples_with_zero_max_rpm() {
-        let rt = RelayTelemetry { game_id: "ets2", rpm: 0.0, max_rpm: 0.0, throttle: 0.0, gear: 0 };
+        let rt = RelayTelemetry { game_id: "ets2", rpm: 0.0, max_rpm: 0.0, throttle: 0.0, gear: 0 , airborne: false };
         assert!(parse(&encode(&rt)).is_none());
     }
 
@@ -351,6 +362,76 @@ mod daemon_agreement {
                 crate::tfsim::DAEMON_GAME_IDS.contains(id),
                 "{id} is on the wire but absent from DAEMON_GAME_IDS"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod airborne_flag_tests {
+    use super::*;
+
+    fn sample(airborne: bool) -> RelayTelemetry {
+        RelayTelemetry {
+            game_id: "acc",
+            rpm: 4000.0,
+            max_rpm: 8000.0,
+            throttle: 0.5,
+            gear: 3,
+            airborne,
+        }
+    }
+
+    #[test]
+    fn the_airborne_flag_round_trips() {
+        for airborne in [false, true] {
+            let decoded = decode(&encode(&sample(airborne))).expect("valid packet");
+            assert_eq!(decoded.airborne, airborne);
+        }
+    }
+
+    #[test]
+    fn a_sender_that_predates_the_flag_reads_as_grounded() {
+        // The byte was documented "reserved, must be sent as 0" and decode
+        // never read it, so every existing sender emits zero there. That has
+        // to mean "not airborne" rather than anything else, or adding the
+        // bit would have changed the meaning of packets already in flight.
+        let mut pkt = encode(&sample(true));
+        pkt[5] = 0;
+        assert!(!decode(&pkt).expect("valid packet").airborne);
+    }
+
+    #[test]
+    fn unknown_flag_bits_are_ignored_rather_than_rejected() {
+        // Room to add more flags later without an older listener refusing
+        // the packet outright.
+        let mut pkt = encode(&sample(true));
+        pkt[5] |= 0b1111_1110;
+        let decoded = decode(&pkt).expect("unknown bits must not invalidate a packet");
+        assert!(decoded.airborne, "the bit we do know still reads");
+    }
+}
+
+#[cfg(test)]
+mod airborne_end_to_end {
+    use super::*;
+
+    /// The whole chain: a relay says airborne, the daemon's Telemetry says
+    /// airborne. Worth asserting because the flag crosses three
+    /// representations (wire byte, RelayTelemetry, Telemetry) and the effect
+    /// that consumes it has never run, so nothing else would notice a break.
+    #[test]
+    fn the_wire_flag_becomes_telemetry_airborne() {
+        for airborne in [false, true] {
+            let pkt = encode(&RelayTelemetry {
+                game_id: "acc",
+                rpm: 5000.0,
+                max_rpm: 8000.0,
+                throttle: 1.0,
+                gear: 4,
+                airborne,
+            });
+            let (_, tel) = parse(&pkt).expect("a running sample parses");
+            assert_eq!(tel.airborne, airborne, "airborne must survive the wire");
         }
     }
 }

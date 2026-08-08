@@ -103,6 +103,7 @@ fn sample() -> Option<RelayTelemetry> {
         max_rpm,
         throttle: load_f32(&STATE.throttle).clamp(0.0, 1.0),
         gear,
+        airborne: false,
     })
 }
 
@@ -124,7 +125,7 @@ fn send_engine_off() {
     let max_rpm = load_f32(&STATE.max_rpm);
     if max_rpm > 0.0 {
         let game_id = STATE.game_id.lock().map(|g| *g).unwrap_or(logi_wheel_core::relay::ID);
-        send(&RelayTelemetry { game_id, rpm: 0.0, max_rpm, throttle: 0.0, gear: 0 });
+        send(&RelayTelemetry { game_id, rpm: 0.0, max_rpm, throttle: 0.0, gear: 0, airborne: false });
     }
 }
 

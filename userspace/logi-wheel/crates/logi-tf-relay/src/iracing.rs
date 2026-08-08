@@ -240,6 +240,8 @@ pub fn decode(map: &[u8]) -> Option<RelayTelemetry> {
         max_rpm,
         throttle: throttle.clamp(0.0, 1.0),
         gear: gear.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+        // iRacing's telemetry has no wheels-off-ground field this reads.
+        airborne: false,
     })
 }
 
