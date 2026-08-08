@@ -7642,11 +7642,27 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 
 		if (effect >= 1 && effect <= 9) {
 			WRITE_ONCE(ff->led_effect, effect);
+			/*
+			 * A broadcast in 6..9 carries its slot in the value,
+			 * exactly like a readback does, so the active slot has
+			 * to follow or every reader of wheel_led_colors starts
+			 * describing a slot the wheel is no longer showing.
+			 * This is the path the wheel's own on-device menu takes,
+			 * where nothing else tells us the slot moved. Effect 5
+			 * is deliberately excluded: it means "custom mode with
+			 * whatever wheel_led_slot says", so deriving a slot
+			 * from it would reset the user's selection to 0.
+			 */
+			if (effect >= 6)
+				WRITE_ONCE(ff->led_active_slot,
+					   (u8)(effect - 5));
 			dd_info(hidpp->hid_dev,
 				 "LED effect change broadcast -> %u\n",
 				 effect);
 			sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL,
 				     "wheel_led_effect");
+			sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL,
+				     "wheel_led_slot");
 		}
 		return 1;
 	}
@@ -9929,6 +9945,36 @@ static int hidpp_dd_lightsync_enable(struct hidpp_device *hidpp, struct hidpp_dd
 	 */
 	ff->ls_num_slots = HIDPP_DD_LIGHTSYNC_NUM_SLOTS;
 	ff->ls_num_leds  = HIDPP_DD_LIGHTSYNC_NUM_LEDS;
+
+	/*
+	 * Ask the wheel which effect it is actually showing, rather than
+	 * assuming the 5 the struct was initialised with. A wheel that came
+	 * up on one of the built-in sweeps, or on a custom slot other than
+	 * the first, was being reported as effect 5 / slot 0 until something
+	 * wrote the attribute, so sysfs described a strip nobody was looking
+	 * at. GET_STATE answers with the live effect in its first parameter
+	 * (observed across the captures returning 01, 02, 03 and 05).
+	 *
+	 * Best-effort: a wheel that will not answer keeps the default, which
+	 * is no worse than before.
+	 */
+	memset(params, 0, sizeof(params));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
+					  HIDPP_DD_LIGHTSYNC_FN_GET_STATE,
+					  params, 3, &response);
+	if (ret == 0) {
+		u8 live = response.fap.params[0];
+
+		if (live >= 1 && live <= 4 + HIDPP_DD_LIGHTSYNC_NUM_SLOTS) {
+			ff->led_effect = live;
+			/* 6..9 carry their slot; 5 keeps the current one. */
+			if (live >= 6)
+				ff->led_active_slot = (u8)(live - 5);
+			dd_dbg(hid, "LIGHTSYNC: wheel reports effect %u\n",
+			       live);
+		}
+	}
+
 	if (ff->idx_rgb_config != HIDPP_DD_FEATURE_NOT_FOUND) {
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_rgb_config,
 						  0x00, params, 3, &response);
