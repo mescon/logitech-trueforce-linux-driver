@@ -169,6 +169,32 @@ pub fn wheel_display_name_at(sysfs_input: &Path, model: WheelModel) -> String {
 }
 
 /// [`wheel_display_name_at`] against the real `/sys/class/input`.
+/// The model a discovered device really is, resolving the one case where
+/// the product id lies.
+///
+/// An RS50 in G PRO compatibility mode borrows the G PRO's product id but
+/// keeps its own USB product string, so a mapping from the id alone calls
+/// it a G PRO. The kernel driver settles this the same way, by looking at
+/// the product string (`dd_is_real_gpro`), and `model_from_name` already
+/// encodes the rule by testing for RS50 before PRO. This is the piece that
+/// was missing: discovery never asked the name.
+///
+/// Only the G PRO ids are second-guessed. Every other id maps directly, and
+/// a name that says nothing useful leaves the id's answer alone.
+fn model_for(pid: Option<u16>, name: &str) -> WheelModel {
+    let by_pid = pid.map(model_from_pid).unwrap_or_default();
+    if by_pid == WheelModel::GPro {
+        let by_name = model_from_name(name);
+        if by_name != WheelModel::Unknown {
+            return by_name;
+        }
+    }
+    if by_pid == WheelModel::Unknown {
+        return model_from_name(name);
+    }
+    by_pid
+}
+
 /// The USB device directory a discovered wheel's sysfs key belongs to.
 ///
 /// A key looks like `.../usb1/1-5/1-5.2/1-5.2.3/1-5.2.3:1.1/0003:046D:C276.0051`:
@@ -407,7 +433,10 @@ impl Device<RealSysfs> {
                 continue;
             }
             if dir.join("wheel_range").exists() {
-                let model = pid_from_hid_dir(&dir).map(model_from_pid).unwrap_or_default();
+                let name = usb_device_dir(&key)
+                    .and_then(|usb| input_name_under(Path::new("/sys/class/input"), &usb))
+                    .unwrap_or_default();
+                let model = model_for(pid_from_hid_dir(&dir), &name);
                 found.push(Device {
                     io: RealSysfs::new(dir),
                     model,
@@ -1395,6 +1424,33 @@ mod tests {
 #[cfg(test)]
 mod discover_all_tests {
     use super::*;
+
+    /// An RS50 in G PRO compatibility mode borrows the G PRO's product id.
+    /// Trusting the id alone labels it a G PRO, which is wrong on the one
+    /// rig where it matters: the owner's.
+    #[test]
+    fn a_compat_mode_rs50_is_not_mistaken_for_a_g_pro() {
+        // Borrowed id, own product string: an RS50.
+        assert_eq!(
+            model_for(Some(0xc272), "Logitech RS50 Base for PlayStation/PC"),
+            WheelModel::Rs50
+        );
+        assert_eq!(
+            model_for(Some(0xc268), "Logitech RS50 Base for PlayStation/PC"),
+            WheelModel::Rs50
+        );
+        // A real G PRO keeps its id's answer.
+        assert_eq!(
+            model_for(Some(0xc272), "Logitech G PRO Racing Wheel"),
+            WheelModel::GPro
+        );
+        // An unreadable name must not downgrade a real id.
+        assert_eq!(model_for(Some(0xc272), ""), WheelModel::GPro);
+        // Ids that never lie are taken at face value.
+        assert_eq!(model_for(Some(0xc276), "anything at all"), WheelModel::Rs50);
+        // No id: fall back to the name.
+        assert_eq!(model_for(None, "Logitech G923 Racing Wheel"), WheelModel::G923);
+    }
 
     /// Two wheels attached must not share a name. The scan used to stop at
     /// the first input device that looked like a wheel, so whichever
