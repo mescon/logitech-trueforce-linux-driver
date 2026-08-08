@@ -7,52 +7,39 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## 0.31.0 - 2026-08-09
 
-**Every wheel you have plugged in, not just the first one.** The apps found
-one wheel and managed that; a rig with two showed one of them and silently
-ignored the other. Both apps now find all of them. The window puts a button
-for each next to the title, the terminal app switches with `w`, and the
-settings you see, the values you write, the live input monitor and the tests
-all follow the pick. Wheels of the same model are numbered so they can be
-told apart. Nothing is shared between them: each wheel keeps its own settings
-on its own hardware.
+**Both apps now manage every wheel you have plugged in.** Previously they
+found one and ignored the rest. The window puts a button for each next to
+the title; the terminal app switches with `w`. Settings, values, the live
+input monitor and the tests all follow the wheel you pick, and wheels of the
+same model are numbered so you can tell them apart. Each wheel keeps its own
+settings on its own hardware.
 
-**Simulated TrueForce can be told which wheel to drive.** It picks a G923
-whenever it finds one, which is right for a single wheel and wrong for a rig
-with a G923 and a direct-drive wheel together, where the direct-drive wheel
-was simply never reached. The Setup page has a picker, and `tf-sim.conf`
-takes `wheel = auto | dd | g923`. `LOGI_TF_SIM_WHEEL` still overrides it for
-a single run.
+**You can pick which wheel simulated TrueForce drives.** New on the Setup
+page, or `wheel = auto | dd | g923` in `tf-sim.conf`. This only matters with
+more than one wheel plugged in, where previously one of them could never be
+reached. `LOGI_TF_SIM_WHEEL` still overrides it for a single run.
 
-**An app that cannot find a wheel now says why.** Both apps showed one line
-and a Retry button, which is no help to the person most likely to be reading
-it: someone who has just installed, has nothing working, and does not yet
-know what a udev rule is. They now run the same checks `setup.sh doctor`
-does, in the order that matters, and stop at the first thing that is actually
-wrong: nothing plugged in, a G923 still in console mode, the driver not
-loaded, another driver holding the wheel, permission rules missing. Each one
-comes with plain language about what it means and the single command that
-fixes it. The window offers to run it for you; both offer it to copy, and the
-full list of checks is one click away, which is also what belongs in a bug
-report.
+**An app that cannot find your wheel now tells you why.** Instead of one line
+and a Retry button, both apps run the install checks and stop at the first
+thing that is actually wrong: nothing plugged in, a G923 still in console
+mode, the driver not loaded, another driver holding the wheel, permission
+rules missing. Each says what it means in plain language and gives the one
+command that fixes it. The window offers to run it for you; both let you copy
+it, and the full list of checks is one click away for a bug report.
 
-**`logi-rebind-wheel` ships with the packages.** The script that moves a
-wheel off `hid-generic` and onto this driver existed only in a git checkout,
-so it was unavailable to exactly the people who needed it: the boot race it
-fixes strands the wheel, and that is not a state you debug from source.
+**`logi-rebind-wheel` now ships with the packages.** It moves a wheel that
+another driver grabbed at boot onto this driver, without reaching behind the
+desk to replug. It used to exist only in a git checkout, which is not much
+use when your wheel does not work.
 
-**An RS50 in compatibility mode is no longer mistaken for a G PRO.** It
-borrows the G PRO's USB id in that mode but keeps its own product string, so
-it was named wrong wherever the id was trusted on its own.
+**An RS50 in compatibility mode is no longer named as a G PRO.** It borrows
+the G PRO's USB id in that mode, so it was labelled wrong throughout the apps.
 
-**The app has its own taskbar icon** instead of a generic cogwheel.
+**The desktop app has its own taskbar icon** instead of a generic cogwheel.
 
-`tools/wheel-rotation-watch.py --cmd` now runs a named test program with
-numeric arguments, instead of resolving whatever path it was handed through
-`$PATH`. The old form made "run the wheel test binary" and "run anything on
-this machine" the same operation, which is worth not having in a script that
-automation drives. Every test binary reads its arguments with `atoi`/`atof`,
-so nothing is lost; the invocation drops the directory prefix
-(`--cmd sine 50 2 0.3`).
+**`tools/wheel-rotation-watch.py --cmd` takes a test program name and numeric
+arguments** (`--cmd sine 50 2 0.3`) rather than a path resolved through
+`$PATH`.
 
 ## 0.30.0 - 2026-08-08
 
