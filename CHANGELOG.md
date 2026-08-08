@@ -31,28 +31,35 @@ slot names are worse, being whatever you called them. None of the three
 helps diagnose anything, so the report shows them as withheld rather than
 printing them, and the dmesg command it suggests filters the serial line out.
 
-**The kernel's own TrueForce stream now runs at 4 kHz too.** The effect tick
-was 2 ms emitting two texture samples, each held for two window slots, so the
-wheel received 1 kHz of texture in 2 kHz of slots while userspace had already
-moved to 4 kHz. It is now 1 ms with four distinct samples. That needed more
-than a constant: the samples are a quarter-millisecond apart and the effect
-evaluator counted whole milliseconds, so every sample in a tick came out
-identical. The evaluator takes a quarter-millisecond offset now, reaching the
-periodic phase only; envelopes and durations stay in whole milliseconds.
+**The kernel's own TrueForce stream now runs at 4 kHz too, and the effect
+tick that feeds it really runs at 1 kHz.** The tick asked for 2 ms and was
+believed to run at 500 Hz. It ran at 333 Hz. It was a jiffies timer that
+re-armed itself for the next jiffy, and the timer wheel's contract is that a
+timer never fires early, so an expiry set partway through the current jiffy
+was too early and slipped to the jiffy after. Every nominal interval came
+back one millisecond long, measured across four of them on an RS50: ask for
+1 ms and get 2, ask for 2 and get 3. A self-rearming jiffies timer bottoms
+out at two jiffies, which is 2 ms where `CONFIG_HZ` is 1000 and 8 ms where
+it is 250, so the rate it was asked for was never available to it.
 
-Doubling the tick also doubles the rate at which the steering force sum is
-computed. Measured against the previous build on an RS50, steering response
-is unchanged within 2% across three force levels, so this is fidelity gained
-rather than feel altered: game force-feedback rates reach 1000 Hz and this
-path could previously only sample them at 500.
+It is now an hrtimer, programmed against the clock hardware, and `CONFIG_HZ`
+does not enter into it. Measured on hardware: 1000.2 Hz, median period
+1.000 ms, 99th percentile 1.003 ms, no tick longer than 1.046 ms.
 
-**Texture played at the wrong speed on some kernels.** The effect timer is a
-jiffies timer, so its period is the nominal one rounded up to a whole jiffy:
-1 ms where CONFIG_HZ is 1000, but 4 ms where it is 250. The old code assumed
-its nominal 2 ms regardless and spaced samples accordingly, so on an HZ=250
-kernel it delivered 2 ms of audio every 4 ms and texture ran at half pitch.
-Spacing now follows the period the timer will actually deliver. Debian and
-Ubuntu builds are the ones this was wrong on.
+**That fixed texture pitch as a side effect, on every kernel rather than
+some.** The tick emits four texture samples and spaced them by the period it
+believed it had. Believing 1 ms while delivering 2 meant generating one
+millisecond of waveform for every two milliseconds of real time, so texture
+played an octave low everywhere, not only on the `CONFIG_HZ=250` kernels
+Debian and Ubuntu ship. If you have tuned a pitch setting by ear, expect it
+to want revisiting: the baseline it was tuned against was wrong.
+
+The tick also computes the steering force sum, so this triples the rate at
+which game force is sampled. Under a steering force and a TrueForce stream
+together the driver now puts 990 packets per second on the wire, every one
+accepted at its full 64 bytes with no submission errors. That is close to
+the ceiling by design: the wheel is full-speed USB with a `bInterval=1`
+interrupt OUT endpoint, which allows exactly one packet per millisecond.
 
 **The driver reports which HID++ features a wheel has**, one line at probe.
 Userspace cannot find this out: the driver parses HID++ replies and tells the
@@ -60,6 +67,19 @@ kernel it consumed them, so a hidraw reader sees nothing on any wheel the
 driver is talking to, and reads that silence as absence. `docs/FEATURE_MATRIX.md`
 records what both wheels here answered, including four features present on
 the hardware that this driver does not implement.
+
+The line says so when it is incomplete, on the line itself. A wheel that
+declines to answer one page costs a full send timeout, and the scan's whole
+allowance had been exactly one timeout, so a single unanswered page ended it
+and dropped every page after. On an RS50 that truncated four scans in five,
+reporting between 3 and 15 features where the complete answer was 17, and it
+said so only on a separate line that did not travel with the results when
+someone pasted them. Since a short list would otherwise read as a complete
+one, and concluding a wheel lacks a capability nobody asked about is exactly
+the mistake this project keeps having to avoid, the scan now gets room for a
+stalled page or two where it runs off probe context, and states on the
+results line how many pages it reached. Six consecutive scans after the
+change: all complete, 17 features, 0.75 seconds each.
 
 **Simulated TrueForce now streams at 4 kHz instead of 1 kHz.** Logitech's own
 figure for TRUEFORCE is a 1 ms processing interval, and both transports were

@@ -150,7 +150,7 @@ byte[60-63]: window[12]
   (Semantics from the TF4ALL project's Windows captures.)
 - Bytes 10 (`0x04`) and 11 (`0x0d`) are constants per capture.
 
-Packet cadence in libtrueforce is 250 Hz (4 new samples * 250 Hz = 1000 sample/s effective); the kernel driver's unified stream runs 500 Hz (2 kHz slot rate, 1 kHz unique content). Games vary: ACC captures show 250-500 pkt/s, AC EVO up to ~1000 pkt/s (4 kHz audio) per TF4ALL measurements - the wheel accepts the whole range. If userspace can't keep up the thread repeats the previous window (Windows does the same under input starvation) and the wheel gradually unwinds. If userspace overruns the ring, `logitf_stream_push_s16()` blocks on `ring_space`.
+Packet cadence in libtrueforce is 250 Hz (4 new samples * 250 Hz = 1000 sample/s effective); the kernel driver's unified stream runs 1000 Hz (4 kHz slot rate, 4 kHz unique content) since 0.30.0, having really run at 333 Hz before it. Games vary: ACC captures show 250-500 pkt/s, AC EVO up to ~1000 pkt/s (4 kHz audio) per TF4ALL measurements - the wheel accepts the whole range. If userspace can't keep up the thread repeats the previous window (Windows does the same under input starvation) and the wheel gradually unwinds. If userspace overruns the ring, `logitf_stream_push_s16()` blocks on `ring_space`.
 
 ## Type `0x0e`: Operating Range (root cause of the "90 degrees on game launch" bug)
 
