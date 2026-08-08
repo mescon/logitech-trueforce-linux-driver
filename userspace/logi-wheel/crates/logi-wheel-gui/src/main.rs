@@ -1016,18 +1016,21 @@ fn main() -> Result<(), slint::PlatformError> {
         return Ok(());
     }
 
-    // Must precede the first window, and must match the basename of the
-    // installed desktop entry (`logi-wheel-gui.desktop`). Without it a
-    // Wayland compositor has nothing to tie the window to that entry, so
-    // GNOME shows a generic placeholder in the taskbar and the switcher
-    // instead of the app's own icon. `StartupWMClass` in the desktop file
-    // only covers the X11 side of the same problem.
-    //
-    // Best-effort: a platform where this does not apply returns an error
-    // that says only that, and is not a reason to refuse to start.
-    let _ = slint::set_xdg_app_id("logi-wheel-gui");
-
     let app = App::new()?;
+
+    // Between App::new() and run(), and not before: the id must be set
+    // before the window is SHOWN, but the call needs a Slint platform to
+    // already be initialised, which App::new() is what does. Setting it any
+    // earlier fails with "no Slint platform was initialized" and the icon
+    // silently stays generic.
+    //
+    // The id must equal the basename of the installed desktop entry
+    // (`logi-wheel-gui.desktop`), because that is how a Wayland compositor
+    // ties a window to its entry and therefore to its icon. The desktop
+    // file's `StartupWMClass` covers only the X11 side of the same problem.
+    if let Err(e) = slint::set_xdg_app_id("logi-wheel-gui") {
+        eprintln!("logi-wheel-gui: could not set the app id ({e}); the taskbar icon may fall back to a generic one");
+    }
     // Which categories the connected wheel has content for: starts at
     // every category (`WheelModel::default()` is `Unknown`, treated as a
     // DD wheel, the same fallback used everywhere else) until the first
