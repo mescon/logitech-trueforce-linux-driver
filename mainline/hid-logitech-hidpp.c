@@ -11016,9 +11016,19 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 	 * described one slot while the wheel displayed another, and the app's
 	 * preview faithfully rendered the wrong one.
 	 */
-	if (effect >= 5 && effect <= 4 + HIDPP_DD_LIGHTSYNC_NUM_SLOTS) {
+	if (effect >= 6 && effect <= 4 + HIDPP_DD_LIGHTSYNC_NUM_SLOTS) {
 		u8 sel = (u8)(effect - 5);
 
+		/*
+		 * Deliberately 6..9 and not 5..9. Effect 5 means "custom mode,
+		 * using whatever wheel_led_slot currently says", which is how
+		 * userspace selects a slot: write wheel_led_slot, then write
+		 * effect 5. Deriving the slot from the effect value here too
+		 * would slam it back to 0 on every such write and make slots
+		 * 1-4 unselectable. A raw 6..9 readback is different: it
+		 * carries its slot in the value itself, and nothing else
+		 * updates led_active_slot for those.
+		 */
 		WRITE_ONCE(ff->led_active_slot, sel);
 		/*
 		 * Re-read the newly selected slot from the wheel rather than
