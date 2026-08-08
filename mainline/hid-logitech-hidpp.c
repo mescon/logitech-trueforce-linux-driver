@@ -7411,6 +7411,9 @@ static void hidpp_dd_ff_query_settings(struct hidpp_dd_ff_data *ff);
  * wheel-base Settings menu) or from hidpp_dd_set_mode after a successful
  * sysfs-driven switch.
  */
+static void hidpp_dd_lightsync_query_slot_configs(struct hidpp_device *hidpp,
+					      struct hidpp_dd_ff_data *ff);
+
 static void hidpp_dd_ff_settings_refresh_work(struct work_struct *work)
 {
 	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
@@ -7419,6 +7422,14 @@ static void hidpp_dd_ff_settings_refresh_work(struct work_struct *work)
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
 	hidpp_dd_ff_query_settings(ff);
+	/*
+	 * A profile change swaps the wheel's LED configuration too, so the
+	 * cached slot colours describe the old profile until they are read
+	 * again. Without this the strip shows one profile's colours while
+	 * sysfs reports the previous one's.
+	 */
+	if (ff->idx_rgb_config != HIDPP_DD_FEATURE_NOT_FOUND)
+		hidpp_dd_lightsync_query_slot_configs(ff->hidpp, ff);
 }
 
 /*
@@ -10994,6 +11005,31 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 		return ret;
 
 	ff->led_effect = effect;
+
+	/*
+	 * Effects 5 to 9 are the five custom slots, not five animations:
+	 * apply_slot selects one with SET_EFFECT param 0x05 + slot. Only
+	 * effect 5 used to be recognised as custom, so selecting 6 through 9
+	 * switched the strip to slot 1 through 4 while led_active_slot stayed
+	 * at whatever it was. Everything downstream then reported the wrong
+	 * slot: wheel_led_colors shows led_slots[led_active_slot], so sysfs
+	 * described one slot while the wheel displayed another, and the app's
+	 * preview faithfully rendered the wrong one.
+	 */
+	if (effect >= 5 && effect <= 4 + HIDPP_DD_LIGHTSYNC_NUM_SLOTS) {
+		u8 sel = (u8)(effect - 5);
+
+		WRITE_ONCE(ff->led_active_slot, sel);
+		/*
+		 * Re-read the newly selected slot from the wheel rather than
+		 * trusting the probe-time sweep. Selecting an effect in 6..9
+		 * pushes nothing, so the cache would otherwise keep describing
+		 * whichever slot was cached when the driver loaded, and every
+		 * reader of wheel_led_colors would report colours the strip is
+		 * not showing.
+		 */
+		hidpp_dd_lightsync_get_slot_config(hidpp, ff, sel);
+	}
 
 	/*
 	 * Transitioning to custom mode (effect 5): push the active slot's
