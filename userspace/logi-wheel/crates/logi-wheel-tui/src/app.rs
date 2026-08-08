@@ -367,6 +367,11 @@ pub struct App<S: SysfsIo> {
     /// red header note, Setup and the Info monitor keep working, and `r`
     /// queues a re-discovery. Refreshed by `adopt_device`.
     pub no_wheel: bool,
+    /// Why there is no wheel, and what would fix it. Empty until the
+    /// no-wheel state is actually reached, and only ever filled by the
+    /// real-run loop in `main`: the checks read the real `/sys`, and this
+    /// type is also driven by a fake sysfs under test.
+    pub diagnosis: Vec<logi_wheel_core::diagnose::Finding>,
     /// A re-discovery queued by `r` in the no-wheel state; the main loop
     /// takes it (`take_retry_request`), runs `Device::discover()` (which
     /// only exists for the real sysfs type) and hands any find back via
@@ -478,6 +483,7 @@ impl<S: SysfsIo> App<S> {
             onboard: None,
             pending_shim: None,
             no_wheel: false,
+            diagnosis: Vec::new(),
             retry_requested: false,
             driver_version_path: PathBuf::from(logi_wheel_core::driver::MODULE_VERSION_PATH),
             g923_firmware: None,
@@ -513,6 +519,7 @@ impl<S: SysfsIo> App<S> {
     pub fn adopt_device(&mut self, device: Device<S>) {
         self.device = device;
         self.no_wheel = !wheel_present(&self.device);
+        self.diagnosis.clear();
         self.status = if self.no_wheel {
             "no wheel found (r to retry)".to_string()
         } else {

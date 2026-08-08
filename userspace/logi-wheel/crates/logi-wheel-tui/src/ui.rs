@@ -322,6 +322,61 @@ fn draw_scrolled(
     }
 }
 
+/// The no-wheel empty state: the first thing actually wrong, why it stops
+/// the wheel working, and the one command that fixes it, then the full list
+/// of checks.
+///
+/// Severity is spelled out (`FAILED`, `WARN`, `ok`) rather than carried by
+/// colour alone, so the list reads the same to anyone who cannot separate
+/// the two hues, and in a terminal with colour turned off.
+///
+/// Falls back to the old one-liner when no diagnosis has been made, which is
+/// the case under test: the checks read the real `/sys`, so they are only
+/// ever run by the real loop in `main`.
+fn no_wheel_lines<S: SysfsIo>(app: &App<S>) -> Vec<Line<'static>> {
+    use logi_wheel_core::diagnose::{copyable, Severity};
+
+    let mut lines = vec![Line::from("")];
+    let Some(problem) = app.diagnosis.iter().find(|f| f.severity != Severity::Ok) else {
+        lines.push(Line::from(Span::styled(
+            "(no wheel connected - r to retry)",
+            Style::default().fg(Color::Red),
+        )));
+        return lines;
+    };
+
+    lines.push(Line::from(Span::styled(
+        problem.title.clone(),
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(problem.detail.clone()));
+    if let Some(fix) = &problem.fix {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Run this to fix it:"));
+        lines.push(Line::from(Span::styled(
+            format!("  {}", copyable(fix)),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from("Checks:"));
+    for finding in &app.diagnosis {
+        let (mark, style) = match finding.severity {
+            Severity::Ok => ("ok    ", Style::default().fg(Color::Green)),
+            Severity::Warning => ("WARN  ", Style::default().fg(Color::Yellow)),
+            Severity::Blocking => ("FAILED", Style::default().fg(Color::Red)),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {mark} "), style),
+            Span::raw(finding.title.clone()),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from("r retries discovery."));
+    lines
+}
+
 /// Render the selected category's settings rows (the main body of every
 /// device category; on the Info page this is the top block, above the
 /// live input monitor). Renders into a `Buffer` rather than the `Frame`,
@@ -335,14 +390,7 @@ fn draw_settings<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
     // connected: the app should open showing what was detected, or that
     // nothing was, not hide that behind a generic placeholder.
     if app.no_wheel && app.category() != Category::Info {
-        let lines = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "(no wheel connected - r to retry)",
-                Style::default().fg(Color::Red),
-            )),
-        ];
-        Paragraph::new(lines)
+        Paragraph::new(no_wheel_lines(app))
             .wrap(Wrap { trim: false })
             .block(pane_block("Settings", app.focus == Focus::Content))
             .render(area, buf);
@@ -1693,6 +1741,55 @@ mod tests {
         let serial_pos = text.find("Serial").expect("Serial row present");
         let app_pos = text.find("App").expect("App row present");
         assert!(wheel_pos < serial_pos && wheel_pos < app_pos, "Wheel must lead the block:\n{text}");
+    }
+
+    #[test]
+    fn the_no_wheel_page_explains_the_problem_and_names_the_fix() {
+        use logi_wheel_core::diagnose::{Fix, Severity};
+        let mut a = App::new(logi_wheel_core::Device::with_io(FakeSysfs::new()));
+        assert!(a.no_wheel);
+        // Off the Info page, whose identity block has its own empty state.
+        a.set_cat(Category::ALL.iter().position(|c| *c == Category::Steering).unwrap());
+        a.diagnosis = vec![
+            logi_wheel_core::diagnose::Finding {
+                severity: Severity::Ok,
+                title: "Wheel detected".to_string(),
+                detail: "Attached over USB.".to_string(),
+                fix: None,
+            },
+            logi_wheel_core::diagnose::Finding {
+                severity: Severity::Blocking,
+                title: "The driver is not running".to_string(),
+                detail: "The driver is installed but not loaded.".to_string(),
+                fix: Some(Fix { command: "modprobe hid-logitech-dd".into(), needs_root: true }),
+            },
+        ];
+
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| draw(f, &a)).unwrap();
+        let text = screen(&term);
+
+        assert!(text.contains("The driver is not running"), "{text}");
+        assert!(text.contains("not loaded"), "{text}");
+        // The fix is shown ready to run, privilege included.
+        assert!(text.contains("sudo modprobe hid-logitech-dd"), "{text}");
+        // Severity is readable without colour: the marks carry it.
+        assert!(text.contains("FAILED"), "{text}");
+        assert!(text.contains("ok "), "{text}");
+        // The old one-liner is gone once there is something better to say.
+        assert!(!text.contains("(no wheel connected"), "{text}");
+    }
+
+    #[test]
+    fn the_no_wheel_page_falls_back_when_nothing_was_diagnosed() {
+        // The checks read the real /sys, so they never run under test. The
+        // empty state must still say something.
+        let mut a = App::new(logi_wheel_core::Device::with_io(FakeSysfs::new()));
+        a.set_cat(Category::ALL.iter().position(|c| *c == Category::Steering).unwrap());
+        assert!(a.diagnosis.is_empty());
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| draw(f, &a)).unwrap();
+        assert!(screen(&term).contains("no wheel connected"));
     }
 
     #[test]

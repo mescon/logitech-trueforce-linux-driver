@@ -113,6 +113,13 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
     // teardown below always runs and never leaves the terminal in raw mode.
     let mut last_drift_check = Instant::now();
     let res: Result<(), Box<dyn std::error::Error>> = loop {
+        // Worked out here rather than in `App`, because the checks read the
+        // real /sys and `App` is also driven by a fake one under test.
+        // Cleared by `adopt_device`, so a wheel that goes away again gets a
+        // fresh answer rather than the previous one.
+        if app.no_wheel && app.diagnosis.is_empty() {
+            app.diagnosis = logi_wheel_core::diagnose::diagnose();
+        }
         if let Err(e) = term.draw(|f| ui::draw(f, &app)) {
             break Err(e.into());
         }
