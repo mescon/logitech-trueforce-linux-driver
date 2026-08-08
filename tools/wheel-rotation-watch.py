@@ -212,7 +212,16 @@ def main():
         env.setdefault("LOGI_TF_SIM_WHEEL", "dd" if pid != "c266" else "auto")
         if not os.access(SIM, os.X_OK):
             raise SystemExit(f"{SIM} is not built; run: cargo build --release")
-        cmd = [SIM, "--sweep", str(args.sweep)]
+        # Converted again here, at the point the argument vector is built,
+        # rather than trusting the parser's `type=`. It reads as redundant
+        # and is not: the guarantee that this entry is a number belongs
+        # next to the line that builds the command, where anyone changing
+        # that line can see it, instead of in an argparse keyword three
+        # hundred lines away that a later edit could quietly drop.
+        pitch = int(args.sweep)
+        if not 10 <= pitch <= 200:
+            raise SystemExit(f"--sweep must be 10-200, got {pitch}")
+        cmd = [SIM, "--sweep", str(pitch)]
     else:
         cmd = resolved_command(args.cmd)
 
