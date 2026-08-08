@@ -370,14 +370,22 @@ pub fn probe_features(if0_dir: &Path) -> Option<Vec<(u16, &'static str, Option<u
 /// rev-light code was written from.
 const REV_SW_ID: u8 = 0x0d;
 
-/// Build a HID++ long report (20 bytes) the same way [`short_report`]
-/// builds a short one.
-fn long_report(device_index: u8, feature_index: u8, function: u8, params: &[u8]) -> [u8; 20] {
+/// One long 0x807A send in the level-based dialect.
+///
+/// Takes `function` as a plain function NUMBER and shifts it, exactly like
+/// [`rev_short`], because those two are the pair this dialect is written in
+/// and a helper that silently disagreed with its sibling produced a
+/// malformed command: fn6 was sent as `6 | 0x0d` = `0x0f` instead of
+/// `(6 << 4) | 0x0d` = `0x6d`, so the level command never reached the wheel
+/// and `--led-probe` reported "sent" while the strip stayed dark. The
+/// kernel's own constants are pre-shifted for the same reason
+/// (`HIDPP_DD_LIGHTSYNC_FN_SET_CONFIG` is `0x60`).
+fn rev_long(device_index: u8, feature_index: u8, function: u8, params: &[u8]) -> [u8; 20] {
     let mut r = [0u8; 20];
     r[0] = REPORT_ID_LONG;
     r[1] = device_index;
     r[2] = feature_index;
-    r[3] = function | REV_SW_ID;
+    r[3] = (function << 4) | REV_SW_ID;
     for (i, p) in params.iter().take(16).enumerate() {
         r[4 + i] = *p;
     }
@@ -410,7 +418,7 @@ pub fn rev_level_via_lightsync<T: HidppIo>(io: &mut T, idx: u8, level: u8) -> io
         std::thread::sleep(std::time::Duration::from_millis(4));
     }
     rev_short(io, idx, 2, 0)?;
-    let long = long_report(0xff, idx, 6, &[0x00, 0x01, 0x00, 0x0a, 0x00, level.min(10)]);
+    let long = rev_long(0xff, idx, 6, &[0x00, 0x01, 0x00, 0x0a, 0x00, level.min(10)]);
     io.write_report(&long)
 }
 
@@ -477,6 +485,27 @@ mod tests {
         r.extend_from_slice(params);
         r.resize(20, 0);
         r
+    }
+
+    #[test]
+    fn the_rev_dialect_shifts_its_function_into_the_high_nibble() {
+        // The kernel sends fn6 as HIDPP_DD_LIGHTSYNC_FN_SET_CONFIG (0x60)
+        // or'd with the software id: byte 3 is 0x6d, not 0x0f. It was 0x0f
+        // for a while, because this borrowed a helper whose `function`
+        // argument was already shifted, and the level command silently
+        // never reached the wheel: --led-probe reported "sent" and the
+        // strip stayed dark, which is the exact false negative the probe
+        // exists to rule out (issue #27).
+        let r = rev_long(0xff, 0x11, 6, &[0x00, 0x01, 0x00, 0x0a, 0x00, 5]);
+        assert_eq!(r[0], REPORT_ID_LONG);
+        assert_eq!(r[1], 0xff);
+        assert_eq!(r[2], 0x11);
+        assert_eq!(r[3], 0x6d, "fn6 in the high nibble, sw id 0x0d in the low");
+        assert_eq!(&r[4..10], &[0x00, 0x01, 0x00, 0x0a, 0x00, 5]);
+        // And the short helper it must agree with.
+        let mut io = MockIo::default();
+        rev_short(&mut io, 0x11, 2, 0).unwrap();
+        assert_eq!(io.sent[0][3], 0x2d, "fn2 encodes the same way");
     }
 
     #[test]

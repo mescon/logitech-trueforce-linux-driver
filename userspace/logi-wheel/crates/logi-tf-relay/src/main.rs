@@ -180,6 +180,10 @@ fn run_stream(
 
     eprintln!("logi-tf-relay: streaming {section:?} to 127.0.0.1:{port} (ctrl-c to stop)");
     let mut warned = false;
+    // Owned by the session rather than being process-global: it is state
+    // about this run of this game, and a global made the tests
+    // order-dependent as well as being wrong across sessions.
+    let mut airborne_gate = assettocorsa::AirborneGate::default();
     loop {
         match win::read_section(section, read_len) {
             Ok(bytes) => {
@@ -197,7 +201,7 @@ fn run_stream(
                     id @ (assettocorsa::ID | assettocorsa::ID_ACC) => {
                         let id =
                             if id == assettocorsa::ID_ACC { assettocorsa::ID_ACC } else { assettocorsa::ID };
-                        aux_bytes.and_then(|s| assettocorsa::decode(&bytes, &s, id))
+                        aux_bytes.and_then(|s| assettocorsa::decode(&bytes, &s, id, &mut airborne_gate))
                     }
                     id @ (rfactor2::ID_RF2 | rfactor2::ID_LMU) => {
                         // The two share a decoder but not a settings

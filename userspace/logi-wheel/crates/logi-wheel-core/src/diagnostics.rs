@@ -15,6 +15,14 @@
 /// `wheel_profile_names` is worse, being whatever the owner called their
 /// profiles. Neither helps diagnose anything, so neither is collected, and
 /// the dmesg command suggested at the end filters the serial line out.
+/// Settings whose VALUE is the owner's, not the wheel's. Their presence is
+/// worth reporting; their contents are not.
+///
+/// Add to this rather than removing from it: a field wrongly withheld costs
+/// one round trip in a bug report, a field wrongly published cannot be taken
+/// back.
+pub const WITHHELD: &[&str] = &["wheel_serial", "wheel_profile_names", "wheel_led_slot_name"];
+
 pub fn report() -> String {
     use std::fmt::Write as _;
     use std::fs;
@@ -23,10 +31,6 @@ pub fn report() -> String {
     fn slurp(p: impl AsRef<std::path::Path>) -> Option<String> {
         fs::read_to_string(p).ok().map(|s| s.trim().to_string())
     }
-
-    // Settings whose VALUE is the owner's, not the wheel's. Their presence
-    // is worth reporting; their contents are not.
-    const WITHHELD: &[&str] = &["wheel_serial", "wheel_profile_names", "wheel_led_slot_name"];
 
     let mut out = String::new();
     let _ = writeln!(out, "## logitech-trueforce diagnostic report");
@@ -74,7 +78,14 @@ pub fn report() -> String {
                 }
                 if let Some(v) = slurp(dir.join(&a)) {
                     let v = v.replace('\n', " | ");
-                    let v = if v.len() > 70 { format!("{}...", &v[..70]) } else { v };
+                    // char_indices, not a byte slice: a sysfs value with a
+                    // multi-byte character straddling byte 70 would panic,
+                    // and the GUI calls this from a spawned thread where a
+                    // panic just makes the Collect button never respond.
+                    let v = match v.char_indices().nth(70) {
+                        Some((cut, _)) => format!("{}...", &v[..cut]),
+                        None => v,
+                    };
                     let _ = writeln!(out, "  {a:<26} {v}");
                 }
             }
@@ -159,6 +170,22 @@ mod tests {
         let r = report();
         for section in ["diagnostic report", "### wheels", "### udev rules installed"] {
             assert!(r.contains(section), "missing {section} in:\n{r}");
+        }
+    }
+
+    /// The withheld list must contain what it claims to.
+    ///
+    /// A version of this guard lived in the TUI and asserted that the TUI's
+    /// source contained the literals, three lines below where the test
+    /// itself declared them: it passed no matter what this module did.
+    /// Reading the real constant is the whole point.
+    #[test]
+    fn the_withheld_list_covers_every_identifying_setting() {
+        for field in ["wheel_serial", "wheel_profile_names", "wheel_led_slot_name"] {
+            assert!(
+                WITHHELD.contains(&field),
+                "{field} identifies the owner and must stay withheld",
+            );
         }
     }
 

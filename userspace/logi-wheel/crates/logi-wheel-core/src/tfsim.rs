@@ -32,7 +32,10 @@ pub const FILE_HEADER: &str = "# logi-tf-sim configuration";
 pub const FILE_NAME: &str = "tf-sim.conf";
 
 /// Default master intensity (percent); mirrors tf-sim's default.
-pub const DEFAULT_INTENSITY: u8 = 60;
+/// Master intensity, percent. 30, matching the daemon; see its
+/// `DEFAULT_INTENSITY` for why. Pinned against it by tf-sim's
+/// `frontend_compat` test, because this pair has drifted before.
+pub const DEFAULT_INTENSITY: u8 = 30;
 /// Default per-game intensity (percent), relative to the master.
 pub const DEFAULT_GAME_INTENSITY: u8 = 100;
 /// Default pitch scale (percent of the crank rate).

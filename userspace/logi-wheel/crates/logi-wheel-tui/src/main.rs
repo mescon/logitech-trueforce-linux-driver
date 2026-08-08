@@ -287,27 +287,3 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod report_tests {
-    /// The withheld list is the whole point of the report existing rather
-    /// than telling people to paste dmesg, so it is worth a test that says
-    /// so. Each entry is a value that identifies the owner rather than the
-    /// hardware: the wheel's serial number, and the names they gave their
-    /// profiles and lighting slots.
-    ///
-    /// Add to it rather than removing: a field wrongly withheld costs a
-    /// round trip in a bug report, a field wrongly published cannot be
-    /// taken back.
-    #[test]
-    fn the_identifying_settings_stay_withheld() {
-        const WITHHELD: &[&str] = &["wheel_serial", "wheel_profile_names", "wheel_led_slot_name"];
-        let src = include_str!("main.rs");
-        for field in WITHHELD {
-            assert!(
-                src.contains(&format!("\"{field}\"")),
-                "{field} dropped out of the report's withheld list",
-            );
-        }
-    }
-}

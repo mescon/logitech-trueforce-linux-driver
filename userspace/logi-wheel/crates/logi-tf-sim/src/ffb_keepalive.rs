@@ -31,11 +31,25 @@ use std::path::Path;
 
 use logi_wheel_core::fftest::{self, FfEffect, FfUnion};
 
-/// Product ids of the direct-drive wheels this stabiliser is for: RS50 and
-/// G PRO. The G923 reaches the wheel by a different path and does not need
-/// one (measured: 17 degrees of travel against the RS50's 1500).
-const DD_PRODUCT_IDS: [&str; 2] = ["c276", "c272"];
+/// The direct-drive wheels this stabiliser is for, taken from
+/// [`logi_wheel_core::device::DD_PIDS`] rather than restated.
+///
+/// It was restated once, as two ids, and left out the G PRO PlayStation
+/// edition (`c268`). On that wheel the keepalive silently never opened,
+/// which since the self-test learned to refuse without one meant the app's
+/// "Test simulated TrueForce" button stopped working on a fully supported
+/// wheel, and the daemon streamed to it without the stabiliser issue #57
+/// exists for.
+///
+/// The G923 reaches the wheel by a different path and needs no keepalive
+/// (measured: 17 degrees of travel against the RS50's 1500).
 const LOGITECH_VENDOR: &str = "046d";
+
+fn is_dd_product(hex: &str) -> bool {
+    u16::from_str_radix(hex, 16)
+        .map(|pid| logi_wheel_core::device::DD_PIDS.contains(&pid))
+        .unwrap_or(false)
+}
 
 /// `_IOW('E', nr, T)` as `linux/ioctl.h` encodes it on x86_64.
 const fn iow(nr: u8, size: usize) -> libc::c_ulong {
@@ -80,8 +94,14 @@ fn find_dd_event_node(sysfs_input: &Path) -> Option<String> {
         if read("vendor").as_deref() != Some(LOGITECH_VENDOR) {
             continue;
         }
-        let product = read("product")?;
-        if DD_PRODUCT_IDS.contains(&product.as_str()) {
+        // `continue`, not `?`: an entry whose product cannot be read (a node
+        // still appearing during hotplug, or one this user cannot read) must
+        // skip that entry rather than abandon the search and leave a
+        // direct-drive wheel with no stabiliser.
+        let Some(product) = read("product") else {
+            continue;
+        };
+        if is_dd_product(&product) {
             return Some(format!("/dev/input/{}", entry.file_name().to_string_lossy()));
         }
     }
@@ -180,6 +200,22 @@ mod tests {
         assert!(e.u.0.iter().all(|&b| b == 0), "envelope stays zeroed too");
     }
 
+    /// A directory nothing else will collide with. The fixed names used
+    /// before were shared across users and concurrent runs, and each test
+    /// began by deleting its own path, so two builds on one host raced.
+    fn unique_tmp(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "ffbka-{}-{}-{}",
+            tag,
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
     fn fake_input(root: &Path, event: &str, vendor: &str, product: &str) {
         let dir = root.join(event).join("device/id");
         fs::create_dir_all(&dir).unwrap();
@@ -192,7 +228,7 @@ mod tests {
         // The exact rig this fix first failed on: a G923 on a lower event
         // number than the RS50. Picking by name order opens the session on
         // the G923 and the RS50 keeps thrashing.
-        let tmp = std::env::temp_dir().join("ffbka_two_wheels");
+        let tmp = unique_tmp("two_wheels");
         let _ = fs::remove_dir_all(&tmp);
         fake_input(&tmp, "event3", "046d", "c266");   // G923
         fake_input(&tmp, "event4", "046d", "c276");   // RS50
@@ -200,9 +236,29 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 
+    /// Every wheel core calls direct drive must be found, not a subset.
+    ///
+    /// The first version of this file restated the list as two ids and left
+    /// out the G PRO PlayStation edition, so that wheel lost its stabiliser
+    /// and, once the self-test learned to refuse without one, its test
+    /// button too.
+    #[test]
+    fn every_direct_drive_wheel_is_recognised() {
+        for pid in logi_wheel_core::device::DD_PIDS {
+            let tmp = unique_tmp(&format!("pid{pid:04x}"));
+            fake_input(&tmp, "event7", "046d", &format!("{pid:04x}"));
+            assert_eq!(
+                find_dd_event_node(&tmp).as_deref(),
+                Some("/dev/input/event7"),
+                "DD_PIDS lists {pid:04x} and the keepalive must find it",
+            );
+            let _ = fs::remove_dir_all(&tmp);
+        }
+    }
+
     #[test]
     fn a_rig_with_no_direct_drive_wheel_selects_nothing() {
-        let tmp = std::env::temp_dir().join("ffbka_g923_only");
+        let tmp = unique_tmp("g923_only");
         let _ = fs::remove_dir_all(&tmp);
         fake_input(&tmp, "event3", "046d", "c266");
         fake_input(&tmp, "event9", "045e", "c276");   // right pid, wrong vendor

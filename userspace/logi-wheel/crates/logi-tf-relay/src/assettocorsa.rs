@@ -178,7 +178,12 @@ fn static_layout_looks_right(buf: &[u8]) -> bool {
 /// against. Returns `None` for a short buffer, a static block whose layout
 /// fails its guard, or a session that is not running (Assetto Corsa leaves
 /// the engine fields zeroed in menus).
-pub fn decode(physics: &[u8], statics: &[u8], game_id: &'static str) -> Option<RelayTelemetry> {
+pub fn decode(
+    physics: &[u8],
+    statics: &[u8],
+    game_id: &'static str,
+    gate: &mut AirborneGate,
+) -> Option<RelayTelemetry> {
     if physics.len() < MIN_PHYSICS_LEN || statics.len() < MIN_STATIC_LEN {
         return None;
     }
@@ -202,7 +207,7 @@ pub fn decode(physics: &[u8], statics: &[u8], game_id: &'static str) -> Option<R
         max_rpm,
         throttle,
         gear,
-        airborne: airborne(physics),
+        airborne: gate.airborne(physics),
     })
 }
 
@@ -214,16 +219,41 @@ pub fn decode(physics: &[u8], statics: &[u8], game_id: &'static str) -> Option<R
 /// never reporting it at all: the airborne layer ducks the road surface, so
 /// a false positive silences haptics for the whole session.
 ///
-/// So the reading is only trusted once the field has been seen carrying
-/// load. Any car that is driving has weight on its wheels within a moment,
-/// and a field that is never populated never passes that gate, so an
-/// unpopulated field yields a permanent `false` rather than a permanent
-/// `true`. The state is per-process, which suits a relay that runs for one
-/// session alongside one game.
-fn airborne(physics: &[u8]) -> bool {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static SEEN_LOAD: AtomicBool = AtomicBool::new(false);
+/// So the reading is only trusted while the field has recently carried
+/// load. A field that is never populated never opens the gate at all, so
+/// the unpopulated case yields a permanent `false` rather than a permanent
+/// `true`.
+///
+/// The gate DECAYS rather than latching. A latch was wrong twice over: a
+/// session that loads its wheels once and then reads all-zero for any other
+/// reason (a menu, a replay, a stale mapping) would report airborne for the
+/// rest of the session, ducking the road layer permanently; and a
+/// process-global latch made the tests order-dependent, since cargo runs
+/// them as threads in one process. State lives in a caller-held
+/// [`AirborneGate`] instead, so a relay owns one and a test owns its own.
+#[derive(Debug, Default)]
+pub struct AirborneGate {
+    /// Physics blocks seen with load since the last unloaded one. The gate
+    /// is open while this is non-zero and closes after
+    /// `GATE_DECAY_SAMPLES` consecutive unloaded blocks, which at the
+    /// relay's ~60 Hz is about a second of genuine flight before it stops
+    /// being believed.
+    loaded_credit: u16,
+}
 
+/// How many consecutive unloaded blocks may still be called airborne.
+///
+/// About a second at the relay's poll rate: longer than any real jump and
+/// far shorter than a menu.
+const GATE_DECAY_SAMPLES: u16 = 60;
+
+impl AirborneGate {
+    fn airborne(&mut self, physics: &[u8]) -> bool {
+        airborne_with(self, physics)
+    }
+}
+
+fn airborne_with(gate: &mut AirborneGate, physics: &[u8]) -> bool {
     if physics.len() < MIN_PHYSICS_AIRBORNE_LEN {
         return false;
     }
@@ -236,11 +266,17 @@ fn airborne(physics: &[u8]) -> bool {
         }
     }
     if loaded > 0 {
-        SEEN_LOAD.store(true, Ordering::Relaxed);
+        gate.loaded_credit = GATE_DECAY_SAMPLES;
         return false;
     }
-    // Nothing loaded. Only airborne if this field has ever meant anything.
-    SEEN_LOAD.load(Ordering::Relaxed)
+    // Nothing loaded. Airborne only while the field has recently proved it
+    // means something; the credit runs down so a permanently-zero field, or
+    // a long stretch of zeros for any other reason, stops being believed.
+    if gate.loaded_credit == 0 {
+        return false;
+    }
+    gate.loaded_credit -= 1;
+    true
 }
 
 /// Read throttle and gear from the physics head, which every Assetto Corsa
@@ -403,7 +439,7 @@ mod tests {
     #[test]
     fn evo_and_assetto_corsa_translate_gears_identically() {
         for g in 0..=8 {
-            let ac = decode(&physics(0.5, g, 6000), &statics(7500), ID).unwrap();
+            let ac = decode(&physics(0.5, g, 6000), &statics(7500), ID, &mut AirborneGate::default()).unwrap();
             let evo = decode_evo(&physics_evo(0.5, g, 6000, 7500)).unwrap();
             assert_eq!(ac.gear, evo.gear, "gear {g} must mean the same in both");
         }
@@ -417,8 +453,8 @@ mod tests {
     fn competizione_decodes_identically_and_differs_only_in_id() {
         let p = physics(0.75, 3, 6200);
         let s = statics(7500);
-        let ac = decode(&p, &s, ID).unwrap();
-        let acc = decode(&p, &s, ID_ACC).unwrap();
+        let ac = decode(&p, &s, ID, &mut AirborneGate::default()).unwrap();
+        let acc = decode(&p, &s, ID_ACC, &mut AirborneGate::default()).unwrap();
         assert_eq!(acc.game_id, "acc");
         assert_ne!(ac.game_id, acc.game_id, "separate games, separate switches");
         assert_eq!((ac.rpm, ac.max_rpm, ac.gear), (acc.rpm, acc.max_rpm, acc.gear));
@@ -427,7 +463,7 @@ mod tests {
 
     #[test]
     fn decodes_a_running_session() {
-        let s = decode(&physics(0.75, 3, 6200), &statics(7500), ID).expect("valid buffers");
+        let s = decode(&physics(0.75, 3, 6200), &statics(7500), ID, &mut AirborneGate::default()).expect("valid buffers");
         assert_eq!(s.game_id, ID);
         assert_eq!(s.rpm, 6200.0);
         assert_eq!(s.max_rpm, 7500.0);
@@ -440,7 +476,7 @@ mod tests {
     fn gears_shift_down_by_one_from_assetto_corsas_numbering() {
         let cases = [(0, -1), (1, 0), (2, 1), (3, 2), (8, 7)];
         for (ac, expected) in cases {
-            let s = decode(&physics(0.5, ac, 6000), &statics(7500), ID).unwrap();
+            let s = decode(&physics(0.5, ac, 6000), &statics(7500), ID, &mut AirborneGate::default()).unwrap();
             assert_eq!(s.gear, expected, "AC gear {ac} should relay as {expected}");
         }
     }
@@ -453,42 +489,42 @@ mod tests {
         // UTF-32-shaped: '1', 0, 0, 0. The second 16-bit unit reads zero.
         wrong[2] = 0;
         wrong[3] = 0;
-        assert!(decode(&physics(0.5, 3, 6000), &wrong, ID).is_none());
+        assert!(decode(&physics(0.5, 3, 6000), &wrong, ID, &mut AirborneGate::default()).is_none());
 
         let mut zeroed = statics(7500);
         zeroed[0..4].fill(0);
-        assert!(decode(&physics(0.5, 3, 6000), &zeroed, ID).is_none(), "unwritten block");
+        assert!(decode(&physics(0.5, 3, 6000), &zeroed, ID, &mut AirborneGate::default()).is_none(), "unwritten block");
     }
 
     #[test]
     fn short_buffers_are_refused_rather_than_read_past() {
         let p = physics(0.5, 3, 6000);
         let s = statics(7500);
-        assert!(decode(&p[..MIN_PHYSICS_LEN - 1], &s, ID).is_none());
-        assert!(decode(&p, &s[..MIN_STATIC_LEN - 1], ID).is_none());
-        assert!(decode(&[], &[], ID).is_none());
+        assert!(decode(&p[..MIN_PHYSICS_LEN - 1], &s, ID, &mut AirborneGate::default()).is_none());
+        assert!(decode(&p, &s[..MIN_STATIC_LEN - 1], ID, &mut AirborneGate::default()).is_none());
+        assert!(decode(&[], &[], ID, &mut AirborneGate::default()).is_none());
     }
 
     /// Menus leave the engine fields zeroed, and a car with no redline
     /// gives an engine note nothing to scale against.
     #[test]
     fn a_session_that_is_not_running_yields_nothing() {
-        assert!(decode(&physics(0.0, 0, 0), &statics(0), ID).is_none(), "no redline");
-        assert!(decode(&physics(0.0, 0, 0), &statics(7500), ID).is_some(), "idle is still a session");
+        assert!(decode(&physics(0.0, 0, 0), &statics(0), ID, &mut AirborneGate::default()).is_none(), "no redline");
+        assert!(decode(&physics(0.0, 0, 0), &statics(7500), ID, &mut AirborneGate::default()).is_some(), "idle is still a session");
     }
 
     #[test]
     fn implausible_engine_values_are_refused() {
-        assert!(decode(&physics(0.5, 3, -100), &statics(7500), ID).is_none());
-        assert!(decode(&physics(0.5, 3, 90_000), &statics(7500), ID).is_none());
-        assert!(decode(&physics(0.5, 3, 6000), &statics(90_000), ID).is_none());
+        assert!(decode(&physics(0.5, 3, -100), &statics(7500), ID, &mut AirborneGate::default()).is_none());
+        assert!(decode(&physics(0.5, 3, 90_000), &statics(7500), ID, &mut AirborneGate::default()).is_none());
+        assert!(decode(&physics(0.5, 3, 6000), &statics(90_000), ID, &mut AirborneGate::default()).is_none());
     }
 
     #[test]
     fn a_non_finite_or_out_of_range_throttle_is_tamed() {
-        assert_eq!(decode(&physics(f32::NAN, 3, 6000), &statics(7500), ID).unwrap().throttle, 0.0);
-        assert_eq!(decode(&physics(5.0, 3, 6000), &statics(7500), ID).unwrap().throttle, 1.0);
-        assert_eq!(decode(&physics(-5.0, 3, 6000), &statics(7500), ID).unwrap().throttle, 0.0);
+        assert_eq!(decode(&physics(f32::NAN, 3, 6000), &statics(7500), ID, &mut AirborneGate::default()).unwrap().throttle, 0.0);
+        assert_eq!(decode(&physics(5.0, 3, 6000), &statics(7500), ID, &mut AirborneGate::default()).unwrap().throttle, 1.0);
+        assert_eq!(decode(&physics(-5.0, 3, 6000), &statics(7500), ID, &mut AirborneGate::default()).unwrap().throttle, 0.0);
     }
 }
 
@@ -514,9 +550,10 @@ mod airborne_tests {
     /// and silencing haptics. Zeros alone must never be enough.
     #[test]
     fn a_field_that_never_carries_load_never_reports_airborne() {
-        for _ in 0..50 {
+        let mut gate = AirborneGate::default();
+        for _ in 0..500 {
             assert!(
-                !airborne(&physics_with_loads([0.0; 4])),
+                !gate.airborne(&physics_with_loads([0.0; 4])),
                 "zeros alone must not be read as flight",
             );
         }
@@ -524,24 +561,49 @@ mod airborne_tests {
 
     #[test]
     fn a_short_block_is_not_airborne() {
-        assert!(!airborne(&[0u8; MIN_PHYSICS_AIRBORNE_LEN - 1]));
+        let mut gate = AirborneGate::default();
+        assert!(!gate.airborne(&[0u8; MIN_PHYSICS_AIRBORNE_LEN - 1]));
     }
 
     #[test]
     fn nonsense_loads_are_not_airborne() {
-        assert!(!airborne(&physics_with_loads([f32::NAN, 0.0, 0.0, 0.0])));
+        let mut gate = AirborneGate::default();
+        assert!(!gate.airborne(&physics_with_loads([f32::NAN, 0.0, 0.0, 0.0])));
     }
 
-    /// Ordering matters here and the test states it: load first, then flight.
-    /// Run as one test because the gate is process-wide state and separate
-    /// tests would race each other for it.
+    /// Load first, then flight. Each test owns its gate now, so this no
+    /// longer has to be one test to avoid racing another for global state.
     #[test]
     fn flight_is_reported_only_after_the_field_has_proved_itself() {
+        let mut gate = AirborneGate::default();
         // On the ground: loaded, so not airborne, and the gate opens.
-        assert!(!airborne(&physics_with_loads([3000.0, 3100.0, 2900.0, 3050.0])));
+        assert!(!gate.airborne(&physics_with_loads([3000.0, 3100.0, 2900.0, 3050.0])));
         // Now all four unloaded, with the field proven: airborne.
-        assert!(airborne(&physics_with_loads([0.0; 4])));
+        assert!(gate.airborne(&physics_with_loads([0.0; 4])));
         // A tyre barely touching is not flight.
-        assert!(!airborne(&physics_with_loads([0.0, 0.0, 0.0, 40.0])));
+        assert!(!gate.airborne(&physics_with_loads([0.0, 0.0, 0.0, 40.0])));
+    }
+
+    /// A car that loads its wheels once and then reads all-zero forever
+    /// must stop being called airborne, or the road layer stays ducked for
+    /// the rest of the session. A latch did exactly that.
+    #[test]
+    fn the_gate_decays_rather_than_latching_open() {
+        let mut gate = AirborneGate::default();
+        gate.airborne(&physics_with_loads([3000.0; 4]));
+        let mut flights = 0;
+        for _ in 0..(GATE_DECAY_SAMPLES as usize * 3) {
+            if gate.airborne(&physics_with_loads([0.0; 4])) {
+                flights += 1;
+            }
+        }
+        assert_eq!(
+            flights, GATE_DECAY_SAMPLES as usize,
+            "airborne must expire after the credit runs out, not persist",
+        );
+        assert!(
+            !gate.airborne(&physics_with_loads([0.0; 4])),
+            "and stay expired until load is seen again",
+        );
     }
 }

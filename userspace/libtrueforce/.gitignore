@@ -5,9 +5,11 @@ libtrueforce.so
 libtrueforce.so.*
 
 # Test binaries
-tests/discover
-tests/init_session
-tests/sine
-tests/kf
-tests/angle
-tests/unit
+
+# Compiled test binaries, by rule rather than by name. Listing each one
+# meant every new test shipped its binary until someone noticed: tests/
+# motorlog was committed that way. Sources stay tracked.
+tests/*
+!tests/*.c
+!tests/*.h
+!tests/.gitignore

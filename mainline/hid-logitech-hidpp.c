@@ -4472,6 +4472,14 @@ static int g920_ff_set_autocenter(struct hidpp_device *hidpp,
 }
 
 /*
+ * How long the whole feature scan may take. One HIDPP_SEND_TIMEOUT is
+ * enough: every answer a responsive wheel gives, including "not
+ * supported", comes back promptly, so exceeding this means it has stopped
+ * answering rather than that it has many features.
+ */
+#define HIDPP_DD_FEATURE_LOG_BUDGET	HIDPP_SEND_TIMEOUT
+
+/*
  * Report which HID++ features a wheel implements.
  *
  * This exists because userspace cannot find out. A hidraw reader can send
@@ -4504,6 +4512,7 @@ static void hidpp_dd_log_features(struct hidpp_device *hidpp)
 		0x8140,
 	};
 	char buf[256];
+	unsigned long deadline;
 	int len = 0;
 	unsigned int i;
 
@@ -4513,10 +4522,25 @@ static void hidpp_dd_log_features(struct hidpp_device *hidpp)
 	 * features living on a sub-device (the RS Shifter answers at device
 	 * index 0x04) error here rather than reporting themselves, so this
 	 * is the base device's capability set and not the wheel's.
+	 *
+	 * Bounded in TIME, not in failures. This runs in probe context on the
+	 * G920-class path, and each query can wait HIDPP_SEND_TIMEOUT, so a
+	 * wheel that stops answering part way through would hold the hid bus
+	 * and the udev worker for 29 * 5 seconds. Counting failures instead
+	 * would not do: a healthy RS50 answers "no" fast for several pages in
+	 * a row, and truncating on that would lose real capabilities. A wheel
+	 * that has gone quiet blows this budget on its first timeout, which
+	 * is exactly the case worth abandoning.
 	 */
+	deadline = jiffies + HIDPP_DD_FEATURE_LOG_BUDGET;
 	for (i = 0; i < ARRAY_SIZE(candidates); i++) {
 		u8 index = 0;
 
+		if (time_after(jiffies, deadline)) {
+			hid_info(hidpp->hid_dev,
+				 "HID++ feature scan stopped early: the wheel stopped answering\n");
+			break;
+		}
 		if (hidpp_root_get_feature(hidpp, candidates[i], &index) ||
 		    !index)
 			continue;
@@ -5069,46 +5093,6 @@ struct hidpp_dd_lightsync_slot {
  * Note this also doubles the rate at which the steering force sum is
  * computed, which is a fidelity gain rather than a cost: game FFB rates go
  * up to 1000 Hz and this path could previously only sample them at 500.
- */
-#define HIDPP_DD_FF_TICK_MS \
-	jiffies_to_msecs(msecs_to_jiffies(HIDPP_DD_FF_TIMER_INTERVAL_MS))
-/*
- * Spacing between the tick's texture samples, in quarter-milliseconds:
- * the tick's own duration divided across the packet's sample slots, since
- * the wheel consumes those slots over exactly one packet interval. Comes to
- * one quarter-ms at HZ=1000 and one whole millisecond at HZ=250.
- */
-#define HIDPP_DD_TF_SAMPLE_SPACING_QMS \
-	((HIDPP_DD_FF_TICK_MS * 4U) / HIDPP_DD_TF_NEW_SAMPLES)
-/*
- * This rate also sets the in-kernel texture bandwidth, and it is a quarter
- * of what these wheels are built for.
- *
- * Logitech state a 1 ms TRUEFORCE processing interval, and both userspace
- * transports were measured sustaining exactly that in 2026-08: 1000 packets
- * per second of four samples each, a 4 kHz stream, which is also the ceiling
- * USB interrupt endpoints allow. AC EVO streams at that rate too (see
- * dev/docs/tf4all-analysis.md). This path emits 500 packets per second
- * carrying two distinct samples each, duplicated to fill four slots: 1 kHz
- * of actual texture content.
- *
- * Closing that needs three things, and the third is why it has not been
- * done:
- *
- *   1. this interval to 1 ms, which also doubles the rate at which the
- *      steering force sum is computed - a fidelity gain, since game FFB
- *      rates go to 1000 Hz, but a change to every user's force feel;
- *   2. four DISTINCT samples per tick rather than two duplicated;
- *   3. sub-millisecond resolution in the effect evaluator. Four samples in
- *      a 1 ms tick are 0.25 ms apart, and hidpp_dd_ff_effect_tick and
- *      everything it calls take u32 elapsed_ms. Envelopes, fades and
- *      periodic phase all count whole milliseconds, so this is a change of
- *      time unit through the whole evaluator, not a spacing tweak.
- *
- * An intermediate step of four distinct samples at 0.5 ms spacing on the
- * See HIDPP_DD_TF_SAMPLE_SPACING_QMS for how the spacing follows the tick
- * the timer will actually deliver rather than the nominal one, which matters
- * on kernels where CONFIG_HZ rounds 1 ms up to 4.
  */
 
 /*
@@ -6271,8 +6255,14 @@ static void hidpp_dd_ff_effect_timer_callback(struct timer_list *t)
 		 * unwind-to-soft-stop / recenter safety routine, so
 		 * coalescing identical-force ticks made any held constant
 		 * force evaporate within a couple of seconds (issue #16,
-		 * ffmvforce repro). At 1 kHz x 64 bytes the USB cost is
-		 * ~32 KB/s, negligible.
+		 * ffmvforce repro). At 1 kHz x 64 bytes that is about
+		 * 64 KB/s, which is still nothing in bandwidth terms, but
+		 * it now fills the interrupt OUT endpoint's bInterval=1
+		 * slot exactly where the old 2 ms tick left half of it
+		 * spare. So there is no longer headroom to spend here: an
+		 * extra packet per tick has to displace one, not join it.
+		 * (This read ~32 KB/s for a while, the 500 Hz figure
+		 * carried forward unchanged past the rate change.)
 		 */
 		if (!force_sent)
 			hidpp_dd_ff_send_force(ff, force);

@@ -798,20 +798,13 @@ impl Airborne {
     }
 }
 
-// NOTE: nothing sets `Telemetry::airborne` yet, so this layer has never run
-// outside its tests. Kept rather than deleted because the work to reach it is
-// small and identified, but treat its behaviour as unverified on hardware:
-// the per-block timing fault fixed here in 2026-08 could not have been felt
-// by anyone, and neither can its gain have been tuned.
-//
-// What it needs is a telemetry source. OutGauge (BeamNG) has no such field.
-// Assetto Corsa Competizione's shared memory does expose per-tyre contact, so
-// the relay could derive it, and the relay wire format has a spare `flags`
-// byte at offset 5 that `decode` does not read, so a bit there costs no
-// version bump and no packet growth. That is blocked on rebuilding
-// logi-tf-relay.exe, which needs a Rust windows-gnu target this project's
-// build host does not have (only x86_64-unknown-linux-gnu std is installed,
-// and adding one needs rustup).
+// The relay sets `Telemetry::airborne` from Assetto Corsa Competizione's
+// wheel loads as of 0.30.0, so this layer can now run. Two things about it
+// are still unverified and worth knowing before tuning anything: whether
+// that game populates the field at all (the relay's gate is built so that
+// either answer is safe, not so that one of them is right), and this
+// layer's gain, which was chosen when nothing could reach the layer and has
+// therefore never been heard by anyone.
 impl Effect for Airborne {
     fn id(&self) -> EffectId {
         EffectId::Airborne

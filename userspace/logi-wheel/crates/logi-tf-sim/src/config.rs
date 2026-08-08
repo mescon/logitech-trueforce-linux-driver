@@ -44,7 +44,25 @@ pub const FILE_HEADER: &str = "# logi-tf-sim configuration";
 pub const FILE_NAME: &str = "tf-sim.conf";
 
 /// Default master intensity (percent).
-pub const DEFAULT_INTENSITY: u8 = 60;
+/// Master intensity, percent.
+///
+/// 30, lowered from 60 on hardware evidence 2026-08-08. An RS50 owner
+/// called 60 "way too powerful" and then reported 30 as fine across three
+/// rev rates in the same session, which is both halves of the answer from
+/// the same hands. Measured on the steering axis over a sweep, 60 moved the
+/// wheel about 604 degrees and 30 about 214.
+///
+/// It is also the honest lever for the low-frequency haptic layers. The pit
+/// limiter sits at 10 Hz, ABS at 15, the rev limiter at 25, and excursion
+/// for a given torque goes roughly as 1/f^2, so those layers move a
+/// direct-drive wheel rather than buzzing it. Master intensity scales all of
+/// them at once, which beats guessing at a per-layer frequency curve nobody
+/// has measured (see the module note in `effects.rs` for why that curve was
+/// rejected).
+///
+/// A saved configuration is unaffected; this is the value for one that sets
+/// none.
+pub const DEFAULT_INTENSITY: u8 = 30;
 /// Default per-game intensity (percent), relative to the master.
 pub const DEFAULT_GAME_INTENSITY: u8 = 100;
 

@@ -7,6 +7,15 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## 0.30.0 - 2026-08-08
 
+**Simulated TrueForce is quieter by default: intensity 30, not 60.** An RS50
+owner called 60 "way too powerful" and then reported 30 as fine across three
+rev rates in the same session. Measured on the steering axis over a sweep, 60
+moved the wheel about 604 degrees and 30 about 214. It is also the honest
+lever for the low-frequency haptic layers, which move a direct-drive wheel
+rather than buzzing it: master intensity scales all of them at once, where a
+per-layer frequency curve would have been guesswork. A saved configuration is
+unaffected.
+
 **A diagnostic report, from the app or the command line.** In the terminal
 app it is `b` on the Info page; in the window it is the Collect button on
 the same page, which puts the report on the clipboard and saves a copy. From

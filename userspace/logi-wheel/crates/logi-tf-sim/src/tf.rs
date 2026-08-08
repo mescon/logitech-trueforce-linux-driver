@@ -4,7 +4,7 @@
 //! Binds the minimal session surface from `include/trueforce.h`:
 //! `dllOpen` (discovery scan) -> `logiTrueForceAvailable` ->
 //! `logiTrueForceSetTorqueTFfloat` (which lazily sends the 68-packet
-//! init sequence and starts the 250 Hz stream thread on first use) ->
+//! init sequence and starts the stream thread on first use) ->
 //! `logiTrueForceClearTF` + `logiWheelClose` + `dllClose` on drop.
 //!
 //! Discovery (which hidraw node, which wheels) is entirely the
@@ -95,7 +95,7 @@ impl TfStream {
         self._ffb.is_some()
     }
 
-    /// Queue `samples` (each -1.0..1.0, at 1 kHz) for the wheel.
+    /// Queue `samples` (each -1.0..1.0, at [`crate::synth::SAMPLE_RATE_HZ`]) for the wheel.
     ///
     /// Mirrors the Windows SDK semantics: blocks when the library's
     /// 4096-sample ring is full, so a real-time producer self-paces.

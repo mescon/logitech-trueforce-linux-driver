@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! Engine-note synthesis.
 //!
-//! Generates the 1 kHz sample stream the wheel's TrueForce DSP consumes:
+//! Generates the sample stream the wheel's TrueForce DSP consumes, at
+//! [`SAMPLE_RATE_HZ`]:
 //! a fundamental at the engine's FIRING rate plus 2x and 3x harmonics at falling
 //! gain, amplitude `idle_floor + throttle * gain`, everything scaled by
 //! the effective intensity (master x per-game, 0.0..1.0). The harmonic
@@ -11,7 +12,7 @@
 //!
 //! The generator is pure and stateful only in its oscillator phase, so
 //! frequency changes are click-free. The libtrueforce stream thread does
-//! the packetizing (4 samples per 250 Hz packet); this module only has to
+//! the packetizing (4 samples per packet, 1000 packets/sec); this module only has to
 //! produce samples at [`SAMPLE_RATE_HZ`].
 
 /// The wheel's TrueForce sample rate.
@@ -23,8 +24,9 @@ pub const SAMPLE_RATE_HZ: f32 = 4000.0;
 /// places that would otherwise play everything at the wrong speed.
 pub const SAMPLES_PER_MS: usize = (SAMPLE_RATE_HZ / 1000.0) as usize;
 
-/// Samples per wire packet (the wheel consumes 4-sample packets at
-/// 250 Hz); pushes are conveniently sized in multiples of this.
+/// Samples per wire packet. The wheel consumes 4-sample packets at 1000 Hz,
+/// which is what makes [`SAMPLE_RATE_HZ`] 4000; pushes are conveniently
+/// sized in multiples of this.
 pub const SAMPLES_PER_PACKET: usize = 4;
 
 /// Relative gains for the fundamental and the 2x / 3x harmonics.
@@ -63,7 +65,7 @@ pub fn firing_frequency(rpm: f32, cylinders: u8, pitch_scale: f32) -> f32 {
 /// before band-limiting existed.
 const FULL_MIX_LEVEL: f32 = 0.654_653_7;
 
-/// Nyquist for the 1 kHz sample stream.
+/// Nyquist for the sample stream ([`SAMPLE_RATE_HZ`] / 2).
 const NYQUIST_HZ: f32 = SAMPLE_RATE_HZ / 2.0;
 /// Where a harmonic starts fading out. Below this it is passed at full
 /// gain; between here and Nyquist it fades to nothing, so a partial

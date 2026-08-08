@@ -4642,7 +4642,17 @@ mod tests {
         let mut a = tf_setup_app();
         enter_setup(&mut a, SetupSection::SimTf);
         a.on_key(KeyCode::Char('e'));
-        assert_eq!(a.tf_intensity_edit.as_deref(), Some("60"), "draft seeds from the value");
+        // From the constant, not a literal: this asserted "60" and broke
+        // when the default moved to 30, which is the test noticing a
+        // deliberate change rather than a bug. Deriving it keeps the real
+        // property (the draft seeds from the current value) and stops the
+        // test needing an edit every time the default is retuned.
+        let want = logi_wheel_core::tfsim::DEFAULT_INTENSITY.to_string();
+        assert_eq!(
+            a.tf_intensity_edit.as_deref(),
+            Some(want.as_str()),
+            "draft seeds from the value",
+        );
         a.on_key(KeyCode::Backspace);
         a.on_key(KeyCode::Backspace);
         a.on_key(KeyCode::Char('4'));
