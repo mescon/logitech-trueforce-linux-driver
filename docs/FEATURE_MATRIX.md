@@ -77,9 +77,36 @@ reporting this driver currently infers by scanning sub-device indices, which
 is known awkward (index is a physical port, not a device type). Same
 blocker: no function layout.
 
-**`0x8130` DISPLAY_GAME_DATA and `0x8132` AXIS_MAPPING, RS50 only.** Both
-unknown. Axis mapping in firmware would duplicate something already done
-host-side; what the wheel does with game data is anyone's guess.
+**`0x8130` DISPLAY_GAME_DATA, RS50 only. NOT unknown**, and an earlier
+version of this file wrongly said it was. It is the RS50's Dynamic OLED, and
+`PROTOCOL_SPECIFICATION.md` 12.3 has it largely decoded from issue #20:
+fn0 layout count, fn1 layout descriptor, fn2 clear pending, fn3 set
+layout/data, ten layouts A-J, a typed firmware renderer rather than a
+framebuffer, reached at interface 1 endpoint 0 by SET_REPORT. Reached on
+hardware by a third party with static text and live iRacing telemetry.
+Unimplemented here, but the open questions are narrower than "what is it":
+function numbers and payload layout are known, and the risk below is not.
+
+**`0x8132` AXIS_MAPPING, RS50 only.** Unknown, and it would duplicate
+something already done host-side.
+
+## Before writing to any of these: a live-force hazard
+
+`PROTOCOL_SPECIFICATION.md` 12.5 records, from two independent third
+parties, that **while force is present on the HID++ endpoint a non-force
+write to that endpoint cuts the force.** Regardless of sender, size or
+pacing; a 60 ms floor fixed nothing. Rev-light writes on `0x807A` during a
+game's force were the original case.
+
+That is a constraint on every feature in the "not implemented" list, because
+each would be exactly such a write. It also bears directly on issue #27: the
+G923 Xbox edition is the only wheel here whose force rides HID++, so driving
+its rev lights over `0x807A` may cost force feedback while the lights update
+even if the feature is present. Finding the feature is therefore necessary
+and not sufficient.
+
+The enumeration this file records is safe on that count: it runs once at
+probe, before any force exists.
 
 All four want the same thing before code: a capture of G HUB exercising the
 control. That is the routine this project has used for every other page it

@@ -414,6 +414,33 @@ keeping hands clear during AC EVO map loads) are covered under
 
 ## Troubleshooting
 
+**Filing a bug? Start with this**, and paste what it prints:
+
+```bash
+logi-wheel --report
+```
+
+It collects the versions, which wheels are bound and to what, every wheel
+setting, your simulated-TrueForce config, and which udev rules are
+installed. It deliberately withholds your wheel's serial number and the
+names you gave your profiles and lighting slots, none of which help diagnose
+anything. Do not paste raw `dmesg` instead: the driver logs the serial at
+probe. The report ends with a `dmesg` command that filters it out.
+
+Other diagnostics, when a specific question comes up:
+
+| command | answers |
+|---|---|
+| `logi-wheel --report` | everything below at once, safe to paste |
+| `logi-wheel --hidpp-features` | which HID++ features the wheel implements |
+| `logi-wheel --led-probe` | which rev-light command a wheel obeys |
+| `./tools/setup.sh doctor` | whether the install is complete |
+| `tools/hidpp-feature-probe.py` | feature list without building anything |
+| `tools/wheel-rotation-watch.py` | measures how far the wheel actually moved |
+
+The driver also logs, once per plug-in, which HID++ features your wheel has
+and the effect timer's rate. `sudo dmesg | grep -i logitech | grep -v serial`.
+
 - **No force feedback / no `wheel_*` files (`range`/`gain` on a G923; wheel
   stuck on `hid-generic`):** the driver did not bind. Run `./tools/setup.sh
   doctor` to diagnose, or check by hand: `lsmod | grep hid_logitech_dd`,
@@ -470,7 +497,10 @@ simulated-TrueForce daemon).
 The `wheel_*` attribute reference for scripting,
 [**docs/SYSFS_API.md**](docs/SYSFS_API.md), ships in the repo so it always
 matches your installed version. The protocol and button-mapping references
-live under [`docs/`](docs/) as well.
+live under [`docs/`](docs/) as well, including
+[**docs/FEATURE_MATRIX.md**](docs/FEATURE_MATRIX.md): what each wheel
+reports it can do, measured rather than assumed, against what this driver
+uses.
 
 ## Contributing
 

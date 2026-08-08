@@ -283,7 +283,8 @@ Maximum force RIGHT, sequence 0x01:
 
 - Force update rate: games stream **1000 Hz** (observed in every gameplay
   capture: ACC on RS50, ACC/BeamNG on G PRO - median inter-packet gap
-  ~1.0 ms); the kernel driver's own force stream currently runs at 500 Hz
+  ~1.0 ms); the kernel driver's own force stream matches that at 1000 Hz
+  since 0.30.0, having run at 500 Hz before it
 - Sequence counter increments with each command (one shared counter across
   all interface-2 packet types on the wire)
 - Force value and duplicate must always match
@@ -1074,7 +1075,9 @@ Recommended initialization order:
 3. **Feature Discovery** - Use IRoot (index 0x00) to find feature indices
 4. **Read Settings** - Query current rotation, FFB gain
 5. **Start FFB Loop** - Begin sending force commands (the driver runs a
-   fixed 500 Hz timer)
+   fixed 1 kHz timer; 500 Hz before 0.30.0). The period is a whole jiffy, so
+   a CONFIG_HZ below 1000 rounds it up and the driver spaces its texture
+   samples by the period actually delivered rather than the nominal one
 
 ---
 
@@ -1198,7 +1201,7 @@ capabilities: the G920/G923 has only 0x8123, while the DD wheels have both
 and privilege the endpoint stream.
 
 **Driver implication**: this driver uses the endpoint path exclusively
-(`HIDPP_QUIRK_DD_FFB` / `hidpp_dd_ff_*`), which needs the 500 Hz refresh
+(`HIDPP_QUIRK_DD_FFB` / `hidpp_dd_ff_*`), which needs the 1 kHz refresh
 semantics below; the G920 `hidpp_ff_*` 0x8123 code path with its slot-based
 effect engine still cannot be reused as-is (the issue #8 queue-saturation
 failures), but a minimal 0x8123-fn2 force-target sender remains an untested
@@ -1850,7 +1853,7 @@ Section 5 - and exposed as the `wheel_profile` / `wheel_mode` attributes.)
 
 The `autocenter` sysfs attribute (and the evdev `FF_AUTOCENTER` upload)
 drives a real driver-side centring spring. The driver stores the
-magnitude, and its 500 Hz effect timer sums a position-fed centring force
+magnitude, and its 1 kHz effect timer sums a position-fed centring force
 on top of the game's own effects while the value is nonzero (firm within
 roughly the central eighth of travel). A game that writes autocenter 0
 disables it for its session.
@@ -2174,3 +2177,4 @@ came from.
 | 7.1 | 2026-07-28 | RS Shifter & Handbrake accessory (dev `0x04`) catalogued (5.3): full 18-feature map, names via 0x0005/0x0007, own 0x80A4 store, and the two accessory-unique public features `0x80B1` BANDED_AXIS / `0x1B30` DEVICE_MODE (first-party names, no captured wire format). Driver now discovers the accessory alongside the pedal MCU in one candidate-list pass and exposes presence via `wheel_accessory`; its own three settings were unimplemented at that revision (see 7.2). Sub-device index instability documented explicitly: no index is fixed for either the pedal MCU or the accessory. |
 | 7.3 | 2026-07-29 | Two contributions from @PeposCJ (issue #20), neither verified by this driver. `0x8130` DisplayGameData identified as the Dynamic OLED's transport, reached on hardware with static text and live iRacing telemetry on the panel (12.3); function numbers, payload layout and, critically, whether writing it disturbs the FFB stream all remain open, and `0x18A2`/`0x18B1`/`0x9315` stay unexplained rather than ruled out. Rev-light stream documented from four first-party captures (12.4): the true arm sequence is fn0/fn1/fn2/fn0 before the fn2+fn6 stream, with no `fn3` (the driver's extra `fn3` SET_EFFECT stomped the user's LIGHTSYNC effect and was removed in v0.21.0); every write draws a `0x12` acknowledgement; redline is plain `LL = 10` at ~60 Hz with no flash command; and iRacing's pit-limiter flash is only `LL` 10/0 alternating at ~416.7 ms, so a telemetry feeder can reproduce it with no new protocol support. |
 | 7.4 | 2026-07-30 | Dynamic OLED largely decoded and the HID++ endpoint's contention behaviour recorded, both from issue #20 and neither verified by this driver. `0x8130`: fn0 layout count, fn1 layout descriptor, fn2 clear pending, fn3 set layout/data; 10 layouts A-J, layout J exposing four text fields at 19/10/19/10; a typed firmware renderer rather than a framebuffer (the firmware has a 128x64 buffer but no command accepts pixels, coordinates or regions), reached at interface 1 endpoint 0 by SET_REPORT, explicitly NOT via Logitech's DirectInput Escape path whose Acquire/Unacquire lifecycle emits RESET_ALL / SET_GLOBAL_GAINS / RESET_ALL on 0x8123 (12.3). New 12.5: while any force is present on the HID++ endpoint, a non-force write to it cuts the force, independent of sender count and unimproved by pacing; a quiet-looking endpoint only means the title has native TrueForce and never writes force there ("ignored is not the same as absent"). Recorded with its consequence: the G923 Xbox edition is the only wheel here whose force rides HID++, so rev-light support for it cannot simply reuse 0x807A. |
+| 7.5 | 2026-08-08 | Force stream rates corrected throughout: the kernel driver's own stream runs at **1000 Hz** from 0.30.0, matching what games send and Logitech's stated 1 ms TRUEFORCE interval, having run at 500 Hz before. The timer is a jiffies timer, so a `CONFIG_HZ` below 1000 rounds the period up and the driver now spaces texture samples by the period actually delivered rather than the nominal one; at 500 Hz nominal on an HZ=250 kernel it had been delivering 2 ms of audio every 4 ms and playing texture at half pitch. Feature-page names reconciled against Logitech's published HID++ 2.0 registry: `0x807A` is RPM_INDICATOR (the rev display) rather than the general LIGHTSYNC this project called it, `0x807B` is RPM_LED_PATTERN, `0x80D0` is COMBINED_PEDALS (which explains its profile-change broadcast), `0x8136` is TORQUE_LIMIT. New docs/FEATURE_MATRIX.md enumerates both wheels here against that registry: notably the RS50 and G923 use **different** response-curve pages (`0x80A4` versus the legacy `0x80A3`), and DUAL_CLUTCH `0x8127` and GAMING_ATTACHMENTS `0x8120` are present on both wheels and implemented on neither. |
