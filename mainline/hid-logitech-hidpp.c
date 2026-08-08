@@ -10228,15 +10228,29 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 	 * From capture: 11 ff 0b 6c 00 01 00 0a 00 00 00 00 00 00 00 00 00 00 00 00
 	 */
 	if (ff->idx_lightsync != HIDPP_DD_FEATURE_NOT_FOUND) {
+		/*
+		 * Byte 5 is the rev-display LEVEL, not a LED count and not a
+		 * flag. wheel_rev_level sends this exact command shape, and a
+		 * level of 10 lights all ten LEDs (hardware-verified
+		 * 2026-08-08). Sending 0 here, as this did, was a rev level of
+		 * zero: it switched every LED off immediately before uploading
+		 * the colours meant to be displayed, so a lit strip went dark
+		 * and the colours never showed.
+		 *
+		 * G HUB sends 0x0a once here and never a zero
+		 * (2026-07-19_lightsync_direction).
+		 */
 		memset(params, 0, 16);
 		params[0] = 0x00;
 		params[1] = 0x01;
 		params[2] = 0x00;
-		params[3] = 0x0a;  /* 10 LEDs */
+		params[3] = 0x0a;  /* 10 LEDs in the strip */
+		params[4] = 0x00;
+		params[5] = 0x0a;  /* level: all ten lit */
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
 						  HIDPP_DD_LIGHTSYNC_FN_SET_CONFIG,
 						  params, 16, &response);
-		dd_dbg(hid, "0x0B fn6(pre-config) ret=%d\n", ret);
+		dd_dbg(hid, "0x0B fn6(level=10) ret=%d\n", ret);
 	}
 
 	/*
@@ -10281,6 +10295,22 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 	ret = hidpp_errno(hid, ret, "set RGB config");
 	if (ret)
 		return ret;
+
+	/*
+	 * Activate the slot the colours were just written into. Without this
+	 * the upload is stored and never displayed, which is why colour
+	 * changes did nothing on hardware while every write reported success.
+	 * G HUB sends this after every colour upload
+	 * (2026-07-19_lightsync_direction); the constant already existed here
+	 * and nothing called it.
+	 */
+	params[0] = slot;
+	params[1] = 0x00;
+	params[2] = 0x00;
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_rgb_config,
+					  HIDPP_DD_RGB_FN_ACTIVATE, params, 3,
+					  &response);
+	dd_dbg(hid, "0x0C fn3(activate slot %u) ret=%d\n", slot, ret);
 
 	/*
 	 * No separate "activate" step exists: 0x807B fn3 is GET_NAME (a
@@ -11058,7 +11088,7 @@ static DEVICE_ATTR(wheel_led_effect, 0664, wheel_led_effect_show, wheel_led_effe
  * instead of blocking each write and draining stale
  * intermediates onto the wire.
  */
-#define HIDPP_DD_REV_SWID		0x0d	/* G HUB's sw-id, kept verbatim */
+#define HIDPP_DD_REV_SWID		0x0c	/* G HUB uses 0x0c on the RS50 (2026-07-27 iRacing capture) */
 #define HIDPP_DD_REV_MAX_LEVEL		10
 #define HIDPP_DD_REV_MIN_GAP_MS		10	/* ~100 Hz. G HUB drives rev lights at ~60 Hz (~16.5 ms per pair, measured from the issue #20 iRacing capture); the old 160 ms was a misread and made a full 0->10 sweep take ~1.6 s. The 10 ms cap comfortably clears the observed rate. */
 #define HIDPP_DD_REV_ARM_GAP_MS	4
