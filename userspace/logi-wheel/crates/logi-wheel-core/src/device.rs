@@ -121,6 +121,12 @@ pub fn required_mode(attr: &str) -> Option<&'static str> {
 
 pub struct Device<S: SysfsIo> {
     io: S,
+    /// Canonical sysfs path this device was discovered at, used only to
+    /// tell attached wheels apart and to dedupe the several hidraw nodes a
+    /// single wheel exposes. Deliberately separate from `hid_dir`, which
+    /// decides whether HID++ probing runs: reusing that field for identity
+    /// would start probing DD wheels that previously never did.
+    sysfs_key: Option<std::path::PathBuf>,
     model: WheelModel,
     /// The interface-0 HID device directory a classic (G923) wheel's
     /// identity is anchored to: the sysfs `uniq` string lives in this same
@@ -163,6 +169,61 @@ pub fn wheel_display_name_at(sysfs_input: &Path, model: WheelModel) -> String {
 }
 
 /// [`wheel_display_name_at`] against the real `/sys/class/input`.
+/// The USB device directory a discovered wheel's sysfs key belongs to.
+///
+/// A key looks like `.../usb1/1-5/1-5.2/1-5.2.3/1-5.2.3:1.1/0003:046D:C276.0051`:
+/// the HID device, inside an interface directory, inside the USB device.
+/// Two ancestors up is the USB device itself, which is what every
+/// interface and input node of the same physical wheel shares.
+pub fn usb_device_dir(sysfs_key: &Path) -> Option<PathBuf> {
+    let iface = sysfs_key.parent()?;
+    let usb = iface.parent()?;
+    usb.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.contains(':'))
+        .map(|_| usb.to_path_buf())
+}
+
+/// The display name of the wheel at `sysfs_key`, rather than of whichever
+/// wheel `/sys/class/input` happens to list first.
+///
+/// With one wheel attached the difference never showed. With two, every
+/// device reported the same name, because the scan matched on "looks like
+/// a wheel" and stopped at the first hit: an RS50 would introduce itself
+/// as a G923 purely because the G923 enumerated earlier.
+pub fn wheel_display_name_for(sysfs_key: Option<&Path>, model: WheelModel) -> String {
+    if let Some(usb) = sysfs_key.and_then(usb_device_dir) {
+        if let Some(name) = input_name_under(Path::new("/sys/class/input"), &usb) {
+            return name;
+        }
+    }
+    wheel_display_name(model)
+}
+
+/// The name of the first input device under `usb` that reads like a wheel.
+fn input_name_under(sysfs_input: &Path, usb: &Path) -> Option<String> {
+    let mut entries: Vec<_> = std::fs::read_dir(sysfs_input)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("event"))
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let Ok(real) = std::fs::canonicalize(entry.path()) else { continue };
+        if !real.starts_with(usb) {
+            continue;
+        }
+        let name = match std::fs::read_to_string(entry.path().join("device/name")) {
+            Ok(s) => s.trim().to_string(),
+            Err(_) => continue,
+        };
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
 pub fn wheel_display_name(model: WheelModel) -> String {
     wheel_display_name_at(Path::new("/sys/class/input"), model)
 }
@@ -312,31 +373,48 @@ impl Device<RealSysfs> {
     /// is trusted and modeled as `G923`, the only classic wheel this crate
     /// knows.
     pub fn discover() -> Result<Device<RealSysfs>, Error> {
-        if let Some(dir) = sysfs_dir_override() {
-            let dir = std::path::PathBuf::from(dir);
-            if dir.join("wheel_range").exists() {
-                return Ok(Device { io: RealSysfs::new(dir), model: WheelModel::Unknown, hid_dir: None });
-            }
-            if classic_attrs_present(&dir) {
-                // Not a real HID device directory (no `uevent`/USB parent
-                // structure), so the uniq/HID++ lookups this enables just
-                // fail cleanly and the fixture shows "-"/"unavailable" -
-                // exactly the fake-sysfs dev-aid's existing no-hidraw story.
-                return Ok(Device {
-                    io: RealSysfs::new(dir.clone()),
-                    model: WheelModel::G923,
-                    hid_dir: Some(dir),
-                });
-            }
-            return Err(Error::NoWheel);
+        Self::discover_all().into_iter().next().ok_or(Error::NoWheel)
+    }
+
+    /// Every wheel attached right now, not just the first one found.
+    ///
+    /// `discover()` returns whichever wheel `/sys/class/hidraw` happened to
+    /// yield first, which on a two-wheel rig is decided by directory
+    /// iteration order rather than by anything the user chose. This is what
+    /// a caller uses to offer that choice instead of guessing.
+    ///
+    /// Ordered by sysfs path so the list is stable between calls: a picker
+    /// whose entries reshuffle on every refresh is worse than no picker.
+    /// The `LOGI_WHEEL_SYSFS_DIR` override still pins a single device, and
+    /// is returned here as a one-element list so an override behaves the
+    /// same everywhere.
+    pub fn discover_all() -> Vec<Device<RealSysfs>> {
+        if sysfs_dir_override().is_some() {
+            return Self::discover_overridden().into_iter().collect();
         }
-        let mut entries = std::fs::read_dir("/sys/class/hidraw")
-            .map_err(|_| Error::NoWheel)?;
-        while let Some(Ok(e)) = entries.next() {
-            let dir = e.path().join("device");
+        let mut dirs: Vec<std::path::PathBuf> = match std::fs::read_dir("/sys/class/hidraw") {
+            Ok(entries) => entries.flatten().map(|e| e.path().join("device")).collect(),
+            Err(_) => return Vec::new(),
+        };
+        dirs.sort();
+        let mut found: Vec<Device<RealSysfs>> = Vec::new();
+        for dir in dirs {
+            // One physical wheel exposes several hidraw nodes that resolve
+            // to the same device directory, so dedupe on the canonical path
+            // or the same wheel appears two or three times in the picker.
+            let key = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+            if found.iter().any(|d| d.sysfs_key().as_deref() == Some(key.as_path())) {
+                continue;
+            }
             if dir.join("wheel_range").exists() {
                 let model = pid_from_hid_dir(&dir).map(model_from_pid).unwrap_or_default();
-                return Ok(Device { io: RealSysfs::new(dir), model, hid_dir: None });
+                found.push(Device {
+                    io: RealSysfs::new(dir),
+                    model,
+                    hid_dir: None,
+                    sysfs_key: Some(key),
+                });
+                continue;
             }
             // Only trust the classic attr set when the PID confirms a real
             // G923: an unrelated device coincidentally exposing similarly-
@@ -344,27 +422,57 @@ impl Device<RealSysfs> {
             if classic_ffb_present(&dir)
                 && pid_from_hid_dir(&dir).map(model_from_pid) == Some(WheelModel::G923)
             {
-                return Ok(Device {
+                found.push(Device {
                     io: RealSysfs::new(dir.clone()),
                     model: WheelModel::G923,
                     hid_dir: Some(dir),
+                    sysfs_key: Some(key),
                 });
             }
         }
-        Err(Error::NoWheel)
+        found
+    }
+
+    /// The `LOGI_WHEEL_SYSFS_DIR` path, resolved to a device or nothing.
+    fn discover_overridden() -> Option<Device<RealSysfs>> {
+        let dir = std::path::PathBuf::from(sysfs_dir_override()?);
+        if dir.join("wheel_range").exists() {
+            return Some(Device { io: RealSysfs::new(dir), model: WheelModel::Unknown, hid_dir: None, sysfs_key: None });
+        }
+        if classic_attrs_present(&dir) {
+            // Not a real HID device directory (no `uevent`/USB parent
+            // structure), so the uniq/HID++ lookups this enables just fail
+            // cleanly and the fixture shows "-"/"unavailable" - exactly the
+            // fake-sysfs dev-aid's existing no-hidraw story.
+            return Some(Device {
+                io: RealSysfs::new(dir.clone()),
+                model: WheelModel::G923,
+                hid_dir: Some(dir.clone()),
+                sysfs_key: Some(dir),
+            });
+        }
+        None
     }
 }
 
 impl<S: SysfsIo> Device<S> {
     pub fn with_io(io: S) -> Device<S> {
-        Device { io, model: WheelModel::default(), hid_dir: None }
+        Device { io, model: WheelModel::default(), hid_dir: None, sysfs_key: None }
     }
 
     /// Same as `with_io`, but with an explicit `WheelModel` (tests, and any
     /// caller building a `Device` for a known-model classic wheel without
     /// going through `discover()`'s PID sniffing).
     pub fn with_io_and_model(io: S, model: WheelModel) -> Device<S> {
-        Device { io, model, hid_dir: None }
+        Device { io, model, hid_dir: None, sysfs_key: None }
+    }
+
+    /// The canonical sysfs directory this device was discovered at, used
+    /// to tell two attached wheels apart and to dedupe the several hidraw
+    /// nodes one wheel exposes. `None` for devices built directly from an
+    /// io backend (tests, and the fake-sysfs dev aid).
+    pub fn sysfs_key(&self) -> Option<std::path::PathBuf> {
+        self.sysfs_key.clone()
     }
 
     pub fn model(&self) -> WheelModel {
@@ -464,7 +572,7 @@ impl<S: SysfsIo> Device<S> {
             read("wheel_serial")
         };
         Ok(DeviceInfo {
-            name: wheel_display_name(self.model),
+            name: wheel_display_name_for(self.sysfs_key.as_deref(), self.model),
             serial,
             // The driver returns "base: ...\nmotor: ..."; keep it on one line.
             firmware: read("wheel_firmware").replace('\n', " / "),
@@ -1234,7 +1342,7 @@ mod tests {
         std::fs::write(dir.join("uevent"), "HID_UNIQ=FAKESERIAL01\n").unwrap();
         let fs = FakeSysfs::new();
         fs.set("range", "900");
-        let d = Device { io: fs, model: WheelModel::G923, hid_dir: Some(dir.clone()) };
+        let d = Device { io: fs, model: WheelModel::G923, hid_dir: Some(dir.clone()), sysfs_key: None };
         let info = d.info().unwrap();
         assert_eq!(info.serial, "FAKESERIAL01");
         assert_eq!(info.model, WheelModel::G923);
@@ -1277,9 +1385,98 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let fs = FakeSysfs::new();
         fs.set("range", "900");
-        let d = Device { io: fs, model: WheelModel::G923, hid_dir: Some(dir.clone()) };
+        let d = Device { io: fs, model: WheelModel::G923, hid_dir: Some(dir.clone()), sysfs_key: None };
         assert!(d.classic_firmware().is_none());
         assert!(d.info().is_ok(), "the cheap identity fields must not be affected");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod discover_all_tests {
+    use super::*;
+
+    /// Two wheels attached must not share a name. The scan used to stop at
+    /// the first input device that looked like a wheel, so whichever
+    /// enumerated first supplied the name for both.
+    #[test]
+    fn each_wheel_is_named_from_its_own_usb_device() {
+        let tmp = std::env::temp_dir().join(format!("lw-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let inputs = tmp.join("class-input");
+        std::fs::create_dir_all(&inputs).unwrap();
+
+        // Two USB devices, each with one interface, one input node, one name.
+        let mut usb_dirs = Vec::new();
+        for (i, (usb, iface, name)) in [
+            ("1-8", "1-8:1.0", "Logitech G923 Racing Wheel"),
+            ("1-5", "1-5:1.1", "Logitech RS50 Base"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let usb_dir = tmp.join("devices").join(usb);
+            let real_input = usb_dir.join(iface).join("input").join(format!("input{i}"));
+            std::fs::create_dir_all(real_input.join(format!("event{i}"))).unwrap();
+            std::fs::write(real_input.join(format!("event{i}")).join("..").join("name"), name).unwrap();
+            let link = inputs.join(format!("event{i}"));
+            std::os::unix::fs::symlink(real_input.join(format!("event{i}")), &link).unwrap();
+            std::fs::write(link.join("device").join("name"), name).ok();
+            usb_dirs.push(usb_dir);
+        }
+
+        // The key shape discovery produces: <usb>/<iface>/<hid>
+        let key0 = usb_dirs[0].join("1-8:1.0").join("0003:046D:C266.0001");
+        let key1 = usb_dirs[1].join("1-5:1.1").join("0003:046D:C276.0002");
+        assert_eq!(usb_device_dir(&key0).as_deref(), Some(usb_dirs[0].as_path()));
+        assert_eq!(usb_device_dir(&key1).as_deref(), Some(usb_dirs[1].as_path()));
+        assert_ne!(
+            usb_device_dir(&key0),
+            usb_device_dir(&key1),
+            "two wheels must resolve to different USB devices, or they cannot be told apart"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// One wheel exposes several hidraw nodes that all resolve to the same
+    /// device directory. Without deduping, a picker built from this list
+    /// shows the same wheel two or three times.
+    #[test]
+    fn one_wheel_with_several_hidraw_nodes_appears_once() {
+        let tmp = std::env::temp_dir().join(format!("lw-dedupe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let real = tmp.join("real-device");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("wheel_range"), "900").unwrap();
+
+        let mut keys = std::collections::HashSet::new();
+        for node in ["hidraw0", "hidraw1", "hidraw2"] {
+            let dir = tmp.join(node).join("device");
+            std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&real, &dir).unwrap();
+            keys.insert(std::fs::canonicalize(&dir).unwrap());
+        }
+        assert_eq!(keys.len(), 1, "three nodes must canonicalize to one device");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The override pins one device, and must behave the same through both
+    /// entry points rather than one of them ignoring it.
+    #[test]
+    fn override_yields_exactly_one_device_through_both_entry_points() {
+        let tmp = std::env::temp_dir().join(format!("lw-override-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("wheel_range"), "900").unwrap();
+
+        // SAFETY: single-threaded test process, restored below.
+        unsafe { std::env::set_var("LOGI_WHEEL_SYSFS_DIR", &tmp) };
+        let all = Device::discover_all();
+        let one = Device::discover();
+        unsafe { std::env::remove_var("LOGI_WHEEL_SYSFS_DIR") };
+
+        assert_eq!(all.len(), 1, "an override pins exactly one wheel");
+        assert!(one.is_ok(), "discover() must honour the same override");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
