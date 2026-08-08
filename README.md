@@ -257,7 +257,7 @@ with `sudo pacman -U <url>`.
 Every game and wheel this project knows about, and exactly what each pair
 needs, is in **[docs/GAME_SETUP.md](docs/GAME_SETUP.md)**. It is generated
 from the same registry the settings app uses, so the two cannot disagree.
-The summary below is the shape of it.
+The short version is below.
 
 - **Native and most Proton sims:** force feedback works out of the box; games see
   a standard Linux wheel. No setup beyond binding controls in game.
