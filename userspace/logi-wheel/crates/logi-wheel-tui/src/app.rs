@@ -2417,12 +2417,25 @@ impl<S: SysfsIo> App<S> {
                         _ => self.g923_firmware.clone().unwrap_or_else(|| "-".to_string()),
                     };
                     self.status = format!(
-                        "serial: {}   firmware: {}   app: {}   driver: {}   (shown for manual copy)",
+                        "serial: {}   firmware: {}   app: {}   driver: {}   (for your own reference; press b for a report safe to post)",
                         serial,
                         firmware,
                         self.app_version_text(),
                         self.driver_version_text()
                     );
+                }
+                // Write the diagnostic report. Separate from `c` above,
+                // which shows the serial: that is for the owner's own
+                // reference and must not be pasted into a public issue,
+                // where this is written precisely to be.
+                Char('b') => {
+                    self.status = match logi_wheel_core::diagnostics::write_report() {
+                        Ok(path) => format!(
+                            "diagnostic report written to {} - attach it to a bug report (no serial, no profile names)",
+                            path.display()
+                        ),
+                        Err(e) => format!("could not write the diagnostic report: {e}"),
+                    };
                 }
                 // Stop a running sequence, whether it is in a step's
                 // countdown or actually playing one; a no-op while
@@ -3594,7 +3607,41 @@ mod tests {
             "an absent module stamp shows the explicit marker: {}",
             a.status
         );
-        assert!(a.status.contains("manual copy"), "status: {}", a.status);
+        // The wording matters: this line carries the serial, so it has to
+        // point at the report rather than invite a paste into an issue.
+        assert!(
+            a.status.contains("your own reference") && a.status.contains("press b"),
+            "the serial line must not read as something to post: {}",
+            a.status
+        );
+    }
+
+    /// `b` writes the report, and the message says what it is safe for.
+    ///
+    /// Worth a test because the two keys sit next to each other and do
+    /// opposite things: `c` shows the serial for the owner, `b` writes a
+    /// file with the serial deliberately left out.
+    #[test]
+    fn info_b_writes_a_diagnostic_report_and_says_it_is_safe_to_post() {
+        use crossterm::event::KeyCode;
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        let mut a = App::new(logi_wheel_core::Device::with_io(fs));
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Info).unwrap();
+        a.on_key(KeyCode::Char('b'));
+        assert!(
+            a.status.contains("diagnostic report written")
+                || a.status.contains("could not write"),
+            "b must report an outcome either way: {}",
+            a.status
+        );
+        if a.status.contains("written") {
+            assert!(
+                a.status.contains("no serial"),
+                "the message must say what was left out: {}",
+                a.status
+            );
+        }
     }
 
     #[test]

@@ -2150,6 +2150,34 @@ fn main() -> Result<(), slint::PlatformError> {
         let text = text.to_string();
         std::thread::spawn(move || logi_wheel_core::clipboard::copy(&text));
     });
+    // The Info page's diagnostic report. Writes the file AND puts the text
+    // on the clipboard: the clipboard is what someone actually wants when
+    // filing an issue from this machine, and the file is what survives a
+    // clipboard that did not take (Wayland, a headless session, a
+    // clipboard manager that missed the ownership change).
+    //
+    // Off the UI thread like its neighbours: it reads a directory of sysfs
+    // attributes, which is fast but not free.
+    {
+        let weak = app.as_weak();
+        app.on_write_report(move || {
+            let weak = weak.clone();
+            std::thread::spawn(move || {
+                let text = logi_wheel_core::diagnostics::report();
+                let written = logi_wheel_core::diagnostics::write_report();
+                logi_wheel_core::clipboard::copy(&text);
+                let msg = match written {
+                    Ok(path) => format!("Copied, and saved to {}", path.display()),
+                    Err(e) => format!("Copied to the clipboard (could not save a file: {e})"),
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(app) = weak.upgrade() {
+                        app.set_info_report_status(msg.into());
+                    }
+                });
+            });
+        });
+    }
     {
         let sdk_dir = sdk_dir.clone();
         let installer_path = installer_path.clone();

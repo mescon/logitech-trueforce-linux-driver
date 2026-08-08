@@ -7,7 +7,10 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## 0.30.0 - 2026-08-08
 
-**`logi-wheel --report` prints everything a bug report needs**, with the
+**A diagnostic report, from the app or the command line.** In the terminal
+app it is `b` on the Info page; in the window it is the Collect button on
+the same page, which puts the report on the clipboard and saves a copy. From
+a shell it is `logi-wheel --report`. All three print the same thing, with the
 parts that identify you left out. Versions, which wheels are bound and to
 what, every wheel setting and its value, the simulated-TrueForce config, and
 which udev rules are installed.

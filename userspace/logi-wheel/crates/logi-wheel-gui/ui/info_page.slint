@@ -97,6 +97,12 @@ export component InfoPage inherits Rectangle {
     // options Copy). The firmware value carries its base/motor line
     // break, so it copies as two lines.
     callback copy-value(string);
+    // Collect a diagnostic report: everything a bug report needs, with the
+    // wheel's serial and the owner's profile names left out. Separate from
+    // copy-value above, which copies exactly the identifying values this
+    // deliberately omits.
+    callback write-report();
+    in property <string> report-status: "";
 
     // Whether a wheel evdev node was found; gates the live monitor body
     // and both sim buttons. `scanned` keeps the empty state from
@@ -265,6 +271,29 @@ export component InfoPage inherits Rectangle {
                             text: "Copy";
                             enabled: root.app-version != "";
                             clicked => { root.copy-value(root.app-version); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            width: 90px;
+                            text: "Bug report";
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            color: Theme.muted-text-color;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.report-status == ""
+                                ? "Collects versions, settings and rules. Leaves out your serial and profile names."
+                                : root.report-status;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                            color: root.report-status == "" ? Theme.muted-text-color : Theme.text-color;
+                        }
+                        Button {
+                            text: "Collect";
+                            clicked => { root.write-report(); }
                         }
                     }
                     HorizontalLayout {

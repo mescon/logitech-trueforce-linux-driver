@@ -223,7 +223,8 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, Scope) {
             keys.push(bfs("f", "force feedback sim", "FFB sim"));
             keys.push(bfs("t", "TrueForce texture sim", "texture sim"));
         }
-        keys.push(b("c", "show serial + versions for copying"));
+        keys.push(bfs("b", "write a diagnostic report for a bug report", "bug report"));
+        keys.push(b("c", "show serial + versions (your reference; not for posting)"));
         keys.push(bfs("r", "rescan wheel + input", "rescan"));
         keys.push(b("d", "toggle desktop/onboard mode"));
         return (Section { title: "Info / Testing", bindings: keys }, Scope::View);

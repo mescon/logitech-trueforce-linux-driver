@@ -146,6 +146,8 @@ export component App inherits Window {
     // Copy one identity value (the serial, or the two firmware lines) to
     // the clipboard; same best-effort mechanism as `setup-copy-launch`.
     callback info-copy(string);
+    callback write-report();
+    in property <string> info-report-status: "";
     in property <bool> test-available: false;
     in property <bool> test-scanned: false;
     in property <string> test-device-name: "";
@@ -586,6 +588,8 @@ export component App inherits Window {
                     sim-plan: root.test-sim-plan;
                     open-url(url) => { root.open-url(url); }
                     copy-value(text) => { root.info-copy(text); }
+                    report-status: root.info-report-status;
+                    write-report() => { root.write-report(); }
                     rescan() => { root.test-rescan(); }
                     sim-constant() => { root.test-sim-constant(); }
                     sim-texture() => { root.test-sim-texture(); }

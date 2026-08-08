@@ -28,6 +28,7 @@ pub mod shaping;
 pub mod steam;
 pub mod tfsim;
 pub mod device;
+pub mod diagnostics;
 pub use device::{Device, DeviceInfo, WheelModel};
 pub mod games;
 
