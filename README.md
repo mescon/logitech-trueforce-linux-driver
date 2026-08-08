@@ -66,8 +66,16 @@ to work · 🟡 needs a tester · `-` not applicable.
 | Rotation range (90 to 2700°), strength, damping, filters | ✅ | 🟢 |
 | Pedal response curves, sensitivity, deadzones, combined pedals | ✅ | 🟢 |
 | RS Shifter & Handbrake (shift, digital + analog handbrake) | ✅ | 🟢 |
-| LIGHTSYNC RGB LEDs (slots, colors, direction; edits apply live) | ✅ (faceplate strip) | 🟡 (rev lights) |
+| LIGHTSYNC RGB LEDs (slots, colors, direction; edits apply live) | ✅ (faceplate strip, see note) | 🟡 (rev lights) |
 | RPM rev-light display (level fill, direction-aware) | ✅ | 🟡 |
+
+> **If the strip stays dark, check which onboard profile is active.** The
+> wheel stores five, and a profile can keep the strip off entirely. Every
+> LED write still reports success on such a profile, so the driver looks
+> broken when the wheel is simply doing what that profile says. The four
+> built-in sweeps also play a colour pattern held in the wheel's own
+> firmware, which it never reports, so the app previews their motion but
+> not their colours; pick a custom slot to choose colours yourself.
 | Simulated TrueForce from game telemetry (`logi-tf-sim`) | ✅ (sweep-verified) | 🟢 |
 | Centre calibration, mode / profile switching, computer-side profiles | ✅ | 🟢 |
 

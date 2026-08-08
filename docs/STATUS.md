@@ -12,10 +12,24 @@ measured, which are argued, and which are hoped.
 
 | wheel | force feedback | TrueForce | settings | rev lights |
 |---|---|---|---|---|
-| RS50 (`c276`) | yes, native path | yes | full `wheel_*` surface | yes |
+| RS50 (`c276`) | yes, native path | yes | full `wheel_*` surface | yes, and LIGHTSYNC colours |
 | G PRO (`c272`/`c268`) | yes, same path | yes | full surface | level-based, see below |
 | G923 PS (`c266`) | yes, classic path | simulated only | **none** | yes, classic command |
 | G923 Xbox (`c26e`) | yes, HID++ 0x8123 | simulated only | **none** | **no** |
+
+**LIGHTSYNC on the RS50 was broken until 0.30.0** and is worth stating
+plainly, because the failure looked like hardware. Custom colours never
+displayed in any earlier release: the apply switched every LED off
+immediately before uploading them (a rev-level of zero, `0x807A fn6` byte 5)
+and never activated the slot it had written. Every write returned success
+throughout. Fixed and verified across count, position, colour, spatial split
+and per-LED alternation.
+
+Two things about the strip that are not bugs. It only displays on some
+onboard profiles: a profile can keep it dark, and writes still succeed
+there. And the four built-in sweeps render a palette held in the wheel's
+firmware, which no function in `0x807A`/`0x807B` reports and which G HUB
+never reads either, so their colours cannot be previewed or copied.
 
 The G923 exposes no `wheel_*` attributes at all. That is not an oversight
 this release can fix: it takes the classic force-feedback path, which has no
@@ -34,6 +48,13 @@ The direct-drive stability fix (steering-axis travel 1258-1703 degrees
 before, 204-488 after). The rev-rate default (899 degrees of travel at 25
 against 611 at 35). Which rev-light command each wheel obeys. Which HID++
 features each wheel has.
+
+The RS50's light strip, end to end: `wheel_rev_level` fills it
+proportionally, and custom colours follow what is written across count,
+position, global colour, half-and-half and per-LED alternation. The wire
+traffic for the rev display was compared byte for byte against a G HUB
+capture from the same model and matches, including the transport (control
+SET_REPORT) and the setup packet.
 
 The kernel effect tick, on an RS50 with a kprobe on the timer callback:
 1000.2 Hz on bare metal, median period 1.000 ms, p99 1.003 ms, no tick
