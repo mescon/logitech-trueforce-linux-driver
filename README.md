@@ -32,12 +32,11 @@ before this. See [G923 support](#g923-support).
 ## Logi Wheel
 
 **Logi Wheel** is how you drive all of this. It is this project's answer to G
-HUB, and it is where you will spend your time: every setting the wheel
-supports, in one place, with the ones your hardware or current mode cannot
-accept greyed out and labelled with the reason rather than silently failing.
-It runs as a desktop app (`logi-wheel-gui`) or in a terminal (`logi-wheel`),
-and both are built from the same core, so they offer the same settings and
-the same validation.
+HUB: every setting your wheel supports, in one place. Wheels differ in what
+they offer, and a few settings only apply in one of the wheel's modes, so
+anything unavailable is greyed out with a note saying why. It runs as a
+desktop app (`logi-wheel-gui`) or in a terminal (`logi-wheel`), and both are
+built from the same core, so they behave identically.
 
 ![Logi Wheel](docs/images/logi-wheel.png)
 
@@ -343,11 +342,11 @@ The summary below is the shape of it.
   and `l` lists it, with `[` `]` to pick a layer and `v` to set its level.
 
   How much of it you feel depends on what your game's telemetry carries, and
-  each slider says so rather than leaving you to find out. Only the engine
-  note and the rev limiter work in every supported game. The gear, the pedals
-  and the ABS and traction lamps come from OutGauge, which among these games
-  means BeamNG.drive, so the pit limiter, gear shifts, ABS and traction are
-  silent elsewhere. Surface texture, airborne, impacts and DRS have no source
+  each slider tells you which games feed it. Only the engine note and the rev
+  limiter work in every supported game. The gear, the pedals and the ABS and
+  traction lamps come from OutGauge, which among these games means
+  BeamNG.drive, so the pit limiter, gear shifts, ABS and traction are silent
+  elsewhere. Surface texture, airborne, impacts and DRS have no source
   at all yet: the effects are written, the missing piece is a decoder field.
 
   All of this applies only to games you switched simulated TrueForce on for.
