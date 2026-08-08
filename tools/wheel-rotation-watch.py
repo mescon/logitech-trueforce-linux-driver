@@ -25,6 +25,7 @@ Two limits worth knowing before trusting a run:
     watching another reads as a clean zero, which looks like a pass.
 """
 import argparse
+import shutil
 import os
 import subprocess
 import sys
@@ -76,15 +77,54 @@ def read_range(pid):
     return 1080.0
 
 
+def sweep_pitch(text):
+    """A pitch percentage, and nothing else.
+
+    This value becomes an argv entry for the simulated-TrueForce daemon, so
+    it is validated here rather than forwarded verbatim: the daemon accepts
+    10-200 and anything outside that is a mistake worth catching before it
+    reaches another program's command line.
+    """
+    try:
+        value = int(text, 10)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"pitch must be a whole number, got {text!r}")
+    if not 10 <= value <= 200:
+        raise argparse.ArgumentTypeError(f"pitch must be 10-200, got {value}")
+    return str(value)
+
+
+def resolved_command(argv):
+    """Resolve `argv` to a concrete executable path plus its arguments.
+
+    --cmd exists to run an arbitrary test binary, so the program itself is
+    the caller's choice by design. What is checked is that it resolves to
+    something that exists and is executable, so a typo or a stray argument
+    fails here with a clear message instead of becoming an exec of whatever
+    that text happened to name. Nothing is ever passed to a shell: the
+    command is executed as an argument vector.
+    """
+    if not argv:
+        raise SystemExit("--cmd needs a program to run")
+    program = shutil.which(argv[0]) or (
+        os.path.abspath(argv[0]) if os.path.isfile(argv[0]) else None
+    )
+    if program is None or not os.access(program, os.X_OK):
+        raise SystemExit(f"--cmd: {argv[0]!r} is not an executable on PATH or a runnable file")
+    return [program, *argv[1:]]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--wheel", default="auto", choices=["auto", "rs50", "gpro", "g923"])
-    ap.add_argument("--sweep", metavar="PITCH", help="run logi-tf-sim --sweep PITCH")
+    ap.add_argument("--sweep", metavar="PITCH", type=sweep_pitch,
+                    help="run logi-tf-sim --sweep PITCH (10-200)")
     ap.add_argument("--tail", type=float, default=6.0,
                     help="seconds to keep sampling after the command exits "
                          "(motion often continues well past it)")
-    ap.add_argument("--cmd", nargs=argparse.REMAINDER, help="run this instead")
+    ap.add_argument("--cmd", nargs=argparse.REMAINDER,
+                    help="run this instead: PROGRAM [ARGS...]")
     args = ap.parse_args()
 
     if not args.sweep and not args.cmd:
@@ -118,9 +158,11 @@ def main():
         # whenever one is attached, so on a two-wheel rig the sweep would
         # otherwise drive a wheel this script is not watching.
         env.setdefault("LOGI_TF_SIM_WHEEL", "dd" if pid != "c266" else "auto")
+        if not os.access(SIM, os.X_OK):
+            raise SystemExit(f"{SIM} is not built; run: cargo build --release")
         cmd = [SIM, "--sweep", args.sweep]
     else:
-        cmd = args.cmd
+        cmd = resolved_command(args.cmd)
 
     print(f"watching {dev.name} ({pid}), range {range_deg:.0f} deg")
     print(f"running  {' '.join(cmd)}")
