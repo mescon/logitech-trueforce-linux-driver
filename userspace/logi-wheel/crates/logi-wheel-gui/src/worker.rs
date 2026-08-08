@@ -490,12 +490,21 @@ fn handle<S: SysfsIo>(vm: &ViewModel<S>, req: Request, on_response: &dyn Fn(Resp
             // would make the UI rebuild every row's widget for a one-field
             // edit (see `Response::RowUpdated`'s doc comment).
             let error = vm.edit(&attr, input).err().map(|e| e.to_string());
-            // A successful mode OR active-profile edit changes more than its
-            // own row: a mode flip re-gates every mode-gated row (and the
-            // header label), and an onboard profile switch rewrites the
-            // effective settings across categories. Both follow up with the
-            // fresh rows-plus-info a Refresh would have produced.
-            let device_wide = matches!(attr.as_str(), "wheel_mode" | "wheel_profile") && error.is_none();
+            // A successful mode, active-profile OR LED-effect edit changes
+            // more than its own row: a mode flip re-gates every mode-gated
+            // row (and the header label), an onboard profile switch rewrites
+            // the effective settings across categories, and an LED effect in
+            // 5..9 selects one of the five custom slots, which changes both
+            // the active slot and the colours the strip is showing.
+            //
+            // The effect case is why the preview used to disagree with the
+            // wheel: selecting a different effect changed the colours on the
+            // strip, nothing re-read them, and the preview kept rendering the
+            // slot that was current when the page loaded.
+            let device_wide = matches!(
+                attr.as_str(),
+                "wheel_mode" | "wheel_profile" | "wheel_led_effect"
+            ) && error.is_none();
             // A slot rename's reply gets the active slot's row from the
             // SAME read sent ahead of it: the UI attributes the re-read
             // name to its per-slot cache via the last-known slot, and a
