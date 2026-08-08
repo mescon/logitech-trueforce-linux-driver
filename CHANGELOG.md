@@ -92,6 +92,31 @@ make the wire format look invented. And the strip only displays on some
 onboard profiles: on a profile that keeps it dark, every write still reports
 success.
 
+**The LED state the apps show is now the wheel's, not a guess.** Several
+things conspired to make the strip on screen disagree with the strip on the
+wheel.
+
+Effects 5 to 9 are the five custom slots rather than five animations, but
+only effect 5 was recognised as one, so selecting 6 to 9 switched the wheel
+to another slot while everything downstream still reported the first. The
+driver also assumed effect 5 at every probe instead of asking, so a wheel
+that came up on a built-in sweep was reported as a custom slot until
+something wrote the attribute. It asks now, and it follows the wheel's own
+effect-change broadcasts to the slot they carry, which is the path the
+wheel's on-device menu takes.
+
+The colours themselves were read once at load and never again. They are
+re-read when an effect selects a different slot and when the active profile
+changes, since a profile swap replaces the wheel's LED configuration
+wholesale.
+
+In the app, changing the effect now reloads the LED page, the preview
+animates the sweep the selected effect plays rather than the slot's own
+direction, and the four built-in sweeps preview as motion without colour:
+they render a palette held in the wheel's firmware which nothing reports, so
+showing the slot's colours there claimed something untrue. Custom slots are
+unchanged, and their colours are shown as before.
+
 **The driver reports which HID++ features a wheel has**, one line at probe.
 Userspace cannot find this out: the driver parses HID++ replies and tells the
 kernel it consumed them, so a hidraw reader sees nothing on any wheel the
