@@ -261,105 +261,99 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
         println!("No wheel found.");
         return Ok(());
     };
+
+    // Every interface, every dialect, numbered. The old version tried two
+    // fixed guesses: the classic command on interface 0 and the 0x807A level
+    // dialect on whichever interface declared HID++ report ids. On a wheel
+    // laid out differently (the Xbox G923 has no 0xFF00 interface at all)
+    // the second one silently had no target, so a dialect that had never
+    // been sent got recorded as one the wheel ignores. Sweeping removes the
+    // guess: a remote tester runs one command and reports one number.
+    let nodes = hidpp::all_wheel_nodes(if0);
+    if nodes.is_empty() {
+        println!("No HID interfaces found for this wheel.");
+        return Ok(());
+    }
+
     println!("wheel: {:?}", device.model());
     println!();
-    println!("Each test lights the rev strip for 4 seconds, then turns it off.");
-    println!("Watch the wheel. Note which test number lights it, if any.");
-    println!("Nothing here produces force feedback.");
+    println!("Each test lights the rev strip for 4 seconds, then turns it off,");
+    println!("with a 2 second gap between tests. LEDs only: nothing here");
+    println!("produces force feedback and the wheel will not move.");
+    println!();
+    println!("Watch the rim and note WHICH TEST NUMBER lights it.");
     println!();
 
     let hold = Duration::from_secs(4);
-    let mut worked: Vec<&str> = Vec::new();
+    let gap = Duration::from_secs(2);
+    let mut n = 0;
+    let mut sent = Vec::new();
+    let mut first = true;
 
-    // Test 1: the classic lg4ff output report, on the joystick interface.
-    // Naming the target matters more than it looks: a write to the wrong
-    // interface is not always refused. On a G923 this exact command sent to
-    // the 0xFFFD vendor node is accepted and does nothing, so "sent" alone
-    // cannot tell a wheel that ignored the dialect from a test that never
-    // reached it.
-    match hidpp::joystick_node(if0) {
-        Some(node) => println!(
-            "TEST 1  classic lg4ff command -> {} [{}]",
-            node.display(),
-            hidpp::descriptor_kind(if0)
-        ),
-        None => println!("TEST 1  classic lg4ff command -> no hidraw node found"),
-    }
-    print!("        ");
-    std::io::stdout().flush().ok();
-    match hidpp::open_joystick_node(if0) {
-        None => println!("could not open the joystick interface (try sudo)"),
-        Some(mut io) => {
-            let all_on = hidpp::rev_mask_via_lg4ff(&mut io, 0x1f);
-            sleep(hold);
-            let _ = hidpp::rev_mask_via_lg4ff(&mut io, 0x00);
-            match all_on {
-                Ok(()) => {
-                    println!("sent");
-                    worked.push("1 (classic lg4ff)");
-                }
-                Err(e) => println!("send failed: {e}"),
-            }
-        }
-    }
+    for (hid_dir, node) in &nodes {
+        let kind = hidpp::descriptor_kind(hid_dir);
 
-    // Test 2: the level-based 0x807A dialect, on the HID++ interface.
-    let hidpp_node = hidpp::find_hidpp_sibling(if0);
-    match &hidpp_node {
-        Some(node) => {
-            let dir = node
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| std::path::PathBuf::from("/sys/class/hidraw").join(n).join("device"))
-                .unwrap_or_default();
-            println!(
-                "TEST 2  0x807A level dialect  -> {} [{}]",
-                node.display(),
-                hidpp::descriptor_kind(&dir)
-            );
+        // Dialect A: the classic lg4ff output report.
+        n += 1;
+        if !first {
+            sleep(gap);
         }
-        None => println!("TEST 2  0x807A level dialect  -> no HID++ sibling interface found"),
-    }
-    print!("        ");
-    std::io::stdout().flush().ok();
-    match hidpp::probe_features(if0) {
-        None => println!("no HID++ interface could be opened (try sudo)"),
-        Some(rows) => {
-            let lightsync = rows.iter().find(|(id, _, _)| *id == 0x807A).and_then(|(_, _, i)| *i);
-            match lightsync {
-                None => println!("this wheel does not implement 0x807A, so this one cannot work"),
-                // The same path that was reported above, not a second
-                // lookup: a diagnostic that names one node and writes to
-                // another cannot be trusted about either.
-                Some(idx) => match hidpp_node
-                    .as_ref()
-                    .and_then(|n| hidpp::RealHidppIo::open(n).ok())
-                {
-                    None => println!("could not open the HID++ interface (try sudo)"),
-                    Some(mut io) => {
-                        let on = hidpp::rev_level_via_lightsync(&mut io, idx, 10);
-                        sleep(hold);
-                        let _ = hidpp::rev_level_via_lightsync(&mut io, idx, 0);
-                        match on {
-                            Ok(()) => {
-                                println!("sent (feature index 0x{idx:02X})");
-                                worked.push("2 (0x807A level dialect)");
-                            }
-                            Err(e) => println!("send failed: {e}"),
-                        }
+        first = false;
+        print!("TEST {n}  {} [{kind}]  classic lg4ff ... ", node.display());
+        std::io::stdout().flush().ok();
+        match hidpp::RealHidppIo::open(node) {
+            Err(e) => println!("cannot open ({e})"),
+            Ok(mut io) => {
+                let on = hidpp::rev_mask_via_lg4ff(&mut io, 0x1f);
+                sleep(hold);
+                let _ = hidpp::rev_mask_via_lg4ff(&mut io, 0x00);
+                match on {
+                    Ok(()) => {
+                        println!("sent");
+                        sent.push(n);
                     }
-                },
+                    Err(e) => println!("refused ({e})"),
+                }
             }
+        }
+
+        // Dialect B: the level-based 0x807A sequence, but only where this
+        // interface actually answers HID++. Asking each interface rather
+        // than assuming which one speaks it is the whole point.
+        n += 1;
+        sleep(gap);
+        print!("TEST {n}  {} [{kind}]  0x807A level ... ", node.display());
+        std::io::stdout().flush().ok();
+        match hidpp::RealHidppIo::open(node) {
+            Err(e) => println!("cannot open ({e})"),
+            Ok(mut io) => match hidpp::resolve_feature_index(&mut io, 0x807A) {
+                None => println!("this interface does not answer HID++ for 0x807A"),
+                Some(idx) => {
+                    let on = hidpp::rev_level_via_lightsync(&mut io, idx, 10);
+                    sleep(hold);
+                    let _ = hidpp::rev_level_via_lightsync(&mut io, idx, 0);
+                    match on {
+                        Ok(()) => {
+                            println!("sent (feature index 0x{idx:02X})");
+                            sent.push(n);
+                        }
+                        Err(e) => println!("refused ({e})"),
+                    }
+                }
+            },
         }
     }
 
     println!();
-    if worked.is_empty() {
-        println!("Nothing could be sent. Run again with sudo, or report the errors above.");
+    if sent.is_empty() {
+        println!("Nothing could be sent at all. Try again with sudo.");
     } else {
-        println!("Sent successfully: {}", worked.join(", "));
-        println!("A command being sent does NOT mean the wheel obeyed it.");
-        println!("What matters is which test number actually lit the strip.");
+        let list = sent.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+        println!("Reached the wheel: TEST {list}.");
+        println!("That only means the bytes were accepted, NOT that the wheel obeyed.");
     }
+    println!();
+    println!("WHICH TEST NUMBER LIT THE STRIP? Reply with the number, or 'none'.");
     Ok(())
 }
+

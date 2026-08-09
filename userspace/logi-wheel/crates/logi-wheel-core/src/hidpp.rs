@@ -294,6 +294,46 @@ pub fn find_hidpp_sibling(if0_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Every HID interface of the wheel's USB device, as
+/// `(hid device directory, /dev/hidrawN)` pairs, sorted by node name.
+///
+/// The rev-light probe needs this because which interface carries what
+/// differs per wheel: a PlayStation G923 has Joystick + `0xFF00` + `0xFFFD`,
+/// while the Xbox edition has only Joystick + `0xFFFD` and no `0xFF00` at
+/// all. Guessing the right one from a model name has cost issue #27 months,
+/// so the probe stopped guessing and now tries every interface.
+pub fn all_wheel_nodes(if0_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let Ok(if0_real) = std::fs::canonicalize(if0_dir) else {
+        return Vec::new();
+    };
+    let Some(usb_device_dir) = if0_real.parent().and_then(Path::parent) else {
+        return Vec::new();
+    };
+    let Ok(iface_entries) = std::fs::read_dir(usb_device_dir) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for iface in iface_entries.filter_map(|e| e.ok()) {
+        let Ok(hid_entries) = std::fs::read_dir(iface.path()) else {
+            continue;
+        };
+        for hid in hid_entries.filter_map(|e| e.ok()) {
+            let hid_dir = hid.path();
+            if !hid_dir.join("report_descriptor").is_file() {
+                continue;
+            }
+            if let Some(node) = hidraw_node(&hid_dir) {
+                found.push((hid_dir, node));
+            }
+        }
+    }
+    // Sorted so the numbering a remote tester reports back means the same
+    // thing on the next run.
+    found.sort_by(|a, b| a.1.cmp(&b.1));
+    found.dedup_by(|a, b| a.1 == b.1);
+    found
+}
+
 /// The full G923 firmware query: resolve the HID++ sibling node from the
 /// classic wheel's interface-0 directory, open it, and run
 /// `query_main_firmware`. `None` at any step (no sibling found, the node
