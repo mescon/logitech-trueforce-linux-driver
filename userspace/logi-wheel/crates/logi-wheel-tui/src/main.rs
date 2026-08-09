@@ -272,7 +272,20 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
     let mut worked: Vec<&str> = Vec::new();
 
     // Test 1: the classic lg4ff output report, on the joystick interface.
-    print!("TEST 1  classic lg4ff command ... ");
+    // Naming the target matters more than it looks: a write to the wrong
+    // interface is not always refused. On a G923 this exact command sent to
+    // the 0xFFFD vendor node is accepted and does nothing, so "sent" alone
+    // cannot tell a wheel that ignored the dialect from a test that never
+    // reached it.
+    match hidpp::joystick_node(if0) {
+        Some(node) => println!(
+            "TEST 1  classic lg4ff command -> {} [{}]",
+            node.display(),
+            hidpp::descriptor_kind(if0)
+        ),
+        None => println!("TEST 1  classic lg4ff command -> no hidraw node found"),
+    }
+    print!("        ");
     std::io::stdout().flush().ok();
     match hidpp::open_joystick_node(if0) {
         None => println!("could not open the joystick interface (try sudo)"),
@@ -291,7 +304,23 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Test 2: the level-based 0x807A dialect, on the HID++ interface.
-    print!("TEST 2  0x807A level dialect  ... ");
+    let hidpp_node = hidpp::find_hidpp_sibling(if0);
+    match &hidpp_node {
+        Some(node) => {
+            let dir = node
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| std::path::PathBuf::from("/sys/class/hidraw").join(n).join("device"))
+                .unwrap_or_default();
+            println!(
+                "TEST 2  0x807A level dialect  -> {} [{}]",
+                node.display(),
+                hidpp::descriptor_kind(&dir)
+            );
+        }
+        None => println!("TEST 2  0x807A level dialect  -> no HID++ sibling interface found"),
+    }
+    print!("        ");
     std::io::stdout().flush().ok();
     match hidpp::probe_features(if0) {
         None => println!("no HID++ interface could be opened (try sudo)"),
@@ -299,8 +328,12 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
             let lightsync = rows.iter().find(|(id, _, _)| *id == 0x807A).and_then(|(_, _, i)| *i);
             match lightsync {
                 None => println!("this wheel does not implement 0x807A, so this one cannot work"),
-                Some(idx) => match hidpp::find_hidpp_sibling(if0)
-                    .and_then(|n| hidpp::RealHidppIo::open(&n).ok())
+                // The same path that was reported above, not a second
+                // lookup: a diagnostic that names one node and writes to
+                // another cannot be trusted about either.
+                Some(idx) => match hidpp_node
+                    .as_ref()
+                    .and_then(|n| hidpp::RealHidppIo::open(n).ok())
                 {
                     None => println!("could not open the HID++ interface (try sudo)"),
                     Some(mut io) => {

@@ -437,7 +437,38 @@ pub fn rev_mask_via_lg4ff<T: HidppIo>(io: &mut T, mask: u8) -> io::Result<()> {
 /// lg4ff command is sent. That is the interface carrying the gamepad
 /// descriptor, not the HID++ one [`find_hidpp_sibling`] returns.
 pub fn open_joystick_node(if0_dir: &Path) -> Option<RealHidppIo> {
-    RealHidppIo::open(&hidraw_node(if0_dir)?).ok()
+    RealHidppIo::open(&joystick_node(if0_dir)?).ok()
+}
+
+/// The path [`open_joystick_node`] would open, so a diagnostic can say
+/// where it wrote rather than only that it wrote.
+///
+/// Worth reporting because a write to the wrong interface does not
+/// necessarily fail: on a G923, the classic LED command sent to the
+/// `0xFFFD` vendor node is accepted by the kernel and does nothing, while
+/// the same write to the `0xFF00` HID++ node fails with `EPIPE`. A test
+/// that only prints "sent" therefore cannot distinguish "the wheel ignored
+/// this dialect" from "this never reached the wheel's joystick interface",
+/// and that difference has cost a remote tester months.
+pub fn joystick_node(if0_dir: &Path) -> Option<PathBuf> {
+    hidraw_node(if0_dir)
+}
+
+/// The first bytes of a HID device's report descriptor, as a short label.
+/// `05 01 09 04` is Generic Desktop / Joystick, which is the interface the
+/// classic LED command has to land on.
+pub fn descriptor_kind(hid_dir: &Path) -> String {
+    let Ok(bytes) = std::fs::read(hid_dir.join("report_descriptor")) else {
+        return "unreadable".to_string();
+    };
+    match bytes.get(..4) {
+        Some([0x05, 0x01, 0x09, 0x04]) => "Joystick".to_string(),
+        Some([0x05, 0x01, 0x09, 0x05]) => "Gamepad".to_string(),
+        Some([0x06, 0x00, 0xff, ..]) => "vendor 0xFF00 (HID++)".to_string(),
+        Some([0x06, 0xfd, 0xff, ..]) => "vendor 0xFFFD (TrueForce)".to_string(),
+        Some(b) => format!("unrecognised ({:02x} {:02x} {:02x} {:02x})", b[0], b[1], b[2], b[3]),
+        None => "empty".to_string(),
+    }
 }
 
 #[cfg(test)]
