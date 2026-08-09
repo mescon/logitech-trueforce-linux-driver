@@ -69,25 +69,43 @@ pointing it at a Proton-made prefix triggers prefix initialisation, prompts
 to install wine-mono, and can convert the prefix. `logi-launch` refuses to
 attach at all rather than do that.
 
-### Choosing the helper
+### You should not have to configure it
+
+With nothing set, `logi-launch` runs **this project's own `logi-tf-relay`**
+and works out which game it is from the appid Steam already provides. So
+for simulated TrueForce the whole setup is:
+
+```
+logi-launch %command%
+```
+
+It knows the seven titles that publish to shared memory (iRacing, RaceRoom,
+Assetto Corsa, Competizione, EVO, rFactor 2, Le Mans Ultimate). For any
+other game it starts nothing and simply launches it, so leaving it in the
+launch options of a game that does not need it costs nothing.
+
+If the relay is not in that game's prefix yet it says so in the log and
+launches the game anyway, rather than failing silently. Install it from the
+app's Setup page, **Install relay**.
+
+### Running something else instead
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LOGI_LAUNCH_EXE` | `c:\sim-teleport.exe` | The helper, as a Windows path inside the prefix |
-| `LOGI_LAUNCH_ARGS` | `source` | Arguments passed to it |
+| `LOGI_LAUNCH_EXE` | `c:\logi-tf-relay.exe` | The helper, as a Windows path inside the prefix |
+| `LOGI_LAUNCH_ARGS` | `--game <from appid>` | Arguments passed to it |
 | `LOGI_LAUNCH_WAIT` | `120` | Seconds to wait for the game's wineserver |
 | `LOGI_LAUNCH_SETTLE` | `15` | Seconds to let the game create its sections first |
 | `LOGI_LAUNCH_LOG` | `/tmp/logi-launch.log` | Where it writes what it did |
 
-To drive simulated TrueForce from a shared-memory sim, point it at this
-project's own relay instead:
+For example, to run a bridge that forwards telemetry to another machine
+instead of driving simulated TrueForce here:
 
 ```
-LOGI_LAUNCH_EXE='c:\logi-tf-relay.exe' LOGI_LAUNCH_ARGS='--game ac-evo' logi-launch %command%
+LOGI_LAUNCH_EXE='c:\sim-teleport.exe' LOGI_LAUNCH_ARGS=source logi-launch %command%
 ```
 
-Use `--game acc`, `assetto`, `iracing`, `raceroom`, `rf2` or `lmu` to match
-the title. See [SHARED_MEMORY_RELAY.md](SHARED_MEMORY_RELAY.md).
+See [SHARED_MEMORY_RELAY.md](SHARED_MEMORY_RELAY.md) for the relay itself.
 
 ### Feeding SimHub on another PC
 
@@ -100,8 +118,8 @@ approximation.
 
 Its source half runs correctly under Proton: confirmed on 2026-08-09 with
 Assetto Corsa EVO, which it detected from the menu via
-`Local\acevo_pmf_physics`. Put `sim-teleport.exe` in the prefix's `drive_c`,
-then use the default `logi-launch` settings above.
+`Local\acevo_pmf_physics`. Put `sim-teleport.exe` in the prefix's `drive_c`
+and set `LOGI_LAUNCH_EXE` as above.
 
 None of this touches force feedback or TrueForce. A telemetry helper only
 reads; the native FFB and SDK TrueForce paths are unaffected.

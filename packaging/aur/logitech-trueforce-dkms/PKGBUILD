@@ -160,6 +160,13 @@ package_logi-wheel() {
 	install -Dm755 "$_src/tools/rebind-wheel.sh" \
 		"$pkgdir/usr/bin/logi-rebind-wheel"
 
+	# Steam launch-options wrapper: starts an in-prefix Windows helper
+	# (logi-tf-relay, or a telemetry bridge) after the game is up. Useless
+	# unless it is on PATH, because the whole point is that a user types
+	# `logi-launch %command%` and nothing else.
+	install -Dm755 "$_src/tools/logi-launch.sh" \
+		"$pkgdir/usr/bin/logi-launch"
+
 	# The rotation proxy the installer stages with --range-proxy. Shipped
 	# prebuilt because it is a Windows DLL and the people who need it are
 	# on Linux without a cross-compiler; without this, --range-proxy is

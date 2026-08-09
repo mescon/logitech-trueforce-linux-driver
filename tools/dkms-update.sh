@@ -67,6 +67,8 @@ MODESWITCH_SRC="$REPO_ROOT/tools/g923-xbox-modeswitch.sh"
 MODESWITCH_DST="/usr/bin/logi-g923-modeswitch"
 REBIND_SRC="$REPO_ROOT/tools/rebind-wheel.sh"
 REBIND_DST="/usr/bin/logi-rebind-wheel"
+LAUNCH_SRC="$REPO_ROOT/tools/logi-launch.sh"
+LAUNCH_DST="/usr/bin/logi-launch"
 MODPROBE_SRC="$REPO_ROOT/packaging/modprobe.d/hid-logitech-dd.conf"
 MODPROBE_DST="/etc/modprobe.d/hid-logitech-dd.conf"
 
@@ -221,6 +223,18 @@ if [ -f "$REBIND_SRC" ]; then
 		install -Dm 0755 "$REBIND_SRC" "$REBIND_DST"
 	else
 		echo "rebind helper up to date ($REBIND_DST)"
+	fi
+fi
+
+# The Steam launch-options wrapper. Documented as a bare `logi-launch
+# %command%`, so it has to be on PATH: a user pasting an absolute path into
+# Steam is exactly the friction this is meant to remove.
+if [ -f "$LAUNCH_SRC" ]; then
+	if ! cmp -s "$LAUNCH_SRC" "$LAUNCH_DST" 2>/dev/null; then
+		echo "== installing $LAUNCH_DST =="
+		install -Dm 0755 "$LAUNCH_SRC" "$LAUNCH_DST"
+	else
+		echo "launch wrapper up to date ($LAUNCH_DST)"
 	fi
 fi
 

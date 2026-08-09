@@ -74,6 +74,12 @@ override_dh_install:
 	# to be moved.
 	install -D -m 0755 tools/rebind-wheel.sh \
 		$(TUI)/usr/bin/logi-rebind-wheel
+	# Steam launch-options wrapper: starts an in-prefix Windows helper
+	# (logi-tf-relay, or a telemetry bridge) after the game is up. Useless
+	# unless it is on PATH, because the whole point is that a user types
+	# `logi-launch %command%` and nothing else.
+	install -D -m 0755 tools/logi-launch.sh \
+		$(TUI)/usr/bin/logi-launch
 	# The transitional symlink for the pre-0.22.0 name is declared in
 	# debian/logi-wheel.links, next to the other rename's symlink.
 	# Everything else (udev rules, binaries, desktop entry, icon) comes

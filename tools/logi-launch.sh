@@ -26,10 +26,31 @@
 # initialisation (the wine-mono prompt) and risks converting it.
 set -uo pipefail
 
-# The helper executable, as a Windows path inside the prefix. Override to
-# run something else, or to point at a copy kept elsewhere in drive_c.
-HELPER_EXE="${LOGI_LAUNCH_EXE:-c:\\sim-teleport.exe}"
-HELPER_ARGS="${LOGI_LAUNCH_ARGS:-source}"
+# Which titles publish to shared memory, keyed by Steam appid, with the
+# name logi-tf-relay knows them by. A game that is not here needs nothing
+# started, so this doubles as the "should I do anything at all" test.
+relay_game_for() {
+	case "$1" in
+	266410)  echo "iracing" ;;
+	211500)  echo "raceroom" ;;
+	244210)  echo "assetto" ;;
+	805550)  echo "acc" ;;
+	3058630) echo "ac-evo" ;;
+	365960)  echo "rf2" ;;
+	2399420) echo "lmu" ;;
+	*)       echo "" ;;
+	esac
+}
+
+# With nothing configured this runs THIS project's own relay, with the game
+# worked out from the appid Steam sets. That is the case worth making
+# effortless: install the packages, put `logi-launch %command%` in the
+# launch options, and simulated TrueForce has its telemetry.
+#
+# Set LOGI_LAUNCH_EXE to run something else instead, for example a bridge
+# that forwards telemetry to SimHub on another machine.
+HELPER_EXE="${LOGI_LAUNCH_EXE:-}"
+HELPER_ARGS="${LOGI_LAUNCH_ARGS:-}"
 # How long to wait for the game's wineserver before giving up, and how long
 # to let the game settle afterwards so its maps exist before the first probe.
 WAIT_SECONDS="${LOGI_LAUNCH_WAIT:-120}"
@@ -60,6 +81,22 @@ if [ -z "$wine_bin" ]; then
 	say "(refusing to fall back to the distribution's wine: it would try to"
 	say " initialise a Proton-made prefix)"
 	exec "$@"
+fi
+
+# Work out what to start, if the caller did not say.
+if [ -z "$HELPER_EXE" ]; then
+	game=$(relay_game_for "${SteamAppId:-${SteamGameId:-}}")
+	if [ -z "$game" ]; then
+		say "appid ${SteamAppId:-unknown} does not need an in-prefix helper; launching the game"
+		exec "$@"
+	fi
+	if [ ! -f "$prefix_root/pfx/drive_c/logi-tf-relay.exe" ]; then
+		say "this game needs logi-tf-relay in its prefix and it is not there."
+		say "Install it from the app's Setup page (Install relay), then start the game again."
+		exec "$@"
+	fi
+	HELPER_EXE='c:\logi-tf-relay.exe'
+	HELPER_ARGS="--game $game"
 fi
 
 (

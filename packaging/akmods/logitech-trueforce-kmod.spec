@@ -124,6 +124,7 @@ Proton prefixes.
 %{_datadir}/logitech-trueforce/logi-tf-relay.exe
 %{_bindir}/logi-g923-modeswitch
 %{_bindir}/logi-rebind-wheel
+%{_bindir}/logi-launch
 %{_bindir}/logitech-trueforce-install-shim
 
 %package -n logi-wheel-gui
@@ -249,6 +250,12 @@ install -D -m 0755 tools/g923-xbox-modeswitch.sh \
 # to be moved.
 install -D -m 0755 tools/rebind-wheel.sh \
     "%{buildroot}%{_bindir}/logi-rebind-wheel"
+# Steam launch-options wrapper: starts an in-prefix Windows helper
+# (logi-tf-relay, or a telemetry bridge) after the game is up. Useless
+# unless it is on PATH, because the whole point is that a user types
+# `logi-launch %command%` and nothing else.
+install -D -m 0755 tools/logi-launch.sh \
+    "%{buildroot}%{_bindir}/logi-launch"
 # Transitional symlink for the pre-v0.22.0 name.
 ln -s logi-shim "%{buildroot}%{_bindir}/logitech-trueforce-install-shim"
 
