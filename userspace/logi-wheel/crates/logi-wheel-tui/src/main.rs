@@ -215,8 +215,26 @@ fn run(mut app: App<RealSysfs>) -> Result<(), Box<dyn std::error::Error>> {
 /// access to the wheel's HID++ hidraw node, which this project's udev rules
 /// grant; without them, run it with sudo.
 fn hidpp_features() -> Result<(), Box<dyn std::error::Error>> {
-    let device = Device::discover()?;
-    println!("wheel: {:?}", device.model());
+    // Every attached wheel, not just the first one sysfs happened to
+    // yield. A diagnostic that quietly describes one wheel on a two-wheel
+    // rig is worse than one that refuses to run: the output looks complete.
+    let wheels = Device::discover_all();
+    if wheels.is_empty() {
+        return Err(Box::new(logi_wheel_core::Error::NoWheel));
+    }
+    let models: Vec<_> = wheels.iter().map(|d| d.model()).collect();
+    let labels = logi_wheel_core::device::short_labels(&models);
+    for (i, device) in wheels.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("wheel: {}", labels.get(i).cloned().unwrap_or_else(|| format!("{:?}", device.model())));
+        report_hidpp_features(device);
+    }
+    Ok(())
+}
+
+fn report_hidpp_features(device: &Device<logi_wheel_core::sysfs::RealSysfs>) {
     match device.hidpp_features() {
         None => {
             println!();
@@ -236,7 +254,6 @@ fn hidpp_features() -> Result<(), Box<dyn std::error::Error>> {
             println!("A feature with an index is implemented by the wheel.");
         }
     }
-    Ok(())
 }
 
 /// Try each known way of driving a wheel's rev strip, one at a time, and
@@ -256,11 +273,17 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
     use std::thread::sleep;
     use std::time::Duration;
 
-    let device = Device::discover()?;
-    let Some(if0) = device.hid_dir() else {
+    // Every attached wheel, each with every interface. Probing only the
+    // first wheel found would leave the second one untested while the
+    // output looked complete, which is the failure this whole command
+    // exists to prevent.
+    let wheels = Device::discover_all();
+    if wheels.is_empty() {
         println!("No wheel found.");
         return Ok(());
-    };
+    }
+    let models: Vec<_> = wheels.iter().map(|d| d.model()).collect();
+    let labels = logi_wheel_core::device::short_labels(&models);
 
     // Every interface, every dialect, numbered. The old version tried two
     // fixed guesses: the classic command on interface 0 and the 0x807A level
@@ -269,13 +292,6 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
     // the second one silently had no target, so a dialect that had never
     // been sent got recorded as one the wheel ignores. Sweeping removes the
     // guess: a remote tester runs one command and reports one number.
-    let nodes = hidpp::all_wheel_nodes(if0);
-    if nodes.is_empty() {
-        println!("No HID interfaces found for this wheel.");
-        return Ok(());
-    }
-
-    println!("wheel: {:?}", device.model());
     println!();
     println!("Each test lights the rev strip for 4 seconds, then turns it off,");
     println!("with a 2 second gap between tests. LEDs only: nothing here");
@@ -290,7 +306,15 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
     let mut sent = Vec::new();
     let mut first = true;
 
-    for (hid_dir, node) in &nodes {
+    for (wi, device) in wheels.iter().enumerate() {
+        let Some(if0) = device.hid_dir() else { continue };
+        let nodes = hidpp::all_wheel_nodes(if0);
+        if nodes.is_empty() {
+            continue;
+        }
+        let label = labels.get(wi).cloned().unwrap_or_else(|| format!("{:?}", device.model()));
+        println!("== {label} ==");
+        for (hid_dir, node) in &nodes {
         let kind = hidpp::descriptor_kind(hid_dir);
 
         // Dialect A: the classic lg4ff output report.
@@ -342,6 +366,8 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
                 }
             },
         }
+    }
+        println!();
     }
 
     println!();

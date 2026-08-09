@@ -95,6 +95,44 @@ pub fn report() -> String {
         let _ = writeln!(out, "  no Logitech wheel bound");
     }
 
+    // The HID++ feature map, per wheel. Worth collecting automatically
+    // because it is what a protocol question actually turns on, and
+    // because asking for it by hand has cost issue #27 months: a wheel
+    // that answers nothing and a wheel nobody addressed correctly look
+    // identical in every other kind of report. Each line is one round trip
+    // to the wheel, so this runs once per report and never per frame.
+    let _ = writeln!(out, "\n### HID++ features");
+    let wheels = crate::Device::discover_all();
+    if wheels.is_empty() {
+        let _ = writeln!(out, "no wheel to ask");
+    } else {
+        let models: Vec<_> = wheels.iter().map(|d| d.model()).collect();
+        let labels = crate::device::short_labels(&models);
+        for (i, wheel) in wheels.iter().enumerate() {
+            let label = labels.get(i).cloned().unwrap_or_else(|| format!("{:?}", wheel.model()));
+            match wheel.hidpp_features() {
+                None => {
+                    let _ = writeln!(out, "{label}: no HID++ interface could be opened");
+                }
+                Some(rows) => {
+                    let implemented: Vec<String> = rows
+                        .iter()
+                        .filter_map(|(id, _, idx)| idx.map(|i| format!("{id:04X}@{i:02X}")))
+                        .collect();
+                    let _ = writeln!(
+                        out,
+                        "{label}: {}",
+                        if implemented.is_empty() {
+                            "none of the known features".to_string()
+                        } else {
+                            implemented.join(" ")
+                        }
+                    );
+                }
+            }
+        }
+    }
+
     let _ = writeln!(out, "\n### simulated TrueForce config");
     let cfg = std::env::var("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)

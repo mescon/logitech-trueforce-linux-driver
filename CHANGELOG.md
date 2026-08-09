@@ -15,6 +15,15 @@ rules, neither of which was the problem. The wheel's HID device directory
 was not being carried through discovery, and every HID++ lookup starts from
 it. An RS50 enumerates fourteen features again.
 
+**The diagnostics cover every wheel, and bug reports carry the feature
+map.** `--hidpp-features` and `--led-probe` described whichever wheel sysfs
+yielded first, so on a two-wheel rig the second was silently untested while
+the output looked complete. Both now walk every attached wheel. `logi-wheel
+--report` also collects each wheel's HID++ feature map now, because that is
+what a protocol question actually turns on, and a wheel that answers nothing
+looks identical to a wheel nobody addressed correctly in every other kind of
+report.
+
 **The LIGHTSYNC preview button says what it does.** "Preview animation",
 next to a picture of the LED strip, was read as "play this on the wheel",
 which it never was: the strip is a rev-light display and holds a static

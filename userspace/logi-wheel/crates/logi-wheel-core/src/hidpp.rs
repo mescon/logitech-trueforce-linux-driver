@@ -571,6 +571,10 @@ pub fn descriptor_kind(hid_dir: &Path) -> String {
         Some([0x05, 0x01, 0x09, 0x05]) => "Gamepad".to_string(),
         Some([0x06, 0x00, 0xff, ..]) => "vendor 0xFF00 (HID++)".to_string(),
         Some([0x06, 0xfd, 0xff, ..]) => "vendor 0xFFFD (TrueForce)".to_string(),
+        // The RS50's HID++ page, and the Xbox G923's: printing it as
+        // "unrecognised" made the one interface that matters look like the
+        // odd one out in the probe's own output.
+        Some([0x06, 0x43, 0xff, ..]) => "vendor 0xFF43 (HID++)".to_string(),
         Some(b) => format!("unrecognised ({:02x} {:02x} {:02x} {:02x})", b[0], b[1], b[2], b[3]),
         None => "empty".to_string(),
     }
