@@ -33,6 +33,17 @@ can convert the prefix. Our own documentation recommended exactly that.
 `logi-launch` starts the helper only once the game's own wineserver exists,
 and runs it with the wine build the prefix actually belongs to.
 
+**The apps can now talk to a G923 Xbox edition at all.** Every HID++ query
+this project made was sent as a short report, and an interface had to
+declare the short and long report ids to be recognised as HID++ in the
+first place. That wheel does neither: it carries HID++ on its Joystick
+interface with the long and very-long ids and no short one. So the
+interface was never found, and a short request would have been refused
+before it reached the wheel. Nothing over HID++ had ever reached that
+wheel, and the failures read as a wheel that does not answer. It does:
+asked properly it replies, and reports the rev-light feature at index
+`0x12`. Firmware queries and feature probes work there now.
+
 **A from-source install now installs the apps.** `sudo ./tools/setup.sh`
 built the driver, installed the udev rules and the helper scripts, and then
 left `logi-wheel`, `logi-ffb` and `logi-tf-sim` to the reader. Every
