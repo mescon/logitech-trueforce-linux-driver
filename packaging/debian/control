@@ -39,7 +39,7 @@ Depends: ${misc:Depends}, ${shlibs:Depends}, logitech-trueforce-dkms
 Recommends: python3
 Suggests: wine
 # Renamed from logi-dd (0.20.0): "dd" meant direct-drive, but the app
-# configures every supported wheel, including the belt-driven G923. These
+# configures every supported wheel, including the gear-driven G923. These
 # move an existing logi-dd install onto this package automatically.
 Provides: logi-dd
 Replaces: logi-dd

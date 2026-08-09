@@ -171,7 +171,7 @@ wins if both are set).
 ## Upgrading from logi-dd
 
 The settings app used to be named `logi-dd`; it is renamed to `logi-wheel`
-because the driver now also supports the belt-driven G923, not just the
+because the driver now also supports the gear-driven G923, not just the
 direct-drive wheels. Packages upgrade in place (see the top-level
 CHANGELOG), and `logi-dd`/`logi-dd-gui` are installed as transitional
 symlinks to the new binaries. Existing profiles and `tf-sim.conf` under

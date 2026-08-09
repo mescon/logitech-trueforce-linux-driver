@@ -1167,7 +1167,7 @@ reason to upgrade unless you install from the AUR.
 - **The settings app is renamed from `logi-dd` to `logi-wheel`** (TUI binary
   `logi-dd` -> `logi-wheel`, GUI binary `logi-dd-gui` -> `logi-wheel-gui`;
   `logi-ffb` and `logi-tf-sim` keep their names). Reason: "dd" meant
-  direct-drive, but the driver now also supports the belt-driven G923, and
+  direct-drive, but the driver now also supports the gear-driven G923, and
   the app configures every supported wheel, not just the direct-drive ones.
   - **Config files migrate automatically, once.** Profiles and
     `tf-sim.conf` move to `$XDG_CONFIG_HOME/logi-wheel` (falling back to
@@ -1609,7 +1609,7 @@ the direct-drive wheels.
   `hid-logitech-hidpp` DKMS package and the stale
   `blacklist-hid-logitech-hidpp.conf`, restoring the in-tree driver for
   your other Logitech hardware.
-- Belt-driven **G920/G923 are no longer claimed** by this fork; they use
+- Gear-driven **G920/G923 are no longer claimed** by this fork; they use
   the in-tree driver (their standard HID++ FFB is unchanged).
 
 ### Licensing and packaging

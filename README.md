@@ -3,7 +3,7 @@
 # Logitech TrueForce Linux Driver
 
 A Linux kernel driver and userspace tools for three Logitech racing wheels:
-the direct-drive **RS50** and **G PRO Racing Wheel**, and the belt-driven
+the direct-drive **RS50** and **G PRO Racing Wheel**, and the gear-driven
 **G923**. It brings force feedback, TrueForce haptics, a live RPM rev-light
 display, LIGHTSYNC LED control, and G HUB-equivalent wheel settings to Linux,
 including in Proton/Wine sims.
@@ -131,7 +131,7 @@ TrueForce on the same wheel**. TrueForce has never been available for it on
 Linux before, and the PlayStation edition had no force feedback at all - the
 in-tree drivers do not cover it.
 
-It is belt-driven and speaks an older Logitech protocol, so internally it
+It is gear-driven and speaks an older Logitech protocol, so internally it
 takes a different path than the RS50 and G PRO above, but the result is the
 same: real forces in games, engine haptics through the rim, working rev
 lights, and the settings app.

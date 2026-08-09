@@ -4649,7 +4649,7 @@ static int g920_get_config(struct hidpp_device *hidpp,
 		hid_warn(hidpp->hid_dev,
 			 "Failed to read range from device!\n");
 	}
-	/* Direct-drive wheels default to 1080, belt-driven to 900 */
+	/* Direct-drive wheels default to 1080, gear-driven to 900 */
 	if (ret) {
 		if (hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_RS50 ||
 		    hidpp->hid_dev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
@@ -16812,10 +16812,10 @@ static const struct hid_device_id hidpp_devices[] = {
 	 * wheels - the RS50 and G PRO, across their three USB IDs (c276 RS50
 	 * native, c272 G PRO Xbox/PC which the RS50 also uses in compatibility
 	 * mode, c268 G PRO PS/PC) - whose TrueForce / direct-drive FFB support
-	 * it adds, plus the belt-driven G923, whose classic FFB engine and
+	 * it adds, plus the gear-driven G923, whose classic FFB engine and
 	 * HID++ 0x8123 path are also implemented here (c266/c267 classic,
 	 * c26e Xbox). Every other Logitech HID++ device (mice, keyboards,
-	 * receiver-paired and 27 MHz devices, and other belt-driven wheels
+	 * receiver-paired and 27 MHz devices, and other gear-driven wheels
 	 * such as the G920) is deliberately left to the in-tree
 	 * hid-logitech-hidpp driver, which is continuously maintained and
 	 * supports far more hardware. Do not add IDs here beyond the ones
@@ -16826,7 +16826,7 @@ static const struct hid_device_id hidpp_devices[] = {
 	 * Direct-drive base architecture: HID++ 4.2 on interface 1, a dedicated
 	 * 64-byte FFB endpoint on interface 2, and the TrueForce packet layout.
 	 * These use hidpp_dd_ff_* (HIDPP_QUIRK_DD_FFB), NOT the G920 HID++ FFB
-	 * path, which inherits transport/queue limitations from the belt-driven
+	 * path, which inherits transport/queue limitations from the gear-driven
 	 * generation and misbehaves on direct-drive hardware (issue #8).
 	 */
 	{ /* Logitech G Pro Racing Wheel (Xbox/PC) over USB */

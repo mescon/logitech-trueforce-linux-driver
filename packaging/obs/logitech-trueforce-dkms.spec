@@ -81,7 +81,7 @@ Requires:       logitech-trueforce-dkms
 # The shim installer edits the wine prefix registry with python3.
 Recommends:     python3
 # Renamed from logi-dd (0.20.0): "dd" meant direct-drive, but the app
-# configures every supported wheel, including the belt-driven G923. These
+# configures every supported wheel, including the gear-driven G923. These
 # move an existing logi-dd install onto this package automatically.
 Provides:       logi-dd = %{version}-%{release}
 Obsoletes:      logi-dd < %{version}-%{release}
@@ -308,7 +308,7 @@ dkms remove -m %{module} -v %{modver} --all --rpm_safe_upgrade >/dev/null 2>&1 |
 * Sun Jul 26 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.20.0-1
 - Renamed the userspace subpackages: logi-dd -> logi-wheel, logi-dd-gui ->
   logi-wheel-gui ("dd" meant direct-drive, but the app now also covers the
-  belt-driven G923). Provides/Obsoletes on the old names move existing
+  gear-driven G923). Provides/Obsoletes on the old names move existing
   installs over automatically.
 
 * Mon Jul 20 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.16.1-1

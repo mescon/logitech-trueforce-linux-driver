@@ -128,7 +128,7 @@ package_logi-wheel() {
 	optdepends=('python: required by the TrueForce Proton shim installer'
 	            'wine: run Logitech SDK DLLs for TrueForce in Proton sims')
 	# Renamed from logi-dd (v0.20.0): "dd" meant direct-drive, but the app
-	# configures every supported wheel, including the belt-driven G923.
+	# configures every supported wheel, including the gear-driven G923.
 	# These let pacman/paru move an existing logi-dd install onto this
 	# package automatically instead of leaving it orphaned.
 	provides=('logi-dd')

@@ -741,7 +741,7 @@ The G PRO Racing Wheel for Xbox/PC (`046d:c272`) and PS/PC (`046d:c268`) PIDs co
 - **Real G PRO Racing Wheel.** Direct-drive wheel. iProduct string is "Logitech PRO Racing Wheel".
 - **RS50 in "G PRO compatibility" mode.** RS50 hardware re-enumerated as the same VID/PID via the wheel's OLED menu. iProduct string is "Logitech RS50 Base for PlayStation/PC".
 
-Both wheels are direct-drive and run the same modern firmware architecture. They share the same HID++ 4.2 feature catalog at the same indices and the same dedicated 64-byte FFB endpoint on interface 2. The driver gives both `HIDPP_QUIRK_DD_FFB` from the id-table (no iProduct-string sniff), so both go through the `hidpp_dd_ff_*` code path rather than the inherited G920 HID++ FFB path. This is what makes basic FFB, TrueForce streaming, and the wheel-config sysfs surface all work on a real G PRO without the queue-saturation / "Failed to send command" failures the G920 path inherits from the older belt-driven generation (issue #8).
+Both wheels are direct-drive and run the same modern firmware architecture. They share the same HID++ 4.2 feature catalog at the same indices and the same dedicated 64-byte FFB endpoint on interface 2. The driver gives both `HIDPP_QUIRK_DD_FFB` from the id-table (no iProduct-string sniff), so both go through the `hidpp_dd_ff_*` code path rather than the inherited G920 HID++ FFB path. This is what makes basic FFB, TrueForce streaming, and the wheel-config sysfs surface all work on a real G PRO without the queue-saturation / "Failed to send command" failures the G920 path inherits from the older gear-driven generation (issue #8).
 
 Catalog note (corrected 2026-07-02 after a full IFeatureSet cross-capture
 comparison): the RS50's compat-mode device-0xff feature catalog is
@@ -1177,7 +1177,7 @@ re-enumerate it.
 | Report ID | 0x11/0x12 | 0x01 (custom) |
 | Sequence Field | 2 bytes | 1 byte |
 | Max Rotation | 900° | 2700° |
-| Motor Type | Belt/Gear | Direct drive |
+| Motor Type | Gear | Direct drive |
 | FFB refresh keepalive | Not needed | Not needed |
 | USB Interfaces | Unified HID++ | 3 separate (joystick, HID++, FFB) |
 

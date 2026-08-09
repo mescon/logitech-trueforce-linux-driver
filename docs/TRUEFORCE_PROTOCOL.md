@@ -25,7 +25,7 @@ Verified against three wheels:
 
 The 68-packet init sequence is identical across the RS50 and G Pro, byte-for-byte. The streaming packet layout (type 0x01) is also identical. Treat TRUEFORCE as a single protocol across the direct-drive wheel family.
 
-The belt-driven **G923** carries the same interface-2 transport and stream protocol (first established by the TF4ALL project's Windows captures, issue #20; hardware-confirmed on a c266 by `logi-tf-sim`'s synthetic sweep). One G923-specific caveat: while a type-0x01 stream runs, the wheel's motor follows the stream's `cur` field and stops reacting to its classic interface-0 force-feedback commands, so a G923 streamer must mirror the live FFB into `cur` for the stream's duration - `logi-tf-sim` reads the kernel driver's `ffb_output` sysfs attribute for exactly this (see `SYSFS_API.md`). Feel under real game telemetry is not yet verified on the G923.
+The gear-driven **G923** carries the same interface-2 transport and stream protocol (first established by the TF4ALL project's Windows captures, issue #20; hardware-confirmed on a c266 by `logi-tf-sim`'s synthetic sweep). One G923-specific caveat: while a type-0x01 stream runs, the wheel's motor follows the stream's `cur` field and stops reacting to its classic interface-0 force-feedback commands, so a G923 streamer must mirror the live FFB into `cur` for the stream's duration - `logi-tf-sim` reads the kernel driver's `ffb_output` sysfs attribute for exactly this (see `SYSFS_API.md`). Feel under real game telemetry is not yet verified on the G923.
 
 ## Traffic Characterisation
 
