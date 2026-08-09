@@ -149,6 +149,15 @@ pub enum Response {
         /// the hardware directly (the live input monitor) can follow the
         /// picker instead of taking whichever wheel enumerated first.
         active_usb: Option<std::path::PathBuf>,
+        /// What the active wheel can do, for the per-game advice on the
+        /// Setup page. Sent from here because this is the only place that
+        /// knows which wheel the picker is on: the page used to work it out
+        /// with its own `Device::discover()`, which returns whichever wheel
+        /// enumerated first. On a rig with a G923 and a direct-drive wheel
+        /// that handed the direct-drive owner the G923's advice, telling
+        /// them to leave PROTON_ENABLE_HIDRAW unset and use simulated
+        /// TrueForce, when their wheel gets the real thing from the game.
+        caps: logi_wheel_core::games::WheelCaps,
     },
     /// The computer-side profile store's state: the saved names (sorted)
     /// plus the outcome line of the request that triggered this reply
@@ -190,8 +199,16 @@ impl Worker {
                 Response::Info(i) => i.model,
                 _ => WheelModel::default(),
             };
+            let mut active_caps = caps_of(&vm, active_model);
             on_response(resp);
-            announce_wheels(&wheels, active, active_model, active_usb.clone(), &on_response);
+            announce_wheels(
+                &wheels,
+                active,
+                active_model,
+                active_usb.clone(),
+                active_caps,
+                &on_response,
+            );
             // What the drift watcher needs between requests: the category
             // the UI is looking at (tracked from the requests themselves,
             // starting at the UI's own startup default) and the last-seen
@@ -223,8 +240,16 @@ impl Worker {
                         Response::Info(i) => i.model,
                         _ => WheelModel::default(),
                     };
+                    active_caps = caps_of(&vm, active_model);
                     on_response(resp);
-                    announce_wheels(&wheels, active, active_model, active_usb.clone(), &on_response);
+                    announce_wheels(
+                        &wheels,
+                        active,
+                        active_model,
+                        active_usb.clone(),
+                        active_caps,
+                        &on_response,
+                    );
                     last_seen = drift_baseline(&vm);
                     continue;
                 }
@@ -243,6 +268,7 @@ impl Worker {
                             active.min(wheels.len()),
                             active_model,
                             active_usb.clone(),
+                            active_caps,
                             &on_response,
                         );
                         continue;
@@ -256,8 +282,16 @@ impl Worker {
                         Response::Info(i) => i.model,
                         _ => WheelModel::default(),
                     };
+                    active_caps = caps_of(&vm, active_model);
                     on_response(resp);
-                    announce_wheels(&wheels, active, active_model, active_usb.clone(), &on_response);
+                    announce_wheels(
+                        &wheels,
+                        active,
+                        active_model,
+                        active_usb.clone(),
+                        active_caps,
+                        &on_response,
+                    );
                     // The new wheel's rows are a different set entirely
                     // (a G923 hides most of them), so reload what is on
                     // screen instead of leaving the previous wheel's rows.
@@ -310,11 +344,26 @@ fn pick(wheels: &mut Vec<Device<RealSysfs>>, index: usize) -> Result<Device<Real
 /// so the active wheel's name is reinstated at its own index to rebuild the
 /// full list in its original order. Without that the picker would be one
 /// entry short and every index after the active one would be off by one.
+/// The managed wheel's capabilities, falling back to the model alone when
+/// there is no view model (the info read failed). Kept in one place so the
+/// Setup page's advice and the wheel picker can never disagree about which
+/// wheel is being described.
+fn caps_of<S: SysfsIo>(
+    vm: &Option<ViewModel<S>>,
+    model: WheelModel,
+) -> logi_wheel_core::games::WheelCaps {
+    match vm {
+        Some(v) => v.wheel_caps(),
+        None => logi_wheel_core::games::WheelCaps::of(model),
+    }
+}
+
 fn announce_wheels(
     remaining: &[Device<RealSysfs>],
     active: usize,
     active_model: WheelModel,
     active_usb: Option<std::path::PathBuf>,
+    caps: logi_wheel_core::games::WheelCaps,
     on_response: &impl Fn(Response),
 ) {
     let mut models: Vec<WheelModel> = remaining.iter().map(|d| d.model()).collect();
@@ -324,6 +373,7 @@ fn announce_wheels(
         names: logi_wheel_core::device::short_labels(&models),
         active: at,
         active_usb,
+        caps,
     });
 }
 

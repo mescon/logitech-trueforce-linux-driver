@@ -415,8 +415,13 @@ export component Setup inherits Rectangle {
                     for game in root.games: Rectangle {
                         background: Theme.control-background;
                         border-radius: Theme.panel-radius;
+                        // Bound to the content, because a Rectangle does not
+                        // grow to fit a child layout. Without this the last
+                        // line of a tall card (the green "installed" status)
+                        // was drawn past the card's own bottom edge.
+                        height: card.preferred-height;
 
-                        VerticalLayout {
+                        card := VerticalLayout {
                             padding: 12px;
                             spacing: 6px;
 

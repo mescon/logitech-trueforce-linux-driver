@@ -241,6 +241,13 @@ impl<S: SysfsIo> ViewModel<S> {
     /// Read a raw attribute back through the wrapped device. Used by the
     /// worker's LIGHTSYNC try-on-wheel run (to remember the state it must
     /// restore) and by tests.
+    /// What this wheel can do, for the Setup page's per-game advice.
+    /// Read from the managed device rather than rediscovered, so the advice
+    /// follows the wheel the picker is on.
+    pub fn wheel_caps(&self) -> logi_wheel_core::games::WheelCaps {
+        self.device.wheel_caps()
+    }
+
     pub fn device_read(&self, attr: &str) -> Result<Value, Error> {
         self.device.read(attr)
     }

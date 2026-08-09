@@ -476,6 +476,12 @@ fn sdk_status(field: &str, installer: Option<&std::path::Path>) -> (Option<std::
 /// re-walking slow Steam/Lutris/Heroic libraries.
 type GamesCache = Arc<Mutex<Vec<logi_wheel_core::launchers::DiscoveredGame>>>;
 
+/// The managed wheel's capabilities, as reported by the worker with the
+/// wheel list. Shared because the Setup page's advice is rebuilt from
+/// several places (first scan, config edits, wheel switch) and every one
+/// of them has to describe the same wheel the picker is on.
+type CapsCell = Arc<Mutex<logi_wheel_core::games::WheelCaps>>;
+
 /// Rebuild the "Your games" model from the cached launcher scan plus a
 /// fresh tf-sim.conf, and push it into `setup-games`. Called on the UI
 /// thread after every per-game simulated-TrueForce edit so both titles
@@ -486,17 +492,15 @@ type GamesCache = Arc<Mutex<Vec<logi_wheel_core::launchers::DiscoveredGame>>>;
 /// different wheel in and hitting Rescan re-answers the question. With no
 /// wheel found the general case is described (see
 /// [`games::WheelCaps::assumed`]) rather than a specific owner advised.
-fn wheel_caps() -> logi_wheel_core::games::WheelCaps {
-    match logi_wheel_core::Device::discover() {
-        Ok(d) => d.wheel_caps(),
-        Err(_) => logi_wheel_core::games::WheelCaps::assumed(),
-    }
-}
-
-fn refresh_games(app: &App, cache: &GamesCache) {
+fn refresh_games(app: &App, cache: &GamesCache, caps: &CapsCell) {
     let cfg = logi_wheel_core::tfsim::Config::load();
     let games = cache.lock().unwrap();
-    let items = bridge::setup_games(&games, &cfg, wheel_caps());
+    // The managed wheel's own capabilities, never a fresh discovery: this
+    // used to call Device::discover(), which returns whichever wheel
+    // enumerated first, so on a two-wheel rig the direct-drive owner was
+    // shown the G923's advice for every SDK title.
+    let caps = *caps.lock().unwrap();
+    let items = bridge::setup_games(&games, &cfg, caps);
     app.set_setup_games_summary(bridge::games_summary(&items).into());
     app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
     app.set_addable_games(slint::ModelRc::new(slint::VecModel::from(bridge::addable_games(&games))));
@@ -511,7 +515,7 @@ fn refresh_games(app: &App, cache: &GamesCache) {
 /// rebuild the list without re-walking every launcher. Runs at startup, on
 /// the Rescan button, and after every install/remove so the per-row status
 /// reflects what just happened.
-fn scan_games(app_weak: slint::Weak<App>, cache: GamesCache) {
+fn scan_games(app_weak: slint::Weak<App>, cache: GamesCache, caps: CapsCell) {
     std::thread::spawn(move || {
         let games = match std::env::var_os("HOME") {
             Some(home) => logi_wheel_core::launchers::discover(std::path::Path::new(&home)),
@@ -521,7 +525,7 @@ fn scan_games(app_weak: slint::Weak<App>, cache: GamesCache) {
         *cache.lock().unwrap() = games.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else { return };
-            let items = bridge::setup_games(&games, &cfg, wheel_caps());
+            let items = bridge::setup_games(&games, &cfg, *caps.lock().unwrap());
             app.set_setup_games_summary(bridge::games_summary(&items).into());
             app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
             app.set_addable_games(slint::ModelRc::new(slint::VecModel::from(bridge::addable_games(&games))));
@@ -547,6 +551,7 @@ fn install_shim_for(
     installer_path: &Option<std::path::PathBuf>,
     shim_binary: &Option<String>,
     games_cache: &GamesCache,
+    caps: &CapsCell,
 ) {
     let Some(app) = app_weak.upgrade() else { return };
     if prefix.is_empty() {
@@ -561,7 +566,7 @@ fn install_shim_for(
     let dir = sdk_dir.lock().unwrap().clone();
     let resolved = logi_wheel_core::steam::resolve_sdk_dir(&dir, installer_path.as_deref());
     let args = logi_wheel_core::steam::shim_install_args(&prefix, resolved.as_deref());
-    run_shim_command(app_weak, shim_binary.clone(), args, games_cache.clone());
+    run_shim_command(app_weak, shim_binary.clone(), args, games_cache.clone(), caps.clone());
 }
 
 /// Run the TrueForce SDK shim installer with `args` (a per-game install,
@@ -575,7 +580,13 @@ fn install_shim_for(
 /// immediately, without spawning anything (the installer is never
 /// re-resolved mid-run, so a binary installed after startup needs an app
 /// restart to be picked up, same as the status line next to the buttons).
-fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<String>, args: Vec<String>, cache: GamesCache) {
+fn run_shim_command(
+    app_weak: slint::Weak<App>,
+    binary: Option<String>,
+    args: Vec<String>,
+    cache: GamesCache,
+    caps: CapsCell,
+) {
     let Some(bin) = binary else {
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else { return };
@@ -600,7 +611,7 @@ fn run_shim_command(app_weak: slint::Weak<App>, binary: Option<String>, args: Ve
             app.set_setup_shim_output(text.into());
             app.set_setup_shim_running(false);
         });
-        scan_games(rescan_weak, cache);
+        scan_games(rescan_weak, cache, caps);
     });
 }
 
@@ -1145,7 +1156,11 @@ fn main() -> Result<(), slint::PlatformError> {
     // The installed-games scan cache, shared by the launcher scan and every
     // per-game "Your games" rebuild (see `GamesCache`).
     let games_cache: GamesCache = Arc::new(Mutex::new(Vec::new()));
-    scan_games(app.as_weak(), games_cache.clone());
+    // Starts at the general case; the worker replaces it with the managed
+    // wheel's real capabilities as soon as it announces the wheel list.
+    let wheel_caps_cell: CapsCell =
+        Arc::new(Mutex::new(logi_wheel_core::games::WheelCaps::assumed()));
+    scan_games(app.as_weak(), games_cache.clone(), wheel_caps_cell.clone());
     // Setup page: Simulated TrueForce. The binary resolves once at startup
     // (same rule as logi-ffb); tf-sim.conf is read fresh for the master
     // controls (the per-game switches live in each game's row), and the
@@ -1267,6 +1282,8 @@ fn main() -> Result<(), slint::PlatformError> {
         let test_reader_outer = test_reader.clone();
         let test_device_outer = test_device.clone();
         let test_model_outer = test_model.clone();
+        let caps_outer = wheel_caps_cell.clone();
+        let games_cache_outer = games_cache.clone();
         Worker::spawn(move |response| {
             let app_weak = app_weak.clone();
             let current_category = current_category.clone();
@@ -1283,11 +1300,25 @@ fn main() -> Result<(), slint::PlatformError> {
             let test_device_resp = test_device_outer.clone();
             let test_model_resp = test_model_outer.clone();
             let current_category_resp = current_category.clone();
+            let caps_resp = caps_outer.clone();
+            let games_cache_resp = games_cache_outer.clone();
             let app_weak_resp = app_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(app) = app_weak.upgrade() else { return };
                 match response {
-                    Response::Wheels { names, active, active_usb } => {
+                    Response::Wheels { names, active, active_usb, caps } => {
+                        // The advice on the Setup page is per-wheel, so it
+                        // has to be rebuilt whenever the managed wheel
+                        // changes, not only when the games are rescanned.
+                        let caps_changed = {
+                            let mut slot = caps_resp.lock().unwrap();
+                            let differs = slot.sdk_trueforce != caps.sdk_trueforce;
+                            *slot = caps;
+                            differs
+                        };
+                        if caps_changed {
+                            refresh_games(&app, &games_cache_resp, &caps_resp);
+                        }
                         // A switch changes which hardware the Info page's
                         // live monitor should be reading, so restart it
                         // when the active wheel's USB device moves.
@@ -2453,16 +2484,26 @@ fn main() -> Result<(), slint::PlatformError> {
         let installer_path = installer_path.clone();
         let shim_binary = shim_binary.clone();
         let games_cache = games_cache.clone();
+        let caps_install = wheel_caps_cell.clone();
         let app_weak = app.as_weak();
         app.on_setup_install_game(move |prefix| {
             // The install passes the RESOLVED dir explicitly, i.e. exactly
             // the directory the status line reports; nothing resolved
             // omits the flag and the installer's own error guidance runs.
-            install_shim_for(app_weak.clone(), prefix.to_string(), &sdk_dir, &installer_path, &shim_binary, &games_cache);
+            install_shim_for(
+                app_weak.clone(),
+                prefix.to_string(),
+                &sdk_dir,
+                &installer_path,
+                &shim_binary,
+                &games_cache,
+                &caps_install,
+            );
         });
     }
     {
         let games_cache = games_cache.clone();
+        let wheel_caps_cell = wheel_caps_cell.clone();
         let app_weak = app.as_weak();
         app.on_setup_install_relay(move |prefix| {
             // A file copy, so it runs inline: unlike the shim installer
@@ -2486,7 +2527,7 @@ fn main() -> Result<(), slint::PlatformError> {
             app.set_setup_shim_output(message.into());
             // Rebuild the rows so the per-game "installed" line reflects
             // what just happened, the same way the shim install does.
-            refresh_games(&app, &games_cache);
+            refresh_games(&app, &games_cache, &wheel_caps_cell);
         });
     }
     {
@@ -2494,27 +2535,46 @@ fn main() -> Result<(), slint::PlatformError> {
         let installer_path = installer_path.clone();
         let shim_binary = shim_binary.clone();
         let games_cache = games_cache.clone();
+        let caps_install = wheel_caps_cell.clone();
         let app_weak = app.as_weak();
         app.on_add_game(move |prefix| {
-            install_shim_for(app_weak.clone(), prefix.to_string(), &sdk_dir, &installer_path, &shim_binary, &games_cache);
+            install_shim_for(
+                app_weak.clone(),
+                prefix.to_string(),
+                &sdk_dir,
+                &installer_path,
+                &shim_binary,
+                &games_cache,
+                &caps_install,
+            );
         });
     }
     {
         let shim_binary = shim_binary.clone();
         let games_cache = games_cache.clone();
+        let caps_shim = wheel_caps_cell.clone();
         let app_weak = app.as_weak();
         app.on_setup_remove_game(move |prefix| {
             let Some(app) = app_weak.upgrade() else { return };
             app.set_setup_shim_output("Running...".into());
             app.set_setup_shim_running(true);
             let args = vec!["--uninstall-prefix".to_string(), prefix.to_string()];
-            run_shim_command(app_weak.clone(), shim_binary.clone(), args, games_cache.clone());
+            run_shim_command(
+                app_weak.clone(),
+                shim_binary.clone(),
+                args,
+                games_cache.clone(),
+                caps_shim.clone(),
+            );
         });
     }
     {
         let app_weak = app.as_weak();
         let games_cache = games_cache.clone();
-        app.on_setup_rescan_games(move || scan_games(app_weak.clone(), games_cache.clone()));
+        let caps_rescan = wheel_caps_cell.clone();
+        app.on_setup_rescan_games(move || {
+            scan_games(app_weak.clone(), games_cache.clone(), caps_rescan.clone())
+        });
     }
 
     // Setup page: Simulated TrueForce. Every conf edit writes exactly one
@@ -2601,6 +2661,7 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let app_weak = app.as_weak();
         let games_cache = games_cache.clone();
+        let wheel_caps_cell = wheel_caps_cell.clone();
         app.on_setup_sim_game_enabled(move |id, v| {
             let Some(app) = app_weak.upgrade() else { return };
             report_tf_write(
@@ -2608,12 +2669,13 @@ fn main() -> Result<(), slint::PlatformError> {
                 logi_wheel_core::tfsim::set_game_enabled_in(&logi_wheel_core::tfsim::default_path(), &id, v),
             );
             // Both titles sharing the id must show the fresh value.
-            refresh_games(&app, &games_cache);
+            refresh_games(&app, &games_cache, &wheel_caps_cell);
         });
     }
     {
         let app_weak = app.as_weak();
         let games_cache = games_cache.clone();
+        let wheel_caps_cell = wheel_caps_cell.clone();
         app.on_setup_sim_game_intensity(move |id, v| {
             let Some(app) = app_weak.upgrade() else { return };
             report_tf_write(
@@ -2624,7 +2686,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     v.clamp(0, 100) as u8,
                 ),
             );
-            refresh_games(&app, &games_cache);
+            refresh_games(&app, &games_cache, &wheel_caps_cell);
         });
     }
     {
