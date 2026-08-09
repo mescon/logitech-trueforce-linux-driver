@@ -312,6 +312,8 @@ The short version is below.
   still waiting on an in-game tester; if you run such a sim, reports are very
   welcome.
 
+Every launch option this project asks for, what each one does and how they combine, is in [docs/LAUNCH_OPTIONS.md](docs/LAUNCH_OPTIONS.md).
+
 - **Simulated TrueForce** for games without native support: enable the game in
   Setup's "Simulated TrueForce" panel and switch on the game's own UDP
   telemetry setting. `logi-tf-sim` then plays engine haptics from live RPM and
