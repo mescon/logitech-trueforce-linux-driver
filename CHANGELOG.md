@@ -5,6 +5,37 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.32.2 - 2026-08-09
+
+**The apps now ask a wheel what it has, instead of what we thought to ask
+about.** `logi-wheel --hidpp-features` walked a fixed list of the features
+this project already documents, which can confirm a wheel has what you
+expect and can never show what you did not. A wheel carrying an
+undocumented capability looked exactly like one carrying nothing. It now
+enumerates the wheel's own feature set and names the ones we have never
+written down.
+
+The gap is not small. An RS50 reports **37** features against the 14
+documented here; a G923 reports **21** against 3, including `0x80A3`,
+`0x8122` and `0x8124`, which sit next to features we do decode and are not
+decoded at all. The driver's own log had been listing four of these all
+along. This matters most on the G923 Xbox edition, where no rev-light
+dialect we know lights the strip: what that wheel implements and we have
+never tried is now visible rather than assumed.
+
+**Four fixes to the diagnostic report**, all found by reading a real one.
+The kernel log was never actually read: the section was hardcoded to say it
+needed root, including when run as root. Packaged udev rules were listed
+twice, because `/lib` is a symlink to `/usr/lib` on most distributions, and
+that reads as a duplicate install. A G923 reported one attribute, dropping
+gain, autocenter and combined pedals. And with two wheels attached neither
+was named, so both appeared as raw HID ids. The report also says when the
+loaded driver and the apps disagree about version.
+
+**The G923 is gear-driven, not belt-driven.** Reported by a reader, and
+wrong in eighteen places including the README's opening paragraph, the
+driver's own comments and every distribution package description.
+
 ## 0.32.1 - 2026-08-09
 
 **Direct-drive wheels had lost every HID++ feature.** On an RS50 or G PRO,
