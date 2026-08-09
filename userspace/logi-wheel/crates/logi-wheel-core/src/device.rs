@@ -470,10 +470,19 @@ impl Device<RealSysfs> {
                     .and_then(|usb| input_name_under(Path::new("/sys/class/input"), &usb))
                     .unwrap_or_default();
                 let model = model_for(pid_from_hid_dir(&dir), &name);
+                // A direct-drive wheel gets its HID device directory too.
+                // Leaving this None silently disabled every HID++ feature
+                // on the RS50 and G PRO: --hidpp-features, the firmware
+                // query and --led-probe's level-dialect test all resolve
+                // the HID++ interface from it, and all of them reported
+                // "no HID++ interface" on wheels that plainly have one.
+                // The directory is a fine starting point whichever
+                // interface it belongs to, because find_hidpp_sibling
+                // walks up to the shared USB device before scanning.
                 found.push(Device {
-                    io: RealSysfs::new(dir),
+                    io: RealSysfs::new(dir.clone()),
                     model,
-                    hid_dir: None,
+                    hid_dir: Some(dir),
                     sysfs_key: Some(key),
                 });
                 continue;
@@ -499,7 +508,16 @@ impl Device<RealSysfs> {
     fn discover_overridden() -> Option<Device<RealSysfs>> {
         let dir = std::path::PathBuf::from(sysfs_dir_override()?);
         if dir.join("wheel_range").exists() {
-            return Some(Device { io: RealSysfs::new(dir), model: WheelModel::Unknown, hid_dir: None, sysfs_key: None });
+            // hid_dir is set here for the same reason as in discover_all:
+            // it is what every HID++ lookup starts from. A fixture has no
+            // USB parent, so those lookups fail cleanly and the fixture
+            // shows "-" rather than wrong data.
+            return Some(Device {
+                io: RealSysfs::new(dir.clone()),
+                model: WheelModel::Unknown,
+                hid_dir: Some(dir.clone()),
+                sysfs_key: Some(dir),
+            });
         }
         if classic_attrs_present(&dir) {
             // Not a real HID device directory (no `uevent`/USB parent
@@ -1298,6 +1316,16 @@ mod tests {
         let dd = Device::discover().unwrap();
         assert_eq!(dd.model(), WheelModel::Unknown);
         assert!(same_registry(dd.settings(), REGISTRY));
+        // A direct-drive wheel must carry its HID device directory. Every
+        // HID++ lookup resolves the interface from it, so leaving it unset
+        // turned --hidpp-features, the firmware query and --led-probe's
+        // level-dialect test into "no HID++ interface" on wheels that
+        // plainly have one, with nothing in the output saying why.
+        assert!(
+            dd.hid_dir().is_some(),
+            "a direct-drive wheel must keep its hid_dir, or HID++ probing goes dark"
+        );
+        assert!(classic.hid_dir().is_some(), "a classic wheel keeps its hid_dir too");
 
         std::env::remove_var("LOGI_WHEEL_SYSFS_DIR");
 
