@@ -251,8 +251,16 @@ doctor() {
 			fi
 		elif [ "$tool" = "logi-wheel-gui" ]; then
 			wrn "$tool is not installed (optional: the window; the terminal app does the same job)"
-		else
+		elif [ -n "$want" ]; then
+			# A checkout: setup.sh builds and installs these, so missing
+			# means the install did not finish.
 			bad "$tool is not installed (run: sudo $0)"
+		else
+			# No checkout, so this is a packaged system and the driver
+			# package alone is a legitimate way to run. Telling such a
+			# user to run a script they do not have would be worse than
+			# saying nothing.
+			wrn "$tool is not installed (install the logi-wheel package for your distribution)"
 		fi
 	done
 	# No `grep -q` here: under `set -o pipefail`, -q exits on the first

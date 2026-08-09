@@ -153,13 +153,30 @@ running. The prefix is named after the game's Steam appid:
 | rFactor 2 | `rf2` | 365960 | `rF2SharedMemoryMapPlugin` |
 | Le Mans Ultimate | `lmu` | 2399420 | `rF2SharedMemoryMapPlugin` |
 
-```bash
-WINEPREFIX=~/.steam/steam/steamapps/compatdata/244210/pfx \
-  wine 'c:\logi-tf-relay.exe' --game assetto
+The easy way is to let the game start it, by putting this in the game's
+Steam launch options:
+
+```
+logi-launch %command%
 ```
 
-(That is where `setup.sh` installs it. If you put it somewhere else, use
-your own path instead.)
+That starts the relay inside the prefix once the game is up, and works out
+which game it is from the appid, so there is nothing else to set. See
+[LAUNCH_OPTIONS.md](LAUNCH_OPTIONS.md).
+
+**Starting it by hand is fiddlier than it looks, and the obvious command is
+a trap.** `WINEPREFIX=... wine ...` uses your distribution's wine, which is
+a different build from the one Proton made the prefix with: it runs prefix
+initialisation, prompts to install wine-mono, and can convert the prefix.
+Use the prefix's own wine instead, and only while the game is already
+running, because Proton waits for any existing wineserver to exit before it
+will launch:
+
+```bash
+PFX=~/.steam/steam/steamapps/compatdata/244210
+PROTON=$(sed -n 's#^\(/.*\)/files/.*#\1#p' "$PFX/config_info" | head -1)
+WINEPREFIX="$PFX/pfx" "$PROTON/files/bin/wine" 'c:\logi-tf-relay.exe' --game assetto
+```
 
 Leave it running. It re-reads the section about 60 times a second and sends
 what it finds to `logi-tf-sim`, which must also be running. Then turn the
