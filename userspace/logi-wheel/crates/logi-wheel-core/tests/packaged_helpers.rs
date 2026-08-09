@@ -76,3 +76,61 @@ fn every_helper_script_exists_and_is_executable() {
         }
     }
 }
+
+/// `setup.sh` builds the apps for a from-source install with `cargo build
+/// -p <package>`. Those are PACKAGE names, not binary names, and the two
+/// differ for the terminal app: package `logi-wheel-tui` produces binary
+/// `logi-wheel`. Getting it wrong fails at install time on a user's
+/// machine, having passed every test here, which is exactly what happened
+/// the first time this was written.
+#[test]
+fn setup_builds_packages_that_exist() {
+    let root = repo();
+    let setup = root.join("tools/setup.sh");
+    if !setup.is_file() {
+        return;
+    }
+    let text = std::fs::read_to_string(&setup).expect("read setup.sh");
+
+    let mut known = Vec::new();
+    let crates = root.join("userspace/logi-wheel/crates");
+    for entry in std::fs::read_dir(&crates).expect("read crates dir").flatten() {
+        let manifest = entry.path().join("Cargo.toml");
+        let Ok(m) = std::fs::read_to_string(&manifest) else { continue };
+        if let Some(name) = m
+            .lines()
+            .find_map(|l| l.strip_prefix("name = ").map(|v| v.trim_matches('"').to_string()))
+        {
+            known.push(name);
+        }
+    }
+    assert!(!known.is_empty(), "found no crates to check against");
+
+    // Only real build lines: a naive scan for "-p " also finds `mkdir -p`
+    // and the prose in this file's own comments.
+    let mut checked = 0;
+    for line in text.lines() {
+        let line = line.trim_start();
+        if line.starts_with('#') || !line.contains("cargo build") {
+            continue;
+        }
+        for name in line
+            .split_whitespace()
+            .skip_while(|w| *w != "-p")
+            .collect::<Vec<_>>()
+            .chunks(2)
+            .filter(|c| c.len() == 2 && c[0] == "-p")
+            .map(|c| c[1].trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').to_string())
+        {
+            if name.is_empty() {
+                continue;
+            }
+        assert!(
+            known.contains(&name),
+            "tools/setup.sh builds `-p {name}`, which is not a package in the workspace.              Known packages: {known:?}"
+        );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "setup.sh no longer builds any package; is the apps step still there?");
+}

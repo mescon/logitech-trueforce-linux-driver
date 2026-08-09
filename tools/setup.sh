@@ -230,10 +230,29 @@ doctor() {
 	else
 		bad "hid_logitech_dd is not loaded (run: sudo ./tools/setup.sh)"
 	fi
-	# App versions, when the tools are on PATH; bug reports want these.
-	for tool in logi-wheel logi-wheel-gui logi-ffb logi-tf-sim; do
+	# App versions, and their absence. Reporting only the ones that are
+	# present used to hide the case that actually bites: a from-source
+	# install put the driver on but never built the apps, so a months-old
+	# binary sat next to a current driver and doctor said nothing at all.
+	# The version of this checkout, when there is one, is what they should
+	# match.
+	local want=""
+	if [ -f "$REPO_ROOT/userspace/logi-wheel/Cargo.toml" ]; then
+		want=$(sed -n 's/^version = "\(.*\)"/\1/p' \
+			"$REPO_ROOT/userspace/logi-wheel/Cargo.toml" | head -1)
+	fi
+	local tool have
+	for tool in logi-wheel logi-ffb logi-tf-sim logi-wheel-gui; do
 		if command -v "$tool" >/dev/null 2>&1; then
-			ok "$tool on PATH ($("$tool" --version 2>/dev/null || echo "version flag unsupported"))"
+			have=$("$tool" --version 2>/dev/null || echo "")
+			ok "$tool on PATH (${have:-version flag unsupported})"
+			if [ -n "$want" ] && [ -n "$have" ] && [ "${have##* }" != "$want" ]; then
+				wrn "$tool is ${have##* } but this checkout is $want (run: sudo $0)"
+			fi
+		elif [ "$tool" = "logi-wheel-gui" ]; then
+			wrn "$tool is not installed (optional: the window; the terminal app does the same job)"
+		else
+			bad "$tool is not installed (run: sudo $0)"
 		fi
 	done
 	# No `grep -q` here: under `set -o pipefail`, -q exits on the first
@@ -642,6 +661,78 @@ do_helpers() {
 	return 0
 }
 
+# Build and install the settings apps from this checkout.
+#
+# The from-source path installed the driver, the udev rules and the shell
+# helpers, and then stopped. The apps were left to the reader, so a
+# checkout install ended up with a current driver and whatever binaries the
+# user had built by hand months earlier. `doctor` even reported their
+# versions, which made the mismatch look deliberate. Every distro package
+# has always installed them; only this path did not.
+#
+# Cargo runs as the invoking user: building as root leaves a root-owned
+# target/ that the user's next plain `cargo build` cannot write, and roots
+# ~/.cargo too.
+do_apps() {
+	local ws="$REPO_ROOT/userspace/logi-wheel"
+	[ -d "$ws" ] || { echo "  no userspace workspace here; skipping"; return 0; }
+
+	local cargo_bin=""
+	if [ -n "${SUDO_USER:-}" ]; then
+		cargo_bin=$(runuser -u "$SUDO_USER" -- sh -lc 'command -v cargo' 2>/dev/null || true)
+	else
+		cargo_bin=$(command -v cargo 2>/dev/null || true)
+	fi
+	if [ -z "$cargo_bin" ]; then
+		echo "  cargo not found, so the apps cannot be built here."
+		echo "  Install Rust (https://rustup.rs, or your distro's rust package) and re-run,"
+		echo "  or install the packaged apps for your distribution instead."
+		return 0
+	fi
+
+	# The terminal app, the FFB proxy and the simulated-TrueForce daemon.
+	# Built as one invocation so cargo shares the work.
+	echo "  building logi-wheel, logi-ffb, logi-tf-sim (this takes a few minutes)"
+	# -p takes PACKAGE names, and the terminal app's package is
+	# logi-wheel-tui; logi-wheel is the binary it produces.
+	local build='cd "$1" && cargo build --release -p logi-wheel-tui -p logi-ffb -p logi-tf-sim'
+	if [ -n "${SUDO_USER:-}" ]; then
+		runuser -u "$SUDO_USER" -- sh -lc "$build" _ "$ws" || {
+			echo "  build failed; leaving any existing apps alone" >&2
+			return 0
+		}
+	else
+		sh -lc "$build" _ "$ws" || { echo "  build failed" >&2; return 0; }
+	fi
+	local bin
+	for bin in logi-wheel logi-ffb logi-tf-sim; do
+		if [ -x "$ws/target/release/$bin" ]; then
+			install -Dm 0755 "$ws/target/release/$bin" "/usr/bin/$bin"
+			echo "  installed /usr/bin/$bin"
+		fi
+	done
+
+	# The window is optional: it needs fontconfig headers and a working
+	# graphics stack, and a headless rig has no use for it. A failure here
+	# must not fail the install, because the terminal app is the one every
+	# other step assumes.
+	echo "  building logi-wheel-gui (optional; needs fontconfig headers)"
+	local gbuild='cd "$1" && cargo build --release -p logi-wheel-gui'
+	local built_gui=1
+	if [ -n "${SUDO_USER:-}" ]; then
+		runuser -u "$SUDO_USER" -- sh -lc "$gbuild" _ "$ws" || built_gui=0
+	else
+		sh -lc "$gbuild" _ "$ws" || built_gui=0
+	fi
+	if [ "$built_gui" -eq 1 ] && [ -x "$ws/target/release/logi-wheel-gui" ]; then
+		install -Dm 0755 "$ws/target/release/logi-wheel-gui" /usr/bin/logi-wheel-gui
+		echo "  installed /usr/bin/logi-wheel-gui"
+	else
+		echo "  skipped the window (install fontconfig's headers to get it:"
+		echo "  libfontconfig-dev on Debian/Ubuntu, fontconfig-devel on Fedora, fontconfig on Arch)"
+	fi
+}
+
 do_shim() {
 	if [ "$EUID" -eq 0 ]; then
 		if [ -n "${SUDO_USER:-}" ]; then
@@ -670,10 +761,10 @@ setup() {
 		exit 1
 	fi
 
-	say "[1/6] Kernel module (DKMS) + udev rule"
+	say "[1/7] Kernel module (DKMS) + udev rule"
 	"$REPO_ROOT/tools/dkms-update.sh" || exit 1
 
-	say "[2/6] Migrating off any old full-fork install"
+	say "[2/7] Migrating off any old full-fork install"
 	# The old build shipped its module as hid-logitech-hidpp - the SAME
 	# name as the in-tree driver - so DKMS DISPLACED the genuine in-tree
 	# module (backing it up under .../original_module/) and the installer
@@ -727,7 +818,7 @@ setup() {
 		echo "  nothing to migrate (clean install)"
 	fi
 
-	say "[3/6] Loading the module"
+	say "[3/7] Loading the module"
 	modprobe -r hid-logitech-dd 2>/dev/null || true
 	if modprobe hid-logitech-dd; then
 		echo "  loaded"
@@ -737,7 +828,10 @@ setup() {
 	# claim the wheel if it is currently sitting on hid-generic
 	"$REPO_ROOT/tools/rebind-wheel.sh" >/dev/null 2>&1 || true
 
-	say "[4/6] TrueForce shim (Steam prefixes)"
+	say "[4/7] Settings apps"
+	do_apps || true
+
+	say "[5/7] TrueForce shim (Steam prefixes)"
 	if ls "$(resolved_sdk_dir)"/Logi/Trueforce/*/trueforce_sdk_x64.dll >/dev/null 2>&1; then
 		do_shim || true
 	else
@@ -745,10 +839,10 @@ setup() {
 		echo "  see the wiki's Force-feedback-in-games page for TrueForce)"
 	fi
 
-	say "[5/6] Telemetry helpers (relay + truck-sim plugin)"
+	say "[6/7] Telemetry helpers (relay + truck-sim plugin)"
 	do_helpers || true
 
-	say "[6/6] Doctor"
+	say "[7/7] Doctor"
 	# diagnosis runs best as the real user (permission checks)
 	if [ -n "${SUDO_USER:-}" ]; then
 		runuser -u "$SUDO_USER" -- "$(readlink -f "$0")" doctor || true
