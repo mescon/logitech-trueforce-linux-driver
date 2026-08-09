@@ -2,7 +2,7 @@ logitech-trueforce-dkms (0.20.0-1) unstable; urgency=medium
 
   * Renamed the settings packages: logi-dd -> logi-wheel, logi-dd-gui ->
     logi-wheel-gui ("dd" meant direct-drive, but the app now also covers
-    the belt-driven G923). Provides/Replaces/Conflicts on the old names
+    the gear-driven G923). Provides/Replaces/Conflicts on the old names
     move existing installs over automatically; logi-dd and logi-dd-gui
     are installed as transitional symlinks to the new binaries.
 
