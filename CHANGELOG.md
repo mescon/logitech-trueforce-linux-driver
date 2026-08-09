@@ -5,6 +5,22 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.32.1 - 2026-08-09
+
+**Direct-drive wheels had lost every HID++ feature.** On an RS50 or G PRO,
+the firmware query, `logi-wheel --hidpp-features` and the level-dialect test
+in `--led-probe` all reported "no HID++ interface could be opened" on a
+wheel that plainly has one, and suggested trying sudo or checking the udev
+rules, neither of which was the problem. The wheel's HID device directory
+was not being carried through discovery, and every HID++ lookup starts from
+it. An RS50 enumerates fourteen features again.
+
+**The LIGHTSYNC preview button says what it does.** "Preview animation",
+next to a picture of the LED strip, was read as "play this on the wheel",
+which it never was: the strip is a rev-light display and holds a static
+pattern until a game or telemetry bridge feeds it RPM. The button now says
+"Preview on screen".
+
 ## 0.32.0 - 2026-08-09
 
 **The Setup page was giving direct-drive owners the G923's advice.** With
