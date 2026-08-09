@@ -34,6 +34,7 @@ const REPORT_TIMEOUT: Duration = Duration::from_millis(500);
 /// `0xff` as the device index for a directly-connected wheel base).
 const REPORT_ID_SHORT: u8 = 0x10;
 const REPORT_ID_LONG: u8 = 0x11;
+const REPORT_ID_VERY_LONG: u8 = 0x12;
 const DEVICE_INDEX_BASE: u8 = 0xff;
 const SW_ID: u8 = 0x0a;
 const ROOT_FEATURE_INDEX: u8 = 0x00;
@@ -55,6 +56,20 @@ const MAX_ENTITIES: u8 = 8;
 /// in-memory mock instead of hardware.
 pub trait HidppIo {
     fn write_report(&mut self, report: &[u8]) -> io::Result<()>;
+    /// Whether requests must go out as LONG (`0x11`) reports because this
+    /// interface declares no SHORT (`0x10`) one.
+    ///
+    /// The G923 Xbox edition is the case: it carries HID++ on its Joystick
+    /// interface using vendor page `0xFF43` with report ids `0x11` and
+    /// `0x12` only. A short request there is refused by the kernel before
+    /// it reaches the wheel, so every HID++ query this project ever made to
+    /// that wheel failed, and the failure looked like a wheel that does not
+    /// answer rather than one we were not addressing properly. Confirmed
+    /// 2026-08-09: with long requests the same wheel answers, and reports
+    /// `0x807A` at index `0x12` (issue #27).
+    fn long_requests_only(&self) -> bool {
+        false
+    }
     /// Block for at most `timeout` waiting for the next report;
     /// `ErrorKind::TimedOut` when nothing arrived in time.
     fn read_report(&mut self, timeout: Duration) -> io::Result<Vec<u8>>;
@@ -63,16 +78,35 @@ pub trait HidppIo {
 /// The real transport: a hidraw character device node opened read/write.
 pub struct RealHidppIo {
     file: std::fs::File,
+    long_only: bool,
 }
 
 impl RealHidppIo {
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
-        Ok(Self { file })
+        // Which report sizes this node declares decides how requests must
+        // be framed. Read from the node's own descriptor rather than
+        // assumed from the wheel's model: the two layouts we have seen do
+        // not correlate with anything else about the wheel.
+        let long_only = match descriptor_of_node(path) {
+            Some(d) => !has_report_id(&d, REPORT_ID_SHORT) && has_report_id(&d, REPORT_ID_LONG),
+            None => false,
+        };
+        Ok(Self { file, long_only })
     }
 }
 
+/// The report descriptor behind a `/dev/hidrawN`, via its sysfs entry.
+fn descriptor_of_node(node: &Path) -> Option<Vec<u8>> {
+    let name = node.file_name()?.to_str()?;
+    std::fs::read(Path::new("/sys/class/hidraw").join(name).join("device/report_descriptor")).ok()
+}
+
 impl HidppIo for RealHidppIo {
+    fn long_requests_only(&self) -> bool {
+        self.long_only
+    }
+
     fn write_report(&mut self, report: &[u8]) -> io::Result<()> {
         self.file.write_all(report)
     }
@@ -113,7 +147,21 @@ fn short_report(device_index: u8, feature_index: u8, function: u8, params: &[u8]
     r
 }
 
-/// Send one short HID++ request and return its response params (everything
+/// The same request as a 20-byte HID++ long report, for an interface that
+/// declares no short one.
+fn long_request(device_index: u8, feature_index: u8, function: u8, params: &[u8]) -> [u8; 20] {
+    let mut r = [0u8; 20];
+    r[0] = REPORT_ID_LONG;
+    r[1] = device_index;
+    r[2] = feature_index;
+    r[3] = function | SW_ID;
+    for (i, p) in params.iter().take(16).enumerate() {
+        r[4 + i] = *p;
+    }
+    r
+}
+
+/// Send one HID++ request and return its response params (everything
 /// past the 4-byte header - 3 bytes for a short reply, 16 for the long
 /// reply this wheel always answers with in practice; either way the
 /// params start at offset 4). `None` on any I/O failure, a timeout, or a
@@ -126,8 +174,18 @@ fn request<T: HidppIo>(
     function: u8,
     params: &[u8],
 ) -> Option<Vec<u8>> {
-    let report = short_report(device_index, feature_index, function, params);
-    io.write_report(&report).ok()?;
+    // Long when the interface has no short report, short otherwise. The
+    // payload is identical either way; only the frame differs.
+    let long;
+    let short;
+    let report: &[u8] = if io.long_requests_only() {
+        long = long_request(device_index, feature_index, function, params);
+        &long
+    } else {
+        short = short_report(device_index, feature_index, function, params);
+        &short
+    };
+    io.write_report(report).ok()?;
     let resp = io.read_report(REPORT_TIMEOUT).ok()?;
     if resp.len() < 4
         || resp[1] != device_index
@@ -244,7 +302,14 @@ pub fn query_main_firmware<T: HidppIo>(io: &mut T) -> Option<String> {
 /// the pair is what distinguishes the HID++ interface from every other one
 /// this wheel exposes.
 fn looks_like_hidpp(descriptor: &[u8]) -> bool {
-    has_report_id(descriptor, REPORT_ID_SHORT) && has_report_id(descriptor, REPORT_ID_LONG)
+    // Two layouts exist. The usual one declares short and long (0x10,
+    // 0x11) on its own vendor interface. The G923 Xbox edition instead
+    // carries HID++ on its Joystick interface with long and very-long
+    // (0x11, 0x12) and no short at all, so requiring 0x10 made that wheel
+    // invisible to every HID++ feature in this project.
+    has_report_id(descriptor, REPORT_ID_LONG)
+        && (has_report_id(descriptor, REPORT_ID_SHORT)
+            || has_report_id(descriptor, REPORT_ID_VERY_LONG))
 }
 
 /// Whether `descriptor` declares a Report ID item (`0x85`) for `id`. A
@@ -691,6 +756,61 @@ mod tests {
     }
 
     // --- report-descriptor sniffing + sibling discovery ---
+
+    /// The G923 Xbox edition's Joystick interface: vendor page 0xFF43 with
+    /// long and very-long reports and no short one. Bytes taken from
+    /// simonr2k4's own dump on issue #27, 2026-08-09. Requiring a short
+    /// report made this interface invisible, so nothing this project does
+    /// over HID++ ever reached that wheel.
+    #[test]
+    fn a_long_only_interface_is_recognised_as_hidpp() {
+        let xbox_g923: &[u8] = &[
+            0x06, 0x43, 0xff, 0x0a, 0x02, 0x06, 0xa1, 0x01, 0x85, 0x11, 0x75, 0x08, 0x95, 0x13,
+            0x15, 0x00, 0x26, 0xff, 0x00, 0x09, 0x02, 0x81, 0x00, 0x09, 0x02, 0x91, 0x00, 0xc0,
+            0x06, 0x43, 0xff, 0x0a, 0x04, 0x06, 0xa1, 0x01, 0x85, 0x12, 0x75, 0x08, 0x95, 0x3f,
+            0x15, 0x00, 0x26, 0xff, 0x00, 0x09, 0x04, 0x81, 0x00, 0x09, 0x04, 0x91, 0x00, 0xc0,
+        ];
+        assert!(has_report_id(xbox_g923, REPORT_ID_LONG));
+        assert!(!has_report_id(xbox_g923, REPORT_ID_SHORT));
+        assert!(looks_like_hidpp(xbox_g923), "the Xbox G923's HID++ interface must be found");
+    }
+
+    /// An interface with neither a short nor a very-long report is not
+    /// HID++, whatever else it declares. Keeps the looser matcher from
+    /// claiming an unrelated vendor collection that happens to use 0x11.
+    #[test]
+    fn a_lone_long_report_is_not_enough() {
+        let not_hidpp: &[u8] = &[0x06, 0x00, 0xff, 0xa1, 0x01, 0x85, 0x11, 0x75, 0x08, 0xc0];
+        assert!(!looks_like_hidpp(not_hidpp));
+    }
+
+    /// A long-only interface must frame its requests as long reports: the
+    /// payload is the same, the frame is not, and a short one is refused
+    /// before it reaches the wheel.
+    #[test]
+    fn a_long_only_transport_sends_long_requests() {
+        struct LongOnly(MockIo);
+        impl HidppIo for LongOnly {
+            fn write_report(&mut self, r: &[u8]) -> std::io::Result<()> {
+                self.0.write_report(r)
+            }
+            fn read_report(&mut self, t: Duration) -> std::io::Result<Vec<u8>> {
+                self.0.read_report(t)
+            }
+            fn long_requests_only(&self) -> bool {
+                true
+            }
+        }
+        let mut inner = MockIo::default();
+        // Root.getFeature answering with index 0x12, as his wheel does.
+        inner.responses.push_back(Some(vec![0x11, 0xff, 0x00, SW_ID, 0x12, 0, 0]));
+        let mut io = LongOnly(inner);
+        assert_eq!(resolve_feature_index(&mut io, 0x807A), Some(0x12));
+        let sent = &io.0.sent[0];
+        assert_eq!(sent[0], REPORT_ID_LONG, "must go out as a long report");
+        assert_eq!(sent.len(), 20, "a long report is 20 bytes");
+        assert_eq!(&sent[4..6], &[0x80, 0x7A], "the feature id still rides in the params");
+    }
 
     #[test]
     fn looks_like_hidpp_requires_both_report_ids() {
