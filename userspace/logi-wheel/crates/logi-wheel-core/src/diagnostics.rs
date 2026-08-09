@@ -23,6 +23,28 @@
 /// back.
 pub const WITHHELD: &[&str] = &["wheel_serial", "wheel_profile_names", "wheel_led_slot_name"];
 
+/// The driver's own kernel-log lines, serial withheld, or `None` when the
+/// log cannot be read (the usual case for a non-root user under
+/// `dmesg_restrict`). Capped because a long-running machine can hold
+/// hundreds of replug cycles and the tail is what matters.
+fn kernel_log_lines() -> Option<Vec<String>> {
+    let out = std::process::Command::new("dmesg").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|l| l.to_ascii_lowercase().contains("logitech"))
+        .filter(|l| !l.to_ascii_lowercase().contains("serial"))
+        .map(|l| l.to_string())
+        .collect();
+    if lines.len() > 40 {
+        lines = lines.split_off(lines.len() - 40);
+    }
+    Some(lines)
+}
+
 pub fn report() -> String {
     use std::fmt::Write as _;
     use std::fs;
@@ -40,6 +62,15 @@ pub fn report() -> String {
     let _ = writeln!(out, "module     {}",
              slurp("/sys/module/hid_logitech_dd/version")
                  .unwrap_or_else(|| "not loaded".into()));
+    // A stale driver next to current apps is a real and common state, and
+    // one that changes what a report means. It was visible here as two
+    // version lines nobody was asked to compare.
+    if let Some(m) = slurp("/sys/module/hid_logitech_dd/version") {
+        let app = env!("CARGO_PKG_VERSION");
+        if !m.trim_start_matches('v').starts_with(app) {
+            let _ = writeln!(out, "           NOTE: driver {m} and apps {app} differ; the driver may need reinstalling");
+        }
+    }
     if let Some(os) = slurp("/etc/os-release") {
         if let Some(line) = os.lines().find(|l| l.starts_with("PRETTY_NAME=")) {
             let _ = writeln!(out, "distro     {}", line.trim_start_matches("PRETTY_NAME=").trim_matches('"'));
@@ -63,11 +94,29 @@ pub fn report() -> String {
             let drv = fs::read_link(dir.join("driver")).ok()
                 .and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
                 .unwrap_or_else(|| "none".into());
-            let _ = writeln!(out, "\n{n}  driver={drv}");
+            // Named, because a raw HID id does not tell a reader which of
+            // their wheels this block is. The pid is in the name: a G923
+            // and an RS50 do not collide in sysfs, they each get their own
+            // directory, but the report gave no way to tell them apart.
+            let model = match n.split(':').nth(2).and_then(|t| t.split('.').next()) {
+                Some("C276") => " (RS50)",
+                Some("C272") | Some("C268") => " (G PRO)",
+                Some("C266") | Some("C267") | Some("C26E") => " (G923)",
+                Some("C26D") => " (G923 Xbox, console mode)",
+                _ => "",
+            };
+            let _ = writeln!(out, "\n{n}{model}  driver={drv}");
             let mut attrs: Vec<String> = fs::read_dir(&dir).ok()
                 .map(|rd| rd.filter_map(|e| e.ok())
                     .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .filter(|a| a.starts_with("wheel_") || a == "range")
+                    // The classic set as well as the wheel_* one. Matching
+                    // only "range" meant a G923 reported one attribute and
+                    // silently dropped gain, autocenter and combined
+                    // pedals, which is most of what that wheel has.
+                    .filter(|a| {
+                        a.starts_with("wheel_")
+                            || matches!(a.as_str(), "range" | "gain" | "autocenter" | "combine_pedals")
+                    })
                     .collect())
                 .unwrap_or_default();
             attrs.sort();
@@ -148,15 +197,29 @@ pub fn report() -> String {
     }
 
     let _ = writeln!(out, "\n### udev rules installed");
+    // Deduped by canonical path: /lib is a symlink to /usr/lib on most
+    // distributions now, so listing both directories reported every
+    // packaged rule twice. That reads as a duplicate install, which is
+    // exactly the thing someone runs this report to rule out.
     let mut any_rule = false;
+    let mut seen: Vec<std::path::PathBuf> = Vec::new();
     for d in ["/etc/udev/rules.d", "/usr/lib/udev/rules.d", "/lib/udev/rules.d"] {
         if let Ok(rd) = fs::read_dir(d) {
-            for e in rd.filter_map(|e| e.ok()) {
-                let n = e.file_name().to_string_lossy().into_owned();
-                if n.contains("logi") || n.contains("trueforce") {
-                    let _ = writeln!(out, "  {d}/{n}");
-                    any_rule = true;
+            let mut names: Vec<String> = rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.contains("logi") || n.contains("trueforce"))
+                .collect();
+            names.sort();
+            for n in names {
+                let path = std::path::Path::new(d).join(&n);
+                let real = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if seen.contains(&real) {
+                    continue;
                 }
+                seen.push(real);
+                let _ = writeln!(out, "  {d}/{n}");
+                any_rule = true;
             }
         }
     }
@@ -164,14 +227,34 @@ pub fn report() -> String {
         let _ = writeln!(out, "  none found (force feedback and LEDs will need root)");
     }
 
+    // Read it when we can rather than always claiming we cannot: the old
+    // text told someone running as root that root was required, which is
+    // both wrong and the sort of thing that makes a reader distrust the
+    // rest of the report.
+    //
+    // The serial line is dropped here for the same reason it is withheld
+    // above. It identifies the owner, not the wheel, and the whole point of
+    // this report is that it can be pasted into a public issue.
     let _ = writeln!(out, "\n### kernel log");
-    let _ = writeln!(out, "  Not readable without root. Add it with:");
-    let _ = writeln!(out);
-    let _ = writeln!(out, "    sudo dmesg | grep -i logitech | grep -v serial");
-    let _ = writeln!(out);
-    let _ = writeln!(out, "  The grep drops the line carrying your wheel's serial number.");
-    let _ = writeln!(out, "  The lines worth having are \"HID++ features\", \"Effect timer\",");
-    let _ = writeln!(out, "  and anything saying failed or error.");
+    match kernel_log_lines() {
+        Some(lines) if !lines.is_empty() => {
+            for l in lines {
+                let _ = writeln!(out, "  {l}");
+            }
+        }
+        Some(_) => {
+            let _ = writeln!(out, "  readable, but nothing from this driver is in it");
+        }
+        None => {
+            let _ = writeln!(out, "  Not readable as this user. Add it with:");
+            let _ = writeln!(out);
+            let _ = writeln!(out, "    sudo dmesg | grep -i logitech | grep -v serial");
+            let _ = writeln!(out);
+            let _ = writeln!(out, "  The grep drops the line carrying your wheel's serial number.");
+            let _ = writeln!(out, "  The lines worth having are \"HID++ features\", \"Effect timer\",");
+            let _ = writeln!(out, "  and anything saying failed or error.");
+        }
+    }
 
     out
 }
