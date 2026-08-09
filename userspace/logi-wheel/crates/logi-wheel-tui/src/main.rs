@@ -252,6 +252,24 @@ fn report_hidpp_features(device: &Device<logi_wheel_core::sysfs::RealSysfs>) {
             }
             println!();
             println!("A feature with an index is implemented by the wheel.");
+            // What the wheel says it has, rather than what we thought to
+            // ask about. Anything unnamed here is a feature this project
+            // has never documented, which on a wheel whose LEDs nobody can
+            // drive is the first place to look.
+            if let Some(all) = device.hidpp_all_features() {
+                let extra: Vec<String> = all
+                    .iter()
+                    .filter(|(_, _, name)| name.is_none())
+                    .map(|(i, id, _)| format!("0x{id:04X}@0x{i:02X}"))
+                    .collect();
+                println!();
+                println!("The wheel lists {} features in total.", all.len());
+                if extra.is_empty() {
+                    println!("None of them are undocumented here.");
+                } else {
+                    println!("Undocumented by this project: {}", extra.join(" "));
+                }
+            }
         }
     }
 }

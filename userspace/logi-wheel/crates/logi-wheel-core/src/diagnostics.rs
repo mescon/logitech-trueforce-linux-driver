@@ -164,6 +164,21 @@ pub fn report() -> String {
                     let _ = writeln!(out, "{label}: no HID++ interface could be opened");
                 }
                 Some(rows) => {
+                    // What the wheel says it has, alongside what we knew to
+                    // ask for. The gap between the two is where an
+                    // undecoded capability hides, and it is large: an RS50
+                    // lists 37 features and this project documents 14.
+                    if let Some(all) = wheel.hidpp_all_features() {
+                        let extra: Vec<String> = all
+                            .iter()
+                            .filter(|(_, _, name)| name.is_none())
+                            .map(|(i, id, _)| format!("{id:04X}@{i:02X}"))
+                            .collect();
+                        let _ = writeln!(out, "{label}: {} features total", all.len());
+                        if !extra.is_empty() {
+                            let _ = writeln!(out, "{label}: undocumented {}", extra.join(" "));
+                        }
+                    }
                     let implemented: Vec<String> = rows
                         .iter()
                         .filter_map(|(id, _, idx)| idx.map(|i| format!("{id:04X}@{i:02X}")))

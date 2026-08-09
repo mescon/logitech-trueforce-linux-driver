@@ -412,6 +412,49 @@ pub fn query_g923_firmware(if0_dir: &Path) -> Option<String> {
     query_main_firmware(&mut io)
 }
 
+/// Ask the wheel to list EVERY feature it implements, as
+/// `(index, feature id)` pairs.
+///
+/// [`probe_features`] can only report features this project already knows
+/// to ask about, which is fine for checking a wheel has what we expect and
+/// useless for finding what we did not expect. A wheel carrying an LED
+/// feature nobody here has heard of looks identical to one carrying
+/// nothing.
+///
+/// That is not hypothetical. The driver's own probe log on an RS50 lists
+/// `8120`, `8127`, `8130` and `8132`, none of which are in
+/// [`KNOWN_FEATURES`], so `--hidpp-features` was silently omitting four
+/// features the kernel had already found. On the G923 Xbox edition, where
+/// no known LED dialect lights the strip (issue #27), what it implements
+/// that we have never tried is the whole question.
+///
+/// Uses `FeatureSet` (`0x0001`): `getCount` then `getFeatureId` per index.
+pub fn enumerate_features<T: HidppIo>(io: &mut T) -> Option<Vec<(u8, u16)>> {
+    const FEATURE_SET: u16 = 0x0001;
+    let set_index = resolve_feature_index(io, FEATURE_SET)?;
+    let count = *request(io, DEVICE_INDEX_BASE, set_index, FN_GET_INFO, &[])?.first()?;
+    let mut out = Vec::new();
+    for i in 1..=count {
+        // A gap or an unreadable entry is not fatal: report what answered
+        // rather than abandoning the whole enumeration.
+        if let Some(resp) = request(io, DEVICE_INDEX_BASE, set_index, FN_GET, &[i]) {
+            if resp.len() >= 2 {
+                let id = u16::from_be_bytes([resp[0], resp[1]]);
+                if id != 0 {
+                    out.push((i, id));
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The name this project knows a feature id by, or `None` when it is one we
+/// have never documented. The unnamed ones are the interesting ones.
+pub fn feature_name(id: u16) -> Option<&'static str> {
+    KNOWN_FEATURES.iter().find(|(k, _)| *k == id).map(|(_, what)| *what)
+}
+
 /// HID++ feature pages worth asking a wheel about, with what each one is
 /// for. Mirrors the `HIDPP_DD_PAGE_*` constants in the kernel driver.
 ///
@@ -766,6 +809,29 @@ mod tests {
     /// simonr2k4's own dump on issue #27, 2026-08-09. Requiring a short
     /// report made this interface invisible, so nothing this project does
     /// over HID++ ever reached that wheel.
+    /// The enumeration walk: resolve FeatureSet, read the count, then read
+    /// each id. Built as a mock because the point is the sequence, and a
+    /// wheel that answers three features must produce three pairs.
+    #[test]
+    fn enumerate_features_walks_the_feature_set() {
+        let mut io = MockIo::default();
+        // Root.getFeature(0x0001) -> index 0x01
+        io.responses.push_back(Some(vec![0x11, 0xff, 0x00, SW_ID, 0x01, 0, 0]));
+        // FeatureSet.getCount -> 3
+        io.responses.push_back(Some(vec![0x11, 0xff, 0x01, FN_GET_INFO | SW_ID, 0x03, 0, 0]));
+        // getFeatureId(1..3)
+        for id in [0x0001u16, 0x807A, 0x9999] {
+            let hi = (id >> 8) as u8;
+            let lo = (id & 0xff) as u8;
+            io.responses.push_back(Some(vec![0x11, 0xff, 0x01, FN_GET | SW_ID, hi, lo, 0]));
+        }
+        let found = enumerate_features(&mut io).expect("enumeration");
+        assert_eq!(found, vec![(1, 0x0001), (2, 0x807A), (3, 0x9999)]);
+        // The unknown one is exactly what this exists to surface.
+        assert!(feature_name(0x807A).is_some());
+        assert!(feature_name(0x9999).is_none(), "an undocumented feature must not be named");
+    }
+
     #[test]
     fn a_long_only_interface_is_recognised_as_hidpp() {
         let xbox_g923: &[u8] = &[

@@ -691,6 +691,16 @@ impl<S: SysfsIo> Device<S> {
     /// The wheel's interface-0 HID directory, when discovery found one.
     /// Needed by the rev-light probe, which talks to both that interface
     /// and its HID++ sibling.
+    /// Every feature this wheel implements, named where we know the name.
+    /// Unlike [`hidpp_features`](Self::hidpp_features) this asks the wheel
+    /// to list them, so a feature nobody here has documented still shows up.
+    pub fn hidpp_all_features(&self) -> Option<Vec<(u8, u16, Option<&'static str>)>> {
+        let node = crate::hidpp::find_hidpp_sibling(self.hid_dir.as_deref()?)?;
+        let mut io = crate::hidpp::RealHidppIo::open(&node).ok()?;
+        let found = crate::hidpp::enumerate_features(&mut io)?;
+        Some(found.into_iter().map(|(i, id)| (i, id, crate::hidpp::feature_name(id))).collect())
+    }
+
     pub fn hid_dir(&self) -> Option<&std::path::Path> {
         self.hid_dir.as_deref()
     }
