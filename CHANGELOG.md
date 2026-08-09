@@ -5,6 +5,57 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.32.0 - 2026-08-09
+
+**The Setup page was giving direct-drive owners the G923's advice.** With
+more than one wheel plugged in it worked out which wheel it was describing
+by rediscovering the hardware, which returns whichever wheel enumerated
+first rather than the one you have selected. So an RS50 owner with a G923
+also attached was told to leave `PROTON_ENABLE_HIDRAW` unset and use
+simulated TrueForce for ACC and Assetto Corsa EVO, when their wheel gets the
+real thing from the game through the shim. The advice was already correct
+per wheel; it was being handed the wrong wheel.
+
+**`logi-launch`, a new command, starts a helper inside the game's Proton
+prefix.** Put `logi-launch %command%` in a game's Steam launch options and
+the telemetry relay that simulated TrueForce needs starts with the game,
+instead of being a thing you had to remember to run by hand every session.
+It works out which game it is from the appid, so there is nothing to
+configure, and a title that needs no helper starts nothing.
+
+This is harder than it looks, which is why it is a command rather than a
+line in the documentation. Proton takes the prefix exclusively when it
+launches and waits for any existing wineserver to exit, so a helper started
+first stops the game from starting at all. And the obvious way to run a
+Windows binary in a prefix, `WINEPREFIX=... wine`, uses your distribution's
+wine against a prefix Proton built, which prompts to install wine-mono and
+can convert the prefix. Our own documentation recommended exactly that.
+`logi-launch` starts the helper only once the game's own wineserver exists,
+and runs it with the wine build the prefix actually belongs to.
+
+**A from-source install now installs the apps.** `sudo ./tools/setup.sh`
+built the driver, installed the udev rules and the helper scripts, and then
+left `logi-wheel`, `logi-ffb` and `logi-tf-sim` to the reader. Every
+distribution package has always installed them, so only people building
+from a checkout ended up with a current driver next to binaries they had
+built by hand months earlier. `doctor` reported those versions but never
+said anything when one was missing; it now fails on a missing app and warns
+when one is older than the checkout it is run from.
+
+**`logi-wheel --led-probe` tries every interface, numbered.** It used to try
+two fixed guesses, and on a wheel whose interfaces are laid out differently
+one of them had nowhere to go and silently tested nothing. It now walks
+every interface, asks each whether it answers HID++ rather than assuming,
+and prints which device node and dialect each numbered test used. `sent` was
+never evidence on its own: on a G923 the classic LED command sent to the
+wrong interface is accepted by the kernel and does nothing.
+
+**Also:** the per-game cards on the Setup page no longer draw their last
+line past their own edge, which was hiding a line of text entirely; every
+helper documented as a bare command is now checked to be installed by every
+packaging path; and `docs/LAUNCH_OPTIONS.md` collects every launch option
+this project asks for, what each does and how they combine.
+
 ## 0.31.0 - 2026-08-09
 
 **Both apps now manage every wheel you have plugged in.** Previously they
