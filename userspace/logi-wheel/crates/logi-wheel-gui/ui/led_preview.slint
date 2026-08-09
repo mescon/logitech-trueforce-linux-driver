@@ -101,7 +101,13 @@ export component LedPreview inherits Rectangle {
             spacing: 8px;
 
             Button {
-                text: root.animating ? "Stop preview" : "Preview animation";
+                // "Preview animation" next to a picture of the strip reads
+                // as "play this on the wheel", and was reported as a bug on
+                // that basis (issue #59). The caption below says otherwise
+                // but is muted 11px text under the button, which is not
+                // where someone looks before pressing it. The label says it
+                // instead.
+                text: root.animating ? "Stop" : "Preview on screen";
                 clicked => {
                     root.phase = 0;
                     root.animating = !root.animating;
@@ -116,7 +122,7 @@ export component LedPreview inherits Rectangle {
         Text {
             text: root.builtin-effect
                 ? "Effect changes apply to the wheel immediately. This is one of the wheel's four built-in sweeps: it plays a colour pattern stored in the wheel's own firmware, which the wheel does not report, so only the motion is previewed here and not the colours. Pick a custom slot to choose colours yourself."
-                : "Effect changes apply to the wheel immediately. The physical strip is a rev-light display, RPM-driven by a game or telemetry bridge, and shows a static idle pattern otherwise; the animation preview above shows on screen how a custom slot's direction behaves.";
+                : "Effect changes apply to the wheel immediately, and your colours are on the strip now. What the strip does NOT do is animate on its own: it is a rev-light display, driven by a game or a telemetry bridge, and it holds a static idle pattern until something feeds it RPM. The button above animates this on-screen picture only, to show how the slot's direction would sweep.";
             font-size: 11px;
             color: Theme.muted-text-color;
             wrap: word-wrap;
