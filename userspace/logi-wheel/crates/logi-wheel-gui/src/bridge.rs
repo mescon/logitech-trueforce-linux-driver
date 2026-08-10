@@ -966,6 +966,13 @@ pub fn setup_games(games: &[DiscoveredGame], cfg: &tfsim::Config, caps: games::W
                     // it here instead taught people to paste a setting that
                     // is right for one wheel and wrong for the other.
                     launch: "logi-launch %command%".into(),
+                    // The same decision the wrapper makes, from the same
+                    // function, so the page cannot describe one recipe
+                    // while logi-launch applies another. `ambiguous` is
+                    // false here because the page is already showing one
+                    // wheel's answer: `caps` is the wheel being managed,
+                    // which the user picks in the app.
+                    plan: games::LaunchPlan::for_game(compat, caps, false).describe().into(),
                     installed: g.shim_installed,
                     sim_id: sim_id.into(),
                     sim_enabled: sim.enabled,
@@ -984,6 +991,7 @@ pub fn setup_games(games: &[DiscoveredGame], cfg: &tfsim::Config, caps: games::W
                 // it wants; offering a guess would be worse than
                 // offering nothing.
                 launch: String::new().into(),
+                plan: String::new().into(),
                 installed: true,
                 sim_id: String::new().into(),
                 sim_enabled: false,

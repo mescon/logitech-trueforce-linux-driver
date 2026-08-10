@@ -325,7 +325,7 @@ fn launch_plan(
     named: Option<String>,
     wheel_arg: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use logi_wheel_core::games::{self, Ffb, SimTf};
+    use logi_wheel_core::games;
 
     // The advice is per wheel, so it needs the wheel actually attached.
     // With none, say so and claim nothing: a wrapper that guesses here
@@ -368,15 +368,12 @@ fn launch_plan(
         println!("wheel={}", if caps.sdk_trueforce { "direct-drive" } else { "classic" });
     }
 
-    // An unknown title still gets the daemon. Only the shared-memory sims
-    // are keyed by appid here; the UDP ones (AMS2, the F1 games, BeamNG,
-    // the Codemasters titles) need nothing but logi-tf-sim listening, and
-    // it idles when nothing is streaming. Withholding it because a game is
-    // not in a table would leave exactly those titles unserved for no gain.
+    // An unknown title still gets the daemon; see `LaunchPlan::unknown`.
     let unknown = || {
         println!("game=unknown");
-        println!("tfsim=1");
-        println!("relay=none");
+        for line in games::LaunchPlan::unknown().lines() {
+            println!("{line}");
+        }
     };
     // A name the user gave wins over the appid. That is the whole point of
     // it: the appid may be missing (a non-Steam shortcut, whose id is
@@ -404,63 +401,11 @@ fn launch_plan(
     };
     println!("game={}", game.name);
 
-    // A title that does not run on Linux gets no recipe. setup_line already
-    // refuses to describe one, for the reason that applies here too: any
-    // advice would be untested, and stating it confidently is worse than
-    // saying nothing. Forza Motorsport is the case, and it was emitting a
-    // full direct-drive recipe.
-    if game.linux == games::Linux::Unsupported {
-        println!("supported=0");
-        println!("tfsim=0");
-        println!("relay=none");
-        println!("note=this title does not run on Linux");
-        return Ok(());
-    }
-
-    // PROTON_ENABLE_HIDRAW, and the proxy, come straight from the registry's
-    // own launch-options answer for this wheel.
-    match game.launch_options(caps) {
-        // Never on a guess: wrong here means a G923 owner loses force
-        // feedback, and they would have no way to tell that is what
-        // happened.
-        Some(games::LAUNCH_HIDRAW) if ambiguous => {
-            println!("note=this game wants PROTON_ENABLE_HIDRAW on a direct-drive wheel;")
-        }
-        Some(games::LAUNCH_HIDRAW) => println!("hidraw=1"),
-        Some(games::LAUNCH_LOGI_FFB) => println!("ffb=proxy"),
-        _ => {}
-    }
-    if game.ffb == Ffb::DirectInput && game.launch_options(caps).is_none() {
-        // DirectInput without the proxy needs HIDRAW off, not merely unset.
-        println!("hidraw=0");
-    }
-
-    // A title whose own TrueForce reaches this wheel must NOT also get the
-    // simulated kind. logi-tf-sim treats an unlisted game as enabled, so
-    // starting it for ACC or Assetto Corsa EVO on a direct-drive wheel
-    // would layer a synthesised engine note on top of the real haptics the
-    // game is already sending. The registry already knows the difference:
-    // InstallShim means native TrueForce is the route on this wheel.
-    if game.setup_action(caps) == games::SetupAction::InstallShim {
-        println!("tfsim=0");
-        println!("relay=none");
-        println!("note=native TrueForce via the shim; simulated would double it");
-        return Ok(());
-    }
-
-    // The telemetry half: which relay decoder, and whether the daemon is
-    // worth running at all for this title.
-    if let SimTf::LiveNow(id) = game.simulated_tf {
-        println!("tfsim=1");
-        match id {
-            "acc" | "ac-evo" | "assetto" | "iracing" | "raceroom" | "rf2" | "lmu" => {
-                println!("relay={id}")
-            }
-            _ => println!("relay=none"),
-        }
-    } else {
-        println!("tfsim=0");
-        println!("relay=none");
+    // Everything below this point is decided in logi-wheel-core, so the
+    // wrapper's recipe and the GUI's description of it cannot disagree.
+    // They did before: only this printer knew which wheel was attached.
+    for line in games::LaunchPlan::for_game(game, caps, ambiguous).lines() {
+        println!("{line}");
     }
     Ok(())
 }

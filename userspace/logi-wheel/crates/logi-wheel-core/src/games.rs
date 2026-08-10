@@ -854,10 +854,299 @@ pub fn sorted_by_name() -> Vec<&'static GameCompat> {
     games
 }
 
+/// What `logi-launch` will actually do for one (game, wheel) pair.
+///
+/// The recipe used to exist twice: once as the `--launch-plan` printer that
+/// `logi-launch` parses, and once as the static `setup` sentence the Setup
+/// page shows. They could not agree, because only the first knew which
+/// wheel was attached, so the page told a G923 owner to set
+/// `PROTON_ENABLE_HIDRAW=1` for Assetto Corsa Competizione while the
+/// wrapper correctly refused to. This is the single answer both now read.
+///
+/// It is deliberately data rather than printed lines: the terminal app
+/// renders it as `key=value` for the wrapper to parse, and the GUI renders
+/// it as a sentence for a person to read.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LaunchPlan {
+    /// `Some(true)` sets `PROTON_ENABLE_HIDRAW=1`, `Some(false)` sets it to
+    /// `0` explicitly, `None` leaves it alone. Never guessed: on a wheel
+    /// that cannot take it, setting it costs the owner force feedback.
+    pub hidraw: Option<bool>,
+    /// Launch the game through the `logi-ffb` proxy for DirectInput force
+    /// feedback.
+    pub ffb_proxy: bool,
+    /// Run the `logi-tf-sim` daemon for this title.
+    pub tfsim: bool,
+    /// Which relay decoder belongs in the game's prefix, if any.
+    pub relay: Option<&'static str>,
+    /// False for a title that does not run on Linux, which gets no recipe
+    /// at all rather than an untested one.
+    pub supported: bool,
+    /// Why the plan is what it is, in the order it should be shown.
+    pub notes: Vec<String>,
+}
+
+impl LaunchPlan {
+    /// The plan for a title the registry does not know.
+    ///
+    /// Still runs the daemon. Only the shared-memory sims are keyed by
+    /// appid; the UDP ones need nothing but the daemon listening, and it
+    /// idles when nothing is streaming. Withholding it because a game is
+    /// absent from a table would leave exactly those titles unserved for
+    /// no gain.
+    pub fn unknown() -> Self {
+        LaunchPlan { tfsim: true, supported: true, ..Default::default() }
+    }
+
+    /// The plan for `game` on a wheel with `caps`.
+    ///
+    /// `ambiguous` is true when several kinds of wheel are attached and
+    /// none was named. The game picks which one it uses, in its own
+    /// settings, and never tells us. In that state the harmful half of the
+    /// recipe is withheld rather than guessed, because guessing wrong sets
+    /// `PROTON_ENABLE_HIDRAW` on a G923 and costs it force feedback.
+    pub fn for_game(game: &GameCompat, caps: WheelCaps, ambiguous: bool) -> Self {
+        let mut plan = LaunchPlan { supported: true, ..Default::default() };
+
+        if game.linux == Linux::Unsupported {
+            plan.supported = false;
+            plan.notes.push("this title does not run on Linux".into());
+            return plan;
+        }
+
+        match game.launch_options(caps) {
+            Some(LAUNCH_HIDRAW) if ambiguous => plan
+                .notes
+                .push("this game wants PROTON_ENABLE_HIDRAW on a direct-drive wheel;".into()),
+            Some(LAUNCH_HIDRAW) => plan.hidraw = Some(true),
+            Some(LAUNCH_LOGI_FFB) => plan.ffb_proxy = true,
+            _ => {}
+        }
+        // DirectInput without the proxy needs HIDRAW off, not merely unset.
+        if game.ffb == Ffb::DirectInput && game.launch_options(caps).is_none() {
+            plan.hidraw = Some(false);
+        }
+
+        // A title whose own TrueForce reaches this wheel must NOT also get
+        // the simulated kind. The daemon treats an unlisted game as
+        // enabled, so running it for ACC or AC EVO on a direct-drive wheel
+        // would layer a synthesised engine note over the real haptics the
+        // game is already sending.
+        if game.setup_action(caps) == SetupAction::InstallShim {
+            plan.notes.push("simulated TrueForce stays off, so it does not double the real thing".into());
+            return plan;
+        }
+
+        if let SimTf::LiveNow(id) = game.simulated_tf {
+            plan.tfsim = true;
+            plan.relay = matches!(id, "acc" | "ac-evo" | "assetto" | "iracing" | "raceroom" | "rf2" | "lmu")
+                .then_some(id);
+        }
+        plan
+    }
+
+    /// The plan as the `key=value` lines `logi-launch` parses.
+    ///
+    /// Order and spelling are load-bearing: the wrapper reads them with
+    /// `sed -n "s/^key=//p"`, so a renamed key silently stops being found
+    /// rather than failing loudly.
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.supported {
+            out.push("supported=0".into());
+            out.push("tfsim=0".into());
+            out.push("relay=none".into());
+            out.extend(self.notes.iter().map(|n| format!("note={n}")));
+            return out;
+        }
+        for note in &self.notes {
+            // A note explaining a withheld hidraw belongs beside it, above
+            // the telemetry half, which is where it was printed before.
+            if note.contains("PROTON_ENABLE_HIDRAW") {
+                out.push(format!("note={note}"));
+            }
+        }
+        match self.hidraw {
+            Some(true) => out.push("hidraw=1".into()),
+            Some(false) => out.push("hidraw=0".into()),
+            None => {}
+        }
+        if self.ffb_proxy {
+            out.push("ffb=proxy".into());
+        }
+        out.push(format!("tfsim={}", u8::from(self.tfsim)));
+        out.push(format!("relay={}", self.relay.unwrap_or("none")));
+        for note in &self.notes {
+            if !note.contains("PROTON_ENABLE_HIDRAW") {
+                out.push(format!("note={note}"));
+            }
+        }
+        out
+    }
+
+    /// The plan as a sentence, for the Setup page.
+    ///
+    /// Written as what the wrapper WILL DO rather than what the user should
+    /// do, because with `logi-launch` in the launch options they no longer
+    /// do any of it. The page used to show a static instruction to set
+    /// variables by hand next to a launch line that sets them for you,
+    /// which reads as two conflicting recipes.
+    pub fn describe(&self) -> String {
+        if !self.supported {
+            return "This title does not run on Linux, so there is nothing to set up.".into();
+        }
+        let mut parts: Vec<String> = Vec::new();
+        match self.hidraw {
+            Some(true) => parts.push("sets PROTON_ENABLE_HIDRAW=1 so the game's own TrueForce reaches the wheel".into()),
+            Some(false) => parts.push("sets PROTON_ENABLE_HIDRAW=0, which this game needs for force feedback".into()),
+            None => {}
+        }
+        if self.ffb_proxy {
+            parts.push("runs the game through logi-ffb for force feedback".into());
+        }
+        if self.tfsim {
+            parts.push("starts logi-tf-sim for simulated TrueForce".into());
+        }
+        if let Some(relay) = self.relay {
+            parts.push(format!("puts the {relay} telemetry relay in the game's prefix"));
+        }
+
+        let mut text = if parts.is_empty() {
+            "On your wheel, logi-launch sets nothing extra for this game.".to_string()
+        } else {
+            format!("On your wheel, logi-launch {}.", join_clauses(&parts))
+        };
+        for note in &self.notes {
+            text.push(' ');
+            let note = note.trim_end_matches(';');
+            text.push_str(&format!("{}{}", capitalise(note), if note.ends_with('.') { "" } else { "." }));
+        }
+        text
+    }
+}
+
+/// "a", "a and b", "a, b and c" - an Oxford-comma-free list, because these
+/// clauses are read aloud in a sentence rather than scanned as a table.
+fn join_clauses(parts: &[String]) -> String {
+    match parts.len() {
+        0 => String::new(),
+        1 => parts[0].clone(),
+        _ => format!("{} and {}", parts[..parts.len() - 1].join(", "), parts[parts.len() - 1]),
+    }
+}
+
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tfsim;
+
+    const DD: WheelCaps = WheelCaps { sdk_trueforce: true };
+    const G923: WheelCaps = WheelCaps { sdk_trueforce: false };
+
+    fn acc() -> &'static GameCompat {
+        compat_for_appid(805550).expect("Assetto Corsa Competizione is in the registry")
+    }
+
+    /// The two wheels must get DIFFERENT recipes for the same game, which
+    /// is the whole reason the Setup page shows this line: the launch
+    /// options are now identical for every game and every wheel, so the
+    /// page would otherwise imply the same thing happens on both.
+    #[test]
+    fn the_same_game_plans_differently_per_wheel() {
+        let dd = LaunchPlan::for_game(acc(), DD, false);
+        let classic = LaunchPlan::for_game(acc(), G923, false);
+        assert_ne!(dd, classic, "ACC must not plan identically on both wheels");
+
+        // Direct drive: the game's own TrueForce, and NOT the simulated
+        // kind on top of it.
+        assert_eq!(dd.hidraw, Some(true));
+        assert!(!dd.tfsim, "simulated TrueForce would double the real thing");
+
+        // A G923 must never be told to set this: it costs that wheel force
+        // feedback, and the owner has no way to tell that is what happened.
+        assert_ne!(classic.hidraw, Some(true), "PROTON_ENABLE_HIDRAW on a G923 kills its force feedback");
+        assert!(classic.tfsim, "the G923's only TrueForce here is the simulated kind");
+    }
+
+    /// With several kinds of wheel attached and none named, the harmful
+    /// half is withheld rather than guessed.
+    #[test]
+    fn an_ambiguous_rig_is_never_told_to_set_hidraw() {
+        let plan = LaunchPlan::for_game(acc(), DD, true);
+        assert_eq!(plan.hidraw, None, "guessing here costs a G923 its force feedback");
+        assert!(
+            plan.notes.iter().any(|n| n.contains("PROTON_ENABLE_HIDRAW")),
+            "withholding it silently is worse than withholding it out loud"
+        );
+    }
+
+    /// `logi-launch` parses these with `sed -n "s/^key=//p"`, so a renamed
+    /// or reordered key stops being found instead of failing loudly.
+    #[test]
+    fn the_wrapper_keys_are_present_and_parseable() {
+        for (game, caps) in [(acc(), DD), (acc(), G923)] {
+            let lines = LaunchPlan::for_game(game, caps, false).lines();
+            for key in ["tfsim=", "relay="] {
+                assert!(
+                    lines.iter().any(|l| l.starts_with(key)),
+                    "{key:?} missing from {lines:?}; logi-launch reads it by exact prefix"
+                );
+            }
+            for line in &lines {
+                assert!(line.contains('='), "{line:?} is not a key=value line");
+                assert!(!line.contains('\n'), "{line:?} spans lines; the wrapper reads one per line");
+            }
+        }
+    }
+
+    /// An unknown title still gets the daemon: the UDP sims need nothing
+    /// but a listener, and it idles when nothing streams.
+    #[test]
+    fn an_unknown_game_still_gets_the_daemon() {
+        let plan = LaunchPlan::unknown();
+        assert!(plan.tfsim);
+        assert_eq!(plan.relay, None);
+        assert!(plan.lines().contains(&"tfsim=1".to_string()));
+    }
+
+    /// A title that does not run on Linux gets no recipe rather than an
+    /// untested one.
+    #[test]
+    fn an_unsupported_title_is_described_as_such_and_gets_no_recipe() {
+        let Some(game) = GAMES.iter().find(|g| g.linux == Linux::Unsupported) else {
+            return;
+        };
+        let plan = LaunchPlan::for_game(game, DD, false);
+        assert!(!plan.supported);
+        assert!(!plan.tfsim);
+        assert!(plan.lines().contains(&"supported=0".to_string()));
+        assert!(plan.describe().contains("does not run on Linux"));
+    }
+
+    /// The sentence has to read as one, and must never be empty: a blank
+    /// line under the launch options tells the reader nothing about why it
+    /// is blank.
+    #[test]
+    fn every_game_describes_itself_readably_on_both_wheels() {
+        for game in GAMES.iter() {
+            for caps in [DD, G923] {
+                let text = LaunchPlan::for_game(game, caps, false).describe();
+                assert!(!text.trim().is_empty(), "{} described as nothing", game.name);
+                assert!(text.ends_with('.'), "{} : {text:?} does not end a sentence", game.name);
+                assert!(!text.contains(" ,"), "{} : {text:?} has a stray comma", game.name);
+                assert!(!text.contains("  "), "{} : {text:?} has a doubled space", game.name);
+                assert!(!text.contains(".."), "{} : {text:?} has a doubled full stop", game.name);
+            }
+        }
+    }
     use std::collections::BTreeSet;
 
     #[test]

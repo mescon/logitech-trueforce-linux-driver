@@ -221,28 +221,90 @@ app's Setup page, **Install relay**.
 lights lose their telemetry. That is the right choice only when you want
 nothing driven on this machine.
 
-### Running something as well
+### Running your own helpers inside the prefix
 
-`LOGI_LAUNCH_HELPERS` starts extra programs inside the prefix alongside
-whatever the plan already decided, as a semicolon-separated list of
-`exe args`:
+`LOGI_LAUNCH_HELPERS` starts extra Windows programs inside the game's
+prefix, alongside whatever the plan already decided. Our relay is one such
+program; there is nothing special about it, and anything else that has to
+run beside the game can go the same way.
 
 ```
 LOGI_LAUNCH_HELPERS='c:\sim-teleport.exe source' logi-launch %command%
 ```
 
-Two or more:
+Semicolons separate several:
 
 ```
-LOGI_LAUNCH_HELPERS='c:\sim-teleport.exe source; c:\something-else.exe'
+LOGI_LAUNCH_HELPERS='c:\sim-teleport.exe source; c:\dash-bridge.exe --port 8080'
 ```
 
-They all read the same telemetry, which is not a conflict: a Windows
-shared-memory section takes any number of readers.
+#### Why it has to be in the prefix
 
-The program name is whatever comes before the first space, so it cannot
-itself contain one. Put helpers in the prefix's `drive_c`, where the path is
-`c:\name.exe` and the question does not arise.
+The sims that matter here publish telemetry into a **named Windows
+shared-memory section**: the Assetto Corsa family including EVO, iRacing,
+RaceRoom, rFactor 2 and Le Mans Ultimate. That section exists inside the
+Wine prefix and nowhere else. No Linux process can open it, and neither can
+a program on another machine. Reading it takes a Windows process in the same
+prefix, which is the whole reason this mechanism exists.
+
+Games that broadcast telemetry over **UDP** instead (Automobilista 2, the F1
+titles, the Codemasters rally games, BeamNG) need none of this. Point the
+game's own telemetry setting at `127.0.0.1` and read it from Linux directly.
+
+#### Getting a program in there
+
+Copy the `.exe` into the prefix's `drive_c`, which is where `c:\name.exe`
+resolves to:
+
+```
+cp yourhelper.exe ~/.steam/steam/steamapps/compatdata/<appid>/pfx/drive_c/
+```
+
+Then name it in `LOGI_LAUNCH_HELPERS` as `c:\yourhelper.exe`.
+
+#### What logi-launch handles for you
+
+The hard part is not starting the program, it is starting it at the right
+moment, and this is the reason to go through the wrapper rather than
+launching it yourself:
+
+- **Order.** Proton takes the prefix exclusively at launch: it runs
+  `wineserver -w` and waits for any existing wineserver to exit first. Start
+  a helper first and **the game does not start at all**, it sits waiting for
+  your helper to quit. `logi-launch` execs the game immediately and starts
+  helpers afterwards, once the game's own wineserver exists.
+- **The right wine.** Helpers run with the same Proton build the game is
+  using, read from the prefix's `config_info`. The distribution's `wine` is
+  a different build against a Proton-made prefix: it prompts to install
+  wine-mono and can convert the prefix.
+- **Settling.** It waits `LOGI_LAUNCH_SETTLE` seconds (15 by default) so the
+  game has created its sections before the first probe.
+
+#### What suits this, and what does not
+
+Good candidates are programs that **attach to a running game**: telemetry
+readers, bridges to a dashboard or a second PC, bass-shaker feeders, logging
+tools. Several reading the same telemetry is fine, and not a conflict: a
+Windows shared-memory section takes any number of readers.
+
+It does not suit anything that must run **before** the game, such as a
+launcher, a patcher, or a mod manager. Those need the prefix to themselves,
+which is the exact situation this design avoids.
+
+#### Limits worth knowing
+
+- The program name is whatever precedes the first space, so it cannot itself
+  contain one. In `drive_c` the path is `c:\name.exe` and the question does
+  not arise.
+- Each helper gets its own wine process, and they are all started together
+  rather than one after another. A helper that never exits does not hold up
+  the next one.
+- Helpers stop when the game does, because Proton tears the prefix down on
+  exit. That is observed rather than promised: a helper of your own that
+  survives it would keep a wineserver alive and delay the next launch. If a
+  game refuses to start, check for a stray `wineserver` first.
+- Output goes to `/tmp/logi-launch.log`, with `WINEDEBUG=-all` unless you
+  set `WINEDEBUG` yourself.
 
 See [SHARED_MEMORY_RELAY.md](SHARED_MEMORY_RELAY.md) for the relay itself.
 

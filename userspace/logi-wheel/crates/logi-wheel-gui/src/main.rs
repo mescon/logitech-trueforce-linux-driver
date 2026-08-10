@@ -569,6 +569,33 @@ fn install_shim_for(
     run_shim_command(app_weak, shim_binary.clone(), args, games_cache.clone(), caps.clone());
 }
 
+/// How a finished helper process is reported in the Setup page's output
+/// panel: one sentence when it worked, the raw output when it did not.
+///
+/// Removing TrueForce from a game used to put
+/// `uninstalled /home/…/compatdata/1881200/pfx` and
+/// `[exit status: exit status: 0]` into the panel where that game's row had
+/// been. Both halves were wrong. A success is not something to report in
+/// the tool's own words, and `ExitStatus` already Displays as
+/// "exit status: 0", so wrapping it in another label produced the stutter.
+///
+/// A FAILURE keeps the full output, because there the process's own words
+/// are the only diagnostic there is.
+fn command_result(out: &std::process::Output, ok: &str) -> String {
+    if out.status.success() {
+        return ok.to_string();
+    }
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        // Nothing said, so the status is all there is to go on.
+        format!("Failed: {}.", out.status)
+    } else {
+        format!("{text}\n\n{}", out.status)
+    }
+}
+
 /// Run the TrueForce SDK shim installer with `args` (a per-game install,
 /// `--prefix <pfx>` plus `--sdk-dir <dir>` when the folder validates, or
 /// an `--uninstall-prefix <pfx>` remove) off the UI thread, then push its combined stdout+stderr plus
@@ -595,14 +622,17 @@ fn run_shim_command(
         });
         return;
     };
+    // What to say when it works. The installer's own stdout is a path and
+    // a status line written for a terminal, which is not what belongs in a
+    // panel under the game's row.
+    let done = if args.iter().any(|a| a == "--uninstall-prefix") {
+        "TrueForce files removed from this game."
+    } else {
+        "TrueForce shim installed."
+    };
     std::thread::spawn(move || {
         let text = match std::process::Command::new(&bin).args(&args).output() {
-            Ok(out) => {
-                let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
-                combined.push_str(&String::from_utf8_lossy(&out.stderr));
-                combined.push_str(&format!("\n[exit status: {}]", out.status));
-                combined
-            }
+            Ok(out) => command_result(&out, done),
             Err(e) => format!("Failed to run {bin}: {e}"),
         };
         let rescan_weak = app_weak.clone();
@@ -682,10 +712,15 @@ fn run_tf_sweep(
                 let waited = child.wait_with_output();
                 *pid_cell.lock().unwrap() = None;
                 match waited {
+                    // The sweep's stdout IS the result here, unlike the
+                    // installer's, so it is kept whether it succeeded or
+                    // not. Only the doubled status label is dropped.
                     Ok(out) => {
                         let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
                         combined.push_str(&String::from_utf8_lossy(&out.stderr));
-                        combined.push_str(&format!("\n[exit status: {}]", out.status));
+                        if !out.status.success() {
+                            combined.push_str(&format!("\n{}", out.status));
+                        }
                         combined
                     }
                     Err(e) => format!("Failed to wait for {binary}: {e}"),
@@ -2827,7 +2862,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
 #[cfg(test)]
 mod overlay_debug_tests {
-    use super::overlay_debug_from;
+    use super::{command_result, overlay_debug_from};
 
     #[test]
     fn new_only() {
@@ -2852,5 +2887,57 @@ mod overlay_debug_tests {
     #[test]
     fn unparsable_value_falls_back_to_zero() {
         assert_eq!(overlay_debug_from(Some("nope".to_string()), None), Some(0.0));
+    }
+
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn output(code: i32, stdout: &str, stderr: &str) -> Output {
+        Output {
+            // from_raw takes a wait status, where the exit code is the
+            // second byte: 0 is success, 256 is exit code 1.
+            status: ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    /// Removing TrueForce from a game put the installer's own terminal
+    /// output into the panel where that game's row had been:
+    ///
+    /// ```text
+    ///   uninstalled /home/…/steamapps/compatdata/1881200/pfx
+    ///
+    /// [exit status: exit status: 0]
+    /// ```
+    ///
+    /// A success has nothing to report, and the doubled label came from
+    /// wrapping `ExitStatus` (which Displays as "exit status: 0") in
+    /// another "exit status:".
+    #[test]
+    fn a_successful_command_reports_a_sentence_not_its_stdout() {
+        let out = output(0, "uninstalled /home/someone/.steam/…/pfx\n", "");
+        let text = command_result(&out, "TrueForce files removed from this game.");
+        assert_eq!(text, "TrueForce files removed from this game.");
+        assert!(!text.contains("uninstalled"), "the tool's own words leaked into the UI");
+        assert!(!text.contains("exit status"), "a success has no status worth showing");
+    }
+
+    /// A failure is the case where the process's own words are the only
+    /// diagnostic there is, so they are kept in full.
+    #[test]
+    fn a_failed_command_keeps_its_output_and_says_so_once() {
+        let out = output(1, "", "cannot write to prefix: Permission denied\n");
+        let text = command_result(&out, "TrueForce files removed from this game.");
+        assert!(text.contains("Permission denied"), "the reason must survive: {text:?}");
+        assert_eq!(text.matches("exit status").count(), 1, "stuttered status in {text:?}");
+    }
+
+    /// A failure that says nothing still has to say something.
+    #[test]
+    fn a_silent_failure_still_reports_the_status() {
+        let text = command_result(&output(2, "", ""), "Done.");
+        assert!(text.starts_with("Failed"), "{text:?}");
+        assert!(text.contains('2'), "the exit code is all there is to go on: {text:?}");
     }
 }

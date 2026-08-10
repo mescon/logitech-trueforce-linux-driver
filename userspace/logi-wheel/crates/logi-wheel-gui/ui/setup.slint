@@ -35,6 +35,14 @@ export struct SetupGame {
     // is how a G923 owner ended up with PROTON_ENABLE_HIDRAW and no force
     // feedback. The per-wheel part is shown as the row's action instead.
     launch: string,
+    // What that one line actually DOES for this game on the wheel plugged
+    // in now (`games::LaunchPlan::describe`). Shown because the launch line
+    // is now identical for every game and every wheel, which on its own
+    // hides that the recipe behind it differs: an RS50 gets
+    // PROTON_ENABLE_HIDRAW and the game's own TrueForce, a G923 must NOT
+    // get that variable and gets the simulated kind instead. Empty for a
+    // game the registry does not know, where there is nothing to describe.
+    plan: string,
 }
 
 // One haptic layer of the simulated-TrueForce effects engine, built on the
@@ -449,7 +457,15 @@ export component Setup inherits Rectangle {
                                     vertical-alignment: center;
                                 }
                             }
-                            Text {
+                            // The registry's per-game note, which is written
+                            // as manual instructions. Shown here only for a
+                            // game with no plan to describe; where there IS
+                            // one, it moves below as the by-hand
+                            // alternative, because side by side the two read
+                            // as contradicting each other: one says to set
+                            // PROTON_ENABLE_HIDRAW yourself and the other
+                            // says logi-launch sets it for you.
+                            if game.plan == "": Text {
                                 text: game.summary;
                                 font-size: 12px;
                                 color: Theme.muted-text-color;
@@ -534,6 +550,31 @@ export component Setup inherits Rectangle {
                                     text: "Copy";
                                     clicked => { root.copy-launch(game.launch); }
                                 }
+                            }
+
+                            // What that line does here. Directly under the
+                            // launch options rather than beside the row's
+                            // summary, because it is an explanation OF that
+                            // line and reads as one thought with it.
+                            if game.plan != "": Text {
+                                text: game.plan;
+                                font-size: 12px;
+                                color: Theme.muted-text-color;
+                                wrap: word-wrap;
+                            }
+
+                            // The same recipe by hand, for anyone who would
+                            // rather not use the wrapper. Last, and labelled
+                            // as an alternative, so it cannot be mistaken
+                            // for a list of things still left to do. It is
+                            // also where the advice logi-launch CANNOT
+                            // carry out lives, Steam Input being the one
+                            // that matters.
+                            if game.plan != "": Text {
+                                text: "Or by hand: " + game.summary;
+                                font-size: 11px;
+                                color: Theme.muted-text-color;
+                                wrap: word-wrap;
                             }
 
                             // Simulated TrueForce: the game's own switch
