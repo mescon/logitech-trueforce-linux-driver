@@ -39,7 +39,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return hidpp_features();
     }
     if std::env::args().any(|a| a == "--led-probe") {
-        return led_probe();
+        // An optional test number re-runs just that one. Watching a rim
+        // through eighteen tests to check a single number again is a poor
+        // use of the one instrument this question has: the person looking.
+        let only = std::env::args()
+            .skip_while(|a| a != "--led-probe")
+            .nth(1)
+            .and_then(|a| a.parse::<u32>().ok());
+        return led_probe(only);
     }
     if std::env::args().any(|a| a == "--report") {
         print!("{}", logi_wheel_core::diagnostics::report());
@@ -285,7 +292,7 @@ fn report_hidpp_features(device: &Device<logi_wheel_core::sysfs::RealSysfs>) {
 /// This WRITES to the wheel, unlike `--hidpp-features`. It only ever sends
 /// LED commands: nothing here produces force, and every test turns the
 /// lights off again afterwards.
-fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
+fn led_probe(only: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     use logi_wheel_core::hidpp;
     use std::io::Write;
     use std::thread::sleep;
@@ -341,6 +348,11 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
             sleep(gap);
         }
         first = false;
+        // Skip only THIS test, never the rest of the node's: a `continue`
+        // here would jump past the level tests too, so `--led-probe 12`
+        // would silently never run test 12.
+        let run_classic = only.is_none_or(|o| o == n);
+        if run_classic {
         print!("TEST {n}  {} [{kind}]  classic lg4ff ... ", node.display());
         std::io::stdout().flush().ok();
         if kind.contains("HID++") {
@@ -367,6 +379,7 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        }
 
         // Dialect B: the level-based 0x807A sequence, but only where this
         // interface actually answers HID++. Asking each interface rather
@@ -377,7 +390,12 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
         // command this project sent before said 10 (issue #27).
         for leds in [hidpp::LEDS_DIRECT_DRIVE, hidpp::LEDS_G923] {
             n += 1;
-            sleep(gap);
+            if only.is_some_and(|o| o != n) {
+                continue;
+            }
+            if only.is_none() {
+                sleep(gap);
+            }
             print!("TEST {n}  {} [{kind}]  0x807A level, {leds} LEDs ... ", node.display());
             std::io::stdout().flush().ok();
             match hidpp::RealHidppIo::open(node) {
