@@ -152,6 +152,35 @@ and set `LOGI_LAUNCH_EXE` as above.
 None of this touches force feedback or TrueForce. A telemetry helper only
 reads; the native FFB and SDK TrueForce paths are unaffected.
 
+## Seeing every game's recipe
+
+```
+logi-wheel --launch-plan --list
+```
+
+prints all 30 titles the registry knows, with the name to pass to `--game`,
+the Steam appid, and what each one resolves to **on the wheel you have
+attached**. The same command with an appid instead of `--list` shows one
+game's answer, which is what `logi-launch` itself asks for.
+
+Titles that do not run on Linux at all (the Forza games, Gran Turismo 7) say
+so and get no recipe, rather than advice nobody can test.
+
+## Naming a game it does not recognise
+
+An appid identifies a Steam title, but not every install has one: a game
+added as a non-Steam shortcut gets an id Steam makes up locally, a copy
+bought elsewhere has none, and a delisted game may not resolve. Name it
+instead:
+
+```
+logi-launch --game dirt-4 %command%
+```
+
+Names come from `--launch-plan --list`. A partial name works if it is
+unambiguous; `--game dirt` refuses and lists the candidates rather than
+choosing between DiRT 4 and DiRT Rally 2.0.
+
 ## Two wheels at once
 
 `logi-launch` works out what to set from the wheel you have attached. With

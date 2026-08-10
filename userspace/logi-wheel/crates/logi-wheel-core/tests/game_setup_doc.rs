@@ -95,7 +95,15 @@ fn render() -> String {
         "Launch options go in Steam under the game's Properties. Paste them\n\
          exactly, `%command%` included: it is the placeholder Steam replaces\n\
          with the game itself, so without it the line replaces the game\n\
-         instead of wrapping it.\n\n",
+         instead of wrapping it.\n\n\
+         **Or skip the table.** `logi-launch %command%` works out everything\n\
+         below for the game being launched and the wheel attached, and\n\
+         applies it: the raw-HID setting only where that wheel wants it, the\n\
+         logi-ffb proxy for the DirectInput games, the telemetry daemon, and\n\
+         the relay inside the game's prefix for the sims that need one. A\n\
+         game with its own TrueForce keeps it, and nothing is layered on\n\
+         top. The table below is for doing it by hand, or for working out\n\
+         what went wrong. See LAUNCH_OPTIONS.md.\n\n",
     );
 
     out.push_str("## Recipes\n\n");

@@ -28,9 +28,12 @@ export struct SetupGame {
     // in-prefix relay, and whether that relay is already in its prefix.
     needs-relay: bool,
     relay-installed: bool,
-    // The Steam launch options this title wants ON THIS WHEEL, or ""
-    // when it needs none. Resolved per (game, wheel) pair on the Rust
-    // side; the row shows and copies it, and never writes it.
+    // The line to paste into this game's Steam launch options. The same
+    // for every game now: logi-launch works the recipe out at launch from
+    // the appid and the wheel attached. It used to hold the raw recipe,
+    // which is per wheel, and a line copied from someone else's screenshot
+    // is how a G923 owner ended up with PROTON_ENABLE_HIDRAW and no force
+    // feedback. The per-wheel part is shown as the row's action instead.
     launch: string,
 }
 
