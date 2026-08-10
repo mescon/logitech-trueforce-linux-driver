@@ -128,10 +128,13 @@ If something did not happen, that file says which step declined and why.
 
 | Option | What it does | When you want it |
 |---|---|---|
-| `PROTON_ENABLE_HIDRAW=1 %command%` | Lets the game talk to the wheel's raw HID interface, which is how Logitech's SDK delivers TrueForce | A **direct-drive wheel** (RS50, G PRO) in a game with its own TrueForce: ACC, Assetto Corsa EVO. Needs the shim installed |
-| *(leave it out)* | The wheel stays an ordinary Linux force-feedback device | A **G923**, always. Also DirectInput games, unless you are using `logi-ffb` |
-| `logi-ffb %command%` | Presents a virtual wheel that speaks the older DirectInput force-feedback protocol, and forwards it to your real wheel | Games that only do DirectInput FFB: Le Mans Ultimate, rFactor 2, iRacing, RaceRoom |
-| `logi-launch %command%` | Works out and applies everything below for this game and this wheel | Every racing game. It is the only line most people need |
+| `logi-launch %command%` | Works out everything below for this game and this wheel, and applies it | **Every racing game.** It is the only line most people need |
+| `PROTON_ENABLE_HIDRAW=1 %command%` | Lets the game talk to the wheel's raw HID interface, which is how Logitech's SDK delivers TrueForce | Set by `logi-launch`. By hand: a **direct-drive wheel** (RS50, G PRO) in a game with its own TrueForce (ACC, Assetto Corsa EVO), with the TrueForce files installed |
+| *(leave it out)* | The wheel stays an ordinary Linux force-feedback device | By hand: a **G923**, always |
+| `logi-ffb %command%` | Presents a virtual wheel that speaks the older DirectInput force-feedback protocol, and forwards it to your real wheel | Applied by `logi-launch`. By hand: games that only do DirectInput FFB (Le Mans Ultimate, rFactor 2, iRacing, RaceRoom), on **any** wheel including a G923 |
+
+The bottom three rows describe what `logi-launch` does for you. You only type
+them yourself if you would rather not use it.
 
 `gamemoderun` is not ours. It is from `gamemode` and composes fine with all
 of the above.
@@ -141,21 +144,42 @@ of the above.
 Order is: **environment variables first, then wrappers, then `%command%`.**
 Each wrapper runs the next one along, so they chain left to right.
 
-A direct-drive wheel in Assetto Corsa EVO, with gamemode and a telemetry
-helper:
+`logi-launch` composes with things that are not ours. Assetto Corsa EVO, with
+gamemode and the graphics settings that title wants:
 
 ```
-PROTON_ENABLE_NVAPI=1 PROTON_ENABLE_HIDRAW=1 gamemoderun logi-launch %command%
+PROTON_ENABLE_NVAPI=1 VKD3D_CONFIG=descriptor_heap gamemoderun logi-launch %command%
 ```
 
-A G923 in Le Mans Ultimate:
+That line is the same on an RS50 and on a G923. Do not add
+`PROTON_ENABLE_HIDRAW=1` to it: `logi-launch` sets that itself on the wheels
+that want it, and setting it yourself is how it ends up on a G923, where it
+costs that wheel its force feedback.
+
+Le Mans Ultimate, on any wheel:
 
 ```
-logi-ffb %command%
+logi-launch %command%
 ```
 
-Note there is no `PROTON_ENABLE_HIDRAW=1` there. On a G923 it costs you
-force feedback, and `logi-ffb` is the route to FFB in a DirectInput game.
+`logi-launch` starts `logi-ffb` for you there, because that title uses
+DirectInput force feedback. You do not type `logi-ffb` yourself.
+
+### The same two by hand
+
+If you would rather not use the wrapper:
+
+```
+PROTON_ENABLE_NVAPI=1 VKD3D_CONFIG=descriptor_heap PROTON_ENABLE_HIDRAW=1 gamemoderun %command%   # AC EVO, direct-drive wheel
+PROTON_ENABLE_NVAPI=1 VKD3D_CONFIG=descriptor_heap gamemoderun %command%                          # AC EVO, G923
+logi-ffb %command%                                                                                # Le Mans Ultimate, either wheel
+```
+
+The first two differ by one variable, and that variable is the difference
+between TrueForce on one wheel and no force feedback at all on the other.
+Doing this by hand means getting it right per game and per wheel, every time.
+You also start `logi-tf-sim` yourself, and install the relay per game from the
+app's Setup page.
 
 ## Why the relay has to run inside the prefix
 

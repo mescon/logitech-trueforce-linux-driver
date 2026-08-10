@@ -37,11 +37,38 @@ Three steps, whichever of these wheels you own.
 [Install](#install) below.
 
 **2. Plug the wheel in and open Logi Wheel.** `logi-wheel-gui` for the desktop
-app, `logi-wheel` for the terminal one. It finds the wheel, shows every
-setting that wheel supports, and its Setup page finds your sims and installs
-the per-game helpers they need.
+app, `logi-wheel` for the terminal one. It finds the wheel and shows every
+setting that wheel supports.
 
-**3. Put one launch option on each sim.** In Steam: Properties, General,
+**3. Set your games up from its Setup page.** It lists the sims it found
+across Steam, Lutris and Heroic, and each row has the buttons for that game:
+
+- **Install relay** puts the telemetry relay into that game's Proton folder.
+  This is what feeds simulated TrueForce and the rev lights in sims that keep
+  their telemetry in shared memory (the Assetto Corsa family, iRacing,
+  RaceRoom, rFactor 2, Le Mans Ultimate).
+- **Install TrueForce files** puts Logitech's own TrueForce files into that
+  game's Proton folder, for sims with TrueForce built in (Assetto Corsa
+  Competizione, Assetto Corsa EVO) on a **direct-drive wheel**. This needs a
+  one-time copy first; see below. A G923 does not use this route and can skip
+  it, because that wheel does not answer Logitech's SDK.
+
+> **The one-time copy: Logitech's TrueForce files.** They cannot be
+> redistributed, so you supply them from a Windows G HUB installation. Copy
+> the whole `Logi` folder to `~/.local/share/logitech-trueforce/sdk`, keeping
+> its own layout, so you end up with:
+>
+> ```
+> ~/.local/share/logitech-trueforce/sdk/Logi/Trueforce/<version>/trueforce_sdk_x64.dll
+> ~/.local/share/logitech-trueforce/sdk/Logi/wheel_sdk/<version>/logi_steering_wheel_x64.dll
+> ```
+>
+> Whatever version numbers your G HUB shipped are the right ones. The Setup
+> page's **TrueForce files** section shows the folder it is reading and says
+> whether it found them, so you can check before installing to a game. To keep
+> them somewhere else, set the folder there.
+
+**4. Put one launch option on each sim.** In Steam: Properties, General,
 Launch Options.
 
 ```

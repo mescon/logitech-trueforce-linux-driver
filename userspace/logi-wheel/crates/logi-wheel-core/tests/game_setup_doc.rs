@@ -72,6 +72,18 @@ fn render() -> String {
          registry, so what you read here is what the app will tell you.\n\n",
     );
     out.push_str(
+        "**Most people need none of this.** `logi-launch %command%` in a\n\
+         game's Steam launch options works the whole recipe out for the game\n\
+         being launched and the wheel attached, and applies it: the raw-HID\n\
+         setting only where that wheel wants it, the logi-ffb proxy for the\n\
+         DirectInput games, the telemetry daemon, and the relay inside the\n\
+         game's prefix for the sims that need one. A game with its own\n\
+         TrueForce keeps it, and nothing is layered on top. See\n\
+         LAUNCH_OPTIONS.md.\n\n\
+         **This table is for doing it by hand**, or for working out what went\n\
+         wrong. Read on for why the answer differs per wheel.\n\n",
+    );
+    out.push_str(
         "What a game needs depends on the wheel as well as the game. The\n\
          direct-drive wheels answer Logitech's TrueForce SDK, so a sim with\n\
          built-in TrueForce reaches them through the staged SDK DLLs, and\n\
@@ -95,15 +107,7 @@ fn render() -> String {
         "Launch options go in Steam under the game's Properties. Paste them\n\
          exactly, `%command%` included: it is the placeholder Steam replaces\n\
          with the game itself, so without it the line replaces the game\n\
-         instead of wrapping it.\n\n\
-         **Or skip the table.** `logi-launch %command%` works out everything\n\
-         below for the game being launched and the wheel attached, and\n\
-         applies it: the raw-HID setting only where that wheel wants it, the\n\
-         logi-ffb proxy for the DirectInput games, the telemetry daemon, and\n\
-         the relay inside the game's prefix for the sims that need one. A\n\
-         game with its own TrueForce keeps it, and nothing is layered on\n\
-         top. The table below is for doing it by hand, or for working out\n\
-         what went wrong. See LAUNCH_OPTIONS.md.\n\n",
+         instead of wrapping it.\n\n",
     );
 
     out.push_str("## Recipes\n\n");

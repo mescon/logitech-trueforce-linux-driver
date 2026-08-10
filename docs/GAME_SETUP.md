@@ -7,6 +7,18 @@ compatibility registry in
 The settings app resolves your own installed games against that same
 registry, so what you read here is what the app will tell you.
 
+**Most people need none of this.** `logi-launch %command%` in a
+game's Steam launch options works the whole recipe out for the game
+being launched and the wheel attached, and applies it: the raw-HID
+setting only where that wheel wants it, the logi-ffb proxy for the
+DirectInput games, the telemetry daemon, and the relay inside the
+game's prefix for the sims that need one. A game with its own
+TrueForce keeps it, and nothing is layered on top. See
+LAUNCH_OPTIONS.md.
+
+**This table is for doing it by hand**, or for working out what went
+wrong. Read on for why the answer differs per wheel.
+
 What a game needs depends on the wheel as well as the game. The
 direct-drive wheels answer Logitech's TrueForce SDK, so a sim with
 built-in TrueForce reaches them through the staged SDK DLLs, and
@@ -33,15 +45,6 @@ Launch options go in Steam under the game's Properties. Paste them
 exactly, `%command%` included: it is the placeholder Steam replaces
 with the game itself, so without it the line replaces the game
 instead of wrapping it.
-
-**Or skip the table.** `logi-launch %command%` works out everything
-below for the game being launched and the wheel attached, and
-applies it: the raw-HID setting only where that wheel wants it, the
-logi-ffb proxy for the DirectInput games, the telemetry daemon, and
-the relay inside the game's prefix for the sims that need one. A
-game with its own TrueForce keeps it, and nothing is layered on
-top. The table below is for doing it by hand, or for working out
-what went wrong. See LAUNCH_OPTIONS.md.
 
 ## Recipes
 

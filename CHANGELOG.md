@@ -5,6 +5,78 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.33.0 - 2026-08-11
+
+**One launch option now sets a game up, whatever wheel you have.** Put
+`logi-launch %command%` in a sim's Steam launch options and it works out what
+that game needs on the wheel plugged in, then does it: sets
+`PROTON_ENABLE_HIDRAW` where the wheel wants it and never where it would cost
+force feedback, routes DirectInput sims through `logi-ffb`, starts the
+telemetry daemon, and attaches the shared-memory relay inside the game's
+Proton prefix once the game is up. The same line is correct for every game and
+every wheel, which the old per-game recipes were not: the same title needs
+opposite settings on an RS50 and a G923, and a launch line copied from
+someone else's post is the most common way a G923 owner loses force feedback.
+
+It knows 28 titles by Steam appid. A game it does not know still gets the
+daemon, `--game <name>` names one whose appid cannot identify it (a non-Steam
+shortcut, a delisted title), and `~/.config/logi-wheel/games.conf` lets anyone
+add or override a recipe without waiting for a release.
+`logi-wheel --launch-plan --list` prints every title and what each resolves to
+on the wheel you have.
+
+**With two wheels attached it declines to guess.** The game chooses which
+wheel it uses, in its own settings, and never tells us. Taking the first one
+found is a coin toss whose losing side sets `PROTON_ENABLE_HIDRAW` on a G923.
+`--wheel dd` or `--wheel g923` says which, and the named wheel aims the
+telemetry daemon too.
+
+**Simulated TrueForce is no longer layered on games that have their own.** The
+daemon treats an unlisted game as enabled, so on a direct-drive wheel running
+Assetto Corsa Competizione or EVO it was synthesising an engine note on top of
+the real haptics the game was already sending.
+
+**The Setup page says what that launch option will do for each game.** Since
+the line is now identical everywhere, the page showed no sign that the recipe
+behind it differs per wheel, and it sat under an instruction to set
+`PROTON_ENABLE_HIDRAW=1` by hand, which read as two conflicting recipes. Each
+row now describes what will happen on the wheel being managed, with the manual
+steps below it as the alternative.
+
+**Rev lights on a wheel that declares no short HID++ report.** The G923 Xbox
+edition's interface declares report ids `0x11` and `0x12` and no `0x10`, but
+the level sequence sent its arm burst and the command that APPLIES a level as
+`0x10` anyway. hidraw accepts a write of an undeclared report id and returns
+success, so all of them went out, none arrived, and `--led-probe` reported
+"sent" in front of a correct command. This is why 0.32.3's five-LED fix
+changed nothing on that wheel (#27).
+
+**`logi-tf-sim` says when it cannot write the rev display.** A refused write
+was indistinguishable from a level that had not changed, so the daemon printed
+that it was driving the display and then failed silently at 60 Hz. Two
+separate investigations ended in that blind spot, because "the lights do not
+move" is also exactly what no telemetry at all looks like. It now reports the
+file, the reason and the fix, once (#59).
+
+**Extra helpers can run inside a game's prefix.** `LOGI_LAUNCH_HELPERS` starts
+your own Windows programs alongside the relay, so feeding SimHub on another
+machine and driving the wheel on this one are no longer alternatives.
+`LOGI_LAUNCH_EXE` still replaces the relay, as before.
+
+**Documentation now starts with getting started.** The README opened with the
+project's positioning and put installation 190 lines down, and `logi-launch`
+appeared once, near the bottom. The README and the wiki now both lead with the
+same four steps, and both cover all four wheels equally rather than treating
+the G923 as a footnote. Two G923 claims that were wrong are corrected: it does
+need `logi-ffb` for DirectInput sims, and "no launch options at all" was only
+ever true for the sims that are not DirectInput.
+
+**`tools/g923-xbox-led-replay.py`**, which replays a Windows capture of a
+G923 Xbox edition lighting its strip, verified byte-for-byte against that
+capture. It separates the ways our sequence differed from Windows', so one run
+says which mattered. It refuses to run on any other model, because feature
+indices are per firmware.
+
 ## 0.32.3 - 2026-08-10
 
 **The rev-light command now states the wheel's real strip length.** A
