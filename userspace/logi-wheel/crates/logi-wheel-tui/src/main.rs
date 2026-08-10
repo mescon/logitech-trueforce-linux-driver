@@ -344,15 +344,15 @@ fn led_probe(only: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
 
         // Dialect A: the classic lg4ff output report.
         n += 1;
-        if !first {
-            sleep(gap);
-        }
-        first = false;
         // Skip only THIS test, never the rest of the node's: a `continue`
         // here would jump past the level tests too, so `--led-probe 12`
         // would silently never run test 12.
         let run_classic = only.map_or(true, |o| o == n);
         if run_classic {
+        if !first {
+            sleep(gap);
+        }
+        first = false;
         print!("TEST {n}  {} [{kind}]  classic lg4ff ... ", node.display());
         std::io::stdout().flush().ok();
         if kind.contains("HID++") {
@@ -431,6 +431,10 @@ fn led_probe(only: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
     println!("WHICH TEST NUMBER LIT THE STRIP? Reply with the number, or 'none'.");
+    println!();
+    println!("Please paste this whole output with your answer. The numbers depend");
+    println!("on how many interfaces your wheel has, so the same number means");
+    println!("different things on different wheels: on its own it cannot be read.");
     Ok(())
 }
 
