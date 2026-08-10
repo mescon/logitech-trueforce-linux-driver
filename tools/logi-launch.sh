@@ -194,9 +194,26 @@ fi
 if [ "${LOGI_LAUNCH_TF_SIM:-1}" = "1" ] && [ "${want_tfsim:-1}" = "1" ]; then
 	if pgrep -x logi-tf-sim >/dev/null 2>&1; then
 		say "logi-tf-sim is already running"
+		# It was started for some other session, possibly aimed at the
+		# other wheel. Say so rather than let a named wheel look like it
+		# was honoured when the running daemon never saw it.
+		if [ -n "$named_wheel" ]; then
+			say "note: it was already running, so --wheel $named_wheel did not reach it."
+			say "note: stop it and start the game again to aim it at that wheel."
+		fi
 	elif command -v logi-tf-sim >/dev/null 2>&1; then
-		say "starting logi-tf-sim"
-		setsid logi-tf-sim >>"$LOG" 2>&1 </dev/null &
+		# The daemon drives ONE wheel and has its own picker, which
+		# defaults to preferring a G923. Naming a wheel here and leaving
+		# the daemon to its own default would be two answers to one
+		# question, and on a two-wheel rig they would disagree: the game
+		# on the direct-drive wheel, the haptics on the G923.
+		if [ -n "$named_wheel" ]; then
+			say "starting logi-tf-sim, aimed at $named_wheel"
+			setsid env LOGI_TF_SIM_WHEEL="$named_wheel" logi-tf-sim >>"$LOG" 2>&1 </dev/null &
+		else
+			say "starting logi-tf-sim"
+			setsid logi-tf-sim >>"$LOG" 2>&1 </dev/null &
+		fi
 	else
 		say "logi-tf-sim is not installed; the rev lights and simulated"
 		say "TrueForce need it. Install the logi-wheel package."

@@ -152,6 +152,30 @@ and set `LOGI_LAUNCH_EXE` as above.
 None of this touches force feedback or TrueForce. A telemetry helper only
 reads; the native FFB and SDK TrueForce paths are unaffected.
 
+## Two wheels at once
+
+`logi-launch` works out what to set from the wheel you have attached. With
+two of them, and of different kinds, it stops guessing: the game picks which
+wheel it uses in its own settings and never tells us, so there is nothing to
+detect. Getting it wrong is not a small mistake either, because
+`PROTON_ENABLE_HIDRAW` on a G923 costs that wheel its force feedback.
+
+So on a mixed rig it applies what is safe, says what it withheld, and waits
+to be told:
+
+```
+logi-launch --wheel dd %command%      # the RS50 or G PRO
+logi-launch --wheel g923 %command%    # the G923
+```
+
+That choice also aims `logi-tf-sim` at the same wheel, so the game and the
+haptics cannot end up on different ones. If the daemon was already running
+from an earlier session it keeps whatever wheel it was started with, and
+the log says so rather than letting the flag look honoured.
+
+**One wheel, or several of the same kind, needs none of this.** There is
+nothing ambiguous to resolve, and nothing to pass.
+
 ## Teaching it a new game
 
 `logi-launch` knows 28 titles by Steam appid. For anything else, or to
