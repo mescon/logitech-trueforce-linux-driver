@@ -354,6 +354,19 @@ fn launch_plan(appid: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
         println!("hidraw=0");
     }
 
+    // A title whose own TrueForce reaches this wheel must NOT also get the
+    // simulated kind. logi-tf-sim treats an unlisted game as enabled, so
+    // starting it for ACC or Assetto Corsa EVO on a direct-drive wheel
+    // would layer a synthesised engine note on top of the real haptics the
+    // game is already sending. The registry already knows the difference:
+    // InstallShim means native TrueForce is the route on this wheel.
+    if game.setup_action(caps) == games::SetupAction::InstallShim {
+        println!("tfsim=0");
+        println!("relay=none");
+        println!("note=native TrueForce via the shim; simulated would double it");
+        return Ok(());
+    }
+
     // The telemetry half: which relay decoder, and whether the daemon is
     // worth running at all for this title.
     if let SimTf::LiveNow(id) = game.simulated_tf {
