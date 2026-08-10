@@ -32,9 +32,15 @@ if errorlevel 1 (
 
 rem  dumpcap ships with Wireshark and is what actually records; using it
 rem  directly avoids the GUI entirely.
-set "DUMPCAP=%ProgramFiles%\Wireshark\dumpcap.exe"
-if not exist "%DUMPCAP%" set "DUMPCAP=%ProgramFiles(x86)%\Wireshark\dumpcap.exe"
-if not exist "%DUMPCAP%" (
+rem  %ProgramFiles(x86)% is avoided deliberately: the parentheses in the
+rem  variable's own name terminate a block early under cmd's parser, which
+rem  is a bug that only appears on the machine you cannot test on.
+set "DUMPCAP="
+if exist "%ProgramFiles%\Wireshark\dumpcap.exe" set "DUMPCAP=%ProgramFiles%\Wireshark\dumpcap.exe"
+if not defined DUMPCAP if exist "C:\Program Files\Wireshark\dumpcap.exe" set "DUMPCAP=C:\Program Files\Wireshark\dumpcap.exe"
+if not defined DUMPCAP if exist "C:\Program Files (x86)\Wireshark\dumpcap.exe" set "DUMPCAP=C:\Program Files (x86)\Wireshark\dumpcap.exe"
+if not defined DUMPCAP for /f "delims=" %%P in ('where dumpcap 2^>nul') do if not defined DUMPCAP set "DUMPCAP=%%P"
+if not defined DUMPCAP (
   echo   Wireshark is not installed, or not in the usual place.
   echo.
   echo   Get it from https://www.wireshark.org/download.html
@@ -49,7 +55,11 @@ rem  wheel is on. The extra traffic costs a few megabytes and removes the
 rem  one question whose wrong answer produces a capture with no wheel in it.
 set "ARGS="
 set "COUNT=0"
-for /f "tokens=2" %%A in ('""%DUMPCAP%" -D 2^>nul ^| findstr /i USBPcap"') do (
+rem  usebackq with backticks, so a path containing spaces needs no nested
+rem  quoting. The doubled-quote form this replaced is the classic way to
+rem  get "The system cannot find the file specified" from a path that is
+rem  perfectly correct.
+for /f "usebackq tokens=2" %%A in (`"%DUMPCAP%" -D 2^>nul ^| findstr /i USBPcap`) do (
   set "ARGS=!ARGS! -i %%A"
   set /a COUNT+=1
 )
