@@ -35,6 +35,95 @@ instead.
 The rest of this page is what `logi-launch` is doing on your behalf, for
 when you want to do it by hand or understand what went wrong.
 
+## What `logi-launch` actually does
+
+In order, when you start a game with it:
+
+**1. It asks the app what this game needs.** `logi-wheel --launch-plan
+<appid>` answers from the compatibility registry, for the wheel currently
+attached. Steam already provides the appid in the environment, so nothing
+has to be configured. The registry is the same one behind the app's Setup
+page: the wrapper decides nothing itself, because a second copy of that
+logic in shell is a second copy to drift.
+
+**2. It sets `PROTON_ENABLE_HIDRAW` only if that wheel wants it here.**
+Games with their own TrueForce need the raw HID interface to reach the
+wheel, and the SDK only delivers it to a direct-drive wheel. On a G923 the
+same setting **removes** force feedback, so it is never set speculatively:
+no wheel, or two different kinds and none named, means it is withheld and
+the log says why.
+
+**3. It chains through `logi-ffb` for DirectInput games.** Le Mans Ultimate,
+rFactor 2, iRacing and RaceRoom drive force feedback the old Windows way,
+which needs the proxy in front of the game. `logi-launch` execs it rather
+than asking you to add a second wrapper.
+
+**4. It starts `logi-tf-sim` if the game needs it.** The daemon turns a
+game's telemetry into TrueForce haptics and rev-light levels. It is left
+running afterwards, because it idles when nothing is streaming. If a wheel
+was named, the daemon is aimed at that same wheel, so the game and the
+haptics cannot end up on different ones.
+
+It is **not** started for a game whose own TrueForce already reaches your
+wheel. On a direct-drive wheel, Assetto Corsa Competizione and Assetto
+Corsa EVO get the real thing through the shim, and the simulated kind on
+top of it would be two engine notes at once. On a G923, where the real one
+cannot arrive, those same titles do get it.
+
+**5. It starts the game.**
+
+**6. Once the game has the prefix, it starts `logi-tf-relay` inside it.**
+Only for the sims that publish telemetry to Windows shared memory rather
+than over the network. This step is last for a reason, and the reason is
+not obvious: Proton takes the prefix exclusively when it launches, running
+`wineserver -w` and waiting for any existing wineserver to exit. A helper
+started **before** the game stops the game from starting at all. So the
+wrapper launches the game first and waits for the game's own wineserver to
+appear before attaching anything.
+
+The relay is run with the wine build the prefix itself belongs to, read
+from its `config_info`. The distribution's `wine` is a different build, and
+pointing it at a Proton-made prefix triggers prefix initialisation, prompts
+to install wine-mono, and can convert the prefix. If that build cannot be
+found, the relay is skipped rather than run the wrong way.
+
+### What it never does
+
+- Set `PROTON_ENABLE_HIDRAW` on a guess. Wrong here silently costs a G923
+  owner their force feedback, and nothing in the game would explain it.
+- Put simulated TrueForce on a game that already has its own on your wheel.
+- Start anything for a game that needs nothing, so leaving the line in
+  every game's launch options costs nothing.
+- Offer advice for a title that does not run on Linux at all.
+
+### Seeing what it decided
+
+Everything it does is logged to `/tmp/logi-launch.log`, starting with the
+plan it resolved:
+
+Assetto Corsa EVO on a direct-drive wheel, where the game's own TrueForce
+is the route and nothing is simulated:
+
+```
+[logi-launch] plan: wheel=direct-drive game=Assetto Corsa EVO (early access) hidraw=1 ffb=native relay=none tfsim=0
+[logi-launch] set PROTON_ENABLE_HIDRAW=1
+[logi-launch] no in-prefix helper needed for this game
+```
+
+The same game on a G923, where it cannot be, so the simulated kind and its
+relay are used instead:
+
+```
+[logi-launch] plan: wheel=classic game=Assetto Corsa EVO (early access) hidraw=unset ffb=native relay=ac-evo tfsim=1
+[logi-launch] starting logi-tf-sim, aimed at g923
+[logi-launch] starting c:\logi-tf-relay.exe --game ac-evo in .../compatdata/3058630/pfx
+```
+
+Note there is no `PROTON_ENABLE_HIDRAW` in the second one. That is the
+difference that costs a G923 owner their force feedback if it is guessed.
+
+If something did not happen, that file says which step declined and why.
+
 ## The options
 
 | Option | What it does | When you want it |
@@ -68,7 +157,7 @@ logi-ffb %command%
 Note there is no `PROTON_ENABLE_HIDRAW=1` there. On a G923 it costs you
 force feedback, and `logi-ffb` is the route to FFB in a DirectInput game.
 
-## Why `logi-launch` exists
+## Why the relay has to run inside the prefix
 
 Some sims never send telemetry over the network. The Assetto Corsa family
 (including EVO), iRacing, RaceRoom, rFactor 2 and Le Mans Ultimate publish
