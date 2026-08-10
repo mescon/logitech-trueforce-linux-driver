@@ -2150,6 +2150,36 @@ stating explicitly so it is not mistaken for a latent bug:
   the classic engine it does not use, and `wheel_led_*` belongs to the
   direct-drive path it does not use either.
 
+### 0x807A rev level: the 4th parameter is a denominator (hardware-measured)
+
+Measured on an RS50 on 2026-08-10, with the strip switched to Left-to-Right
+so a fill reads as a count from one end rather than closing in from both
+(Outside-In makes the two cases below look nearly identical, which cost one
+inconclusive round):
+
+| count | level | LEDs lit |
+|---|---|---|
+| 10 | 10 | 10 |
+| 10 | 5 | 5 |
+| **5** | **5** | **10** |
+
+The third row settles it. If the level were a raw LED count, `5` would light
+five. It lights the whole strip, so the level is a fraction of the count:
+the 4th parameter is the denominator, and the wheel scales the fill to its
+own strip.
+
+**But the two wheels do not treat a wrong denominator the same.** The RS50
+accepts `0a` and `05` and lights for both. The G923 Xbox edition lit nothing
+at all for `0a` across five framings (issue #27), while Windows drives it
+with `05`, which is that wheel's real LED count. So on the RS50 the value
+only scales the fill, and on the Xbox G923 it appears to be validated. That
+asymmetry is unexplained and worth remembering: do not conclude from the
+RS50's tolerance that the field is cosmetic.
+
+The rule either way is the same, and it is what Windows does: send the
+wheel's actual LED count, ten for the direct-drive wheels and five for a
+G923.
+
 **Superseded 2026-08-10 by a capture of that wheel (issue #27).** Its rev
 lights are driven over `0x807A` after all, with `fn2`+`fn6` pairs, and the
 reason ours never lit is a single parameter: the level command states the
