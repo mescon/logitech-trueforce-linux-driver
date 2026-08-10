@@ -5,6 +5,37 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.32.3 - 2026-08-10
+
+**The rev-light command now states the wheel's real strip length.** A
+Windows capture of a G923 Xbox edition driving its lights under
+Automobilista 2 shows the level command carrying `05` where this project
+has always sent `0a`. That parameter is the strip length, and the level is
+a fraction of it: measured on an RS50, "level 5 of 10" lights five LEDs and
+"level 5 of 5" lights all ten. A G923 has five LEDs where the direct-drive
+wheels have ten, so every rev-light command this project ever sent that
+wheel described a strip twice the size of the one it has. `--led-probe`
+tries both lengths now.
+
+**`--led-probe` stopped spoiling its own results.** The classic command was
+being sent to HID++ interfaces, where its report id means nothing: the write
+is refused and the refusal stalls the endpoint for several seconds, so the
+next test on that interface failed too and read as a result about that test.
+It is skipped there now. A test number can also be given, to re-run one test
+without watching the rim through all of them, and the closing prompt says
+that numbering is local to a run, since it depends on how many interfaces a
+wheel has and the same number means different things on different wheels.
+
+**`tools/windows-usb-capture.bat`**, for anyone helping decode a wheel from
+a Windows capture. It checks it is elevated, finds Wireshark's `dumpcap`,
+records every USB interface so there is no interface to choose, and writes a
+capture to the Desktop with instructions for what to do during it.
+
+**The G923 is gear-driven, not belt-driven**, corrected everywhere including
+the README's opening paragraph, and the Xbox edition's force is now
+documented as arriving on its `0xFFFD` stream rather than over HID++, from
+the same capture.
+
 ## 0.32.2 - 2026-08-09
 
 **The apps now ask a wheel what it has, instead of what we thought to ask
