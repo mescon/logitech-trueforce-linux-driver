@@ -163,6 +163,10 @@ pub struct RevLeds {
     /// Cleared as soon as the limiter disengages, so the next one starts
     /// lit rather than wherever a free-running clock happened to be.
     pit_flash_since: Option<Instant>,
+    /// Whether a failed write has already been reported. The display is
+    /// driven at up to 60 Hz, so the complaint is made once and then the
+    /// daemon stops talking about it.
+    warned: bool,
 }
 
 impl RevLeds {
@@ -230,14 +234,26 @@ impl RevLeds {
     /// A rev display at an explicit `wheel_rev_level` attribute path
     /// (tests point this at a plain file in a temp directory).
     pub fn at(attr: PathBuf) -> RevLeds {
-        RevLeds { backend: Backend::Attr(attr), last_level: None, last_write: None, pit_flash_since: None }
+        RevLeds {
+            backend: Backend::Attr(attr),
+            last_level: None,
+            last_write: None,
+            pit_flash_since: None,
+            warned: false,
+        }
     }
 
     /// A rev display driven by 5 discrete LED brightness files, RPM1
     /// (outermost pair) through RPM5 (innermost) (tests point these at
     /// plain files in a temp directory).
     pub fn at_classdevs(brightness: [PathBuf; 5]) -> RevLeds {
-        RevLeds { backend: Backend::Classdevs { brightness, lit: [false; 5] }, last_level: None, last_write: None, pit_flash_since: None }
+        RevLeds {
+            backend: Backend::Classdevs { brightness, lit: [false; 5] },
+            last_level: None,
+            last_write: None,
+            pit_flash_since: None,
+            warned: false,
+        }
     }
 
     /// Feed one telemetry sample at time `now` (injected so tests control
@@ -259,38 +275,71 @@ impl RevLeds {
         if self.last_write.is_some_and(|t| now.duration_since(t) < MIN_WRITE_INTERVAL) {
             return;
         }
-        if self.write_level(level) {
-            self.last_level = Some(level);
-            self.last_write = Some(now);
+        match self.write_level(level) {
+            Ok(()) => {
+                self.last_level = Some(level);
+                self.last_write = Some(now);
+            }
+            Err((path, err)) if !self.warned => {
+                // Say it once, then stop: this runs at up to 60 Hz and a
+                // per-write message would bury everything else.
+                //
+                // Silence here has cost two separate investigations. A
+                // G923's five LED classdevs come up 0644 root:root, and a
+                // DD wheel's `wheel_rev_level` is 0644 until the udev rule
+                // chmods it, so in both cases every write failed while the
+                // daemon reported that it was driving the display, and the
+                // only symptom anyone could report was "the lights do not
+                // move". Nothing distinguished that from the wheel not
+                // being fed any RPM at all.
+                eprintln!("logi-tf-sim: cannot write the rev display at {}: {err}", path.display());
+                eprintln!(
+                    "logi-tf-sim: the rev lights will not move. This is usually a permissions \
+                     problem: the file should be writable by you (mode 0666), which the udev \
+                     rule shipped with the driver sets. Replug the wheel after installing or \
+                     updating the driver, or run: sudo udevadm trigger"
+                );
+                self.warned = true;
+            }
+            Err(_) => {}
         }
     }
 
     /// Push `level` (0-10) to the backend. For [`Backend::Attr`] this is
     /// one write of the level itself; for [`Backend::Classdevs`] it maps
     /// `level` to a lit-pair count via [`lit_count`] and writes only the
-    /// brightness files whose on/off state actually changed. Returns
-    /// whether every write attempted actually succeeded (a partial
-    /// classdev failure still updates the LEDs that did land, and the
-    /// unwritten ones are retried on the next call since they are left
-    /// out of `lit`).
-    fn write_level(&mut self, level: u8) -> bool {
+    /// brightness files whose on/off state actually changed.
+    ///
+    /// The error carries the path that failed as well as the reason,
+    /// because on the classdev backend there are five candidates and
+    /// "permission denied" on its own does not say which. A partial
+    /// classdev failure still keeps the LEDs that did land, and the
+    /// unwritten ones are retried on the next call since they are left out
+    /// of `lit`.
+    fn write_level(&mut self, level: u8) -> Result<(), (PathBuf, std::io::Error)> {
         match &mut self.backend {
-            Backend::Attr(attr) => std::fs::write(attr, level.to_string()).is_ok(),
+            Backend::Attr(attr) => {
+                std::fs::write(&attr, level.to_string()).map_err(|e| (attr.clone(), e))
+            }
             Backend::Classdevs { brightness, lit } => {
                 let target = lit_count(level) as usize;
-                let mut all_ok = true;
+                let mut failure = None;
                 for i in 0..RPM_SUFFIXES.len() {
                     let on = i < target;
                     if lit[i] == on {
                         continue;
                     }
-                    if std::fs::write(&brightness[i], if on { "1" } else { "0" }).is_ok() {
-                        lit[i] = on;
-                    } else {
-                        all_ok = false;
+                    match std::fs::write(&brightness[i], if on { "1" } else { "0" }) {
+                        Ok(()) => lit[i] = on,
+                        Err(e) => {
+                            failure.get_or_insert((brightness[i].clone(), e));
+                        }
                     }
                 }
-                all_ok
+                match failure {
+                    Some(f) => Err(f),
+                    None => Ok(()),
+                }
             }
         }
     }
@@ -507,6 +556,52 @@ mod tests {
 
         leds.update(50.0, 100.0, false, t0 + Duration::from_secs(2));
         assert_eq!(read(&attr), "5", "changed level lands");
+    }
+
+    /// A write that cannot land must not be mistaken for a level that has
+    /// not changed, or the daemon retries nothing and reports nothing.
+    ///
+    /// This is the state two separate investigations ended up in. A G923's
+    /// LED classdevs come up 0644 root:root and a DD wheel's
+    /// `wheel_rev_level` is 0644 until udev chmods it, so every write
+    /// failed while the daemon said it was driving the display. The only
+    /// symptom reachable from a bug report was "the lights do not move",
+    /// which is also what no telemetry at all looks like.
+    #[test]
+    fn a_write_that_fails_is_never_recorded_as_written() {
+        let dir = tempdir();
+        let attr = dir.join(ATTR);
+        fs::write(&attr, "").unwrap();
+        // Read-only for everyone, which is what the pre-udev mode amounts
+        // to for a non-root daemon.
+        let mut perms = fs::metadata(&attr).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&attr, perms).unwrap();
+
+        let mut leds = RevLeds::at(attr.clone());
+        let t0 = Instant::now();
+        leds.update(50.0, 100.0, false, t0);
+
+        // Running as root defeats the permission bit entirely, so the
+        // assertion below would be checking nothing. Skip rather than
+        // pass: a test that cannot fail is worse than an absent one.
+        if read(&attr) == "5" {
+            return;
+        }
+        assert_eq!(leds.last_level, None, "a failed write must not be cached as the current level");
+        assert!(leds.warned, "a failure the user cannot see is one they cannot report");
+
+        // Made writable again: the level still wants writing, because it
+        // was never recorded as landed.
+        let mut perms = fs::metadata(&attr).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o666);
+        }
+        fs::set_permissions(&attr, perms).unwrap();
+        leds.update(50.0, 100.0, false, t0 + Duration::from_secs(1));
+        assert_eq!(read(&attr), "5", "the level must be retried once the write can land");
     }
 
     #[test]
