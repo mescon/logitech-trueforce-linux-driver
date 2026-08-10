@@ -151,7 +151,10 @@ hardware:
   G HUB, which does not exist on Linux), so this driver streams them itself.
 - **Rev lights**, driven from telemetry or controllable as ordinary Linux LEDs.
   These need the udev rules from 0.29.0 or later: before that their brightness
-  files were root-owned and every write failed silently.
+  files were root-owned and every write failed silently. **PlayStation edition
+  only.** On the Xbox edition those LEDs are not controllable by any computer,
+  on any operating system, and never have been; see [G923](docs/) notes and
+  issue #27.
 - **Settings**: rotation range, force strength, autocenter and combined pedals,
   through `logi-wheel` or Oversteer.
 
