@@ -97,6 +97,26 @@ plan=""
 if command -v logi-wheel >/dev/null 2>&1; then
 	plan=$(logi-wheel --launch-plan "${SteamAppId:-${SteamGameId:-0}}" 2>/dev/null)
 fi
+
+# A game we do not know yet is not a dead end. Anyone can describe one in
+# ~/.config/logi-wheel/games.conf, a line per appid:
+#
+#   3058630  hidraw=1 relay=ac-evo tfsim=1
+#   1234567  ffb=proxy tfsim=0
+#
+# The file wins over the built-in answer, so it doubles as a way to
+# override a recipe that is wrong for someone's setup without waiting for a
+# release. Getting a working line into that file is also exactly the report
+# needed to add the game properly.
+user_conf="${XDG_CONFIG_HOME:-$HOME/.config}/logi-wheel/games.conf"
+this_app="${SteamAppId:-${SteamGameId:-0}}"
+if [ -r "$user_conf" ]; then
+	user_line=$(sed -n "s/^[[:space:]]*$this_app[[:space:]]\+//p" "$user_conf" | head -1)
+	if [ -n "$user_line" ]; then
+		say "using your games.conf entry for appid $this_app"
+		plan=$(printf '%s\n' "$plan" | grep -E '^(wheel|game)=' ; printf '%s\n' $user_line)
+	fi
+fi
 plan_get() { printf '%s\n' "$plan" | sed -n "s/^$1=//p" | head -1; }
 
 want_hidraw=$(plan_get hidraw)

@@ -185,12 +185,48 @@ pub enum SetupAction {
 /// check are listed. A title nobody can install on Linux needs no appid, and
 /// inventing one would be inventing a fact.
 pub const STEAM_APPIDS: &[(&str, u32)] = &[
+    // Every id here was resolved against Steam's own store API and confirmed
+    // by the name it returns, not from memory. A wrong id is worse than a
+    // missing one: it applies another game's recipe to a real title, and the
+    // owner has no way to tell that is what happened.
+    //
+    // Delisted titles (Project CARS 2, DiRT 4, F1 22 and 23, GRID 2019) do
+    // not appear in store search any more but still resolve through
+    // appdetails, and people still own and play them.
+    //
+    // A title may appear more than once: the F1 row covers four seasons, and
+    // the lookup is by id, so each season maps to the same recipe.
     ("Assetto Corsa Competizione", 805550),
     ("Assetto Corsa EVO (early access)", 3058630),
+    ("Assetto Corsa (original)", 244210),
+    ("Assetto Corsa Rally (early access)", 3917090),
+    ("Automobilista 2", 1066890),
+    ("Project CARS 2", 378860),
     ("rFactor 2", 365960),
     ("Le Mans Ultimate", 2399420),
     ("iRacing", 266410),
     ("RaceRoom Racing Experience", 211500),
+    ("BeamNG.drive", 284160),
+    ("DiRT Rally 2.0", 690790),
+    ("DiRT 4", 421020),
+    ("EA Sports WRC", 1849250),
+    ("EA Sports F1 (F1 22-25)", 1692250),
+    ("EA Sports F1 (F1 22-25)", 2108330),
+    ("EA Sports F1 (F1 22-25)", 2488620),
+    ("EA Sports F1 (F1 22-25)", 3059520),
+    ("Wreckfest", 228380),
+    ("Euro Truck Simulator 2", 227300),
+    ("American Truck Simulator", 270880),
+    ("KartKraft", 406350),
+    ("CarX Drift Racing Online", 635260),
+    ("GRID (2019)", 703860),
+    ("GRID Legends", 1307710),
+    ("Forza Motorsport (2023)", 2440510),
+    ("Forza Horizon 5", 1551360),
+    ("Dakar Desert Rally", 1839940),
+    ("Rennsport", 2077750),
+    // Deliberately absent, because they are not on Steam at all: Richard
+    // Burns Rally, Gran Turismo 7, TOCA Race Driver 3, Need for Speed Shift.
 ];
 
 /// The appid for a registry entry, when one is recorded.
@@ -904,6 +940,38 @@ mod tests {
         assert_eq!(sorted.len(), GAMES.len());
         for pair in sorted.windows(2) {
             assert!(pair[0].name.to_lowercase() <= pair[1].name.to_lowercase());
+        }
+    }
+
+    /// Every appid must name a title the registry actually has. A typo
+    /// here does not fail to resolve, it resolves to nothing and the
+    /// launch wrapper silently treats a supported game as unknown.
+    #[test]
+    fn every_appid_names_a_game_in_the_registry() {
+        for (name, appid) in STEAM_APPIDS {
+            assert!(
+                GAMES.iter().any(|g| g.name == *name),
+                "appid {appid} is mapped to {name:?}, which is not a title in GAMES"
+            );
+            assert!(
+                compat_for_appid(*appid).is_some(),
+                "appid {appid} ({name}) does not resolve through compat_for_appid"
+            );
+        }
+    }
+
+    /// No appid may appear twice with different titles. The same title
+    /// under several ids is fine and deliberate (the F1 seasons); the same
+    /// id under two titles means one of them is wrong.
+    #[test]
+    fn no_appid_maps_to_two_different_games() {
+        for (i, (name_a, id_a)) in STEAM_APPIDS.iter().enumerate() {
+            for (name_b, id_b) in &STEAM_APPIDS[i + 1..] {
+                assert!(
+                    id_a != id_b || name_a == name_b,
+                    "appid {id_a} is mapped to both {name_a:?} and {name_b:?}"
+                );
+            }
         }
     }
 
