@@ -521,7 +521,7 @@ const REV_SW_ID: u8 = 0x0d;
 /// One long 0x807A send in the level-based dialect.
 ///
 /// Takes `function` as a plain function NUMBER and shifts it, exactly like
-/// [`rev_short`], because those two are the pair this dialect is written in
+/// [`rev_send`], because those two are the pair this dialect is written in
 /// and a helper that silently disagreed with its sibling produced a
 /// malformed command: fn6 was sent as `6 | 0x0d` = `0x0f` instead of
 /// `(6 << 4) | 0x0d` = `0x6d`, so the level command never reached the wheel
@@ -540,9 +540,26 @@ fn rev_long(device_index: u8, feature_index: u8, function: u8, params: &[u8]) ->
     r
 }
 
-/// One short 0x807A send in the level-based dialect: `fn` in the high
-/// nibble, G HUB's software id in the low one.
-fn rev_short<T: HidppIo>(io: &mut T, idx: u8, function: u8, p0: u8) -> io::Result<()> {
+/// One parameterless 0x807A send in the level-based dialect: `fn` in the
+/// high nibble, G HUB's software id in the low one.
+///
+/// Framed SHORT or LONG according to what the interface declares, the same
+/// rule [`request`] follows. It has to be asked rather than assumed: the
+/// Xbox G923 declares report ids `0x11` and `0x12` and **no `0x10` at
+/// all**, so a hardcoded short report is a report id that wheel never
+/// agreed to receive.
+///
+/// Nothing reports that as an error. hidraw hands the write to the device
+/// and returns success, the wheel drops it, and the caller sees "sent".
+/// That is how five undeliverable writes sat in front of a correct level
+/// command for months of issue #27: the bytes after them were right, the
+/// wheel had simply never been told to apply them. A Windows capture of
+/// the same wheel sends every one of these as a LONG request.
+fn rev_send<T: HidppIo>(io: &mut T, idx: u8, function: u8, p0: u8) -> io::Result<()> {
+    if io.long_requests_only() {
+        let r = rev_long(0xff, idx, function, &[p0]);
+        return io.write_report(&r);
+    }
     let mut r = [0u8; 7];
     r[0] = REPORT_ID_SHORT;
     r[1] = 0xff;
@@ -567,10 +584,10 @@ pub fn rev_level_via_lightsync<T: HidppIo>(
     leds: u8,
 ) -> io::Result<()> {
     for (function, p0) in [(0u8, 0u8), (1, 0), (2, 0), (0, 0)] {
-        rev_short(io, idx, function, p0)?;
+        rev_send(io, idx, function, p0)?;
         std::thread::sleep(std::time::Duration::from_millis(4));
     }
-    rev_short(io, idx, 2, 0)?;
+    rev_send(io, idx, 2, 0)?;
     let long = rev_long(0xff, idx, 6, &[0x00, 0x01, 0x00, leds, 0x00, level.min(leds)]);
     io.write_report(&long)
 }
@@ -700,8 +717,54 @@ mod tests {
         assert_eq!(&r[4..10], &[0x00, 0x01, 0x00, 0x0a, 0x00, 5]);
         // And the short helper it must agree with.
         let mut io = MockIo::default();
-        rev_short(&mut io, 0x11, 2, 0).unwrap();
+        rev_send(&mut io, 0x11, 2, 0).unwrap();
         assert_eq!(io.sent[0][3], 0x2d, "fn2 encodes the same way");
+    }
+
+    /// On a wheel whose interface declares no SHORT report, every part of
+    /// the level sequence has to go out LONG.
+    ///
+    /// Taken from a Windows capture of a G923 Xbox edition (`c26e`)
+    /// lighting its strip from Automobilista 2, issue #27: G HUB sends the
+    /// whole exchange as `0x11` reports, including the fn2 that applies the
+    /// level. Ours sent the fn2 and the arm burst as `0x10`, a report id
+    /// that wheel does not declare, so the wheel dropped them while hidraw
+    /// returned success and `--led-probe` printed "sent".
+    #[test]
+    fn a_long_only_wheel_gets_the_whole_level_sequence_as_long_reports() {
+        #[derive(Default)]
+        struct LongOnly(Vec<Vec<u8>>);
+        impl HidppIo for LongOnly {
+            fn write_report(&mut self, r: &[u8]) -> std::io::Result<()> {
+                self.0.push(r.to_vec());
+                Ok(())
+            }
+            fn read_report(&mut self, _t: Duration) -> std::io::Result<Vec<u8>> {
+                Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no reply"))
+            }
+            fn long_requests_only(&self) -> bool {
+                true
+            }
+        }
+
+        let mut io = LongOnly::default();
+        rev_level_via_lightsync(&mut io, 0x12, 5, LEDS_G923).unwrap();
+
+        assert!(!io.0.is_empty(), "nothing was sent at all");
+        for (n, r) in io.0.iter().enumerate() {
+            assert_eq!(
+                r[0], REPORT_ID_LONG,
+                "report {n} went out as 0x{:02x}; this wheel declares no short report",
+                r[0]
+            );
+            assert_eq!(r.len(), 20, "report {n} is {} bytes, not a long report", r.len());
+        }
+
+        // And the payload still says five LEDs, matching the capture's
+        // `11 ff 12 6a 00 01 00 05 00 05`.
+        let level = io.0.last().expect("a level command");
+        assert_eq!(level[3], 0x6d, "fn6");
+        assert_eq!(&level[4..10], &[0x00, 0x01, 0x00, 0x05, 0x00, 0x05]);
     }
 
     #[test]
