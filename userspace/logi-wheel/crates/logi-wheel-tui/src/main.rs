@@ -48,6 +48,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|a| a.parse::<u32>().ok());
         return led_probe(only);
     }
+    if std::env::args().any(|a| a == "--launch-plan") {
+        let appid = std::env::args()
+            .skip_while(|a| a != "--launch-plan")
+            .nth(1)
+            .and_then(|a| a.parse::<u32>().ok());
+        return launch_plan(appid);
+    }
     if std::env::args().any(|a| a == "--report") {
         print!("{}", logi_wheel_core::diagnostics::report());
         return Ok(());
@@ -292,6 +299,78 @@ fn report_hidpp_features(device: &Device<logi_wheel_core::sysfs::RealSysfs>) {
 /// This WRITES to the wheel, unlike `--hidpp-features`. It only ever sends
 /// LED commands: nothing here produces force, and every test turns the
 /// lights off again afterwards.
+/// What a game needs on the wheel that is attached, as `key=value` lines
+/// for `logi-launch` to act on.
+///
+/// The knowledge lives in the registry, which is tested and already drives
+/// the apps' Setup page. A launch wrapper reimplementing any of it in shell
+/// would be a second copy to drift, and the per-wheel half is exactly what
+/// went wrong when the Setup page described the wrong wheel.
+fn launch_plan(appid: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
+    use logi_wheel_core::games::{self, Ffb, SimTf};
+
+    // The advice is per wheel, so it needs the wheel actually attached.
+    // With none, say so and claim nothing: a wrapper that guesses here
+    // would set PROTON_ENABLE_HIDRAW on a G923 and cost its owner force
+    // feedback.
+    let caps = match logi_wheel_core::Device::discover() {
+        Ok(d) => d.wheel_caps(),
+        Err(_) => {
+            println!("wheel=none");
+            return Ok(());
+        }
+    };
+    println!("wheel={}", if caps.sdk_trueforce { "direct-drive" } else { "classic" });
+
+    // An unknown title still gets the daemon. Only the shared-memory sims
+    // are keyed by appid here; the UDP ones (AMS2, the F1 games, BeamNG,
+    // the Codemasters titles) need nothing but logi-tf-sim listening, and
+    // it idles when nothing is streaming. Withholding it because a game is
+    // not in a table would leave exactly those titles unserved for no gain.
+    let unknown = || {
+        println!("game=unknown");
+        println!("tfsim=1");
+        println!("relay=none");
+    };
+    let Some(appid) = appid else {
+        unknown();
+        return Ok(());
+    };
+    let Some(game) = games::compat_for_appid(appid) else {
+        unknown();
+        return Ok(());
+    };
+    println!("game={}", game.name);
+
+    // PROTON_ENABLE_HIDRAW, and the proxy, come straight from the registry's
+    // own launch-options answer for this wheel.
+    match game.launch_options(caps) {
+        Some(games::LAUNCH_HIDRAW) => println!("hidraw=1"),
+        Some(games::LAUNCH_LOGI_FFB) => println!("ffb=proxy"),
+        _ => {}
+    }
+    if game.ffb == Ffb::DirectInput && game.launch_options(caps).is_none() {
+        // DirectInput without the proxy needs HIDRAW off, not merely unset.
+        println!("hidraw=0");
+    }
+
+    // The telemetry half: which relay decoder, and whether the daemon is
+    // worth running at all for this title.
+    if let SimTf::LiveNow(id) = game.simulated_tf {
+        println!("tfsim=1");
+        match id {
+            "acc" | "ac-evo" | "assetto" | "iracing" | "raceroom" | "rf2" | "lmu" => {
+                println!("relay={id}")
+            }
+            _ => println!("relay=none"),
+        }
+    } else {
+        println!("tfsim=0");
+        println!("relay=none");
+    }
+    Ok(())
+}
+
 fn led_probe(only: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     use logi_wheel_core::hidpp;
     use std::io::Write;

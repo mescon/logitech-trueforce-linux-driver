@@ -419,6 +419,16 @@ pub(crate) fn normalize_title(title: &str) -> String {
 /// mirroring the family handling in `tfsim::game_id_for_title`. Returns
 /// `None` when nothing matches confidently, so an unknown game is shown as
 /// "no special setup needed" rather than mislabeled.
+/// The registry row for a Steam appid, for the launch wrapper.
+///
+/// `match_title` goes by name, which a wrapper does not have: Steam gives
+/// it `SteamAppId` and nothing else. Looking the name up first and matching
+/// on that would add a second place for the mapping to drift.
+pub fn compat_for_appid(appid: u32) -> Option<&'static GameCompat> {
+    let name = STEAM_APPIDS.iter().find(|(_, id)| *id == appid).map(|(n, _)| *n)?;
+    GAMES.iter().find(|g| g.name == name)
+}
+
 pub fn match_title(steam_name: &str) -> Option<&'static GameCompat> {
     let target = normalize_title(steam_name);
     if target.is_empty() {
