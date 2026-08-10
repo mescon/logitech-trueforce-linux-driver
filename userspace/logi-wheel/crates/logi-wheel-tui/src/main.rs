@@ -370,6 +370,19 @@ fn launch_plan(
     };
     println!("game={}", game.name);
 
+    // A title that does not run on Linux gets no recipe. setup_line already
+    // refuses to describe one, for the reason that applies here too: any
+    // advice would be untested, and stating it confidently is worse than
+    // saying nothing. Forza Motorsport is the case, and it was emitting a
+    // full direct-drive recipe.
+    if game.linux == games::Linux::Unsupported {
+        println!("supported=0");
+        println!("tfsim=0");
+        println!("relay=none");
+        println!("note=this title does not run on Linux");
+        return Ok(());
+    }
+
     // PROTON_ENABLE_HIDRAW, and the proxy, come straight from the registry's
     // own launch-options answer for this wheel.
     match game.launch_options(caps) {
