@@ -64,13 +64,22 @@ say() { printf '[logi-launch] %s\n' "$*" >>"$LOG"; }
 # generates locally), a copy bought elsewhere, or a delisted game
 # reinstalled from a backup. `logi-wheel --launch-plan --list` prints the
 # names.
+# --game names the title when the appid cannot identify it. --wheel names
+# which wheel to set up for, which matters only when more than one kind is
+# plugged in: the game chooses the wheel it uses in its own settings and
+# never tells us, so with a direct-drive wheel and a G923 both attached we
+# decline to guess rather than risk setting PROTON_ENABLE_HIDRAW on the
+# G923 and costing it force feedback.
 named_game=""
-if [ "${1:-}" = "--game" ]; then
-	named_game="${2:-}"
-	shift 2
-elif [ "${1:-}" = "--list" ] || [ "${1:-}" = "--help" ]; then
-	exec logi-wheel --launch-plan --list
-fi
+named_wheel=""
+while :; do
+	case "${1:-}" in
+	--game)  named_game="${2:-}";  shift 2 ;;
+	--wheel) named_wheel="${2:-}"; shift 2 ;;
+	--list|--help) exec logi-wheel --launch-plan --list ;;
+	*) break ;;
+	esac
+done
 
 # The prefix Steam is launching this game with. Without it there is nothing
 # to attach to, so run the game and stay out of the way.
@@ -108,10 +117,15 @@ fi
 # the wrong wheel.
 plan=""
 if command -v logi-wheel >/dev/null 2>&1; then
+	set -- "$@"
+	wheel_args=""
+	[ -n "$named_wheel" ] && wheel_args="--wheel $named_wheel"
 	if [ -n "$named_game" ]; then
-		plan=$(logi-wheel --launch-plan --game "$named_game" 2>/dev/null)
+		# shellcheck disable=SC2086
+		plan=$(logi-wheel --launch-plan --game "$named_game" $wheel_args 2>/dev/null)
 	else
-		plan=$(logi-wheel --launch-plan "${SteamAppId:-${SteamGameId:-0}}" 2>/dev/null)
+		# shellcheck disable=SC2086
+		plan=$(logi-wheel --launch-plan "${SteamAppId:-${SteamGameId:-0}}" $wheel_args 2>/dev/null)
 	fi
 fi
 

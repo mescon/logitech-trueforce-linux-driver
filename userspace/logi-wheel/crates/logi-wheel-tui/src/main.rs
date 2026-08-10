@@ -62,7 +62,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .skip_while(|a| a != "--launch-plan")
             .nth(1)
             .and_then(|a| a.parse::<u32>().ok());
-        return launch_plan(appid, named);
+        let wheel_arg = args
+            .iter()
+            .position(|a| a == "--wheel")
+            .and_then(|i| args.get(i + 1))
+            .cloned();
+        return launch_plan(appid, named, wheel_arg);
     }
     if std::env::args().any(|a| a == "--report") {
         print!("{}", logi_wheel_core::diagnostics::report());
@@ -318,6 +323,7 @@ fn report_hidpp_features(device: &Device<logi_wheel_core::sysfs::RealSysfs>) {
 fn launch_plan(
     appid: Option<u32>,
     named: Option<String>,
+    wheel_arg: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use logi_wheel_core::games::{self, Ffb, SimTf};
 
@@ -325,14 +331,42 @@ fn launch_plan(
     // With none, say so and claim nothing: a wrapper that guesses here
     // would set PROTON_ENABLE_HIDRAW on a G923 and cost its owner force
     // feedback.
-    let caps = match logi_wheel_core::Device::discover() {
-        Ok(d) => d.wheel_caps(),
-        Err(_) => {
-            println!("wheel=none");
-            return Ok(());
+    //
+    // With SEVERAL, and of different kinds, the honest answer is that we
+    // do not know which one the game will use. The game chooses that in
+    // its own settings and never tells us. Taking the first one discovery
+    // returns is a coin toss, and on a rig with a direct-drive wheel and a
+    // G923 the losing side of that toss sets PROTON_ENABLE_HIDRAW on the
+    // G923 and costs it force feedback. So the wheel can be named, and
+    // when it is not and the answer is ambiguous, the harmful half is
+    // withheld rather than guessed.
+    let wheels = logi_wheel_core::Device::discover_all();
+    if wheels.is_empty() {
+        println!("wheel=none");
+        return Ok(());
+    }
+    let mut kinds: Vec<bool> = wheels.iter().map(|d| d.wheel_caps().sdk_trueforce).collect();
+    kinds.dedup();
+    let forced = match wheel_arg.as_deref() {
+        Some("dd") | Some("direct-drive") | Some("rs50") | Some("gpro") => Some(true),
+        Some("g923") | Some("classic") => Some(false),
+        Some(other) => {
+            eprintln!("unknown --wheel {other:?}; use dd or g923");
+            None
         }
+        None => None,
     };
-    println!("wheel={}", if caps.sdk_trueforce { "direct-drive" } else { "classic" });
+    let ambiguous = forced.is_none() && kinds.len() > 1;
+    let caps = games::WheelCaps {
+        sdk_trueforce: forced.unwrap_or_else(|| wheels[0].wheel_caps().sdk_trueforce),
+    };
+    if ambiguous {
+        println!("wheel=mixed");
+        println!("note=several kinds of wheel attached and the game picks one, not us");
+        println!("note=name it with --wheel dd or --wheel g923 to get the full recipe");
+    } else {
+        println!("wheel={}", if caps.sdk_trueforce { "direct-drive" } else { "classic" });
+    }
 
     // An unknown title still gets the daemon. Only the shared-memory sims
     // are keyed by appid here; the UDP ones (AMS2, the F1 games, BeamNG,
@@ -386,6 +420,12 @@ fn launch_plan(
     // PROTON_ENABLE_HIDRAW, and the proxy, come straight from the registry's
     // own launch-options answer for this wheel.
     match game.launch_options(caps) {
+        // Never on a guess: wrong here means a G923 owner loses force
+        // feedback, and they would have no way to tell that is what
+        // happened.
+        Some(games::LAUNCH_HIDRAW) if ambiguous => {
+            println!("note=this game wants PROTON_ENABLE_HIDRAW on a direct-drive wheel;")
+        }
         Some(games::LAUNCH_HIDRAW) => println!("hidraw=1"),
         Some(games::LAUNCH_LOGI_FFB) => println!("ffb=proxy"),
         _ => {}
