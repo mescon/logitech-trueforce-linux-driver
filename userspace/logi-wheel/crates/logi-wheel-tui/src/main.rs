@@ -351,7 +351,7 @@ fn led_probe(only: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
         // Skip only THIS test, never the rest of the node's: a `continue`
         // here would jump past the level tests too, so `--led-probe 12`
         // would silently never run test 12.
-        let run_classic = only.is_none_or(|o| o == n);
+        let run_classic = only.map_or(true, |o| o == n);
         if run_classic {
         print!("TEST {n}  {} [{kind}]  classic lg4ff ... ", node.display());
         std::io::stdout().flush().ok();
