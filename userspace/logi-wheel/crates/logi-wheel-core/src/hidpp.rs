@@ -560,15 +560,28 @@ fn rev_short<T: HidppIo>(io: &mut T, idx: u8, function: u8, p0: u8) -> io::Resul
 /// a long fn6 carrying `00 01 00 0a 00 LL`. Both sequences are taken from
 /// the kernel driver's `hidpp_dd_rev_send_level`, which was written from
 /// G HUB captures.
-pub fn rev_level_via_lightsync<T: HidppIo>(io: &mut T, idx: u8, level: u8) -> io::Result<()> {
+pub fn rev_level_via_lightsync<T: HidppIo>(
+    io: &mut T,
+    idx: u8,
+    level: u8,
+    leds: u8,
+) -> io::Result<()> {
     for (function, p0) in [(0u8, 0u8), (1, 0), (2, 0), (0, 0)] {
         rev_short(io, idx, function, p0)?;
         std::thread::sleep(std::time::Duration::from_millis(4));
     }
     rev_short(io, idx, 2, 0)?;
-    let long = rev_long(0xff, idx, 6, &[0x00, 0x01, 0x00, 0x0a, 0x00, level.min(10)]);
+    let long = rev_long(0xff, idx, 6, &[0x00, 0x01, 0x00, leds, 0x00, level.min(leds)]);
     io.write_report(&long)
 }
+
+/// How many LEDs a wheel's rev strip has, which the level command has to
+/// state. Not cosmetic: a Windows capture of a G923 Xbox edition driving
+/// its lights from AMS2 sends `05` here where the direct-drive wheels send
+/// `0a`, and every level command this project sent that wheel said `0a`.
+/// Telling a five-LED strip it has ten is why none of them lit (issue #27).
+pub const LEDS_DIRECT_DRIVE: u8 = 10;
+pub const LEDS_G923: u8 = 5;
 
 /// Drive the rev strip through the **classic lg4ff command**, the one the
 /// PlayStation G923 obeys.

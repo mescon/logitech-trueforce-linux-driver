@@ -343,18 +343,27 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
         first = false;
         print!("TEST {n}  {} [{kind}]  classic lg4ff ... ", node.display());
         std::io::stdout().flush().ok();
-        match hidpp::RealHidppIo::open(node) {
-            Err(e) => println!("cannot open ({e})"),
-            Ok(mut io) => {
-                let on = hidpp::rev_mask_via_lg4ff(&mut io, 0x1f);
-                sleep(hold);
-                let _ = hidpp::rev_mask_via_lg4ff(&mut io, 0x00);
-                match on {
-                    Ok(()) => {
-                        println!("sent");
-                        sent.push(n);
+        if kind.contains("HID++") {
+            // Report id 0xF8 means nothing on a HID++ interface. The write
+            // is refused AND the refusal stalls the endpoint for several
+            // seconds, so the next test on this node fails too and reads as
+            // a result about that test rather than fallout from this one.
+            // That produced one wrong conclusion already.
+            println!("skipped, the classic command is not for a HID++ interface");
+        } else {
+            match hidpp::RealHidppIo::open(node) {
+                Err(e) => println!("cannot open ({e})"),
+                Ok(mut io) => {
+                    let on = hidpp::rev_mask_via_lg4ff(&mut io, 0x1f);
+                    sleep(hold);
+                    let _ = hidpp::rev_mask_via_lg4ff(&mut io, 0x00);
+                    match on {
+                        Ok(()) => {
+                            println!("sent");
+                            sent.push(n);
+                        }
+                        Err(e) => println!("refused ({e})"),
                     }
-                    Err(e) => println!("refused ({e})"),
                 }
             }
         }
@@ -362,27 +371,33 @@ fn led_probe() -> Result<(), Box<dyn std::error::Error>> {
         // Dialect B: the level-based 0x807A sequence, but only where this
         // interface actually answers HID++. Asking each interface rather
         // than assuming which one speaks it is the whole point.
-        n += 1;
-        sleep(gap);
-        print!("TEST {n}  {} [{kind}]  0x807A level ... ", node.display());
-        std::io::stdout().flush().ok();
-        match hidpp::RealHidppIo::open(node) {
-            Err(e) => println!("cannot open ({e})"),
-            Ok(mut io) => match hidpp::resolve_feature_index(&mut io, 0x807A) {
-                None => println!("this interface does not answer HID++ for 0x807A"),
-                Some(idx) => {
-                    let on = hidpp::rev_level_via_lightsync(&mut io, idx, 10);
-                    sleep(hold);
-                    let _ = hidpp::rev_level_via_lightsync(&mut io, idx, 0);
-                    match on {
-                        Ok(()) => {
-                            println!("sent (feature index 0x{idx:02X})");
-                            sent.push(n);
+        // Once per strip size. The level command states how many LEDs the
+        // strip has, and a wheel told the wrong number lights nothing: the
+        // direct-drive wheels want 10, a G923 wants 5, and every level
+        // command this project sent before said 10 (issue #27).
+        for leds in [hidpp::LEDS_DIRECT_DRIVE, hidpp::LEDS_G923] {
+            n += 1;
+            sleep(gap);
+            print!("TEST {n}  {} [{kind}]  0x807A level, {leds} LEDs ... ", node.display());
+            std::io::stdout().flush().ok();
+            match hidpp::RealHidppIo::open(node) {
+                Err(e) => println!("cannot open ({e})"),
+                Ok(mut io) => match hidpp::resolve_feature_index(&mut io, 0x807A) {
+                    None => println!("this interface does not answer HID++ for 0x807A"),
+                    Some(idx) => {
+                        let on = hidpp::rev_level_via_lightsync(&mut io, idx, leds, leds);
+                        sleep(hold);
+                        let _ = hidpp::rev_level_via_lightsync(&mut io, idx, 0, leds);
+                        match on {
+                            Ok(()) => {
+                                println!("sent (feature index 0x{idx:02X})");
+                                sent.push(n);
+                            }
+                            Err(e) => println!("refused ({e})"),
                         }
-                        Err(e) => println!("refused ({e})"),
                     }
-                }
-            },
+                },
+            }
         }
     }
         println!();
