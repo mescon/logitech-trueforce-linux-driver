@@ -130,32 +130,11 @@ Each needs a capture of G HUB exercising the control, and each would be a
 non-force write to the HID++ endpoint, which specification 12.5 says cuts
 live force.
 
-## Answered
-
-- **The G923 Xbox edition's rev lights are not host-controllable.** Settled
-  2026-08-10 on issue #27, after the feature enumeration landed. The wheel
-  and the PlayStation edition report 21 HID++ features each, differing by
-  four on each side, none of them LED related: both implement `0x807A`,
-  neither implements `0x807B` or `0x8040`. So there is no undiscovered
-  feature to try. The PlayStation edition lights from the classic `f8 12`
-  command, which is not HID++ at all, and the Xbox edition ignores that same
-  command on the same kind of interface.
-
-  What closed it was asking the owner a question nobody had asked in months
-  of testing: whether he had ever seen those LEDs light on **anything**. He
-  had not, on Windows, on an Xbox, or out of the box. They light only when
-  the wheel is unpowered, which is firmware behaviour, not host control.
-
-  So this was never a Linux gap or a missing dialect. Treat it as a hardware
-  limitation and stop testing for it. The lesson is cheaper than the months:
-  ask whether a feature has ever worked anywhere before working out why it
-  does not work here.
-
 ## Waiting on other people
 
-- **#27**, Xbox G923 TrueForce. The rev-light half is **settled and closed**:
-  those LEDs are not host-controllable on that wheel by anyone. See
-  "Answered" below.
+- **#27**, Xbox G923 rev lights. The driver now reports which features that
+  wheel has; the reporter has not run it yet. Even a positive answer is not
+  sufficient, because that wheel's force rides HID++ and 12.5 applies.
 - **#52**, Xbox G923 force feedback. Fixed on the `g923-xbox-ffb-retry`
   branch, unmerged, because no `c26e` exists here to test it on.
 - **#8**, a G PRO capture, which is what would let the real-G-PRO rev-light

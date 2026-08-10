@@ -2150,15 +2150,12 @@ stating explicitly so it is not mistaken for a latent bug:
   the classic engine it does not use, and `wheel_led_*` belongs to the
   direct-drive path it does not use either.
 
-**Consequence for future work: none, because there is no future work here.**
-Settled 2026-08-10 (issue #27): the G923 Xbox edition's rev lights are not
-host-controllable, and never have been on any platform. Its owner has never
-seen them light under Windows, on an Xbox, or out of the box; they light only
-while the wheel is unpowered, which is firmware behaviour. A full HID++
-enumeration shows that wheel and the PlayStation edition implementing the
-same 21 features, neither carrying `0x807B` or `0x8040`, so no undiscovered
-feature was hiding. The endpoint-contention argument below stands on its own
-merits but is no longer the reason this cannot be done.
+**Consequence for future work:** adding rev-light support to the G923 Xbox
+edition is not a matter of wiring up `0x807A`. On that wheel it would be
+writing non-force to the same endpoint its force arrives on, which is exactly
+the configuration described above. It would need force moved off HID++ first,
+or evidence that this wheel behaves differently from the G PRO the finding
+came from.
 
 ---
 
