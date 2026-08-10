@@ -51,6 +51,23 @@ relay_game_for() {
 # that forwards telemetry to SimHub on another machine.
 HELPER_EXE="${LOGI_LAUNCH_EXE:-}"
 HELPER_ARGS="${LOGI_LAUNCH_ARGS:-}"
+# LOGI_LAUNCH_HELPERS runs things AS WELL AS the relay, rather than instead
+# of it, as a semicolon-separated list of `exe args`:
+#
+#   LOGI_LAUNCH_HELPERS='c:\sim-teleport.exe source'
+#
+# Exists because these two wants are not alternatives. Someone running
+# SimHub on a second machine needs its bridge inside the prefix, and still
+# wants the rev lights and simulated TrueForce driven here; LOGI_LAUNCH_EXE
+# made that an either/or and quietly cost them the second one.
+#
+# Several readers of the same telemetry is not a conflict: they only read,
+# and a Windows file mapping takes any number of readers.
+#
+# The exe is whatever precedes the first space, so it cannot itself contain
+# one. Helpers belong in the prefix's drive_c anyway, which is where the
+# documentation puts them and where no path has spaces.
+EXTRA_HELPERS="${LOGI_LAUNCH_HELPERS:-}"
 # How long to wait for the game's wineserver before giving up, and how long
 # to let the game settle afterwards so its maps exist before the first probe.
 WAIT_SECONDS="${LOGI_LAUNCH_WAIT:-120}"
@@ -106,8 +123,9 @@ fi
 # is a different build against a Proton-made prefix, and it prompts to
 # install wine-mono and can convert the prefix.
 if [ -z "$wine_bin" ]; then
-	[ -n "$prefix_root" ] && say "no usable wine for this prefix; skipping the in-prefix helper"
+	[ -n "$prefix_root" ] && say "no usable wine for this prefix; skipping in-prefix helpers"
 	HELPER_EXE=""
+	EXTRA_HELPERS=""
 fi
 
 # Ask the app what this game needs on the wheel that is attached. The
@@ -173,7 +191,10 @@ if [ -z "$HELPER_EXE" ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; then
 	game="$want_relay"
 	[ "$game" = "none" ] && game=""
 	if [ -z "$game" ]; then
-		say "no in-prefix helper needed for this game"
+		# Deliberately "relay", not "helper": LOGI_LAUNCH_HELPERS may
+		# still start something, and a line claiming nothing was needed
+		# would be contradicted moments later.
+		say "no in-prefix relay needed for this game"
 	elif [ ! -f "$prefix_root/pfx/drive_c/logi-tf-relay.exe" ]; then
 		say "this game needs logi-tf-relay in its prefix and it is not there."
 		say "Install it from the app's Setup page (Install relay), then start the game again."
@@ -220,7 +241,38 @@ if [ "${LOGI_LAUNCH_TF_SIM:-1}" = "1" ] && [ "${want_tfsim:-1}" = "1" ]; then
 	fi
 fi
 
-if [ -n "$HELPER_EXE" ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; then
+# Everything to run inside the prefix, as parallel exe/args arrays. Kept
+# apart rather than joined into one string so an exe path containing spaces
+# still works, which is what quoting "$HELPER_EXE" bought before this
+# supported more than one.
+helper_exes=()
+helper_argv=()
+if [ -n "$HELPER_EXE" ]; then
+	helper_exes+=("$HELPER_EXE")
+	helper_argv+=("$HELPER_ARGS")
+fi
+if [ -n "$EXTRA_HELPERS" ]; then
+	# `;` between helpers, first space inside one separating exe from args.
+	saved_ifs="$IFS"
+	IFS=';'
+	for entry in $EXTRA_HELPERS; do
+		# Leading and trailing blanks, so a list can be written spaced out.
+		entry="${entry#"${entry%%[![:space:]]*}"}"
+		entry="${entry%"${entry##*[![:space:]]}"}"
+		[ -z "$entry" ] && continue
+		exe="${entry%% *}"
+		if [ "$entry" = "$exe" ]; then
+			args=""
+		else
+			args="${entry#* }"
+		fi
+		helper_exes+=("$exe")
+		helper_argv+=("$args")
+	done
+	IFS="$saved_ifs"
+fi
+
+if [ ${#helper_exes[@]} -gt 0 ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; then
 (
 	# Wait for the game to take the prefix. Keying on the wineserver rather
 	# than the game process on purpose: the game runs inside Steam's
@@ -241,10 +293,25 @@ if [ -n "$HELPER_EXE" ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; then
 	# Let the game finish creating its shared-memory sections. Attaching
 	# during startup is harmless but the first probes would find nothing.
 	sleep "$SETTLE_SECONDS"
-	say "starting $HELPER_EXE $HELPER_ARGS in $prefix_root/pfx"
-	WINEPREFIX="$prefix_root/pfx" WINEDEBUG="${WINEDEBUG:--all}" \
-		"$wine_bin" "$HELPER_EXE" $HELPER_ARGS >>"$LOG" 2>&1
-	say "helper exited"
+
+	# One wine process each, started together. Waiting for the first to
+	# exit before starting the second would mean the second never runs:
+	# these are long-lived bridges that stay up for the whole session.
+	i=0
+	while [ "$i" -lt ${#helper_exes[@]} ]; do
+		exe="${helper_exes[$i]}"
+		args="${helper_argv[$i]}"
+		(
+			say "starting ${args:+$exe $args}${args:-$exe} in $prefix_root/pfx"
+			WINEPREFIX="$prefix_root/pfx" WINEDEBUG="${WINEDEBUG:--all}" \
+				"$wine_bin" "$exe" $args >>"$LOG" 2>&1
+			# Named, because "helper exited" says nothing about which one
+			# when two are running.
+			say "$exe exited"
+		) &
+		i=$((i + 1))
+	done
+	wait
 ) &
 fi
 

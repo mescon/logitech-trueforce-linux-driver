@@ -209,18 +209,40 @@ app's Setup page, **Install relay**.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LOGI_LAUNCH_EXE` | `c:\logi-tf-relay.exe` | The helper, as a Windows path inside the prefix |
+| `LOGI_LAUNCH_EXE` | `c:\logi-tf-relay.exe` | Run this **instead of** the relay, as a Windows path inside the prefix |
 | `LOGI_LAUNCH_ARGS` | `--game <from appid>` | Arguments passed to it |
+| `LOGI_LAUNCH_HELPERS` | none | Run these **as well as** the relay (see below) |
 | `LOGI_LAUNCH_WAIT` | `120` | Seconds to wait for the game's wineserver |
 | `LOGI_LAUNCH_SETTLE` | `15` | Seconds to let the game create its sections first |
+| `LOGI_LAUNCH_TF_SIM` | `1` | `0` leaves the `logi-tf-sim` daemon alone, for running it yourself |
 | `LOGI_LAUNCH_LOG` | `/tmp/logi-launch.log` | Where it writes what it did |
 
-For example, to run a bridge that forwards telemetry to another machine
-instead of driving simulated TrueForce here:
+`LOGI_LAUNCH_EXE` replaces the relay, so simulated TrueForce and the rev
+lights lose their telemetry. That is the right choice only when you want
+nothing driven on this machine.
+
+### Running something as well
+
+`LOGI_LAUNCH_HELPERS` starts extra programs inside the prefix alongside
+whatever the plan already decided, as a semicolon-separated list of
+`exe args`:
 
 ```
-LOGI_LAUNCH_EXE='c:\sim-teleport.exe' LOGI_LAUNCH_ARGS=source logi-launch %command%
+LOGI_LAUNCH_HELPERS='c:\sim-teleport.exe source' logi-launch %command%
 ```
+
+Two or more:
+
+```
+LOGI_LAUNCH_HELPERS='c:\sim-teleport.exe source; c:\something-else.exe'
+```
+
+They all read the same telemetry, which is not a conflict: a Windows
+shared-memory section takes any number of readers.
+
+The program name is whatever comes before the first space, so it cannot
+itself contain one. Put helpers in the prefix's `drive_c`, where the path is
+`c:\name.exe` and the question does not arise.
 
 See [SHARED_MEMORY_RELAY.md](SHARED_MEMORY_RELAY.md) for the relay itself.
 
@@ -235,8 +257,22 @@ approximation.
 
 Its source half runs correctly under Proton: confirmed on 2026-08-09 with
 Assetto Corsa EVO, which it detected from the menu via
-`Local\acevo_pmf_physics`. Put `sim-teleport.exe` in the prefix's `drive_c`
-and set `LOGI_LAUNCH_EXE` as above.
+`Local\acevo_pmf_physics`. Put `sim-teleport.exe` in the prefix's `drive_c`,
+then add it to the helpers:
+
+```
+LOGI_LAUNCH_HELPERS='c:\sim-teleport.exe source' logi-launch %command%
+```
+
+Use `LOGI_LAUNCH_HELPERS` and not `LOGI_LAUNCH_EXE` here. The second one
+replaces our relay, which leaves SimHub fed on the other machine and the rev
+lights and simulated TrueForce dark on this one. Feeding SimHub and driving
+the wheel are not alternatives, and both bridges can read the same telemetry
+at once.
+
+Its own documentation warns that the **target** half must never run on the
+gaming PC, because it creates shared-memory sections using the game's own
+names. Only the source half belongs here.
 
 None of this touches force feedback or TrueForce. A telemetry helper only
 reads; the native FFB and SDK TrueForce paths are unaffected.
