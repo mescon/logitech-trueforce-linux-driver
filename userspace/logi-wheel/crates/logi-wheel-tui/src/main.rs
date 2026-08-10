@@ -49,11 +49,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return led_probe(only);
     }
     if std::env::args().any(|a| a == "--launch-plan") {
+        if std::env::args().any(|a| a == "--list") {
+            return launch_plan_list();
+        }
+        let args: Vec<String> = std::env::args().collect();
+        let named = args
+            .iter()
+            .position(|a| a == "--game")
+            .and_then(|i| args.get(i + 1))
+            .cloned();
         let appid = std::env::args()
             .skip_while(|a| a != "--launch-plan")
             .nth(1)
             .and_then(|a| a.parse::<u32>().ok());
-        return launch_plan(appid);
+        return launch_plan(appid, named);
     }
     if std::env::args().any(|a| a == "--report") {
         print!("{}", logi_wheel_core::diagnostics::report());
@@ -306,7 +315,10 @@ fn report_hidpp_features(device: &Device<logi_wheel_core::sysfs::RealSysfs>) {
 /// the apps' Setup page. A launch wrapper reimplementing any of it in shell
 /// would be a second copy to drift, and the per-wheel half is exactly what
 /// went wrong when the Setup page described the wrong wheel.
-fn launch_plan(appid: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
+fn launch_plan(
+    appid: Option<u32>,
+    named: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use logi_wheel_core::games::{self, Ffb, SimTf};
 
     // The advice is per wheel, so it needs the wheel actually attached.
@@ -332,11 +344,27 @@ fn launch_plan(appid: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
         println!("tfsim=1");
         println!("relay=none");
     };
-    let Some(appid) = appid else {
-        unknown();
-        return Ok(());
+    // A name the user gave wins over the appid. That is the whole point of
+    // it: the appid may be missing (a non-Steam shortcut, whose id is
+    // generated locally), or belong to a delisted title someone reinstalled
+    // from a backup.
+    let game = if let Some(want) = named.as_deref() {
+        match games::compat_for_slug(want) {
+            Ok(g) => Some(g),
+            Err(candidates) => {
+                if candidates.is_empty() {
+                    eprintln!("no game matches {want:?}. Try --launch-plan --list");
+                } else {
+                    eprintln!("{want:?} matches several games: {}", candidates.join(", "));
+                }
+                unknown();
+                return Ok(());
+            }
+        }
+    } else {
+        appid.and_then(games::compat_for_appid)
     };
-    let Some(game) = games::compat_for_appid(appid) else {
+    let Some(game) = game else {
         unknown();
         return Ok(());
     };
@@ -381,6 +409,47 @@ fn launch_plan(appid: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
         println!("tfsim=0");
         println!("relay=none");
     }
+    Ok(())
+}
+
+/// Every title the registry knows, with the name to pass to `--game` and
+/// the launch line for it. Printed rather than kept only in the app so a
+/// wiki page, an issue reply or a script can be built from the same source
+/// as the app's own advice.
+fn launch_plan_list() -> Result<(), Box<dyn std::error::Error>> {
+    use logi_wheel_core::games::{self, Ffb, SimTf};
+    let caps = match logi_wheel_core::Device::discover() {
+        Ok(d) => d.wheel_caps(),
+        Err(_) => games::WheelCaps::assumed(),
+    };
+    println!("# for a {} wheel", if caps.sdk_trueforce { "direct-drive" } else { "classic" });
+    println!("{:<28} {:<9} {:<11} title", "--game", "appid", "settings");
+    for g in games::GAMES {
+        let slug = games::slug_for(g.name);
+        let appid = games::appid_for(g.name).map(|a| a.to_string()).unwrap_or_else(|| "-".into());
+        let mut bits: Vec<String> = Vec::new();
+        match g.launch_options(caps) {
+            Some(games::LAUNCH_HIDRAW) => bits.push("hidraw=1".into()),
+            Some(games::LAUNCH_LOGI_FFB) => bits.push("ffb=proxy".into()),
+            _ => {}
+        }
+        if g.ffb == Ffb::DirectInput && g.launch_options(caps).is_none() {
+            bits.push("hidraw=0".into());
+        }
+        if g.setup_action(caps) == games::SetupAction::InstallShim {
+            bits.push("tfsim=0".into());
+        } else if let SimTf::LiveNow(id) = g.simulated_tf {
+            bits.push("tfsim=1".into());
+            if matches!(id, "acc" | "ac-evo" | "assetto" | "iracing" | "raceroom" | "rf2" | "lmu") {
+                bits.push(format!("relay={id}"));
+            }
+        }
+        let settings = if bits.is_empty() { "-".to_string() } else { bits.join(" ") };
+        println!("{slug:<28} {appid:<9} {settings:<11} {}", g.name);
+    }
+    println!();
+    println!("Use: logi-launch --game <name> %command%");
+    println!("Or set your own in ~/.config/logi-wheel/games.conf, keyed by appid.");
     Ok(())
 }
 

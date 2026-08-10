@@ -59,6 +59,19 @@ LOG="${LOGI_LAUNCH_LOG:-/tmp/logi-launch.log}"
 
 say() { printf '[logi-launch] %s\n' "$*" >>"$LOG"; }
 
+# `logi-launch --game <name> %command%` names the title explicitly, for when
+# the appid cannot identify it: a non-Steam shortcut (whose id Steam
+# generates locally), a copy bought elsewhere, or a delisted game
+# reinstalled from a backup. `logi-wheel --launch-plan --list` prints the
+# names.
+named_game=""
+if [ "${1:-}" = "--game" ]; then
+	named_game="${2:-}"
+	shift 2
+elif [ "${1:-}" = "--list" ] || [ "${1:-}" = "--help" ]; then
+	exec logi-wheel --launch-plan --list
+fi
+
 # The prefix Steam is launching this game with. Without it there is nothing
 # to attach to, so run the game and stay out of the way.
 # No prefix means no in-prefix helper, but everything else still applies:
@@ -95,7 +108,11 @@ fi
 # the wrong wheel.
 plan=""
 if command -v logi-wheel >/dev/null 2>&1; then
-	plan=$(logi-wheel --launch-plan "${SteamAppId:-${SteamGameId:-0}}" 2>/dev/null)
+	if [ -n "$named_game" ]; then
+		plan=$(logi-wheel --launch-plan --game "$named_game" 2>/dev/null)
+	else
+		plan=$(logi-wheel --launch-plan "${SteamAppId:-${SteamGameId:-0}}" 2>/dev/null)
+	fi
 fi
 
 # A game we do not know yet is not a dead end. Anyone can describe one in

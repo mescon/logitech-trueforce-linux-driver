@@ -959,7 +959,13 @@ pub fn setup_games(games: &[DiscoveredGame], cfg: &tfsim::Config, caps: games::W
                     prefix: prefix.as_str().into(),
                     summary: compat.setup_line(caps).into(),
                     action: action_tag(action),
-                    launch: compat.launch_options(caps).unwrap_or_default().into(),
+                    // One line for every game, because logi-launch works the
+                    // rest out from the appid and the wheel attached. The
+                    // manual equivalent is still in docs/LAUNCH_OPTIONS.md
+                    // for anyone who would rather set it by hand; showing
+                    // it here instead taught people to paste a setting that
+                    // is right for one wheel and wrong for the other.
+                    launch: "logi-launch %command%".into(),
                     installed: g.shim_installed,
                     sim_id: sim_id.into(),
                     sim_enabled: sim.enabled,
@@ -1120,7 +1126,10 @@ mod tests {
 
         // DirectInput -> logi-ffb action, and the same is true here.
         assert_eq!(rows[1].action, ACTION_LOGI_FFB);
-        assert_eq!(rows[1].launch, games::LAUNCH_LOGI_FFB, "the row carries its own launch options");
+        assert_eq!(
+            rows[1].launch, "logi-launch %command%",
+            "every row offers the one line that works out the rest"
+        );
         assert_eq!(rows[1].sim_id, "lmu");
         assert!(rows[1].needs_relay);
 
@@ -1240,17 +1249,31 @@ mod tests {
 
         let rows = setup_games(&games_list, &cfg, g923);
         assert_eq!(rows[0].action, ACTION_OUT_OF_BOX);
-        assert!(rows[0].launch.is_empty(), "nothing to paste: {}", rows[0].launch);
+        // The line offered is the wheel-aware one, so it is safe to paste on
+        // any wheel: logi-launch resolves the recipe at launch from the
+        // wheel actually attached. What must never appear here is the
+        // direct-drive recipe itself, which is what this test was written
+        // to catch and still catches.
+        assert_eq!(rows[0].launch, "logi-launch %command%");
+        assert!(
+            !rows[0].launch.contains("HIDRAW"),
+            "a G923 owner must never be handed PROTON_ENABLE_HIDRAW: {}",
+            rows[0].launch
+        );
         assert!(
             !rows[0].summary.contains("PROTON_ENABLE_HIDRAW=1"),
             "summary must not ask for it: {}",
             rows[0].summary
         );
 
-        // The same game on a direct-drive wheel is unchanged.
+        // The same game on a direct-drive wheel differs in the ACTION, which
+        // is the part that is per wheel: it gets the shim. The launch line
+        // is deliberately identical on both, because the line itself no
+        // longer encodes the recipe.
         let dd = setup_games(&games_list, &cfg, games::WheelCaps { sdk_trueforce: true });
         assert_eq!(dd[0].action, ACTION_SHIM);
-        assert_eq!(dd[0].launch, games::LAUNCH_HIDRAW);
+        assert_eq!(dd[0].launch, "logi-launch %command%");
+        assert_ne!(dd[0].action, rows[0].action, "the wheels must still differ somewhere");
     }
 
     #[test]

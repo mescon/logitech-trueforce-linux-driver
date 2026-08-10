@@ -455,6 +455,48 @@ pub(crate) fn normalize_title(title: &str) -> String {
 /// mirroring the family handling in `tfsim::game_id_for_title`. Returns
 /// `None` when nothing matches confidently, so an unknown game is shown as
 /// "no special setup needed" rather than mislabeled.
+/// A short, typeable name for a title: lowercase, punctuation folded to
+/// dashes, any parenthetical dropped. `DiRT Rally 2.0` becomes
+/// `dirt-rally-2-0`, `Assetto Corsa EVO (early access)` becomes
+/// `assetto-corsa-evo`.
+pub fn slug_for(name: &str) -> String {
+    let base = name.split('(').next().unwrap_or(name);
+    let mut out = String::new();
+    let mut dash = false;
+    for c in base.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            dash = false;
+        } else if !dash && !out.is_empty() {
+            out.push('-');
+            dash = true;
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+/// The registry row for a slug the user typed, matched exactly first and
+/// then as a unique prefix.
+///
+/// Exists because an appid is not always available: a game bought outside
+/// Steam, added as a non-Steam shortcut (whose appid is generated locally
+/// and means nothing to us), or delisted and reinstalled from a backup.
+/// `Err` carries the candidates when a prefix matched more than one, since
+/// silently picking one of `dirt-4` and `dirt-rally-2-0` would apply the
+/// wrong recipe.
+pub fn compat_for_slug(want: &str) -> Result<&'static GameCompat, Vec<String>> {
+    let want = want.trim().to_ascii_lowercase();
+    if let Some(g) = GAMES.iter().find(|g| slug_for(g.name) == want) {
+        return Ok(g);
+    }
+    let hits: Vec<&'static GameCompat> =
+        GAMES.iter().filter(|g| slug_for(g.name).starts_with(&want)).collect();
+    match hits.len() {
+        1 => Ok(hits[0]),
+        _ => Err(hits.iter().map(|g| slug_for(g.name)).collect()),
+    }
+}
+
 /// The registry row for a Steam appid, for the launch wrapper.
 ///
 /// `match_title` goes by name, which a wrapper does not have: Steam gives
