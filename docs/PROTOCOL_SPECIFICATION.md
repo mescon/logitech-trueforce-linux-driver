@@ -2150,6 +2150,14 @@ stating explicitly so it is not mistaken for a latent bug:
   the classic engine it does not use, and `wheel_led_*` belongs to the
   direct-drive path it does not use either.
 
+**Superseded 2026-08-10 by a capture of that wheel (issue #27).** Its rev
+lights are driven over `0x807A` after all, with `fn2`+`fn6` pairs, and the
+reason ours never lit is a single parameter: the level command states the
+strip length, and the G923 has **five** LEDs where the direct-drive wheels
+have ten. This project sent `0a` to every wheel. The same capture shows that
+wheel's force arriving on the `0xFFFD` stream rather than HID++, so the
+endpoint-contention argument below does not apply to its rev lights.
+
 **Consequence for future work:** adding rev-light support to the G923 Xbox
 edition is not a matter of wiring up `0x807A`. On that wheel it would be
 writing non-force to the same endpoint its force arrives on, which is exactly
