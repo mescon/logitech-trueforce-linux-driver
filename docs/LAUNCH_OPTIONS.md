@@ -7,6 +7,34 @@ place. Right-click the game in Steam, **Properties**, **Launch Options**.
 starts the game. Type it exactly, including the percent signs. Anything to
 the left of it runs first; the game itself is what `%command%` becomes.
 
+## The short version
+
+Put this in every racing game's launch options and stop thinking about it:
+
+```
+logi-launch %command%
+```
+
+It works out what that game needs on the wheel you have attached, and does
+it: sets `PROTON_ENABLE_HIDRAW` only where that wheel wants it, launches
+through `logi-ffb` for the DirectInput games, starts `logi-tf-sim`, and
+starts the telemetry relay inside the game's Proton prefix for the sims that
+need one. A game that needs none of it starts none of it, so leaving the
+line in place costs nothing.
+
+It knows 28 titles by their Steam appid. A game it does not know still gets
+the daemon, which is all the UDP-telemetry games need, and you can describe
+it yourself (see [Teaching it a new game](#teaching-it-a-new-game)).
+
+**It will not put simulated TrueForce on a game that has its own.** On a
+direct-drive wheel, Assetto Corsa Competizione and Assetto Corsa EVO get
+their real TrueForce through the shim and nothing is layered on top. On a
+G923, where that cannot arrive, the same titles get the simulated kind
+instead.
+
+The rest of this page is what `logi-launch` is doing on your behalf, for
+when you want to do it by hand or understand what went wrong.
+
 ## The options
 
 | Option | What it does | When you want it |
@@ -14,7 +42,7 @@ the left of it runs first; the game itself is what `%command%` becomes.
 | `PROTON_ENABLE_HIDRAW=1 %command%` | Lets the game talk to the wheel's raw HID interface, which is how Logitech's SDK delivers TrueForce | A **direct-drive wheel** (RS50, G PRO) in a game with its own TrueForce: ACC, Assetto Corsa EVO. Needs the shim installed |
 | *(leave it out)* | The wheel stays an ordinary Linux force-feedback device | A **G923**, always. Also DirectInput games, unless you are using `logi-ffb` |
 | `logi-ffb %command%` | Presents a virtual wheel that speaks the older DirectInput force-feedback protocol, and forwards it to your real wheel | Games that only do DirectInput FFB: Le Mans Ultimate, rFactor 2, iRacing, RaceRoom |
-| `logi-launch %command%` | Starts a Windows helper **inside the game's Proton prefix**, after the game is up | Anything that has to read the game's shared memory from inside the prefix: `logi-tf-relay`, or a telemetry bridge to another PC |
+| `logi-launch %command%` | Works out and applies everything below for this game and this wheel | Every racing game. It is the only line most people need |
 
 `gamemoderun` is not ours. It is from `gamemode` and composes fine with all
 of the above.
@@ -123,3 +151,35 @@ and set `LOGI_LAUNCH_EXE` as above.
 
 None of this touches force feedback or TrueForce. A telemetry helper only
 reads; the native FFB and SDK TrueForce paths are unaffected.
+
+## Teaching it a new game
+
+`logi-launch` knows 28 titles by Steam appid. For anything else, or to
+override what it decides, write a line in
+`~/.config/logi-wheel/games.conf`:
+
+```
+# appid    settings
+3058630    hidraw=1 relay=ac-evo tfsim=1
+1234567    ffb=proxy tfsim=0
+```
+
+The appid is the number in the game's Steam store URL, and the same number
+as its folder under `steamapps/compatdata`. Your line wins over the built-in
+answer.
+
+| setting | values | meaning |
+|---|---|---|
+| `hidraw` | `1`, `0` | set `PROTON_ENABLE_HIDRAW`. Only for a wheel that can take it: on a G923 this costs you force feedback |
+| `ffb` | `proxy` | launch through `logi-ffb`, for games that drive force feedback the DirectInput way |
+| `relay` | `acc`, `ac-evo`, `assetto`, `iracing`, `raceroom`, `rf2`, `lmu`, `none` | which decoder the in-prefix telemetry relay should use |
+| `tfsim` | `1`, `0` | run `logi-tf-sim`. Set `0` for a game whose own TrueForce already reaches your wheel |
+
+A line that works for you is also exactly the report needed to add the game
+properly, so please open an issue with it.
+
+## What it needs installed
+
+`logi-launch` comes with the `logi-wheel` package, along with `logi-ffb`,
+`logi-tf-sim` and the relay it installs into prefixes. If you built from
+source, `sudo ./tools/setup.sh` installs all of them.

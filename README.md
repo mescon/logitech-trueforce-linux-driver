@@ -312,7 +312,20 @@ The short version is below.
   still waiting on an in-game tester; if you run such a sim, reports are very
   welcome.
 
-Every launch option this project asks for, what each one does and how they combine, is in [docs/LAUNCH_OPTIONS.md](docs/LAUNCH_OPTIONS.md).
+**The one line to put in a game's launch options** is:
+
+```
+logi-launch %command%
+```
+
+That is the whole setup for most people. It works out what the game needs on
+the wheel you actually have and applies it: the raw-HID setting only where
+that wheel wants it, the `logi-ffb` proxy for DirectInput games, the
+simulated-TrueForce daemon, and the telemetry relay inside the game's Proton
+prefix for the sims that need one. Games with their own TrueForce keep it and
+get nothing layered on top. It knows 28 titles by their Steam appid, and you
+can teach it others. Full details, including how to add a game yourself, are
+in [docs/LAUNCH_OPTIONS.md](docs/LAUNCH_OPTIONS.md).
 
 - **Simulated TrueForce** for games without native support: enable the game in
   Setup's "Simulated TrueForce" panel and switch on the game's own UDP
