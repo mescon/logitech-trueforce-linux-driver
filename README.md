@@ -29,6 +29,58 @@ before this. See [G923 support](#g923-support).
 > The older **G920** is already served by the in-tree `hid-logitech-hidpp`
 > driver and does not need this one.
 
+## Getting started
+
+Three steps, whichever of these wheels you own.
+
+**1. Install it.** One command on most distributions: find yours in
+[Install](#install) below.
+
+**2. Plug the wheel in and open Logi Wheel.** `logi-wheel-gui` for the desktop
+app, `logi-wheel` for the terminal one. It finds the wheel, shows every
+setting that wheel supports, and its Setup page finds your sims and installs
+the per-game helpers they need.
+
+**3. Put one launch option on each sim.** In Steam: Properties, General,
+Launch Options.
+
+```
+logi-launch %command%
+```
+
+That line is the same for every game and every wheel, and for most people it
+is the only setup step. `logi-launch` works out what this game needs on the
+wheel you have plugged in, and does it: force feedback for older DirectInput
+sims, the game's own TrueForce where it supports it, simulated TrueForce and
+live rev lights everywhere else. Logi Wheel's Setup page shows what it will do
+for each of your games, which differs by wheel. Full detail in
+[docs/LAUNCH_OPTIONS.md](docs/LAUNCH_OPTIONS.md).
+
+One thing it cannot do for you: **turn Steam Input off** for the game
+(Properties, Controller, "Disable Steam Input"). Left on, it hides the wheel
+behind a virtual gamepad and force feedback never arrives.
+
+### Which wheel do I have?
+
+```bash
+lsusb | grep -i 046d
+```
+
+| Product id | Wheel | What you get |
+|---|---|---|
+| `c276` | RS50 | Everything: force feedback, the game's own TrueForce and simulated TrueForce, rev lights, every setting. |
+| `c272` | RS50 in compatibility mode, **or** a G PRO (Xbox/PC) | Same as above. The two share this id; Logi Wheel names which one it found. |
+| `c268` | G PRO Racing Wheel (PS/PC) | Same as above. |
+| `c266`, `c267` | G923 PlayStation edition | Force feedback (no other Linux driver gives this wheel any), simulated TrueForce, rev lights, and the core settings. |
+| `c26d`, `c26e` | G923 Xbox edition | Force feedback and TrueForce, both confirmed on a real unit. Needs `usb_modeswitch` installed; see [G923 support](#g923-support). Rev lights are not solved yet ([#27](https://github.com/mescon/logitech-trueforce-linux-driver/issues/27)). |
+
+A wheel that plugs in as `c267` or `c26d` is switched to its PC mode
+automatically, so a different id after plugging in is expected, not a fault.
+
+If nothing above matches, this driver is not for your wheel. The **G920** is
+already handled by the kernel's own `hid-logitech-hidpp`, and the older
+G25/G27/G29 by `hid-logitech-hidpp` and `hid-lg4ff`.
+
 ## Logi Wheel
 
 **Logi Wheel** is how you drive all of this. It is this project's answer to G
@@ -254,18 +306,25 @@ with `sudo pacman -U <url>`.
 
 ## Force feedback in games
 
-Every game and wheel this project knows about, and exactly what each pair
-needs, is in **[docs/GAME_SETUP.md](docs/GAME_SETUP.md)**. It is generated
-from the same registry the settings app uses, so the two cannot disagree.
-The short version is below.
+**`logi-launch %command%` already does everything in this section.** It is
+covered here because knowing what it does makes it possible to check it, and
+because some people would rather set things up themselves.
+
+The recipe is per game **and per wheel**: the same title needs opposite
+settings on an RS50 and a G923, which is why one launch option that works it
+out beats a line copied from someone else's post. Every game and wheel this
+project knows about is in **[docs/GAME_SETUP.md](docs/GAME_SETUP.md)**,
+generated from the same registry the app uses, so the two cannot disagree.
 
 - **Native and most Proton sims:** force feedback works out of the box; games see
   a standard Linux wheel. No setup beyond binding controls in game.
 
 - **TrueForce haptics** (the high-frequency texture layer, on top of normal
   FFB) in SDK-aware sims: stage Logitech's signed SDK DLLs into the game's
-  Proton prefix and launch with `PROTON_ENABLE_HIDRAW=1`. The one-time recipe
-  is on the
+  Proton prefix, and launch with `PROTON_ENABLE_HIDRAW=1` if you are not
+  using `logi-launch`, which sets it for you on the wheels that want it. The
+  DLLs are the one part nobody can automate, because Logitech's files cannot
+  be redistributed. The one-time recipe is on the
   [Force feedback in games](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Force-Feedback-in-Games)
   wiki page. Verified end to end on **Assetto Corsa Competizione** and
   **Assetto Corsa EVO**.
@@ -303,7 +362,8 @@ The short version is below.
   use opposite conventions, and the game is reading the raw one. Confirmed
   on Assetto Corsa EVO, and it goes away if you unset the variable.
 
-- **DirectInput sims** (Le Mans Ultimate, for example): put `logi-ffb
+- **DirectInput sims** (Le Mans Ultimate, for example): `logi-launch` routes
+  these through `logi-ffb` for you. By hand it is `logi-ffb
   %command%` in the game's Steam launch options. It presents a virtual wheel
   the game can drive force feedback on and passes the forces through to the
   real one; do not set `PROTON_ENABLE_HIDRAW` yourself, `logi-ffb` handles it.
