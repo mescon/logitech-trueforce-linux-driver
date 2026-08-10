@@ -69,12 +69,16 @@ echo   WHAT TO DO WHEN RECORDING STARTS
 echo   --------------------------------
 echo   Recording runs for 40 seconds. During it:
 echo.
-echo     1. Leave the wheel's lights OFF for about 5 seconds.
-echo     2. Make them light up (G HUB, or a game that drives them).
-echo     3. Turn them off again.
+echo     1. Sit still, engine off or idling, for about 5 seconds.
+echo     2. Rev the engine so the lights sweep up. Do it two or
+echo        three times, letting them fall back down in between.
 echo.
-echo   Slowly is better than quickly. The gaps are what make the
-echo   light commands stand out from everything else on the wire.
+echo   Have a racing game already running before you start this.
+echo   The rev lights follow engine RPM, so a game has to be feeding
+echo   them; G HUB on its own will usually leave them dark.
+echo.
+echo   Slowly is better than quickly. The gaps between revs are what
+echo   make the light commands stand out from everything else.
 echo.
 pause
 
