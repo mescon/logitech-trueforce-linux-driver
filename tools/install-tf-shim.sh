@@ -277,8 +277,18 @@ def reg_value(s):
 tf_path = wine_path(tf_dir, "trueforce_sdk_x64.dll")
 wheel_path = wine_path(wheel_dir, "logi_steering_wheel_x64.dll")
 
-# TF SDK registration: default value of the CLSID key holds the DLL path.
+# TF SDK registration: default value of the CLSID key holds the DLL path,
+# and an InProcServer32 sub-key holds it the ordinary COM way as well.
+#
+# The default value is the one that matters, confirmed by watching the
+# lookup: Assetto Corsa EVO opens the key and calls RegQueryValueExW with a
+# null value name, then verifies the file's signature and loads it. The
+# InProcServer32 sub-key is written as well because it is what an ordinary
+# COM consumer reads, and nothing about this registration is ours to
+# reinvent. Neither is any use if the path is unopenable, which is what the
+# escaping bug above made it.
 tf_key = f"[Software\\\\Classes\\\\CLSID\\\\{tf_clsid}]"
+tf_inproc_key = f"[Software\\\\Classes\\\\CLSID\\\\{tf_clsid}\\\\InProcServer32]"
 
 # Wheel SDK registration: CLSID key default holds a friendly name, and a
 # \\ServerBinary sub-key default holds the DLL path. Matches the layout
@@ -287,7 +297,7 @@ tf_key = f"[Software\\\\Classes\\\\CLSID\\\\{tf_clsid}]"
 wheel_key = f"[Software\\\\Classes\\\\CLSID\\\\{wheel_clsid}]"
 wheel_sb_key = f"[Software\\\\Classes\\\\CLSID\\\\{wheel_clsid}\\\\ServerBinary]"
 
-blocks_to_replace = {tf_key, wheel_key, wheel_sb_key}
+blocks_to_replace = {tf_key, tf_inproc_key, wheel_key, wheel_sb_key}
 
 with open(reg_path) as f:
     lines = f.readlines()
@@ -319,6 +329,12 @@ ts = int(time.time())
 # TF SDK
 out.append(f"{tf_key} {ts}\n")
 out.append(f'@="{reg_value(tf_path)}"\n')
+out.append("\n")
+out.append(f"{tf_inproc_key} {ts}\n")
+out.append(f'@="{reg_value(tf_path)}"\n')
+# Both, so the loader is free to use the calling thread's apartment. The
+# SDK runs its own haptic thread either way.
+out.append('"ThreadingModel"="Both"\n')
 out.append("\n")
 
 # Wheel SDK - friendly name at top, path under ServerBinary
@@ -421,6 +437,7 @@ reg_path, tf_clsid, wheel_clsid = sys.argv[1:4]
 
 keys = [
     f"[Software\\\\Classes\\\\CLSID\\\\{tf_clsid}]",
+    f"[Software\\\\Classes\\\\CLSID\\\\{tf_clsid}\\\\InProcServer32]",
     f"[Software\\\\Classes\\\\CLSID\\\\{wheel_clsid}]",
     f"[Software\\\\Classes\\\\CLSID\\\\{wheel_clsid}\\\\ServerBinary]",
 ]
