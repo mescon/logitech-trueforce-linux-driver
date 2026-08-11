@@ -26,6 +26,11 @@ nothing to write to. It now exposes the same five `::RPM1`..`RPM5` entries the
 PlayStation edition does, so `logi-tf-sim`, Oversteer and any LED-aware tool
 work unchanged.
 
+The strip has been made to light on a real Xbox wheel, by its owner, using
+the commands this release now sends. Following RPM in a game is new code that
+has not yet run on that hardware, so treat it as expected rather than
+verified.
+
 **The rev-light command states the strip's real length.** It always claimed
 ten LEDs. The level is a fraction of the stated length, so a five-LED G923
 was told it had ten and showed half of everything. The count now comes from
@@ -51,9 +56,18 @@ was indistinguishable from a level that had not changed, so the daemon
 reported it was driving the display and then failed silently at 60 Hz. It now
 names the file, the reason and the fix, once.
 
-**Extra helpers can run inside a game's prefix** (`LOGI_LAUNCH_HELPERS`), so
-feeding SimHub on another machine and driving the wheel on this one are no
-longer alternatives.
+**Your own helpers can run inside a game's prefix**, alongside our relay
+rather than instead of it:
+
+```
+LOGI_LAUNCH_HELPERS='c:\sim-teleport.exe source' logi-launch %command%
+```
+
+Semicolons separate several. Previously the only way to run something in the
+prefix was `LOGI_LAUNCH_EXE`, which REPLACES the relay, so anyone bridging
+telemetry to SimHub on another machine lost simulated TrueForce and their rev
+lights to get it. Now they run side by side: several readers of the same
+shared-memory section is not a conflict.
 
 **The Setup page says what the launch option will do for each game**, on the
 wheel being managed, with the manual steps below it as the alternative rather
@@ -63,22 +77,6 @@ than as a second conflicting recipe.
 equally, and states something never written down: for Assetto Corsa
 Competizione and EVO on a direct-drive wheel, Logitech's files carry force
 feedback and not only TrueForce.
-
-### If you own a G923 Xbox edition, please check
-
-The rev-light path for that wheel is new code that has not been run on one.
-Its owner made the strip light by hand; nothing has driven it from a game.
-
-1. `dmesg | grep "rev strip"` should show
-   `G923 (Xbox): rev strip: 0x807A at index 0x12, 5 LEDs, display off (will be switched on)`.
-2. `ls /sys/class/leds | grep RPM` should list five entries.
-3. `echo 1 | sudo tee /sys/class/leds/*RPM1/brightness` should light the
-   outermost pair; `echo 0` should clear it.
-4. With `logi-tf-sim` running and a supported game, the strip should follow
-   engine RPM.
-5. **Force feedback should still work.** This release adds code to that
-   wheel's probe path, so a report that force feedback broke matters more
-   than a report that the lights did not light.
 
 ## 0.33.0 - 2026-08-11
 
