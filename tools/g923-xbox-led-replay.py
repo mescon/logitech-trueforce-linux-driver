@@ -87,13 +87,22 @@ def long_report(idx, function, params=()):
     return bytes(r + [0] * (20 - len(r)))
 
 
-# The rev-light preamble, in capture order: the two 0x807A calls Windows
-# makes before it starts pushing levels. The feature-0x0b block that sat
-# among these in the capture is NOT here; see the note at the top of this
-# file for why, and REFERENCE_ONLY_0x0B at the bottom for the bytes.
+# The rev-light preamble: the two 0x807A queries Windows makes, then the
+# call that actually switches the display on.
+#
+# fn3 with effect 2 is the answer to this whole issue. fn2 reports a display
+# state; a wheel in state 0 refuses every level with LogitechInternal(5), and
+# fn3(2) moves it to state 2, after which the identical level is accepted.
+# Confirmed on a PlayStation G923 on 2026-08-11, machine-readable and then
+# visually: 0x807A had never lit that strip before, and with fn3(2) first it
+# does. The same state 2 is what this wheel reports in the Windows capture.
+#
+# The feature-0x0b block that sat among these in the capture is NOT here; see
+# the note at the top of this file, and REFERENCE_ONLY_0x0B at the bottom.
 PREAMBLE = [
     long_report(IDX_RPM, 0),
     long_report(IDX_RPM, 1),
+    long_report(IDX_RPM, 3, [0x02]),
 ]
 
 
@@ -240,7 +249,7 @@ def main():
         print("-- %s  [pid %s]  report ids: %s"
               % (node, pid, ", ".join("0x%02X" % i for i in ids)))
         for label, reports in (
-            ("0x807A level, long reports, repeated at the captured rate", PREAMBLE),
+            ("0x807A level, display switched on with fn3(2) first", PREAMBLE),
         ):
             n += 1
             print("TEST %d  %s ... " % (n, label), end="", flush=True)
