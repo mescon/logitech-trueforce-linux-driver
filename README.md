@@ -568,6 +568,46 @@ keeping hands clear during AC EVO map loads) are covered under
 logi-wheel --report
 ```
 
+### No force feedback once the raw HID interface is on
+
+If a game had force feedback and lost it after `PROTON_ENABLE_HIDRAW` was
+set, this is the likely cause and there is a switch for it.
+
+With the raw interface on, Proton hands the game the raw HID device, and
+Wine's DirectInput drives force feedback by writing HID PID reports to it.
+**These wheels have no PID collection**, so those writes have nowhere to
+land: a game that uses DirectInput for force rather than Logitech's SDK gets
+silence. The driver can add that collection and route the writes to the real
+force-feedback path.
+
+First confirm it is what is happening, with a mode that logs and drives
+nothing:
+
+```bash
+echo 1 | sudo tee /sys/module/hid_logitech_dd/parameters/inject_pid
+# replug the wheel, play for a moment, then:
+sudo dmesg | grep "PID \[dry\]"
+```
+
+Lines there mean the game **is** writing DirectInput force-feedback reports
+that currently go nowhere. In that case, turn actuation on:
+
+```bash
+echo 2 | sudo tee /sys/module/hid_logitech_dd/parameters/inject_pid
+```
+
+and replug the wheel again. To keep it, put
+`options hid-logitech-dd inject_pid=2` in `/etc/modprobe.d/logitech-dd.conf`.
+
+No lines mean the game is not using DirectInput for force, and this is not
+your problem; say so on an issue, because that result is worth having.
+
+> **Why it is not the default.** It has not been confirmed on hardware, and
+> the failure mode of a mis-translated force effect on a direct-drive wheel
+> is the wheel slamming rather than a missing feature. Mode 1 cannot do that:
+> it logs and returns without touching the wheel. Reports from either mode
+> are welcome and are what will make it a default.
+
 It collects the versions, which wheels are bound and to what, every wheel
 setting, your simulated-TrueForce config, and which udev rules are
 installed. It deliberately withholds your wheel's serial number and the
