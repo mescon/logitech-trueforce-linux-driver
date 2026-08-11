@@ -602,11 +602,21 @@ and replug the wheel again. To keep it, put
 No lines mean the game is not using DirectInput for force, and this is not
 your problem; say so on an issue, because that result is worth having.
 
-> **Why it is not the default.** It has not been confirmed on hardware, and
-> the failure mode of a mis-translated force effect on a direct-drive wheel
-> is the wheel slamming rather than a missing feature. Mode 1 cannot do that:
-> it logs and returns without touching the wheel. Reports from either mode
-> are welcome and are what will make it a default.
+> **What is confirmed, and what is not.** On an RS50 on 2026-08-11, an
+> injected force did drive the wheel: a constant effect written as PID
+> reports rotated it to its stop and released cleanly, with the driver
+> logging the whole path. So the mechanism works.
+>
+> What has not been confirmed is a real game getting its force feedback back
+> this way. That is why it is not yet the default, along with the failure
+> mode: a mis-translated effect on a direct-drive wheel means the wheel
+> slams, not a missing feature. Mode 1 cannot do that, since it logs and
+> returns without touching the wheel.
+>
+> Worth knowing before you try it: at 15% wheel strength, a force of 2000 out
+> of 32767 was still enough to drive the wheel all the way to its stop. These
+> wheels have a lot of authority at small numbers. Do not hold it during the
+> first test.
 
 It collects the versions, which wheels are bound and to what, every wheel
 setting, your simulated-TrueForce config, and which udev rules are
