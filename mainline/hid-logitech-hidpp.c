@@ -361,6 +361,8 @@ struct hidpp_scroll_counter {
 
 struct hidpp_dd_pid_state;	/* defined later, PID injection translator */
 
+struct hidpp_g923_rev;
+
 struct hidpp_device {
 	struct hid_device *hid_dev;
 	struct input_dev *input;
@@ -401,6 +403,12 @@ struct hidpp_device {
 	 * parse those frames as HID++ - see the comment there.
 	 */
 	bool no_hidpp_reports;
+	/*
+	 * Rev-light strip for wheels on the g920 path (the G923 Xbox
+	 * edition), which reach neither the DD path's wheel_rev_level nor
+	 * the classic path's LED classdevs. NULL on every other wheel.
+	 */
+	struct hidpp_g923_rev *g923_rev;
 
 	/*
 	 * Scratch buffer for the PID-injected interface-0 descriptor. Filled
@@ -11468,6 +11476,318 @@ out_send:
 	mutex_unlock(&ff->rev_lock);
 }
 
+/* -------------------------------------------------------------------------- */
+/* Rev lights for wheels on the g920 path (G923 Xbox edition, c26e)            */
+/*                                                                            */
+/* That wheel reaches neither of the two paths that already drive a rev        */
+/* strip. The direct-drive wheels use wheel_rev_level on the DD path; the      */
+/* PlayStation G923 uses five LED classdevs on the classic lg4ff path, whose   */
+/* device table carries c266/c267 and not c26e. So this wheel had no LED       */
+/* device at all, and nothing in userspace could drive its lights however      */
+/* correct the protocol was (issue #27).                                       */
+/*                                                                            */
+/* It gets the SAME five ::RPM1..RPM5 classdevs the PlayStation edition        */
+/* exposes, so everything above sees one interface for the whole G923 family:  */
+/* logi-tf-sim's existing classdev backend, Oversteer, and the udev rule that  */
+/* already lists c26e all work unchanged. Only the transport differs, HID++    */
+/* 0x807A here rather than the classic f8 12 command.                          */
+/*                                                                            */
+/* Deliberately NOT hung off hidpp_dd_ff_data: that structure carries the      */
+/* direct-drive force-feedback engine, and this wheel drives force its own way.*/
+/* Borrowing it would mean giving a wheel a whole FFB subsystem it must not    */
+/* use, to get at five LEDs.                                                   */
+/* -------------------------------------------------------------------------- */
+
+#define HIDPP_G923_REV_LEDS	5
+
+struct hidpp_g923_rev {
+	struct hidpp_device *hidpp;
+	u8 idx;			/* 0x807A feature index on this wheel */
+	u8 leds;		/* strip length, from fn0 */
+	bool needs_enable;	/* fn2 reported 0: nothing is being displayed */
+	bool armed;		/* one-time arm burst sent (lock) */
+	struct mutex lock;
+	struct delayed_work work;
+	unsigned long last_write;	/* jiffies, for the pacing floor */
+	u8 target;		/* newest requested level, latest wins */
+	u8 sent;		/* last level actually written */
+	u8 mask;		/* which of the five classdevs are on */
+	struct led_classdev *led[HIDPP_G923_REV_LEDS];
+};
+
+/*
+ * Flush the newest level, arming the strip the first time.
+ *
+ * Mirrors hidpp_dd_rev_work_handler: one coalescing worker owns every send,
+ * so a fast feeder collapses to one write per slot with the newest level
+ * winning rather than draining stale intermediates onto the wire. The arm
+ * burst must run exactly once, and the switch-on decision was taken at probe
+ * where a synchronous request is safe.
+ */
+static void hidpp_g923_rev_work(struct work_struct *work)
+{
+	struct hidpp_g923_rev *rev = container_of(to_delayed_work(work),
+						  struct hidpp_g923_rev, work);
+	struct hidpp_device *hidpp = rev->hidpp;
+	u8 target;
+	int i, ret;
+
+	mutex_lock(&rev->lock);
+	target = rev->target;
+	mutex_unlock(&rev->lock);
+
+	mutex_lock(&hidpp->send_mutex);
+	if (!rev->armed) {
+		static const u8 arm_fns[] = { 0, 1, 2, 0 };
+
+		for (i = 0; i < ARRAY_SIZE(arm_fns); i++) {
+			ret = hidpp_dd_rev_send_short(hidpp, rev->idx,
+						      arm_fns[i], 0);
+			if (ret < 0)
+				goto out;
+			msleep(HIDPP_DD_REV_ARM_GAP_MS);
+		}
+		/*
+		 * Start the display if it was showing nothing. Without this
+		 * the wheel refuses every level with LogitechInternal, which
+		 * is what kept this strip dark for the whole of issue #27.
+		 * Never sent to a wheel that WAS displaying: fn2 reports the
+		 * live effect, and switching one of those would discard the
+		 * owner's choice.
+		 */
+		if (rev->needs_enable) {
+			ret = hidpp_dd_rev_send_short(hidpp, rev->idx,
+						      HIDPP_DD_LIGHTSYNC_FN_SET_EFFECT >> 4,
+						      HIDPP_DD_REV_EFFECT_DISPLAY);
+			if (ret < 0)
+				goto out;
+			msleep(HIDPP_DD_REV_ARM_GAP_MS);
+		}
+		rev->armed = true;
+	}
+
+	ret = hidpp_dd_rev_send_level(hidpp, rev->idx, target, rev->leds);
+	if (ret >= 0)
+		rev->sent = target;
+out:
+	mutex_unlock(&hidpp->send_mutex);
+	rev->last_write = jiffies;
+}
+
+/*
+ * The five classdevs are on/off pairs; the wheel takes a 0..leds fill level.
+ * The strip always fills from the outermost pair, so the level is decided by
+ * the highest lit pair rather than by how many are lit: that keeps a
+ * non-contiguous mask (which nothing driving rev lights produces) from
+ * reading as a shorter strip.
+ */
+static void hidpp_g923_rev_queue(struct hidpp_g923_rev *rev)
+{
+	unsigned long delay = 0;
+	u8 level;
+
+	level = rev->mask ? fls(rev->mask) * 2 : 0;
+	if (level > rev->leds)
+		level = rev->leds;
+
+	mutex_lock(&rev->lock);
+	rev->target = level;
+	mutex_unlock(&rev->lock);
+
+	/* Same pacing floor the DD path uses; bursting starves the wheel. */
+	if (rev->last_write) {
+		unsigned long next = rev->last_write +
+				     msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS);
+
+		if (time_before(jiffies, next))
+			delay = next - jiffies;
+	}
+	mod_delayed_work(system_unbound_wq, &rev->work, delay);
+}
+
+/*
+ * The strip belongs to the hid_device the classdev hangs off.
+ *
+ * Reached through hidpp->g923_rev and NOT through dev_get_drvdata: that
+ * storage is where hid_set_drvdata() keeps the hidpp pointer itself, so
+ * putting anything else there destroys the driver's own state for the
+ * device.
+ */
+static struct hidpp_g923_rev *hidpp_g923_rev_of(struct led_classdev *led_cdev)
+{
+	struct hidpp_device *hidpp;
+
+	if (!led_cdev->dev || !led_cdev->dev->parent)
+		return NULL;
+	hidpp = hid_get_drvdata(to_hid_device(led_cdev->dev->parent));
+	return hidpp ? hidpp->g923_rev : NULL;
+}
+
+static void hidpp_g923_rev_brightness_set(struct led_classdev *led_cdev,
+					  enum led_brightness value)
+{
+	struct hidpp_g923_rev *rev = hidpp_g923_rev_of(led_cdev);
+	int i;
+
+	if (!rev)
+		return;
+	for (i = 0; i < HIDPP_G923_REV_LEDS; i++) {
+		if (rev->led[i] != led_cdev)
+			continue;
+		if (value == LED_OFF)
+			rev->mask &= ~(1 << i);
+		else
+			rev->mask |= 1 << i;
+		hidpp_g923_rev_queue(rev);
+		return;
+	}
+}
+
+static enum led_brightness hidpp_g923_rev_brightness_get(struct led_classdev *led_cdev)
+{
+	struct hidpp_g923_rev *rev = hidpp_g923_rev_of(led_cdev);
+	int i;
+
+	if (!rev)
+		return LED_OFF;
+	for (i = 0; i < HIDPP_G923_REV_LEDS; i++)
+		if (rev->led[i] == led_cdev)
+			return (rev->mask & (1 << i)) ? LED_FULL : LED_OFF;
+	return LED_OFF;
+}
+
+/*
+ * Bring up the rev strip on a wheel that has one but no way to drive it.
+ *
+ * Runs at probe on the interface that answers HID++, where synchronous
+ * requests are safe. Everything it learns is latched, because the flush
+ * worker holds send_mutex for its whole burst and must not ask questions
+ * there.
+ *
+ * Best-effort throughout. A wheel that does not answer 0x807A simply gets
+ * no LED devices, which is what it had before.
+ */
+static int hidpp_g923_rev_init(struct hid_device *hdev)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
+	struct hidpp_g923_rev *rev;
+	struct hidpp_report response;
+	u8 params[3];
+	u8 idx = HIDPP_DD_FEATURE_NOT_FOUND;
+	size_t name_sz;
+	int i, ret;
+
+	if (!hidpp || !hid_is_usb(hdev))
+		return 0;
+
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_LIGHTSYNC, &idx);
+	if (ret || idx == HIDPP_DD_FEATURE_NOT_FOUND) {
+		dd_dbg(hdev, "no 0x807A here; no rev strip to drive\n");
+		return 0;
+	}
+
+	rev = devm_kzalloc(&hdev->dev, sizeof(*rev), GFP_KERNEL);
+	if (!rev)
+		return -ENOMEM;
+	rev->hidpp = hidpp;
+	rev->idx = idx;
+	rev->leds = HIDPP_G923_REV_LEDS * 2;	/* until fn0 says otherwise */
+	mutex_init(&rev->lock);
+	INIT_DELAYED_WORK(&rev->work, hidpp_g923_rev_work);
+
+	/*
+	 * fn0's second parameter is the strip length: 0x05 on a G923 against
+	 * 0x0a on the direct-drive wheels. The level is a fraction of it, so
+	 * a wrong value halves or doubles everything the strip shows.
+	 */
+	memset(params, 0, sizeof(params));
+	ret = hidpp_send_fap_command_sync(hidpp, idx,
+					  HIDPP_DD_LIGHTSYNC_FN_GET_INFO,
+					  params, 3, &response);
+	if (ret == 0) {
+		u8 leds = response.fap.params[1];
+
+		if (leds && leds <= HIDPP_DD_REV_MAX_LEVEL)
+			rev->leds = leds;
+	}
+
+	/* fn2 reports the live effect; 0 means nothing is being displayed. */
+	memset(params, 0, sizeof(params));
+	ret = hidpp_send_fap_command_sync(hidpp, idx,
+					  HIDPP_DD_LIGHTSYNC_FN_GET_STATE,
+					  params, 3, &response);
+	if (ret == 0 && response.fap.params[0] == 0)
+		rev->needs_enable = true;
+
+	dd_info(hdev, "rev strip: 0x807A at index 0x%02x, %u LEDs%s\n",
+		idx, rev->leds,
+		rev->needs_enable ? ", display off (will be switched on)" : "");
+
+	name_sz = strlen(dev_name(&hdev->dev)) + 8;
+	for (i = 0; i < HIDPP_G923_REV_LEDS; i++) {
+		struct led_classdev *led;
+		char *name;
+
+		led = devm_kzalloc(&hdev->dev, sizeof(*led) + name_sz,
+				   GFP_KERNEL);
+		if (!led)
+			goto err;
+
+		name = (void *)(&led[1]);
+		snprintf(name, name_sz, "%s::RPM%d", dev_name(&hdev->dev), i + 1);
+		led->name = name;
+		led->brightness = 0;
+		led->max_brightness = 1;
+		led->brightness_get = hidpp_g923_rev_brightness_get;
+		led->brightness_set = hidpp_g923_rev_brightness_set;
+
+		rev->led[i] = led;
+		if (led_classdev_register(&hdev->dev, led)) {
+			dd_warn(hdev, "could not register rev LED %d\n", i + 1);
+			rev->led[i] = NULL;
+			goto err;
+		}
+	}
+
+	hidpp->g923_rev = rev;
+	return 0;
+
+err:
+	/* Unwind whatever registered, and carry on without LEDs. */
+	while (--i >= 0) {
+		if (rev->led[i]) {
+			led_classdev_unregister(rev->led[i]);
+			rev->led[i] = NULL;
+		}
+	}
+	return 0;
+}
+
+static void hidpp_g923_rev_remove(struct hid_device *hdev)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
+	struct hidpp_g923_rev *rev;
+	int i;
+
+	if (!hidpp || !hidpp->g923_rev)
+		return;
+	rev = hidpp->g923_rev;
+
+	/*
+	 * Unregister first so nothing can queue more work, then wait for the
+	 * worker: it touches the classdevs' owner and dereferences hidpp.
+	 */
+	for (i = 0; i < HIDPP_G923_REV_LEDS; i++) {
+		if (rev->led[i]) {
+			led_classdev_unregister(rev->led[i]);
+			rev->led[i] = NULL;
+		}
+	}
+	cancel_delayed_work_sync(&rev->work);
+	hidpp->g923_rev = NULL;
+}
+
+
 static ssize_t wheel_rev_level_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
@@ -16724,6 +17044,20 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	}
 
 	/*
+	 * Rev lights for the G923 Xbox edition. It is on this path rather
+	 * than the direct-drive one or the classic one, and neither of those
+	 * registers anything for it, so without this the wheel has no LED
+	 * device at all and nothing can drive its strip (issue #27).
+	 *
+	 * Gated on the model, not on "does it answer 0x807A": the
+	 * direct-drive wheels answer it too and already expose the strip as
+	 * wheel_rev_level, and giving them a second, differently-shaped
+	 * interface to the same LEDs would be two owners for one strip.
+	 */
+	if (hdev->product == USB_DEVICE_ID_LOGITECH_G923_XBOX_WHEEL)
+		hidpp_g923_rev_init(hdev);
+
+	/*
 	 * This relies on logi_dj_ll_close() being a no-op so that DJ connection
 	 * events will still be received.
 	 *
@@ -16762,6 +17096,9 @@ static void hidpp_remove(struct hid_device *hdev)
 	 */
 	if (hidpp)
 		hidpp_dd_pid_uninstall(hdev);
+
+	/* Take the rev LEDs down before anything else can go away. */
+	hidpp_g923_rev_remove(hdev);
 
 	if (!hidpp) {
 		/*
