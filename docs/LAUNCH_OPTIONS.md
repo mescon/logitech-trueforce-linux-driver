@@ -477,7 +477,7 @@ answer.
 
 | setting | values | meaning |
 |---|---|---|
-| `hidraw` | `1`, `0` | set `PROTON_ENABLE_HIDRAW`. Only for a wheel that can take it: on a G923 this costs you force feedback |
+| `hidraw` | `0`, or a wheel id like `0x046D/0xC276` | what to set `PROTON_ENABLE_HIDRAW` to. `0` turns the raw interface off for this game, which is how you keep force feedback when the raw path spoils a game's input. A bare `1` still works and means every HID device, which is rarely what you want |
 | `ffb` | `proxy` | launch through `logi-ffb`, for games that drive force feedback the DirectInput way |
 | `relay` | `acc`, `ac-evo`, `assetto`, `iracing`, `raceroom`, `rf2`, `lmu`, `none` | which decoder the in-prefix telemetry relay should use |
 | `tfsim` | `1`, `0` | run `logi-tf-sim`. Set `0` for a game whose own TrueForce already reaches your wheel |
