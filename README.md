@@ -256,26 +256,27 @@ c266: stationary in the pit box with the engine revving, the wheel buzzes,
 which force feedback alone cannot do.
 
 **Xbox edition** (`046d:c26e`) has **force feedback and TrueForce**, both
-confirmed on a real unit. Neither existed for this wheel on Linux before.
+confirmed on a real unit, and **rev lights**. Neither the forces nor the
+haptics existed for this wheel on Linux before this project.
 
-**Rev lights are implemented**, after a long hunt in
-[#27](https://github.com/mescon/logitech-trueforce-linux-driver/issues/27).
-The wheel had two separate problems. Its rev display sits in an "off" state
-until something switches it on, and until then it refuses every level with an
-internal error, which is what made a correct command look ignored. And the
-wheel reached neither of the two driver paths that register LED devices, so
-even once the protocol was right there was nothing for a telemetry feeder to
-write to. Both are fixed: the strip is switched on when it reports itself
-off, and this edition now exposes the same five `::RPM1`..`RPM5` LED devices
-the PlayStation edition does.
+The rev lights are new in 0.34.0 and are the one part not yet confirmed in a
+game: the strip has been lit on a real Xbox wheel, but nothing has driven it
+from live telemetry yet. It exposes the same five `::RPM1`..`::RPM5` LED
+devices the PlayStation edition does, so anything that drives those works
+here unchanged.
 
-The strip has been made to light on a real Xbox wheel by its owner. Following
-RPM in a game is new code that no one has run yet, so treat it as expected
-rather than verified.
+This edition ships in a console-only mode that Linux cannot use, and has to
+be switched into PC mode. The packages handle it: a udev rule does the switch
+on plug-in, using `usb_modeswitch`, which comes in as a recommended
+dependency on Debian, Ubuntu, Fedora and openSUSE. **On Arch it is an
+optional dependency**, so install it yourself there:
 
-It boots into a console-only mode that Linux cannot use, so install
-`usb_modeswitch`; a udev rule then flips it to PC mode automatically when you
-plug it in.
+```bash
+sudo pacman -S usb_modeswitch
+```
+
+If the wheel never leaves console mode, the out-of-tree `xone` driver has
+probably claimed it first.
 
 One known limitation: some sims lock the steering to 90 degrees (45 each
 way). That is not the wheel or this driver. Logitech's TrueForce SDK asks
