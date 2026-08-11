@@ -1,9 +1,19 @@
 # Native force feedback and TrueForce under Proton: what is actually in the way
 
 Neither force feedback nor TrueForce reaches a direct-drive wheel from a
-Logitech SDK title under Proton, and the reason is not the wheel, the driver,
-or the SDK. It is that Windows routes both through a component Wine has no
-equivalent for: a **DirectInput OEM force-feedback driver**.
+Logitech SDK title under Proton. The wheel, the driver and the SDK are all
+healthy; something in the handshake between the game and the SDK is not.
+
+> **This has worked before, and that constrains every theory here.**
+> `docs/TRUEFORCE_PROTOCOL.md` records AC EVO driving an RS50 in **native**
+> mode (`c276`) on 2026-07-08, usbmon-confirmed: Wine's HID backend opened
+> interface 2 and the SDK streamed roughly 2 kHz of type-0x01 packets, 239k
+> OUT transfers over two minutes, on endpoint 0x03.
+>
+> So the SDK can write to this wheel, at this product id, under Wine, with no
+> OEM force-feedback driver in the picture. Any explanation that says the
+> native path is structurally impossible is wrong. What changed since is the
+> question, and AC EVO updated on 2026-07-23.
 
 Everything here was measured on an RS50 (`046d:c276`) in Assetto Corsa EVO on
 2026-08-11, with `tools/dinput8-escape-proxy.cpp` and `usbmon`.
@@ -113,6 +123,22 @@ the only wheel attached was a `c276`, which it does not recognise. Adding the
 `OEMForceFeedback` registry entries for `C276` and `C272` did not change it,
 which suggests the device filter is an internal PID list rather than the
 registry.
+
+## Where the OEM driver does and does not fit
+
+Given the 2026-07-08 evidence above, this driver is **not** required for
+TrueForce: the SDK reached the wheel directly then, and can again. Its
+relevance is narrower and still real:
+
+- It is how **force feedback** works on Windows for these wheels, which is
+  the half that currently dies under `PROTON_ENABLE_HIDRAW`. If it can be
+  driven under Wine, force feedback stops depending on Proton's evdev
+  backend and the hidraw trade-off disappears.
+- It is the only thing that consumes the `Escape` engine-state stream, so it
+  is also where rev lights would come from.
+
+It is not the explanation for the SDK going quiet, and treating it as one
+would be chasing the wrong thing.
 
 ## What follows
 

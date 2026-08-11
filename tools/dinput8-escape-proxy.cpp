@@ -302,6 +302,58 @@ static FARPROC(WINAPI *real_getprocaddress)(HMODULE, LPCSTR);
 
 static LONG g_gpa_calls;
 
+// --------------------------------------------- counting SDK calls safely
+//
+// The question the resolution list cannot answer: having resolved the whole
+// API, does the game ever actually call the torque setters? If it does and
+// nothing reaches the wheel, the SDK is failing internally; if it never
+// does, the refusal happens earlier, in a capability query.
+//
+// Wrapping these in C would mean declaring their signatures, and this family
+// is only partly established (docs/SDK_ABI_NOTES.md records seventeen
+// declarations that were wrong in the same way). A wrapper with the wrong
+// shape corrupts arguments or crashes.
+//
+// So each tracked export gets an assembly thunk that increments a counter
+// and tail-jumps to the real function. It touches no argument register, no
+// stack slot and no return path, so it is correct whatever the signature
+// turns out to be. Only the flags are modified, at function entry, where
+// nothing carries them.
+
+#define TRACKED_CALLS 6
+
+extern "C" {
+volatile LONGLONG g_tf_calls[TRACKED_CALLS];
+void *g_tf_real[TRACKED_CALLS];
+void tf_thunk0(void);
+void tf_thunk1(void);
+void tf_thunk2(void);
+void tf_thunk3(void);
+void tf_thunk4(void);
+void tf_thunk5(void);
+}
+
+#define TF_THUNK(n)                                                    \
+	".globl tf_thunk" #n "\n"                                      \
+	"tf_thunk" #n ":\n"                                            \
+	"  lock incq g_tf_calls+" #n "*8(%rip)\n"                      \
+	"  jmp *g_tf_real+" #n "*8(%rip)\n"
+
+__asm__(".text\n" TF_THUNK(0) TF_THUNK(1) TF_THUNK(2) TF_THUNK(3) TF_THUNK(4)
+		TF_THUNK(5));
+
+static void *const g_tf_thunks[TRACKED_CALLS] = {
+	(void *)tf_thunk0, (void *)tf_thunk1, (void *)tf_thunk2,
+	(void *)tf_thunk3, (void *)tf_thunk4, (void *)tf_thunk5,
+};
+
+/// The calls worth knowing about, in thunk order.
+static const char *const g_tracked[TRACKED_CALLS] = {
+	"logiTrueForceSetTorqueTFfloat",  "logiTrueForceSetTorqueTFdouble",
+	"logiTrueForceSetTorqueTFint16",  "logiTrueForceSetStreamTF",
+	"logiTrueForceSetTorqueKF",	  "logiWheelSetRpmLeds",
+};
+
 static FARPROC WINAPI getprocaddress_hook(HMODULE mod, LPCSTR name)
 {
 	FARPROC p = real_getprocaddress(mod, name);
@@ -325,6 +377,19 @@ static FARPROC WINAPI getprocaddress_hook(HMODULE mod, LPCSTR name)
 		else
 			say("resolve %ls!#%u -> %s", base, (unsigned)(ULONG_PTR)name,
 			    p ? "found" : "NOT FOUND");
+	}
+
+	// Hand back a counting thunk for the calls worth watching. Only for a
+	// real resolution out of a Logitech module, so nothing else in the
+	// process can be redirected by a coincidence of naming.
+	if (p && by_name && logi_module) {
+		for (int i = 0; i < TRACKED_CALLS; i++) {
+			if (strcmp(name, g_tracked[i]) != 0)
+				continue;
+			g_tf_real[i] = (void *)p;
+			say("    (counting calls to %s)", name);
+			return (FARPROC)g_tf_thunks[i];
+		}
 	}
 	return p;
 }
@@ -643,6 +708,15 @@ public:
 			if (loud)
 				say("Escape #%ld  stream type=%u  rpm=%.1f  b=%.1f  limit=%.1f",
 				    (long)n, type, f[0], f[1], f[2]);
+			// Roughly every 30 s at 187 calls a second. The
+			// interesting answer is usually all zeros, which says
+			// the game resolved the whole API and then never used
+			// it, so it is reported even when nothing was called.
+			if ((n % 5600) == 0) {
+				for (int i = 0; i < TRACKED_CALLS; i++)
+					say("    calls: %-32s %lld", g_tracked[i],
+					    (long long)g_tf_calls[i]);
+			}
 		} else if (loud && e) {
 			say("Escape #%ld  command=0x%08lx  in=%lu out=%lu", (long)n,
 			    (unsigned long)e->dwCommand, (unsigned long)e->cbInBuffer,
