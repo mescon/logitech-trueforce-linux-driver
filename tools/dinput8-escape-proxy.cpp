@@ -320,7 +320,7 @@ static LONG g_gpa_calls;
 // turns out to be. Only the flags are modified, at function entry, where
 // nothing carries them.
 
-#define TRACKED_CALLS 6
+#define TRACKED_CALLS 12
 
 extern "C" {
 volatile LONGLONG g_tf_calls[TRACKED_CALLS];
@@ -331,6 +331,12 @@ void tf_thunk2(void);
 void tf_thunk3(void);
 void tf_thunk4(void);
 void tf_thunk5(void);
+void tf_thunk6(void);
+void tf_thunk7(void);
+void tf_thunk8(void);
+void tf_thunk9(void);
+void tf_thunk10(void);
+void tf_thunk11(void);
 }
 
 #define TF_THUNK(n)                                                    \
@@ -340,18 +346,36 @@ void tf_thunk5(void);
 	"  jmp *g_tf_real+" #n "*8(%rip)\n"
 
 __asm__(".text\n" TF_THUNK(0) TF_THUNK(1) TF_THUNK(2) TF_THUNK(3) TF_THUNK(4)
-		TF_THUNK(5));
+		TF_THUNK(5) TF_THUNK(6) TF_THUNK(7) TF_THUNK(8) TF_THUNK(9)
+			TF_THUNK(10) TF_THUNK(11));
 
 static void *const g_tf_thunks[TRACKED_CALLS] = {
-	(void *)tf_thunk0, (void *)tf_thunk1, (void *)tf_thunk2,
-	(void *)tf_thunk3, (void *)tf_thunk4, (void *)tf_thunk5,
+	(void *)tf_thunk0, (void *)tf_thunk1, (void *)tf_thunk2,  (void *)tf_thunk3,
+	(void *)tf_thunk4, (void *)tf_thunk5, (void *)tf_thunk6,  (void *)tf_thunk7,
+	(void *)tf_thunk8, (void *)tf_thunk9, (void *)tf_thunk10, (void *)tf_thunk11,
 };
 
-/// The calls worth knowing about, in thunk order.
+/// The calls worth knowing about, in the order the handshake uses them.
+///
+/// Counting the whole sequence rather than just the torque setters, because
+/// "how far did it get" is the useful answer: an open that never happens and
+/// a torque call that never happens point at completely different things.
 static const char *const g_tracked[TRACKED_CALLS] = {
-	"logiTrueForceSetTorqueTFfloat",  "logiTrueForceSetTorqueTFdouble",
-	"logiTrueForceSetTorqueTFint16",  "logiTrueForceSetStreamTF",
-	"logiTrueForceSetTorqueKF",	  "logiWheelSetRpmLeds",
+	// Opening the library and the wheel.
+	"dllOpen",
+	"logiWheelSupportedByDirectInputW",
+	"logiWheelSupportedByDirectInputA",
+	"logiWheelOpenByDirectInputW",
+	"logiWheelOpenByDirectInputA",
+	"logiWheelSdkHasControl",
+	// Asking whether TrueForce is on offer.
+	"logiTrueForceAvailable",
+	"logiTrueForceSupported",
+	"logiTrueForceSupportedByDirectInputW",
+	// Actually using it.
+	"logiTrueForceSetTorqueTFfloat",
+	"logiTrueForceSetStreamTF",
+	"logiWheelSetRpmLeds",
 };
 
 static FARPROC WINAPI getprocaddress_hook(HMODULE mod, LPCSTR name)
@@ -708,11 +732,12 @@ public:
 			if (loud)
 				say("Escape #%ld  stream type=%u  rpm=%.1f  b=%.1f  limit=%.1f",
 				    (long)n, type, f[0], f[1], f[2]);
-			// Roughly every 30 s at 187 calls a second. The
+			// Once about a second in, so the handshake is visible
+			// without playing, then roughly every 30 s. The
 			// interesting answer is usually all zeros, which says
 			// the game resolved the whole API and then never used
 			// it, so it is reported even when nothing was called.
-			if ((n % 5600) == 0) {
+			if (n == 200 || (n % 5600) == 0) {
 				for (int i = 0; i < TRACKED_CALLS; i++)
 					say("    calls: %-32s %lld", g_tracked[i],
 					    (long long)g_tf_calls[i]);
