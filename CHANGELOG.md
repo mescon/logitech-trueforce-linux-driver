@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## 0.34.0 - unreleased
+## 0.34.0 - 2026-08-11
 
 **Force feedback no longer disappears when the raw HID interface is on.**
 Setting `PROTON_ENABLE_HIDRAW` makes Proton hand the game the raw HID
