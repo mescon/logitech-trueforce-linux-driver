@@ -5008,6 +5008,16 @@ static const u8 hidpp_dd_pedal_dev_candidates[] = {
 #define HIDPP_DD_LIGHTSYNC_FN_ENABLE	0x70	/* fn7: Enable LED display/preview */
 
 /*
+ * Longest rev strip any of these wheels has, and so the widest level the
+ * fn6 command can carry. The direct-drive wheels have ten LEDs and the
+ * G923s five; the wheel states which in fn0's second parameter, which is
+ * read at discovery rather than assumed. Defined here rather than beside
+ * the rev worker because discovery, further up this file, sanity-checks
+ * the reported count against it.
+ */
+#define HIDPP_DD_REV_MAX_LEVEL		10
+
+/*
  * Feature 0x0C (RGB Config) functions.
  * Values are function_number << 4, with sw_id added by hidpp_send_fap_command_sync.
  */
@@ -5304,6 +5314,24 @@ struct hidpp_dd_ff_data {
 	struct mutex rev_lock;
 	struct delayed_work rev_work;	/* coalescing flush; runs on system_unbound_wq */
 	bool rev_armed;			/* one-time arm burst sent (rev_lock) */
+	/*
+	 * How many LEDs this wheel's strip has, from 0x807A fn0's second
+	 * parameter (0x0a on the direct-drive wheels, 0x05 on a G923). The
+	 * level is a fraction of this, so a wrong value halves or doubles
+	 * everything the strip shows (issue #27). 0 until discovery answers,
+	 * and treated as the ten-LED default until then.
+	 */
+	u8 rev_leds;
+	/*
+	 * Whether the rev display has to be switched on before it will take
+	 * a level. 0x807A fn2 reports the live effect: 0 means nothing is
+	 * being shown, and a wheel in that state refuses every level with
+	 * LogitechInternal. fn3 with effect 2 starts it.
+	 *
+	 * Latched at discovery, where synchronous requests are safe. The
+	 * flush worker holds send_mutex and must not ask a question there.
+	 */
+	bool rev_needs_enable;
 	bool rev_err_logged;		/* worker: send-fail warned once this streak (rev_lock) */
 	u8 rev_level;			/* last successfully commanded level 0-10 (reported by _show) */
 	u8 rev_target;			/* newest requested level, WRITE_ONCE/READ_ONCE */
@@ -8057,6 +8085,60 @@ static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff)
 }
 
 /*
+ * Ask the strip how long it is and whether it is displaying anything.
+ *
+ * Both answers are needed before the first level can be sent, and both come
+ * from synchronous requests, so this runs at discovery rather than from the
+ * flush worker: that worker holds send_mutex for the whole burst, and a
+ * synchronous request takes the same lock.
+ *
+ * fn0's second parameter is the strip length (0x0a on the direct-drive
+ * wheels, 0x05 on a G923). fn2 reports the live LIGHTSYNC effect, where 0
+ * means nothing is being shown; a wheel in that state refuses every level
+ * with LogitechInternal, which is what kept the G923 Xbox edition's rev
+ * lights dark for the whole of issue #27.
+ *
+ * Only state 0 counts as needing the switch-on. The other values are real
+ * effects, 1-4 the built-in sweeps and 6-9 the owner's custom slots, and
+ * switching one of those to effect 2 would throw away the colours that
+ * owner picked. That is exactly why the fn3 call was removed from this
+ * sequence once before.
+ *
+ * Best-effort throughout: a wheel that will not answer keeps the ten-LED
+ * default and is never switched, which is no worse than before.
+ */
+static void hidpp_dd_rev_read_geometry(struct hidpp_device *hidpp,
+				       struct hidpp_dd_ff_data *ff)
+{
+	struct hid_device *hid = hidpp->hid_dev;
+	struct hidpp_report response;
+	u8 params[3];
+	int ret;
+
+	memset(params, 0, sizeof(params));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
+					  HIDPP_DD_LIGHTSYNC_FN_GET_INFO,
+					  params, 3, &response);
+	if (ret == 0) {
+		u8 leds = response.fap.params[1];
+
+		if (leds && leds <= HIDPP_DD_REV_MAX_LEVEL) {
+			ff->rev_leds = leds;
+			dd_dbg(hid, "rev strip has %u LEDs\n", leds);
+		}
+	}
+
+	memset(params, 0, sizeof(params));
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
+					  HIDPP_DD_LIGHTSYNC_FN_GET_STATE,
+					  params, 3, &response);
+	if (ret == 0 && response.fap.params[0] == 0) {
+		ff->rev_needs_enable = true;
+		dd_dbg(hid, "rev display is off; it will be switched on\n");
+	}
+}
+
+/*
  * Discover HID++ feature indices for the RS50's custom LIGHTSYNC LED
  * system. These features are RS50-specific in current driver scope
  * (the G Pro's LIGHTSYNC wiring has not been byte-verified yet).
@@ -8074,8 +8156,10 @@ static void hidpp_dd_discover_lightsync_features(struct hidpp_dd_ff_data *ff)
 	ff->idx_sync = HIDPP_DD_FEATURE_NOT_FOUND;
 
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_LIGHTSYNC, &ff->idx_lightsync);
-	if (ret == 0)
+	if (ret == 0) {
 		dd_dbg(hid, "Lightsync feature at index 0x%02x\n", ff->idx_lightsync);
+		hidpp_dd_rev_read_geometry(hidpp, ff);
+	}
 
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_RGB_CONFIG, &ff->idx_rgb_config);
 	if (ret == 0)
@@ -11181,9 +11265,15 @@ static DEVICE_ATTR(wheel_led_effect, 0664, wheel_led_effect_show, wheel_led_effe
  * intermediates onto the wire.
  */
 #define HIDPP_DD_REV_SWID		0x0c	/* G HUB uses 0x0c on the RS50 (2026-07-27 iRacing capture) */
-#define HIDPP_DD_REV_MAX_LEVEL		10
 #define HIDPP_DD_REV_MIN_GAP_MS		10	/* ~100 Hz. G HUB drives rev lights at ~60 Hz (~16.5 ms per pair, measured from the issue #20 iRacing capture); the old 160 ms was a misread and made a full 0->10 sweep take ~1.6 s. The 10 ms cap comfortably clears the observed rate. */
 #define HIDPP_DD_REV_ARM_GAP_MS	4
+/*
+ * The 0x807A effect that means "show the rev level". A wheel reporting
+ * effect 0 is showing nothing and refuses every level with
+ * LogitechInternal; this is what starts it. Confirmed on a G923 (c266)
+ * and then on the Xbox edition in issue #27.
+ */
+#define HIDPP_DD_REV_EFFECT_DISPLAY	0x02
 
 static int hidpp_dd_rev_send_short(struct hidpp_device *hidpp, u8 idx, u8 fn,
 				   u8 p0)
@@ -11212,10 +11302,25 @@ static int hidpp_dd_rev_send_short(struct hidpp_device *hidpp, u8 idx, u8 fn,
 	return ret;
 }
 
-static int hidpp_dd_rev_send_level(struct hidpp_device *hidpp, u8 idx, u8 level)
+/*
+ * Push one level, stating the strip length the wheel actually has.
+ *
+ * `leds` is not cosmetic. The level is a fraction of the stated length, so
+ * telling a five-LED strip it has ten halves everything it shows. The
+ * direct-drive wheels have ten and the G923s have five, and the wheel
+ * reports which in 0x807A fn0's second parameter, so it is read rather
+ * than assumed (issue #27).
+ */
+static int hidpp_dd_rev_send_level(struct hidpp_device *hidpp, u8 idx, u8 level,
+				   u8 leds)
 {
 	struct hidpp_report *report;
 	int ret;
+
+	if (!leds)
+		leds = HIDPP_DD_REV_MAX_LEVEL;
+	if (level > leds)
+		level = leds;
 
 	ret = hidpp_dd_rev_send_short(hidpp, idx, 2, 0);
 	if (ret < 0)
@@ -11232,7 +11337,7 @@ static int hidpp_dd_rev_send_level(struct hidpp_device *hidpp, u8 idx, u8 level)
 	report->fap.params[0] = 0x00;
 	report->fap.params[1] = 0x01;
 	report->fap.params[2] = 0x00;
-	report->fap.params[3] = 0x0a;
+	report->fap.params[3] = leds;
 	report->fap.params[4] = 0x00;
 	report->fap.params[5] = level;
 	ret = __hidpp_send_report(hidpp->hid_dev, report);
@@ -11296,10 +11401,32 @@ static void hidpp_dd_rev_work_handler(struct work_struct *work)
 				goto out_send;
 			msleep(HIDPP_DD_REV_ARM_GAP_MS);
 		}
+		/*
+		 * Start the display if discovery found it showing nothing.
+		 * Fire-and-forget like the rest of the burst: the answer was
+		 * already taken at discovery, because asking here would take
+		 * send_mutex a second time while this section holds it.
+		 *
+		 * Never sent to a wheel that was showing something. fn2
+		 * reports the live effect, not a boolean, so a wheel on a
+		 * built-in sweep or a custom slot reports non-zero and is
+		 * left alone; switching it to effect 2 would discard the
+		 * colours its owner chose, which is why this call was
+		 * removed from the sequence once before.
+		 */
+		if (ff->rev_needs_enable) {
+			ret = hidpp_dd_rev_send_short(hidpp, ff->idx_lightsync,
+						      HIDPP_DD_LIGHTSYNC_FN_SET_EFFECT >> 4,
+						      HIDPP_DD_REV_EFFECT_DISPLAY);
+			if (ret < 0)
+				goto out_send;
+			msleep(HIDPP_DD_REV_ARM_GAP_MS);
+		}
 		ff->rev_armed = true;
 	}
 
-	ret = hidpp_dd_rev_send_level(hidpp, ff->idx_lightsync, target);
+	ret = hidpp_dd_rev_send_level(hidpp, ff->idx_lightsync, target,
+				      ff->rev_leds);
 out_send:
 	mutex_unlock(&hidpp->send_mutex);
 
