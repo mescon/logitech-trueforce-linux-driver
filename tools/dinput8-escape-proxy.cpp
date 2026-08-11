@@ -33,6 +33,12 @@ static CRITICAL_SECTION g_log_lock;
 static bool g_log_ready;
 static bool g_log_opened;
 
+/// Whether the GetProcAddress hook installed: 1 yes, 0 no, -1 not tried.
+///
+/// Declared here rather than beside the hook because it is installed from
+/// DllMain, where logging is unsafe, and reported on the first log line.
+static int g_hook_result = -1;
+
 typedef HRESULT(WINAPI *pfnDirectInput8Create)(HINSTANCE, DWORD, REFIID, LPVOID *,
                                                LPUNKNOWN);
 typedef HRESULT(WINAPI *pfnDllGetClassObject)(REFCLSID, REFIID, LPVOID *);
@@ -75,8 +81,13 @@ static void say(const char *fmt, ...)
 	if (!g_log_opened) {
 		g_log_opened = true;
 		log_open();
-		if (g_log)
+		if (g_log) {
 			fputs("--- dinput8 escape capture ---\n", g_log);
+			fprintf(g_log,
+				g_hook_result == 1 ?
+					"watching which SDK entry points the game resolves\n" :
+					"could not hook GetProcAddress: the handshake is not visible\n");
+		}
 	}
 	if (g_log) {
 		va_list ap;
@@ -223,6 +234,111 @@ static void relay_send(float rpm, float max_rpm)
 	memcpy(pkt + 18, &max_rpm, 4);
 	// 22..26 throttle, 26..28 gear: already zero.
 	sendto(g_sock, (const char *)pkt, sizeof(pkt), 0, (sockaddr *)&g_dest, sizeof(g_dest));
+}
+
+// -------------------------------------------- watching the SDK handshake
+//
+// The wheel is visible, the SDK opens the right interface, and then sends
+// nothing. What we cannot see from outside is the conversation between the
+// game and the SDK: which entry points it resolves, and therefore what it
+// intends to do. The SDK's signature is checked by the game, so it cannot be
+// replaced; this DLL is not, and lives in the same process, so the game's own
+// import of GetProcAddress can be redirected instead.
+//
+// This only watches. Every resolution is passed through untouched: no
+// wrapper is returned in place of a real function, because the signatures of
+// this family are only partly established (docs/SDK_ABI_NOTES.md) and a
+// mismatched wrapper would crash the game rather than teach us anything.
+
+static FARPROC(WINAPI *real_getprocaddress)(HMODULE, LPCSTR);
+
+static LONG g_gpa_calls;
+
+static FARPROC WINAPI getprocaddress_hook(HMODULE mod, LPCSTR name)
+{
+	FARPROC p = real_getprocaddress(mod, name);
+	InterlockedIncrement(&g_gpa_calls);
+	// An ordinal import arrives as a small integer rather than a pointer.
+	bool by_name = name && (ULONG_PTR)name > 0xffff;
+
+	wchar_t path[MAX_PATH] = L"";
+	GetModuleFileNameW(mod, path, MAX_PATH);
+	const wchar_t *base = wcsrchr(path, L'\\');
+	base = base ? base + 1 : path;
+	// Log anything resolved out of a Logitech module as well as anything
+	// with a Logitech-looking name: an earlier run logged only the latter
+	// and could not distinguish "nothing was resolved" from "the hook
+	// never ran", which are opposite conclusions.
+	bool logi_module = wcsstr(path, L"trueforce") || wcsstr(path, L"Trueforce") ||
+			   wcsstr(path, L"logi_steering") || wcsstr(path, L"wheel_sdk");
+	if (logi_module || (by_name && !strncmp(name, "logi", 4))) {
+		if (by_name)
+			say("resolve %ls!%s -> %s", base, name, p ? "found" : "NOT FOUND");
+		else
+			say("resolve %ls!#%u -> %s", base, (unsigned)(ULONG_PTR)name,
+			    p ? "found" : "NOT FOUND");
+	}
+	return p;
+}
+
+// Redirect one imported function in the main executable's import table.
+static bool hook_iat(const char *want, void *replacement, void **original)
+{
+	HMODULE base = GetModuleHandleW(nullptr);
+	if (!base)
+		return false;
+	auto dos = (PIMAGE_DOS_HEADER)base;
+	if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+		return false;
+	auto nt = (PIMAGE_NT_HEADERS)((BYTE *)base + dos->e_lfanew);
+	if (nt->Signature != IMAGE_NT_SIGNATURE)
+		return false;
+	auto dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+	if (!dir.VirtualAddress)
+		return false;
+
+	auto desc = (PIMAGE_IMPORT_DESCRIPTOR)((BYTE *)base + dir.VirtualAddress);
+	for (; desc->Name; desc++) {
+		// OriginalFirstThunk keeps the names; FirstThunk is the live
+		// table the calls actually go through.
+		if (!desc->OriginalFirstThunk)
+			continue;
+		auto names = (PIMAGE_THUNK_DATA)((BYTE *)base + desc->OriginalFirstThunk);
+		auto addrs = (PIMAGE_THUNK_DATA)((BYTE *)base + desc->FirstThunk);
+		for (; names->u1.AddressOfData; names++, addrs++) {
+			if (names->u1.Ordinal & IMAGE_ORDINAL_FLAG)
+				continue;
+			auto imp = (PIMAGE_IMPORT_BY_NAME)((BYTE *)base +
+							   names->u1.AddressOfData);
+			if (strcmp((const char *)imp->Name, want) != 0)
+				continue;
+			DWORD old;
+			if (!VirtualProtect(&addrs->u1.Function, sizeof(void *),
+					    PAGE_READWRITE, &old))
+				return false;
+			*original = (void *)(ULONG_PTR)addrs->u1.Function;
+			addrs->u1.Function = (ULONG_PTR)replacement;
+			VirtualProtect(&addrs->u1.Function, sizeof(void *), old, &old);
+			return true;
+		}
+	}
+	return false;
+}
+
+static void watch_sdk_handshake(void)
+{
+	if (g_hook_result >= 0)
+		return;
+	// Safe here: this DLL is statically imported, so DllMain runs after
+	// the executable's imports are resolved and before its entry point,
+	// which is the only window that catches an SDK loaded during startup.
+	// Installing it from DirectInput8Create was too late: the SDK loaded
+	// about a second before input was initialised, and every resolution
+	// had already happened.
+	g_hook_result = hook_iat("GetProcAddress", (void *)getprocaddress_hook,
+				 (void **)&real_getprocaddress) ?
+				1 :
+				0;
 }
 
 // ------------------------------------------------------- device wrapper
@@ -545,10 +661,15 @@ extern "C" __declspec(dllexport) HRESULT WINAPI DirectInput8Create(HINSTANCE ins
 	// Ask for the interface the caller asked for, so we never change the
 	// contract; the A and W device vtables have the same layout, which is
 	// what lets one wrapper serve both.
+	// The executable's imports are resolved by now, and this runs well
+	// before the SDK is loaded, so the hook is in place when the game
+	// starts resolving its entry points.
+	watch_sdk_handshake();
+
 	void *real = nullptr;
 	HRESULT hr = fn(inst, version, riid, &real, outer);
-	say("DirectInput8Create(version=0x%lx) -> 0x%08lx", (unsigned long)version,
-	    (unsigned long)hr);
+	say("DirectInput8Create(version=0x%lx) -> 0x%08lx  [%ld symbol lookups seen so far]",
+	    (unsigned long)version, (unsigned long)hr, (long)g_gpa_calls);
 	if (FAILED(hr) || !real) {
 		*out = real;
 		return hr;
@@ -588,6 +709,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 		DisableThreadLibraryCalls(inst);
 		InitializeCriticalSection(&g_log_lock);
 		g_log_ready = true;
+		// Only memory reads and VirtualProtect: no CRT, no file, no
+		// loader call, so it is safe under the loader lock.
+		watch_sdk_handshake();
 	}
 	return TRUE;
 }
