@@ -1126,6 +1126,44 @@ mod tests {
         }
     }
 
+    /// **Native TrueForce always wins where it can arrive.** A game with its
+    /// own TrueForce, on a wheel that can receive it, must never also be
+    /// given the simulated kind: that would lay a synthesised engine note
+    /// over the haptics the game's developers authored, and the two would
+    /// play at once.
+    ///
+    /// The converse is equally required. On a wheel that cannot receive it,
+    /// the same title must get the simulated kind, or that owner is left
+    /// with nothing rather than with the best available.
+    #[test]
+    fn native_trueforce_is_always_preferred_where_it_can_arrive() {
+        for game in GAMES.iter() {
+            if game.linux == Linux::Unsupported {
+                continue;
+            }
+            for caps in [DD, G923] {
+                let plan = LaunchPlan::for_game(game, caps, false);
+                let native_here = game.setup_action(caps) == SetupAction::InstallShim;
+                if native_here {
+                    assert!(
+                        !plan.tfsim,
+                        "{}: native TrueForce reaches this wheel, so the simulated kind \
+                         must stay off or both play at once",
+                        game.name
+                    );
+                    assert_eq!(plan.relay, None, "{}: no relay is needed when native works", game.name);
+                } else if game.simulated_tf.live_id().is_some() {
+                    assert!(
+                        plan.tfsim,
+                        "{}: native TrueForce cannot reach this wheel and a decoder exists, \
+                         so the simulated kind is what that owner should get",
+                        game.name
+                    );
+                }
+            }
+        }
+    }
+
     /// An unknown title still gets the daemon: the UDP sims need nothing
     /// but a listener, and it idles when nothing streams.
     #[test]
