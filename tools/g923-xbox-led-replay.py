@@ -4,7 +4,21 @@
 
     sudo tools/g923-xbox-led-replay.py
 
-LEDs only. No force feedback is generated and the wheel will not move.
+This sends rev-light commands only, and does not command any force.
+
+**An earlier version of this script also replayed a block of commands at
+feature index `0x0b`, and that block engaged self-centring on the wheel,
+which stayed on until it was unplugged.** It was replayed because it appeared
+in the capture before the rev-light commands, and was described here as
+"replayed verbatim rather than understood". That was true, and it was not a
+good enough reason to send it: the wheel's replies (`fn8` with `ff ff`, `fn5`
+and `fn6` with `03 6f`) read as a force feature, and it has now been shown to
+make no difference to the lights. It is gone. The bytes are kept at the
+bottom of this file for reference, not sent.
+
+The lesson, recorded because it is more useful than the bytes: replaying an
+unidentified command is not a safe operation, and calling a script "LEDs
+only" while it does so is a claim about something not actually known.
 
 Every previous round of issue #27 sent a command we believed was right and
 asked whether the strip lit. This sends the bytes a Windows machine was
@@ -21,16 +35,27 @@ it differ from what this project has been sending:
    it never agreed to receive. hidraw accepts them and returns success
    regardless, which is why the probe kept printing "sent".
 
-2. **A one-time setup at feature index 0x0b**, before any rev-light command:
-   `fn1`, `fn8`, `fn5`, `fn6` with `03 6f`. We have never sent anything to
-   that feature. What it is, is unknown; it is replayed verbatim rather than
-   understood, which is the point of a replay.
-
-3. **The level command repeats at about 11 Hz** for as long as the lights
+2. **The level command repeats at about 11 Hz** for as long as the lights
    are meant to be on, rather than being sent once and left.
 
-TEST 1 sends only (1) and (3), TEST 2 adds (2). Which of them lights the
-strip says which of these mattered, and a single run answers it.
+## What running this established (2026-08-11)
+
+Both differences turned out not to be the answer. With the bytes matching
+Windows exactly, the wheel still refuses the level:
+
+    ok:    feature 0x12 fn0 -> 03 05 02      (identical to Windows)
+    ok:    feature 0x12 fn1 -> 00 02         (identical to Windows)
+    ok:    feature 0x12 fn2 -> 00            (Windows gets 02)
+    ERROR: feature 0x12 fn6: LogitechInternal (5)
+
+Windows gets `fn6` accepted 437 times in the same capture, and never sees an
+error. So the wheel is not rejecting the command's contents: it is in a
+different state, and `fn2` answering `00` where Windows sees `02` is where
+that difference becomes visible.
+
+Whatever establishes that state happens **before** the capture begins, which
+started with G HUB already running. A capture from a cold start, wheel
+unplugged and G HUB not yet launched, is what would contain it.
 """
 import glob
 import os
@@ -46,7 +71,7 @@ LEVEL = 5       # full strip on a five-LED wheel
 # capture, and both are properties of its firmware rather than constants of
 # the protocol, so this script is for a c26e and nothing else.
 IDX_RPM = 0x12      # 0x807A, confirmed by the driver's own dmesg line
-IDX_SETUP = 0x0b    # unidentified; replayed, not understood
+# 0x0b is NOT sent. See REFERENCE_ONLY_0x0B at the bottom.
 
 
 def long_report(idx, function, params=()):
@@ -62,20 +87,12 @@ def long_report(idx, function, params=()):
     return bytes(r + [0] * (20 - len(r)))
 
 
-# The setup block, in capture order, verbatim.
-SETUP = [
-    long_report(IDX_SETUP, 1),
-    long_report(IDX_SETUP, 8, [0xFF, 0xFF]),
-    long_report(IDX_SETUP, 8, [0x00, 0x00]),
-    long_report(IDX_SETUP, 1),
-    long_report(IDX_SETUP, 8, [0xFF, 0xFF]),
+# The rev-light preamble, in capture order: the two 0x807A calls Windows
+# makes before it starts pushing levels. The feature-0x0b block that sat
+# among these in the capture is NOT here; see the note at the top of this
+# file for why, and REFERENCE_ONLY_0x0B at the bottom for the bytes.
+PREAMBLE = [
     long_report(IDX_RPM, 0),
-    long_report(IDX_SETUP, 5),
-    long_report(IDX_SETUP, 6, [0x03, 0x6F]),
-    long_report(IDX_SETUP, 6, [0x03, 0x6F]),
-    long_report(IDX_SETUP, 5),
-    long_report(IDX_SETUP, 5),
-    long_report(IDX_SETUP, 6, [0x03, 0x6F]),
     long_report(IDX_RPM, 1),
 ]
 
@@ -223,8 +240,7 @@ def main():
         print("-- %s  [pid %s]  report ids: %s"
               % (node, pid, ", ".join("0x%02X" % i for i in ids)))
         for label, reports in (
-            ("long reports, repeated, NO setup block", [long_report(IDX_RPM, 1)]),
-            ("long reports, repeated, WITH the setup block", SETUP),
+            ("0x807A level, long reports, repeated at the captured rate", PREAMBLE),
         ):
             n += 1
             print("TEST %d  %s ... " % (n, label), end="", flush=True)
@@ -257,3 +273,21 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# The feature-0x0b block from the capture, kept as evidence and deliberately
+# never sent. Replaying it engaged self-centring on a real wheel, which
+# persisted until the wheel was unplugged, so whatever this feature is, it
+# governs force and not lights. Recorded here so the next person does not
+# have to re-derive it from the capture, and does not have to find out what
+# it does the way we did.
+#
+#   11 ff 0b 1a 00 00        fn1
+#   11 ff 0b 8a ff ff        fn8, params ff ff
+#   11 ff 0b 8a 00 00        fn8, params 00 00
+#   11 ff 0b 5a 00 00        fn5   -> replies 03 6f
+#   11 ff 0b 6a 03 6f        fn6, params 03 6f
+#
+# It is also now known to make no difference to the rev lights: the level
+# command fails with the same error whether or not this block precedes it.
+REFERENCE_ONLY_0x0B = None
