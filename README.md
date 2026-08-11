@@ -53,14 +53,17 @@ across Steam, Lutris and Heroic, and each row has the buttons for that game:
   one-time copy first; see below. A G923 does not use this route and can skip
   it, because that wheel does not answer Logitech's SDK.
 
-  **These files carry force feedback as well as TrueForce, for these games.**
-  Reaching the wheel's raw HID interface is what lets Logitech's SDK deliver
-  TrueForce, and switching that on replaces the ordinary path Linux force
-  feedback arrives by. The wheel's raw interface offers no force feedback of
-  its own, so with the raw path on and the files missing you get neither.
-  `logi-launch` will not make that trade: it leaves the raw interface alone
-  until the files are there, so force feedback keeps working and you get
-  simulated TrueForce meanwhile.
+  **With these files installed, this is the configuration to want**: the
+  game's own TrueForce reaches the wheel, which is what its developers
+  authored rather than the engine note this project synthesises.
+
+  **Without them, do not switch the raw HID interface on.** Reaching that
+  interface is what lets Logitech's SDK deliver TrueForce, and switching it
+  on replaces the ordinary path force feedback arrives by. The raw interface
+  offers no force feedback of its own, so with it on and the files missing
+  you get neither. `logi-launch` will not make that trade: it leaves the raw
+  interface alone until the files are there, so force feedback keeps working
+  and you get simulated TrueForce meanwhile.
 
 > **The one-time copy: Logitech's TrueForce files.** They cannot be
 > redistributed, so you supply them from a Windows G HUB installation. Copy

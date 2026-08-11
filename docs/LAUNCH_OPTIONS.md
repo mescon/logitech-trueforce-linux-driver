@@ -158,24 +158,36 @@ That line is the same on an RS50 and on a G923. Do not add
 that want it, and setting it yourself is how it ends up on a G923, where it
 costs that wheel its force feedback.
 
-### Turning it on is a trade, not a free upgrade
+### With the TrueForce files it is an upgrade; without them it is a loss
 
-Without it, Proton hands the game a device backed by the Linux input layer
-and force feedback works with nothing installed. With it, the game gets the
-raw HID device instead, and **this wheel's raw descriptor carries no force
-feedback protocol at all**. What replaces it is Logitech's SDK, which is what
-the TrueForce files are.
+**With them**, this is the configuration to want. The game's own TrueForce
+reaches the wheel: the haptics its developers authored, rather than the
+engine note `logi-tf-sim` synthesises from telemetry. That is a real
+difference, and it is the reason this setting exists.
 
-So on a prefix without those files, setting this costs you force feedback and
-gives nothing back. `logi-launch` checks the prefix and declines rather than
-make that trade, saying so in the log, and falls back to simulated TrueForce
-so the wheel is not left with nothing. That is issue #60, where it read as
-"logi-launch gives me no FFB".
+**Without them**, it is a pure loss. Turning it on makes Proton hand the game
+the raw HID device instead of the one backed by the Linux input layer, and
+**this wheel's raw descriptor carries no force-feedback protocol at all**.
+Logitech's SDK is what fills that gap, and the SDK is what those files are.
+So on a prefix without them you lose force feedback and gain nothing.
+
+`logi-launch` checks the prefix and declines rather than make that trade,
+saying so in the log, and falls back to simulated TrueForce so the wheel is
+not left with nothing. That is issue #60, where it read as "logi-launch gives
+me no FFB".
 
 The corollary is worth stating plainly: **for Assetto Corsa Competizione and
 Assetto Corsa EVO on a direct-drive wheel, Logitech's files are what carry
 force feedback**, not only TrueForce. They are optional only in the sense
 that you can leave the raw interface off and keep the ordinary path.
+
+One thing this does **not** change: force feedback itself is never simulated
+by this project. `logi-tf-sim` synthesises TrueForce and nothing else, so the
+forces you feel through the evdev path are the game's own, exactly as its
+developers wrote them. What the raw interface changes is which route those
+forces travel, and whether the game's TrueForce can travel at all. No
+measurement here says the SDK route feels better than the evdev one; the
+gain that is established is native TrueForce over simulated.
 
 ### Why it names your wheel rather than saying `1`
 
