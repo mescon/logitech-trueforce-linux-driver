@@ -5,6 +5,25 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.34.1 - 2026-08-11
+
+**Fixes a regression in 0.34.0 that broke steering and pedals.** 0.34.0 made
+PID injection the default, which adds the part of the HID protocol that
+older-style force feedback needs. It also stops the wheel's input working:
+these wheels send their input reports with no report id, the injected part
+declares thirteen, and a descriptor that uses report ids means every report
+carries one, so the kernel then misreads every input report the wheel sends.
+
+Measured on an RS50: no input events at all with it on, about ten thousand in
+five seconds with it off. It is off again, and documented as something not to
+turn on until the driver can rewrite incoming reports as well.
+
+The force-feedback problem it was meant to solve is therefore still open. Set
+`hidraw=0` for that game in `games.conf` to keep force feedback, at the cost
+of the game's own TrueForce.
+
+Everything else in 0.34.0 is unaffected and stays.
+
 ## 0.34.0 - 2026-08-11
 
 **Force feedback no longer disappears when the raw HID interface is on.**

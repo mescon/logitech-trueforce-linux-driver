@@ -26,7 +26,7 @@
 Name:           %{kmod_name}-kmod
 Version:        %{upstream_ver}
 Release:        1%{?dist}
-Summary:        Kernel module for Logitech TrueForce direct-drive wheels (RS50, G PRO)
+Summary:        Kernel module for Logitech racing wheels (RS50, G PRO, G923)
 License:        GPL-2.0-only
 URL:            https://github.com/mescon/logitech-trueforce-linux-driver
 Source0:        %{url}/archive/refs/tags/v%{upstream_ver}.tar.gz#/%{name}-%{upstream_ver}.tar.gz
@@ -93,7 +93,7 @@ force-feedback device).
 # logi-wheel is the complete headless install: driver <- logi-wheel <-
 # logi-wheel-gui.
 %package -n logi-wheel
-Summary:        Terminal tools for the %{kmod_name} direct-drive wheel driver
+Summary:        Terminal tools for the %{kmod_name} racing wheel driver
 License:        GPL-2.0-only
 BuildRequires:  cargo, rust
 Requires:       %{kmod_name}-kmod-common
@@ -128,7 +128,7 @@ Proton prefixes.
 %{_bindir}/logitech-trueforce-install-shim
 
 %package -n logi-wheel-gui
-Summary:        Graphical settings app for the %{kmod_name} direct-drive wheel driver
+Summary:        Graphical settings app for the %{kmod_name} racing wheel driver
 License:        GPL-3.0-or-later
 Requires:       logi-wheel
 # Renamed from logi-dd-gui (0.20.0); see logi-wheel's subpackage for why.

@@ -16,7 +16,7 @@ Depends: ${misc:Depends}, dkms, usbutils
 # ecosystem") whole while still allowing a lean module-only install.
 Recommends: logi-wheel, usb-modeswitch
 Suggests: oversteer
-Description: DKMS kernel driver for Logitech TrueForce direct-drive wheels
+Description: DKMS kernel driver for Logitech racing wheels (RS50, G PRO, G923)
  Force feedback, TrueForce texture routing, and G HUB-equivalent settings
  exposed through sysfs for the Logitech RS50 and G PRO direct-drive racing
  wheels. The module is built and installed for the running kernel by DKMS,
@@ -44,7 +44,7 @@ Suggests: wine
 Provides: logi-dd
 Replaces: logi-dd
 Conflicts: logi-dd
-Description: Terminal tools for Logitech TrueForce direct-drive wheels
+Description: Terminal tools for Logitech racing wheels (RS50, G PRO, G923)
  The complete headless toolset for the logitech-trueforce driver: logi-wheel,
  a terminal settings UI, logi-ffb, a DirectInput force-feedback proxy,
  logi-tf-sim, a simulated-TrueForce daemon driven by game telemetry, and
@@ -70,7 +70,7 @@ Depends: ${misc:Depends}, ${shlibs:Depends}, logi-wheel,
 Provides: logi-dd-gui
 Replaces: logi-dd-gui
 Conflicts: logi-dd-gui
-Description: Graphical settings app for Logitech TrueForce wheels
+Description: Graphical settings app for Logitech racing wheels (RS50, G PRO, G923)
  logi-wheel-gui, a graphical settings app (GPL-3.0-or-later; see
  debian/copyright) for the logitech-trueforce driver, with a desktop menu
  entry. Covers wheel settings, LIGHTSYNC, response curves, the game-helper

@@ -6,7 +6,7 @@ pkgname=('logitech-trueforce-dkms' 'logi-wheel' 'logi-wheel-gui')
 _dkmsname=logitech-trueforce
 pkgver=0.18.0
 pkgrel=1
-pkgdesc="DKMS kernel driver for Logitech TrueForce direct-drive wheels (RS50, G PRO): force feedback, TrueForce texture routing, and wheel settings via sysfs"
+pkgdesc="DKMS kernel driver for Logitech racing wheels (RS50, G PRO, G923): force feedback, TrueForce texture routing, and wheel settings via sysfs"
 arch=('x86_64')
 url="https://github.com/mescon/logitech-trueforce-linux-driver"
 # The kernel module and logi-ffb/logi-wheel/logi-tf-sim are GPL-2.0-only;
@@ -45,7 +45,7 @@ build() {
 }
 
 package_logitech-trueforce-dkms() {
-	pkgdesc="DKMS kernel driver for Logitech TrueForce direct-drive wheels (RS50, G PRO): force feedback, TrueForce texture routing, and wheel settings via sysfs"
+	pkgdesc="DKMS kernel driver for Logitech racing wheels (RS50, G PRO, G923): force feedback, TrueForce texture routing, and wheel settings via sysfs"
 	license=('GPL-2.0-only')
 	# No dependency on logi-wheel. This package installs udev rule 73, and
 	# that rule dispatches /usr/bin/logi-g923-modeswitch, so the two have

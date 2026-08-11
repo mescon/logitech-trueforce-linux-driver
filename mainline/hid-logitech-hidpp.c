@@ -206,28 +206,32 @@ MODULE_PARM_DESC(disable_tap_to_click,
  * without risking a slam from a mis-translated effect.
  */
 /*
- * On by default since 0.34.0.
+ * OFF, and it must stay off on these wheels. Do not turn it on.
  *
- * When it was added it was reasonable to leave off: the comment then read
- * "only Proton + HIDRAW=1 users need it", and setting that variable was
- * something a handful of people did by hand. Since then this project's own
- * tooling sets it for every direct-drive wheel playing a game with built-in
- * TrueForce, so the situation this exists for is now the NORMAL one, and
- * leaving it off meant handing those owners a wheel with no force feedback
- * and a module parameter to discover.
+ * It was made the default in 0.34.0 and that broke steering and pedals
+ * outright: hardware-measured on an RS50, 0 input events with it on against
+ * ~10000 in five seconds with it off. Reverted in 0.34.1.
  *
- * Costs nothing when unused: a game that drives force through evdev never
- * touches these reports, and the injected collection only appears on
- * interface 0's descriptor, which such a game does not read. The
- * translation lands in the same hidpp_dd_ff_* path the evdev engine uses,
- * so the forces produced are the ones that engine already produces.
+ * The cause is structural rather than a bug in the translation. These
+ * wheels' interface 0 descriptor declares NO report ids at all, so the
+ * firmware sends its input reports with no id prefix. The injected PID
+ * collection declares thirteen. A HID descriptor that uses report ids means
+ * every report carries a one-byte id, so the moment the collection is
+ * spliced in, the kernel expects a prefix on input reports that the wheel
+ * does not send, and parses every one of them wrongly.
  *
- * Set inject_pid=0 to go back to the old behaviour.
+ * Nothing in the collection is wrong: it is the presence of report ids on a
+ * device whose reports have none. Making this usable needs the driver to
+ * synthesise that prefix on incoming reports as well, not just intercept
+ * outgoing ones, which is not what this code does.
+ *
+ * inject_pid=1 has the same effect on input, since it injects the same
+ * descriptor and only withholds actuation.
  */
-static uint inject_pid = 2;
+static uint inject_pid;
 module_param(inject_pid, uint, 0644);
 MODULE_PARM_DESC(inject_pid,
-	"PID injection on interface 0 of direct-drive (RS50/G PRO) wheels: 0=off, 1=dry-run (log only), 2=actuate (default). Needed for force feedback in games that read the wheel over raw HID, which is what PROTON_ENABLE_HIDRAW causes.");
+	"PID injection on interface 0 of direct-drive (RS50/G PRO) wheels: 0=off (default), 1=dry-run, 2=actuate. BREAKS STEERING AND PEDALS on these wheels: the injected collection declares report ids that the wheel does not use, so input reports are then misparsed. Leave it off.");
 
 /*
  * HID++ software-id OR'd into every request's funcindex_clientid.

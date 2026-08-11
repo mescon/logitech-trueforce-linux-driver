@@ -12,7 +12,7 @@
 Name:           logitech-trueforce-dkms
 Version:        0.15.0
 Release:        1
-Summary:        DKMS kernel driver for Logitech TrueForce direct-drive wheels (RS50, G PRO)
+Summary:        DKMS kernel driver for Logitech racing wheels (RS50, G PRO, G923)
 License:        GPL-2.0-only
 URL:            https://github.com/mescon/logitech-trueforce-linux-driver
 Source0:        logitech-trueforce-linux-driver-%{version}.tar.gz
@@ -75,7 +75,7 @@ guide.
 # install) <- logi-wheel-gui. logi-ffb/logi-wheel/logi-tf-sim are GPL-2.0-only
 # (the main package's License); logi-wheel-gui is GPL-3.0-or-later.
 %package -n logi-wheel
-Summary:        Terminal tools for the Logitech direct-drive wheel driver
+Summary:        Terminal tools for the Logitech racing wheel driver
 License:        GPL-2.0-only
 Requires:       logitech-trueforce-dkms
 # The shim installer edits the wine prefix registry with python3.
@@ -94,7 +94,7 @@ and logi-shim, the TrueForce SDK shim installer for
 Proton prefixes.
 
 %package -n logi-wheel-gui
-Summary:        Graphical settings app for the Logitech direct-drive wheel driver
+Summary:        Graphical settings app for the Logitech racing wheel driver
 License:        GPL-3.0-or-later
 Requires:       logi-wheel
 # Owns the hicolor icon directories the GUI's launcher icon lands in.

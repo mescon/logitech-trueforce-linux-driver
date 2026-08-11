@@ -585,35 +585,27 @@ logi-wheel --report
 
 ### No force feedback once the raw HID interface is on
 
-**Fixed in 0.34.0; you should not hit this any more.** It is described here
-because the symptom is confusing and older versions still show it.
+Some games drive force feedback the older Windows way, which needs a part of
+the HID protocol these wheels do not implement. On the raw HID interface
+those games have nowhere to send force, so force feedback goes silent while
+everything else keeps working.
 
-With `PROTON_ENABLE_HIDRAW` set, Proton hands the game the raw HID device,
-and Wine's DirectInput drives force feedback by writing HID PID reports to
-it. These wheels have no PID collection of their own, so a game that uses
-DirectInput for force rather than Logitech's SDK had nowhere to write and
-you got silence, having had force feedback a moment earlier.
+**There is no fix for this yet.** The driver has a `inject_pid` option that
+adds the missing part, and it does deliver force feedback, but it also breaks
+steering and pedals on these wheels, so it is off and should stay off. The
+reason is structural: these wheels send their input reports without a report
+id, and the added part declares several, after which the kernel expects an id
+on every report and misreads the ones the wheel is sending correctly. Making
+it usable needs the driver to rewrite incoming reports too.
 
-The driver adds that collection and routes the writes into its real
-force-feedback path. That is `inject_pid`, and since 0.34.0 it is on by
-default. It costs nothing when unused: a game driving force through the
-normal Linux path never touches those reports.
-
-If you need to turn it off:
+What works today is to leave the raw interface off for that game, which
+keeps force feedback and loses the game's own TrueForce. In
+`~/.config/logi-wheel/games.conf`:
 
 ```
-echo 0 | sudo tee /sys/module/hid_logitech_dd/parameters/inject_pid
+3058630  hidraw=0
 ```
 
-then replug the wheel, or put `options hid-logitech-dd inject_pid=0` in
-`/etc/modprobe.d/logitech-dd.conf` to keep it. `inject_pid=1` is a middle
-setting that logs what a game writes without driving the wheel, which is
-useful when reporting a problem.
-
-> Confirmed on an RS50 on 2026-08-11: a constant force written as PID
-> reports rotated the wheel and released cleanly. Worth knowing if you test
-> it yourself, because the numbers are not intuitive: at 15% wheel strength,
-> a force of 2000 out of 32767 drove the wheel all the way to its stop.
 
 ## Documentation
 
