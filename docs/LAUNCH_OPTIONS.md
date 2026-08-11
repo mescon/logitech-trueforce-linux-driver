@@ -46,7 +46,9 @@ has to be configured. The registry is the same one behind the app's Setup
 page: the wrapper decides nothing itself, because a second copy of that
 logic in shell is a second copy to drift.
 
-**2. It sets `PROTON_ENABLE_HIDRAW` only if that wheel wants it here.**
+**2. It sets `PROTON_ENABLE_HIDRAW` only if that wheel wants it here**, and
+scoped to that wheel (`0x046D/0xC276`) rather than the bare `1`, which
+Proton reads as every HID device on the machine.
 Games with their own TrueForce need the raw HID interface to reach the
 wheel, and the SDK only delivers it to a direct-drive wheel. On a G923 the
 same setting **removes** force feedback, so it is never set speculatively:
@@ -105,9 +107,9 @@ Assetto Corsa EVO on a direct-drive wheel, where the game's own TrueForce
 is the route and nothing is simulated:
 
 ```
-[logi-launch] plan: wheel=direct-drive game=Assetto Corsa EVO (early access) hidraw=1 ffb=native relay=none tfsim=0
-[logi-launch] set PROTON_ENABLE_HIDRAW=1
-[logi-launch] no in-prefix helper needed for this game
+[logi-launch] plan: wheel=direct-drive game=Assetto Corsa EVO (early access) hidraw=0x046D/0xC276 ffb=native relay=none tfsim=0
+[logi-launch] set PROTON_ENABLE_HIDRAW=0x046D/0xC276
+[logi-launch] no in-prefix relay needed for this game
 ```
 
 The same game on a G923, where it cannot be, so the simulated kind and its
