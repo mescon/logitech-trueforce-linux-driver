@@ -5,6 +5,39 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**Native TrueForce has been impossible since 0.27.1, and is fixed.** The
+installer registers Logitech's SDK by writing its path into the Windows
+registry inside each game's Proton folder. Since 0.27.1 that path was written
+with half its separators missing, so it named a file that did not exist, and
+no game could load the SDK. Nothing reported an error: the key was written,
+the installer said it had succeeded, and the files really were where the path
+was meant to point. Games simply asked for TrueForce, got nothing, and carried
+on without it.
+
+If you installed the TrueForce files under any release from 0.27.1 to 0.34.1,
+reinstall them from the app's Setup page (or rerun `install-tf-shim.sh`) to
+get a registration that works.
+
+The installer now reads the registration back and refuses to report success
+unless it resolves to a file that is really there, which is the check whose
+absence let this survive five releases.
+
+Two related things it also does now, both off by default:
+
+- `--oem-ffb` stages G HUB's DirectInput force-feedback driver into a prefix.
+  Windows drives these wheels through that driver rather than from DirectInput
+  itself, which is why force feedback dies when the raw HID interface is on.
+  It only does anything together with the tooling in `docs/DINPUT_ESCAPE.md`,
+  and is unproven on hardware.
+- `--print-sdk-dir` reports whether that driver was found, alongside the SDK
+  versions.
+
+**Known, and not fixed here:** on Assetto Corsa EVO the SDK now loads, opens
+the wheel and still sends it nothing. That is a separate fault from this one
+and is being tracked in `docs/DINPUT_ESCAPE.md`.
+
 ## 0.34.1 - 2026-08-11
 
 **Fixes a regression in 0.34.0 that broke steering and pedals.** 0.34.0 made
