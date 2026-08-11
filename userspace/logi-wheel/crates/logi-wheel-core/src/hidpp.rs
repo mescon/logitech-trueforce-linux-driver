@@ -540,8 +540,8 @@ fn rev_long(device_index: u8, feature_index: u8, function: u8, params: &[u8]) ->
     r
 }
 
-/// The `fn2` state a wheel reports when its rev display is live, and the
-/// `fn3` effect that puts it there.
+/// The `fn2` state meaning "nothing is being displayed", and the `fn3`
+/// effect that starts the rev display.
 ///
 /// Measured on hardware 2026-08-11, reading the wheels' own replies:
 ///
@@ -555,28 +555,31 @@ fn rev_long(device_index: u8, feature_index: u8, function: u8, params: &[u8]) ->
 /// Sending `fn3` with effect 2 moves a G923 from state 0 to state 2, after
 /// which the same level command is accepted instead of refused. That is the
 /// whole of issue #27's rev-light failure.
-const REV_DISPLAY_STATE: u8 = 0x02;
+const REV_STATE_OFF: u8 = 0x00;
 const REV_EFFECT_DISPLAY: u8 = 0x02;
 
-/// Put the strip into rev-display mode, but only if it is not already there.
+/// Start the rev display, but ONLY on a wheel that is displaying nothing.
 ///
-/// The conditional is the point. `fn3` was in this sequence once and was
-/// removed, because on an RS50 it force-switches LIGHTSYNC to effect 2 and
-/// overrides whatever the owner had chosen. That removal was correct for the
-/// RS50, which reports state 2 already and never needed the call, and it
-/// silently broke every wheel that does not: a G923 stays in state 0 forever
-/// and refuses every level with an internal error.
+/// The exact condition is the point, and getting it slightly wrong
+/// reintroduces the bug that had `fn3` removed in the first place. `fn2`
+/// does not report a boolean: it reports the **live LIGHTSYNC effect**,
+/// where 1-4 are the built-in sweeps and 6-9 are the owner's custom slots
+/// (`hidpp_dd_lightsync_read_state` in the driver). So "not 2" is true of an
+/// RS50 sitting on a custom slot, and switching that wheel to effect 2 would
+/// throw away the colours its owner chose. That is the original regression
+/// wearing a different hat.
 ///
-/// Asking first serves both. A wheel already displaying is left completely
-/// alone, so the RS50 regression cannot return; a wheel that is not gets the
-/// one call that enables it.
+/// Zero is the only value that means nothing is being shown, and it is what
+/// both G923 editions report while refusing every level. So zero is the only
+/// value acted on. An RS50 reports 2, a custom slot reports 6-9, and all of
+/// them are left completely alone.
 ///
 /// Best-effort by design: a wheel that will not answer the state query is
 /// left as it is rather than switched on a guess, and the caller still sends
 /// its level. Failing to enable is not a reason to send nothing.
 fn ensure_rev_display_mode<T: HidppIo>(io: &mut T, idx: u8) {
     let Some(state) = rev_state(io, idx) else { return };
-    if state == REV_DISPLAY_STATE {
+    if state != REV_STATE_OFF {
         return;
     }
     let _ = rev_send(io, idx, 3, REV_EFFECT_DISPLAY);
@@ -870,19 +873,28 @@ mod tests {
     }
 
     /// And the regression that got `fn3` removed in the first place must
-    /// not come back: on an RS50 it force-switches LIGHTSYNC to effect 2,
-    /// overriding whatever the owner chose. That wheel already reports
-    /// state 2, so asking first leaves it untouched.
+    /// not come back, in either of its forms.
+    ///
+    /// `fn2` reports the LIVE LIGHTSYNC EFFECT, not a boolean: 1-4 are the
+    /// built-in sweeps and 6-9 are the owner's custom slots. So a condition
+    /// of "not 2" would fire on an RS50 sitting on a custom slot and throw
+    /// away the colours that owner chose, which is the same regression in a
+    /// different hat. Only zero, meaning nothing is displayed, is acted on.
     #[test]
-    fn a_wheel_already_displaying_is_left_alone() {
-        let mut io = MockIo::default();
-        io.push(state_reply(0x0b, REV_DISPLAY_STATE));
-        rev_level_via_lightsync(&mut io, 0x0b, 5, LEDS_DIRECT_DRIVE).unwrap();
-        assert_eq!(
-            fn3_effect(&io.sent, 0x0b),
-            None,
-            "an RS50 reports state 2 already; sending fn3 there overrides the owner's LIGHTSYNC effect"
-        );
+    fn a_wheel_showing_anything_at_all_is_left_alone() {
+        // 2 is what an RS50 reports; 1 and 3-4 are its other built-in
+        // sweeps; 6-9 are custom slots someone picked on purpose.
+        for state in [1u8, 2, 3, 4, 5, 6, 7, 8, 9] {
+            let mut io = MockIo::default();
+            io.push(state_reply(0x0b, state));
+            rev_level_via_lightsync(&mut io, 0x0b, 5, LEDS_DIRECT_DRIVE).unwrap();
+            assert_eq!(
+                fn3_effect(&io.sent, 0x0b),
+                None,
+                "state {state} means something IS displayed; sending fn3 there \
+                 overrides the owner's LIGHTSYNC choice"
+            );
+        }
     }
 
     /// A wheel that will not answer the state query is left as it is rather
