@@ -20,6 +20,8 @@
 // the game behaves exactly as it does without it.
 
 #define DIRECTINPUT_VERSION 0x0800
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <dinput.h>
 #include <stdio.h>
@@ -103,6 +105,124 @@ static void say_bytes(const char *label, const void *p, DWORD len)
 		at += snprintf(line + at, sizeof(line) - at, "%02x ", b[i]);
 	say("    %s (%lu bytes): %s%s", label, (unsigned long)len, line,
 	    len > show ? "..." : "");
+}
+
+// ------------------------------------------------------------ relaying
+//
+// The escape payload is parameters, not a waveform: the synthesis that
+// Logitech's Windows driver would do below this point is work we already
+// have, in logi-tf-sim. So rather than invent a channel, speak the relay
+// format that daemon already listens for on 127.0.0.1:20780, which is the
+// same path logi-tf-relay uses from inside a prefix.
+
+static SOCKET g_sock = INVALID_SOCKET;
+static sockaddr_in g_dest;
+static bool g_relay_tried;
+static bool g_relay_off;
+static char g_game_id[9];
+
+// Which title this is, so the daemon's per-game settings apply. Anything
+// unrecognised falls back to the shared "relay" switch rather than going
+// silent, which is the daemon's own rule for an id it does not know.
+static void resolve_game_id(void)
+{
+	static const struct {
+		const wchar_t *exe;
+		const char *id;
+	} known[] = {
+		{ L"AssettoCorsaEVO.exe", "ac-evo" },
+		{ L"AC2-Win64-Shipping.exe", "acc" },
+		{ L"acs.exe", "assetto" },
+	};
+	strcpy(g_game_id, "relay");
+	wchar_t path[MAX_PATH];
+	if (!GetModuleFileNameW(nullptr, path, MAX_PATH))
+		return;
+	const wchar_t *exe = wcsrchr(path, L'\\');
+	exe = exe ? exe + 1 : path;
+	for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
+		if (!_wcsicmp(exe, known[i].exe)) {
+			strcpy(g_game_id, known[i].id);
+			return;
+		}
+	}
+	say("unrecognised executable \"%ls\": relaying under the shared id", exe);
+}
+
+static bool relay_open(void)
+{
+	if (g_relay_tried)
+		return g_sock != INVALID_SOCKET;
+	g_relay_tried = true;
+
+	// An escape hatch, because this proxy sits in the path of every game
+	// it is staged into and must always be possible to neutralise
+	// without uninstalling it.
+	char off[8];
+	if (GetEnvironmentVariableA("LOGI_ESCAPE_RELAY", off, sizeof(off)) && off[0] == '0') {
+		g_relay_off = true;
+		say("LOGI_ESCAPE_RELAY=0: capturing only, not relaying");
+		return false;
+	}
+
+	WSADATA wsa;
+	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+		say("WSAStartup failed: not relaying");
+		return false;
+	}
+	g_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (g_sock == INVALID_SOCKET) {
+		say("socket() failed (%d): not relaying", WSAGetLastError());
+		return false;
+	}
+	// Overridable so the rate limiter and packet format can be exercised
+	// against a test listener while the real daemon keeps the usual port.
+	unsigned short port = 20780;
+	char pbuf[8];
+	if (GetEnvironmentVariableA("LOGI_ESCAPE_RELAY_PORT", pbuf, sizeof(pbuf))) {
+		int p = atoi(pbuf);
+		if (p > 0 && p < 65536)
+			port = (unsigned short)p;
+	}
+	ZeroMemory(&g_dest, sizeof(g_dest));
+	g_dest.sin_family = AF_INET;
+	g_dest.sin_port = htons(port);
+	g_dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	resolve_game_id();
+	say("relaying telemetry to 127.0.0.1:20780 as \"%s\"", g_game_id);
+	return true;
+}
+
+// The 28-byte relay datagram, laid out to match logi_wheel_core::relay.
+// Throttle and gear are not carried by the escape payload; they are left at
+// zero, which is what that format means by "the sender cannot tell".
+static void relay_send(float rpm, float max_rpm)
+{
+	if (g_relay_off || !relay_open())
+		return;
+
+	// The SDK's haptic thread runs at 187/sec, three times the rate the
+	// existing relays send at (logi-tf-relay sends every 16 ms) and far
+	// more than an RPM figure needs. Send at that same 16 ms and drop the
+	// samples between, so this producer looks like the one the daemon was
+	// built and measured against rather than a new load on it.
+	static ULONGLONG last_ms;
+	ULONGLONG now = GetTickCount64();
+	if (last_ms && now - last_ms < 16)
+		return;
+	last_ms = now;
+
+	unsigned char pkt[28];
+	ZeroMemory(pkt, sizeof(pkt));
+	memcpy(pkt, "LTFR", 4);
+	pkt[4] = 2; // wire version
+	pkt[5] = 0; // flags: airborne unknown from here
+	size_t n = strlen(g_game_id);
+	memcpy(pkt + 6, g_game_id, n > 8 ? 8 : n);
+	memcpy(pkt + 14, &rpm, 4);
+	memcpy(pkt + 18, &max_rpm, 4);
+	// 22..26 throttle, 26..28 gear: already zero.
+	sendto(g_sock, (const char *)pkt, sizeof(pkt), 0, (sockaddr *)&g_dest, sizeof(g_dest));
 }
 
 // ------------------------------------------------------- device wrapper
@@ -244,16 +364,22 @@ public:
 		// enough to watch a value track the engine, rarely enough to
 		// stay readable. Everything else is logged in full, since the
 		// rest of the vocabulary is what we still do not know.
-		bool stream = e && e->dwCommand == 0 && e->cbInBuffer == 20;
+		bool stream = e && e->dwCommand == 0 && e->cbInBuffer == 20 && e->lpvInBuffer;
 		bool loud = stream ? (n % 20) == 0 : (n <= 200 || (n % 1000) == 0);
-		if (loud && stream) {
+		if (stream) {
 			const unsigned char *b = (const unsigned char *)e->lpvInBuffer;
 			unsigned int type;
 			float f[3];
 			memcpy(&type, b + 4, 4);
 			memcpy(f, b + 8, 12);
-			say("Escape #%ld  stream type=%u  a=%.1f  b=%.1f  c=%.1f", (long)n,
-			    type, f[0], f[1], f[2]);
+			// Every sample is relayed, not only the logged ones: the
+			// log is thinned to stay readable, the haptics are not.
+			// The third field is the limiter, which is what the
+			// daemon means by max_rpm; RPM can briefly exceed it.
+			relay_send(f[0], f[2]);
+			if (loud)
+				say("Escape #%ld  stream type=%u  rpm=%.1f  b=%.1f  limit=%.1f",
+				    (long)n, type, f[0], f[1], f[2]);
 		} else if (loud && e) {
 			say("Escape #%ld  command=0x%08lx  in=%lu out=%lu", (long)n,
 			    (unsigned long)e->dwCommand, (unsigned long)e->cbInBuffer,
