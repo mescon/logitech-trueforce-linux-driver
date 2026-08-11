@@ -11,8 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 logi-wheel-core = { path = "../logi-wheel-core" }
-ratatui = "0.28"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 # Only for the Test view's evdev force-feedback ioctls (EVIOCSFF/EVIOCRMFF/EVIOCGBIT)
 # and the non-blocking open flag; already present in the workspace tree.
 libc = "0.2"
