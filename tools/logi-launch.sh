@@ -178,13 +178,23 @@ say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-u
 # interface. Set here so nobody has to remember it, and NEVER guessed: on a
 # wheel that cannot take it this costs the owner force feedback, so it is
 # set only when the plan says this wheel wants it for this game.
-if [ "$want_hidraw" = "1" ]; then
-	export PROTON_ENABLE_HIDRAW=1
-	say "set PROTON_ENABLE_HIDRAW=1"
-elif [ "$want_hidraw" = "0" ]; then
+# The value is normally `0xVID/0xPID` naming the wheel, because Proton
+# matches this variable as a substring against each device's own
+# `0xVID/0xPID` (dlls/winebus.sys/main.c). The bare `1` short-circuits that
+# test and hands EVERY HID device on the machine to the game: keyboards,
+# headsets, other controllers. It is still accepted here, as the fallback
+# when no wheel could be named and for anyone who set it by hand.
+case "$want_hidraw" in
+"") ;;
+0)
 	export PROTON_ENABLE_HIDRAW=0
 	say "set PROTON_ENABLE_HIDRAW=0"
-fi
+	;;
+*)
+	export PROTON_ENABLE_HIDRAW="$want_hidraw"
+	say "set PROTON_ENABLE_HIDRAW=$want_hidraw"
+	;;
+esac
 
 # Work out what to start in the prefix, if the caller did not say.
 if [ -z "$HELPER_EXE" ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; then

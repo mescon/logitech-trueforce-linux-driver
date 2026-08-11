@@ -559,6 +559,21 @@ impl<S: SysfsIo> Device<S> {
         self.model
     }
 
+    /// This wheel's USB product id, read from its own sysfs directory name.
+    ///
+    /// Needed to scope `PROTON_ENABLE_HIDRAW` to the wheel. Proton matches
+    /// that variable as a substring against `0xVID/0xPID` per device
+    /// (`dlls/winebus.sys/main.c`), and the bare value `1` short-circuits
+    /// that test and hands EVERY HID device on the machine to the game:
+    /// keyboards, headsets, other controllers. Naming the wheel is what the
+    /// pattern form exists for.
+    ///
+    /// `None` for a device built from a test or dev-override directory,
+    /// whose name is not in the kernel's `BUS:VID:PID.SEQ` shape.
+    pub fn product_id(&self) -> Option<u16> {
+        pid_from_hid_dir(self.hid_dir.as_ref()?)
+    }
+
     /// What this wheel can do, for resolving a game's setup recipe (see
     /// [`crate::games::WheelCaps`]).
     ///

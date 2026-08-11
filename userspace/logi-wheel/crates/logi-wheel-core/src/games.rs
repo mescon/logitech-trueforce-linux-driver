@@ -884,6 +884,19 @@ pub struct LaunchPlan {
     pub supported: bool,
     /// Why the plan is what it is, in the order it should be shown.
     pub notes: Vec<String>,
+    /// The `PROTON_ENABLE_HIDRAW` value to use when [`Self::hidraw`] is on:
+    /// `0xVID/0xPID` naming the attached wheel.
+    ///
+    /// Proton matches that variable as a substring against each device's own
+    /// `0x%04X/0x%04X` (`dlls/winebus.sys/main.c`). The bare value `1`
+    /// short-circuits the test and hands EVERY HID device to the game, so a
+    /// keyboard, a headset and any other controller all become raw HID
+    /// alongside the wheel. Naming the wheel is what the pattern form is
+    /// for, and it is what issue #60 ran into.
+    ///
+    /// `None` when no wheel is attached to name, in which case `1` is used
+    /// and the old blunt behaviour applies.
+    pub hidraw_scope: Option<String>,
 }
 
 impl LaunchPlan {
@@ -967,7 +980,10 @@ impl LaunchPlan {
             }
         }
         match self.hidraw {
-            Some(true) => out.push("hidraw=1".into()),
+            Some(true) => out.push(format!(
+                "hidraw={}",
+                self.hidraw_scope.as_deref().unwrap_or("1")
+            )),
             Some(false) => out.push("hidraw=0".into()),
             None => {}
         }
@@ -997,7 +1013,10 @@ impl LaunchPlan {
         }
         let mut parts: Vec<String> = Vec::new();
         match self.hidraw {
-            Some(true) => parts.push("sets PROTON_ENABLE_HIDRAW=1 so the game's own TrueForce reaches the wheel".into()),
+            Some(true) => parts.push(format!(
+                "sets PROTON_ENABLE_HIDRAW={} so the game's own TrueForce reaches the wheel",
+                self.hidraw_scope.as_deref().unwrap_or("1")
+            )),
             Some(false) => parts.push("sets PROTON_ENABLE_HIDRAW=0, which this game needs for force feedback".into()),
             None => {}
         }

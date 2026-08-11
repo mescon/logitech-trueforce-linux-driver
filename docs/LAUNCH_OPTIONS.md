@@ -129,7 +129,7 @@ If something did not happen, that file says which step declined and why.
 | Option | What it does | When you want it |
 |---|---|---|
 | `logi-launch %command%` | Works out everything below for this game and this wheel, and applies it | **Every racing game.** It is the only line most people need |
-| `PROTON_ENABLE_HIDRAW=1 %command%` | Lets the game talk to the wheel's raw HID interface, which is how Logitech's SDK delivers TrueForce | Set by `logi-launch`. By hand: a **direct-drive wheel** (RS50, G PRO) in a game with its own TrueForce (ACC, Assetto Corsa EVO), with the TrueForce files installed |
+| `PROTON_ENABLE_HIDRAW=0x046D/0xC276 %command%` | Lets the game talk to the wheel's raw HID interface, which is how Logitech's SDK delivers TrueForce | Set by `logi-launch`, scoped to your wheel. By hand: a **direct-drive wheel** (RS50, G PRO) in a game with its own TrueForce (ACC, Assetto Corsa EVO), with the TrueForce files installed. Use your own product id, not `0xC276` |
 | *(leave it out)* | The wheel stays an ordinary Linux force-feedback device | By hand: a **G923**, always |
 | `logi-ffb %command%` | Presents a virtual wheel that speaks the older DirectInput force-feedback protocol, and forwards it to your real wheel | Applied by `logi-launch`. By hand: games that only do DirectInput FFB (Le Mans Ultimate, rFactor 2, iRacing, RaceRoom), on **any** wheel including a G923 |
 
@@ -152,9 +152,19 @@ PROTON_ENABLE_NVAPI=1 VKD3D_CONFIG=descriptor_heap gamemoderun logi-launch %comm
 ```
 
 That line is the same on an RS50 and on a G923. Do not add
-`PROTON_ENABLE_HIDRAW=1` to it: `logi-launch` sets that itself on the wheels
+`PROTON_ENABLE_HIDRAW` to it: `logi-launch` sets that itself on the wheels
 that want it, and setting it yourself is how it ends up on a G923, where it
 costs that wheel its force feedback.
+
+### Why it names your wheel rather than saying `1`
+
+Proton matches this variable as a **substring** against each device's own
+`0xVID/0xPID` (`dlls/winebus.sys/main.c`). The bare value `1` short-circuits
+that test and returns true for **every HID device on the machine**, so your
+keyboard, headset and any other controller are handed to the game as raw HID
+alongside the wheel. Naming the wheel is what the pattern form is for, and
+what `logi-launch` now does. Reported as issue #60, where `1` cost an RS50
+owner their force feedback in Assetto Corsa EVO.
 
 Le Mans Ultimate, on any wheel:
 
@@ -170,7 +180,7 @@ DirectInput force feedback. You do not type `logi-ffb` yourself.
 If you would rather not use the wrapper:
 
 ```
-PROTON_ENABLE_NVAPI=1 VKD3D_CONFIG=descriptor_heap PROTON_ENABLE_HIDRAW=1 gamemoderun %command%   # AC EVO, direct-drive wheel
+PROTON_ENABLE_NVAPI=1 VKD3D_CONFIG=descriptor_heap PROTON_ENABLE_HIDRAW=0x046D/0xC276 gamemoderun %command%   # AC EVO, RS50
 PROTON_ENABLE_NVAPI=1 VKD3D_CONFIG=descriptor_heap gamemoderun %command%                          # AC EVO, G923
 logi-ffb %command%                                                                                # Le Mans Ultimate, either wheel
 ```

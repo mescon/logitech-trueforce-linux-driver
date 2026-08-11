@@ -404,7 +404,24 @@ fn launch_plan(
     // Everything below this point is decided in logi-wheel-core, so the
     // wrapper's recipe and the GUI's description of it cannot disagree.
     // They did before: only this printer knew which wheel was attached.
-    for line in games::LaunchPlan::for_game(game, caps, ambiguous).lines() {
+    let mut plan = games::LaunchPlan::for_game(game, caps, ambiguous);
+    // Name the wheel in PROTON_ENABLE_HIDRAW rather than saying "1", which
+    // Proton reads as "every HID device on this machine" (issue #60). With
+    // several wheels attached, scope to the one whose recipe this is.
+    // Only a real wheel's id: logi-ffb's virtual wheel is a HID device too,
+    // and while the proxy is running discovery can return it. Scoping the
+    // variable to that would point Proton at a device the game's TrueForce
+    // cannot reach, and the failure would be silent.
+    plan.hidraw_scope = wheels
+        .iter()
+        .find(|d| d.wheel_caps().sdk_trueforce == caps.sdk_trueforce)
+        .and_then(|d| d.product_id())
+        .filter(|pid| {
+            logi_wheel_core::device::DD_PIDS.contains(pid)
+                || logi_wheel_core::device::G923_PIDS.contains(pid)
+        })
+        .map(|pid| format!("0x046D/0x{pid:04X}"));
+    for line in plan.lines() {
         println!("{line}");
     }
     Ok(())
