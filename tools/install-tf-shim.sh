@@ -38,8 +38,11 @@ WHEEL_CLSID='{63bd165d-1584-4e75-ab56-08330350545f}'
 TF_PFX_DIR='drive_c/Program Files/Logi/Trueforce/1_3_11'
 WHEEL_PFX_DIR='drive_c/Program Files/Logi/wheel_sdk/9_1_0'
 
-TF_WINE_PATH='C:\\Program Files\\Logi\\Trueforce\\1_3_11\\trueforce_sdk_x64.dll'
-WHEEL_WINE_PATH='C:\\Program Files\\Logi\\wheel_sdk\\9_1_0\\logi_steering_wheel_x64.dll'
+# The Windows path the registry advertises is derived from the directory
+# above rather than written out a second time. Keeping one copy is not
+# tidiness: the two were separate strings until 0.34.1, in bash quoting that
+# halves every backslash, and the registered path silently named a file that
+# did not exist. Escaping for the .reg format happens once, in the writer.
 
 # Directory holding your own copies of Logitech's signed SDK DLLs, laid
 # out the same way Logitech ships them on Windows (a "Logi/..." subtree).
@@ -118,8 +121,9 @@ resolve_sdk_dir() {
 	# game reading the registered path finds the version it was given.
 	TF_PFX_DIR="drive_c/Program Files/Logi/Trueforce/$TF_VER"
 	WHEEL_PFX_DIR="drive_c/Program Files/Logi/wheel_sdk/$WHEEL_VER"
-	TF_WINE_PATH="C:\\Program Files\\Logi\\Trueforce\\$TF_VER\\trueforce_sdk_x64.dll"
-	WHEEL_WINE_PATH="C:\\Program Files\\Logi\\wheel_sdk\\$WHEEL_VER\\logi_steering_wheel_x64.dll"
+	# No Windows paths here: the writer derives them from the two directories
+	# above, so a version change cannot leave the registry pointing at the
+	# directory we no longer install into.
 }
 
 RANGE_PROXY=${RANGE_PROXY:-0}
@@ -249,10 +253,29 @@ install_in_prefix() {
 	# 2) Register both CLSIDs. Wine's system.reg is a plain text file; we
 	#    edit it directly rather than launching the prefix's wine binary
 	#    (which may be Proton's and inconvenient to invoke from here).
-	python3 - "$sys_reg" "$TF_CLSID" "$TF_WINE_PATH" "$WHEEL_CLSID" "$WHEEL_WINE_PATH" <<'PY'
+	python3 - "$sys_reg" "$TF_CLSID" "$TF_PFX_DIR" "$WHEEL_CLSID" "$WHEEL_PFX_DIR" <<'PY'
 import os, sys, time
 
-reg_path, tf_clsid, tf_path, wheel_clsid, wheel_path = sys.argv[1:6]
+reg_path, tf_clsid, tf_dir, wheel_clsid, wheel_dir = sys.argv[1:6]
+
+
+def wine_path(pfx_dir, dll):
+    """"drive_c/Program Files/Logi/..." -> "C:\\Program Files\\Logi\\...\\dll"."""
+    if not pfx_dir.startswith("drive_c/"):
+        sys.exit(f"install path is not under drive_c: {pfx_dir}")
+    return "C:\\" + pfx_dir[len("drive_c/"):].replace("/", "\\") + "\\" + dll
+
+
+def reg_value(s):
+    """Escape a string for a .reg value, where a lone backslash is an escape.
+
+    Without this the parser eats the separators and the path names nothing.
+    """
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+tf_path = wine_path(tf_dir, "trueforce_sdk_x64.dll")
+wheel_path = wine_path(wheel_dir, "logi_steering_wheel_x64.dll")
 
 # TF SDK registration: default value of the CLSID key holds the DLL path.
 tf_key = f"[Software\\\\Classes\\\\CLSID\\\\{tf_clsid}]"
@@ -295,7 +318,7 @@ ts = int(time.time())
 
 # TF SDK
 out.append(f"{tf_key} {ts}\n")
-out.append(f'@="{tf_path}"\n')
+out.append(f'@="{reg_value(tf_path)}"\n')
 out.append("\n")
 
 # Wheel SDK - friendly name at top, path under ServerBinary
@@ -303,7 +326,7 @@ out.append(f"{wheel_key} {ts}\n")
 out.append('@="Logitech GHUB Legacy Steering Wheel SDK"\n')
 out.append("\n")
 out.append(f"{wheel_sb_key} {ts}\n")
-out.append(f'@="{wheel_path}"\n')
+out.append(f'@="{reg_value(wheel_path)}"\n')
 out.append("\n")
 
 tmp = reg_path + ".new"
@@ -311,7 +334,50 @@ with open(tmp, "w") as f:
     f.writelines(out)
 os.replace(tmp, reg_path)
 PY
+
+	# Read the registration back and check it names a file that is really
+	# there. A CLSID pointing at a path the game cannot open fails silently:
+	# the game asks for TrueForce, gets nothing, and plays on without it.
+	# That is exactly how a backslash-escaping bug went unnoticed through
+	# five releases, so the postcondition is checked rather than assumed.
+	verify_registered_dll "$sys_reg" "$TF_CLSID" "$prefix" || return 1
+
 	echo "  installed $prefix"
+}
+
+# Resolve the path a CLSID advertises back to a real file under the prefix.
+verify_registered_dll() {
+	local reg=$1 clsid=$2 pfx=$3 win unix
+	win=$(python3 - "$reg" "$clsid" <<'PY'
+import re, sys
+reg_path, clsid = sys.argv[1:3]
+key = f"[Software\\\\Classes\\\\CLSID\\\\{clsid}]"
+want = False
+for line in open(reg_path, encoding="utf-8", errors="replace"):
+    if line.startswith(key):
+        want = True
+        continue
+    if want and line.startswith("@="):
+        # Undo the .reg escaping to get the path Wine will hand the game.
+        print(re.sub(r'\\(.)', r'\1', line.strip()[3:-1]))
+        break
+    if want and line.startswith("["):
+        break
+PY
+	)
+	if [ -z "$win" ]; then
+		echo "  error: no DLL path registered for $clsid" >&2
+		return 1
+	fi
+	# "C:\Program Files\..." -> "<pfx>/drive_c/Program Files/..."
+	unix="$pfx/drive_c/${win#?:\\}"
+	unix=${unix//\\//}
+	if [ ! -f "$unix" ]; then
+		echo "  error: the registry points at a file that is not there:" >&2
+		echo "    registered: $win" >&2
+		echo "    resolves to: $unix" >&2
+		return 1
+	fi
 }
 
 uninstall_in_prefix() {
