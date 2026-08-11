@@ -540,6 +540,77 @@ fn rev_long(device_index: u8, feature_index: u8, function: u8, params: &[u8]) ->
     r
 }
 
+/// The `fn2` state a wheel reports when its rev display is live, and the
+/// `fn3` effect that puts it there.
+///
+/// Measured on hardware 2026-08-11, reading the wheels' own replies:
+///
+/// | wheel | `fn2` state | `fn6` set-level |
+/// |---|---|---|
+/// | RS50 (`c276`) | `02` | accepted |
+/// | G923 PS (`c266`) | `00` | **ERROR LogitechInternal(5)** |
+/// | G923 Xbox (`c26e`), ours | `00` | **ERROR LogitechInternal(5)** |
+/// | G923 Xbox, driven by Windows | `02` | accepted, 437 times |
+///
+/// Sending `fn3` with effect 2 moves a G923 from state 0 to state 2, after
+/// which the same level command is accepted instead of refused. That is the
+/// whole of issue #27's rev-light failure.
+const REV_DISPLAY_STATE: u8 = 0x02;
+const REV_EFFECT_DISPLAY: u8 = 0x02;
+
+/// Put the strip into rev-display mode, but only if it is not already there.
+///
+/// The conditional is the point. `fn3` was in this sequence once and was
+/// removed, because on an RS50 it force-switches LIGHTSYNC to effect 2 and
+/// overrides whatever the owner had chosen. That removal was correct for the
+/// RS50, which reports state 2 already and never needed the call, and it
+/// silently broke every wheel that does not: a G923 stays in state 0 forever
+/// and refuses every level with an internal error.
+///
+/// Asking first serves both. A wheel already displaying is left completely
+/// alone, so the RS50 regression cannot return; a wheel that is not gets the
+/// one call that enables it.
+///
+/// Best-effort by design: a wheel that will not answer the state query is
+/// left as it is rather than switched on a guess, and the caller still sends
+/// its level. Failing to enable is not a reason to send nothing.
+fn ensure_rev_display_mode<T: HidppIo>(io: &mut T, idx: u8) {
+    let Some(state) = rev_state(io, idx) else { return };
+    if state == REV_DISPLAY_STATE {
+        return;
+    }
+    let _ = rev_send(io, idx, 3, REV_EFFECT_DISPLAY);
+    std::thread::sleep(std::time::Duration::from_millis(4));
+}
+
+/// The wheel's current rev-display state via `fn2`, or `None` if it does not
+/// answer.
+fn rev_state<T: HidppIo>(io: &mut T, idx: u8) -> Option<u8> {
+    if io.long_requests_only() {
+        io.write_report(&rev_long(0xff, idx, 2, &[0x00])).ok()?;
+    } else {
+        rev_send(io, idx, 2, 0).ok()?;
+    }
+    // Its own reply, not somebody else's: the joystick interface streams
+    // axis reports continuously, and on a wheel that carries HID++ there
+    // too they arrive interleaved with this answer.
+    let deadline = std::time::Instant::now() + REPORT_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        let resp = io.read_report(REPORT_TIMEOUT).ok()?;
+        if resp.len() < 5 || !matches!(resp[0], REPORT_ID_SHORT | REPORT_ID_LONG | REPORT_ID_VERY_LONG) {
+            continue;
+        }
+        // An error reply carries 0xFF where a normal one echoes the feature.
+        if resp[2] == 0xFF {
+            return None;
+        }
+        if resp[2] == idx && (resp[3] >> 4) == 2 {
+            return Some(resp[4]);
+        }
+    }
+    None
+}
+
 /// One parameterless 0x807A send in the level-based dialect: `fn` in the
 /// high nibble, G HUB's software id in the low one.
 ///
@@ -587,6 +658,7 @@ pub fn rev_level_via_lightsync<T: HidppIo>(
         rev_send(io, idx, function, p0)?;
         std::thread::sleep(std::time::Duration::from_millis(4));
     }
+    ensure_rev_display_mode(io, idx);
     rev_send(io, idx, 2, 0)?;
     let long = rev_long(0xff, idx, 6, &[0x00, 0x01, 0x00, leds, 0x00, level.min(leds)]);
     io.write_report(&long)
@@ -765,6 +837,66 @@ mod tests {
         let level = io.0.last().expect("a level command");
         assert_eq!(level[3], 0x6d, "fn6");
         assert_eq!(&level[4..10], &[0x00, 0x01, 0x00, 0x05, 0x00, 0x05]);
+    }
+
+    /// A `fn2` state reply, framed the way a wheel answers it.
+    fn state_reply(idx: u8, state: u8) -> Vec<u8> {
+        let mut r = vec![REPORT_ID_LONG, 0xff, idx, (2 << 4) | REV_SW_ID, state];
+        r.resize(20, 0);
+        r
+    }
+
+    /// Was `fn3` sent, and with what effect?
+    fn fn3_effect(sent: &[Vec<u8>], idx: u8) -> Option<u8> {
+        sent.iter()
+            .find(|r| r.len() > 4 && r[2] == idx && r[3] == (3 << 4) | REV_SW_ID)
+            .map(|r| r[4])
+    }
+
+    /// A wheel sitting in state 0 refuses every level with an internal
+    /// error until `fn3` puts its display into effect 2. Hardware-measured
+    /// on a G923 (`c266`) 2026-08-11, and the same state a G923 Xbox is in
+    /// when Windows is not driving it (issue #27).
+    #[test]
+    fn a_wheel_that_is_not_displaying_gets_switched_on() {
+        let mut io = MockIo::default();
+        io.push(state_reply(0x11, 0x00));
+        rev_level_via_lightsync(&mut io, 0x11, 5, LEDS_G923).unwrap();
+        assert_eq!(
+            fn3_effect(&io.sent, 0x11),
+            Some(REV_EFFECT_DISPLAY),
+            "a wheel in state 0 must be switched to the rev display, or every level is refused"
+        );
+    }
+
+    /// And the regression that got `fn3` removed in the first place must
+    /// not come back: on an RS50 it force-switches LIGHTSYNC to effect 2,
+    /// overriding whatever the owner chose. That wheel already reports
+    /// state 2, so asking first leaves it untouched.
+    #[test]
+    fn a_wheel_already_displaying_is_left_alone() {
+        let mut io = MockIo::default();
+        io.push(state_reply(0x0b, REV_DISPLAY_STATE));
+        rev_level_via_lightsync(&mut io, 0x0b, 5, LEDS_DIRECT_DRIVE).unwrap();
+        assert_eq!(
+            fn3_effect(&io.sent, 0x0b),
+            None,
+            "an RS50 reports state 2 already; sending fn3 there overrides the owner's LIGHTSYNC effect"
+        );
+    }
+
+    /// A wheel that will not answer the state query is left as it is rather
+    /// than switched on a guess, and the level still goes out: failing to
+    /// enable is not a reason to send nothing.
+    #[test]
+    fn a_silent_wheel_is_not_switched_on_a_guess_and_still_gets_its_level() {
+        let mut io = MockIo::default();
+        io.push_timeout();
+        rev_level_via_lightsync(&mut io, 0x11, 5, LEDS_G923).unwrap();
+        assert_eq!(fn3_effect(&io.sent, 0x11), None, "no answer is not a licence to switch modes");
+        let level = io.sent.last().expect("a level command");
+        assert_eq!(level[3], 0x6d, "the level command still goes out");
+        assert_eq!(level[9], 5, "carrying the level");
     }
 
     #[test]
