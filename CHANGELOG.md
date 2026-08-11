@@ -7,6 +7,24 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## 0.34.0 - unreleased
 
+**Force feedback no longer disappears when the raw HID interface is on.**
+Setting `PROTON_ENABLE_HIDRAW` makes Proton hand the game the raw HID
+device, and Wine's DirectInput drives force by writing HID PID reports to
+it. These wheels have no PID collection, so a game using DirectInput for
+force had nowhere to write: force feedback was there a moment earlier and
+then silent.
+
+The driver has been able to add that collection and route those writes into
+its real force-feedback path since April, as `inject_pid`, switched off
+because "only Proton + HIDRAW=1 users need it". That stopped being true when
+this project's own tooling began setting that variable for every
+direct-drive wheel playing Assetto Corsa Competizione or EVO. The situation
+it exists for became the normal one while the answer to it stayed off. It is
+now on by default, and `inject_pid=0` restores the old behaviour.
+
+Confirmed on an RS50: a constant force written as PID reports drove the
+wheel and released cleanly.
+
 **Rev lights on the G923 Xbox edition**, which have never worked on Linux.
 Two separate faults kept that strip dark, and either alone was enough.
 

@@ -195,20 +195,39 @@ MODULE_PARM_DESC(disable_tap_to_click,
  * interface 2. Needed for Proton's default hidraw-backed dinput
  * (no PROTON_ENABLE_HIDRAW required).
  *
- *   0 = off (default; no descriptor change, no override installed)
+ *   0 = off (no descriptor change, no override installed)
  *   1 = dry-run: inject descriptor, install override, LOG every PID output
  *       report we receive, but do NOT drive the wheel. Lets us observe
  *       what Wine actually writes before we trust our translations.
- *   2 = actuate: full translation, calls hidpp_dd_ff_upload/playback to drive
- *       the wheel via interface 2.
+ *   2 = actuate (default): full translation, calls hidpp_dd_ff_upload/playback
+ *       to drive the wheel via interface 2.
  *
  * Dry-run exists specifically so we can bring this up on a live wheel
  * without risking a slam from a mis-translated effect.
  */
-static uint inject_pid;
+/*
+ * On by default since 0.34.0.
+ *
+ * When it was added it was reasonable to leave off: the comment then read
+ * "only Proton + HIDRAW=1 users need it", and setting that variable was
+ * something a handful of people did by hand. Since then this project's own
+ * tooling sets it for every direct-drive wheel playing a game with built-in
+ * TrueForce, so the situation this exists for is now the NORMAL one, and
+ * leaving it off meant handing those owners a wheel with no force feedback
+ * and a module parameter to discover.
+ *
+ * Costs nothing when unused: a game that drives force through evdev never
+ * touches these reports, and the injected collection only appears on
+ * interface 0's descriptor, which such a game does not read. The
+ * translation lands in the same hidpp_dd_ff_* path the evdev engine uses,
+ * so the forces produced are the ones that engine already produces.
+ *
+ * Set inject_pid=0 to go back to the old behaviour.
+ */
+static uint inject_pid = 2;
 module_param(inject_pid, uint, 0644);
 MODULE_PARM_DESC(inject_pid,
-	"PID injection on interface 0 of direct-drive (RS50/G PRO) wheels: 0=off (default), 1=dry-run (log only), 2=actuate (drive the wheel).");
+	"PID injection on interface 0 of direct-drive (RS50/G PRO) wheels: 0=off, 1=dry-run (log only), 2=actuate (default). Needed for force feedback in games that read the wheel over raw HID, which is what PROTON_ENABLE_HIDRAW causes.");
 
 /*
  * HID++ software-id OR'd into every request's funcindex_clientid.

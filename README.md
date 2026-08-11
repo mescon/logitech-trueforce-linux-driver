@@ -570,121 +570,35 @@ logi-wheel --report
 
 ### No force feedback once the raw HID interface is on
 
-If a game had force feedback and lost it after `PROTON_ENABLE_HIDRAW` was
-set, this is the likely cause and there is a switch for it.
+**Fixed in 0.34.0; you should not hit this any more.** It is described here
+because the symptom is confusing and older versions still show it.
 
-With the raw interface on, Proton hands the game the raw HID device, and
-Wine's DirectInput drives force feedback by writing HID PID reports to it.
-**These wheels have no PID collection**, so those writes have nowhere to
-land: a game that uses DirectInput for force rather than Logitech's SDK gets
-silence. The driver can add that collection and route the writes to the real
-force-feedback path.
+With `PROTON_ENABLE_HIDRAW` set, Proton hands the game the raw HID device,
+and Wine's DirectInput drives force feedback by writing HID PID reports to
+it. These wheels have no PID collection of their own, so a game that uses
+DirectInput for force rather than Logitech's SDK had nowhere to write and
+you got silence, having had force feedback a moment earlier.
 
-First confirm it is what is happening, with a mode that logs and drives
-nothing:
+The driver adds that collection and routes the writes into its real
+force-feedback path. That is `inject_pid`, and since 0.34.0 it is on by
+default. It costs nothing when unused: a game driving force through the
+normal Linux path never touches those reports.
 
-```bash
-echo 1 | sudo tee /sys/module/hid_logitech_dd/parameters/inject_pid
-# replug the wheel, play for a moment, then:
-sudo dmesg | grep "PID \[dry\]"
+If you need to turn it off:
+
+```
+echo 0 | sudo tee /sys/module/hid_logitech_dd/parameters/inject_pid
 ```
 
-Lines there mean the game **is** writing DirectInput force-feedback reports
-that currently go nowhere. In that case, turn actuation on:
+then replug the wheel, or put `options hid-logitech-dd inject_pid=0` in
+`/etc/modprobe.d/logitech-dd.conf` to keep it. `inject_pid=1` is a middle
+setting that logs what a game writes without driving the wheel, which is
+useful when reporting a problem.
 
-```bash
-echo 2 | sudo tee /sys/module/hid_logitech_dd/parameters/inject_pid
-```
-
-and replug the wheel again. To keep it, put
-`options hid-logitech-dd inject_pid=2` in `/etc/modprobe.d/logitech-dd.conf`.
-
-No lines mean the game is not using DirectInput for force, and this is not
-your problem; say so on an issue, because that result is worth having.
-
-> **What is confirmed, and what is not.** On an RS50 on 2026-08-11, an
-> injected force did drive the wheel: a constant effect written as PID
-> reports rotated it to its stop and released cleanly, with the driver
-> logging the whole path. So the mechanism works.
->
-> What has not been confirmed is a real game getting its force feedback back
-> this way. That is why it is not yet the default, along with the failure
-> mode: a mis-translated effect on a direct-drive wheel means the wheel
-> slams, not a missing feature. Mode 1 cannot do that, since it logs and
-> returns without touching the wheel.
->
-> Worth knowing before you try it: at 15% wheel strength, a force of 2000 out
-> of 32767 was still enough to drive the wheel all the way to its stop. These
-> wheels have a lot of authority at small numbers. Do not hold it during the
-> first test.
-
-It collects the versions, which wheels are bound and to what, every wheel
-setting, your simulated-TrueForce config, and which udev rules are
-installed. It deliberately withholds your wheel's serial number and the
-names you gave your profiles and lighting slots, none of which help diagnose
-anything. Do not paste raw `dmesg` instead: the driver logs the serial at
-probe. The report ends with a `dmesg` command that filters it out.
-
-Other diagnostics, when a specific question comes up:
-
-| command | answers |
-|---|---|
-| `logi-wheel --report` | everything below at once, safe to paste |
-| `logi-wheel --hidpp-features` | which HID++ features the wheel implements |
-| `logi-wheel --led-probe` | which rev-light command a wheel obeys |
-| `./tools/setup.sh doctor` | whether the install is complete |
-| open logi-wheel with no wheel found | the app says which check failed and offers the fix |
-| `tools/hidpp-feature-probe.py` | feature list without building anything |
-| `tools/wheel-rotation-watch.py` | measures how far the wheel actually moved |
-
-The driver also logs, once per plug-in, which HID++ features your wheel has
-and the effect timer's rate. `sudo dmesg | grep -i logitech | grep -v serial`.
-
-- **No force feedback / no `wheel_*` files (`range`/`gain` on a G923; wheel
-  stuck on `hid-generic`):** the driver did not bind. Run `sudo
-  logi-rebind-wheel`, which moves the wheel onto this driver without a
-  replug. If that does not do it, `./tools/setup.sh doctor` from a checkout
-  says which part of the install is missing, or check by hand: `lsmod | grep
-  hid_logitech_dd`, replug the wheel, read `dmesg`.
-- **Force feedback pulls the wrong way** (native and Wine/Proton games can
-  disagree about direction): toggle **Invert constant force** in logi-wheel
-  (the `wheel_ffb_constant_sign` attribute).
-- **A game stops seeing the wheel after a driver reload:** restart Steam fully;
-  its device list goes stale across reloads.
-- **Rotation snaps to 90° (45° each way) when a sim starts:** not your setup,
-  and not the wheel. Logitech's TrueForce SDK asks G HUB how far your wheel
-  turns; under Proton nothing answers, and it falls back to 90, the minimum of
-  the wheel's legal 90-2700 range.
-
-  On the **direct-drive wheels** the range really is written, and the driver
-  puts it back by itself (`wheel_range_restore`, on by default). On the
-  **G923** the wheel is never actually changed: the rim keeps its full travel,
-  visible in a game's own config screen, and the game clamps its own steering
-  instead.
-
-  There is also a shim that answers the question the SDK cannot, so a game
-  gets your real rotation rather than the fallback:
-
-  ```bash
-  ./tools/install-tf-shim.sh --all-steam --range-proxy
-  ```
-
-  It passes every other SDK call straight through to Logitech's own library
-  and answers only the rotation query. Still being validated on hardware
-  (issue #27); `--uninstall` puts the original back.
-- **Force feedback feels vague, or unrelated to what the car is doing, on
-  Debian 13 / MX Linux 25:** check your kernel. Debian's **6.12 series from
-  about 6.12.90 onward** produces exactly this, and it is not the driver:
-  an owner reproduced it on 6.12.90 and 6.12.100 and had correct force
-  feedback on the same machine, same wheel and same driver commit, under
-  **6.18.15** (issue #53). Debian 12's 6.12.35 is also unaffected, so
-  something changed within the 6.12 stable branch. Install a newer kernel
-  (on MX Linux, the AHS repository ships one) rather than chasing wheel
-  settings.
-
-More cases, with commands, are on the
-[Troubleshooting](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Troubleshooting)
-wiki page.
+> Confirmed on an RS50 on 2026-08-11: a constant force written as PID
+> reports rotated the wheel and released cleanly. Worth knowing if you test
+> it yourself, because the numbers are not intuitive: at 15% wheel strength,
+> a force of 2000 out of 32767 drove the wheel all the way to its stop.
 
 ## Documentation
 
