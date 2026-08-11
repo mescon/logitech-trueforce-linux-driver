@@ -127,6 +127,14 @@ static const char *dd_wheel_name(struct hid_device *hdev)
 		if (dd_product_claims_rs50(hdev))
 			return "RS50 (G PRO compatibility mode)";
 		return "G PRO";
+	/*
+	 * Gear-driven, and not a direct-drive wheel at all. It reaches this
+	 * file for its force feedback and, since 0.34.0, its rev lights, so
+	 * it appears in these logs and "DD wheel" would be actively
+	 * misleading in the one place an owner reads when reporting.
+	 */
+	case USB_DEVICE_ID_LOGITECH_G923_XBOX_WHEEL:
+		return "G923 (Xbox)";
 	default:
 		return "DD wheel";
 	}

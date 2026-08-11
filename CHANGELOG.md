@@ -5,6 +5,81 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.34.0 - unreleased
+
+**Rev lights on the G923 Xbox edition**, which have never worked on Linux.
+Two separate faults kept that strip dark, and either alone was enough.
+
+The display starts switched off. `0x807A` fn2 reports which effect the strip
+is showing and this wheel answers 0 for "nothing", in which state it refuses
+every level with an internal error. So a completely correct command looked
+ignored, which is what a month of issue #27 was spent chasing. Sending fn3
+with effect 2 starts the display, after which the same level is accepted.
+The call goes only to a wheel reporting 0: fn2 is not a boolean but the live
+effect, and switching a wheel that IS displaying would discard the colours
+its owner chose. That is why the call had been removed from this sequence
+once before.
+
+And nothing registered an LED device for that edition at all. It reaches
+neither the direct-drive path nor the classic one, so a correct protocol had
+nothing to write to. It now exposes the same five `::RPM1`..`RPM5` entries the
+PlayStation edition does, so `logi-tf-sim`, Oversteer and any LED-aware tool
+work unchanged.
+
+**The rev-light command states the strip's real length.** It always claimed
+ten LEDs. The level is a fraction of the stated length, so a five-LED G923
+was told it had ten and showed half of everything. The count now comes from
+the wheel.
+
+**`PROTON_ENABLE_HIDRAW` names your wheel** (`0x046D/0xC276`) instead of the
+bare `1`. Proton matches that variable as a substring against each device's
+own id, and `1` short-circuits the test and hands **every HID device on the
+machine** to the game: keyboards, headsets, other controllers. The id is read
+from the attached wheel, so nothing needs configuring.
+
+**`logi-launch` no longer trades away working force feedback.** Turning the
+raw HID interface on replaces the path force feedback normally arrives by,
+and this wheel's raw descriptor carries no force-feedback protocol of its
+own; Logitech's SDK is what fills that gap. On a prefix without those files
+the wrapper was taking force feedback away and giving nothing back. It now
+checks, declines, says why, and falls back to simulated TrueForce. With the
+files present nothing changes, and that remains the configuration to want:
+the game's own TrueForce instead of a synthesised engine note.
+
+**`logi-tf-sim` says when it cannot write the rev display.** A refused write
+was indistinguishable from a level that had not changed, so the daemon
+reported it was driving the display and then failed silently at 60 Hz. It now
+names the file, the reason and the fix, once.
+
+**Extra helpers can run inside a game's prefix** (`LOGI_LAUNCH_HELPERS`), so
+feeding SimHub on another machine and driving the wheel on this one are no
+longer alternatives.
+
+**The Setup page says what the launch option will do for each game**, on the
+wheel being managed, with the manual steps below it as the alternative rather
+than as a second conflicting recipe.
+
+**Documentation now starts with getting started**, covers all four wheels
+equally, and states something never written down: for Assetto Corsa
+Competizione and EVO on a direct-drive wheel, Logitech's files carry force
+feedback and not only TrueForce.
+
+### If you own a G923 Xbox edition, please check
+
+The rev-light path for that wheel is new code that has not been run on one.
+Its owner made the strip light by hand; nothing has driven it from a game.
+
+1. `dmesg | grep "rev strip"` should show
+   `G923 (Xbox): rev strip: 0x807A at index 0x12, 5 LEDs, display off (will be switched on)`.
+2. `ls /sys/class/leds | grep RPM` should list five entries.
+3. `echo 1 | sudo tee /sys/class/leds/*RPM1/brightness` should light the
+   outermost pair; `echo 0` should clear it.
+4. With `logi-tf-sim` running and a supported game, the strip should follow
+   engine RPM.
+5. **Force feedback should still work.** This release adds code to that
+   wheel's probe path, so a report that force feedback broke matters more
+   than a report that the lights did not light.
+
 ## 0.33.0 - 2026-08-11
 
 **One launch option now sets a game up, whatever wheel you have.** Put
