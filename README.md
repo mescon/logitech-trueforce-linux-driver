@@ -31,7 +31,7 @@ before this. See [G923 support](#g923-support).
 
 ## Getting started
 
-Three steps, whichever of these wheels you own.
+Four steps, whichever of these wheels you own.
 
 **1. Install it.** One command on most distributions: find yours in
 [Install](#install) below.
@@ -437,7 +437,7 @@ the wheel you actually have and applies it: the raw-HID setting only where
 that wheel wants it, the `logi-ffb` proxy for DirectInput games, the
 simulated-TrueForce daemon, and the telemetry relay inside the game's Proton
 prefix for the sims that need one. Games with their own TrueForce keep it and
-get nothing layered on top. It knows 28 titles by their Steam appid, and you
+get nothing layered on top. It knows 29 titles by their Steam appid, and you
 can teach it others. Full details, including how to add a game yourself, are
 in [docs/LAUNCH_OPTIONS.md](docs/LAUNCH_OPTIONS.md).
 

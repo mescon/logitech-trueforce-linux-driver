@@ -22,7 +22,7 @@ starts the telemetry relay inside the game's Proton prefix for the sims that
 need one. A game that needs none of it starts none of it, so leaving the
 line in place costs nothing.
 
-It knows 28 titles by their Steam appid. A game it does not know still gets
+It knows 29 titles by their Steam appid. A game it does not know still gets
 the daemon, which is all the UDP-telemetry games need, and you can describe
 it yourself (see [Teaching it a new game](#teaching-it-a-new-game)).
 
@@ -461,7 +461,7 @@ nothing ambiguous to resolve, and nothing to pass.
 
 ## Teaching it a new game
 
-`logi-launch` knows 28 titles by Steam appid. For anything else, or to
+`logi-launch` knows 29 titles by Steam appid. For anything else, or to
 override what it decides, write a line in
 `~/.config/logi-wheel/games.conf`:
 
