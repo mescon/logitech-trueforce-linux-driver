@@ -91,6 +91,12 @@ shared-memory section is not a conflict.
 wheel being managed, with the manual steps below it as the alternative rather
 than as a second conflicting recipe.
 
+**Two development tools are gone**, replaced by the app itself:
+`tools/rev-light-sweep.py` by `logi-wheel --led-probe` and
+`tools/hidpp-feature-probe.py` by `logi-wheel --hidpp-features`. Neither was
+installed by any package, and the app versions are the ones the
+documentation points at.
+
 **Documentation now starts with getting started**, covers all four wheels
 equally, and states something never written down: for Assetto Corsa
 Competizione and EVO on a direct-drive wheel, Logitech's files carry force

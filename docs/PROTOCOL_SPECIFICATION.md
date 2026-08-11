@@ -1237,8 +1237,24 @@ direction setting for the built-in sweep effects.
 > exposed by this driver as `wheel_rev_level` on real G PROs, with the RGB
 > attributes hidden there. Caution from the same source: bursting these
 > writes starves the wheel's shared HID++ command processor and cuts FFB
-> out on the Windows FFB path - pace level writes at G HUB's ~160 ms
-> cadence.
+> out on the Windows FFB path, so level writes are paced. The ~160 ms
+> figure quoted from that source is wrong: a first-party G HUB capture
+> (issue #20, iRacing) measures ~16.5 ms per pair, about 60 Hz. The driver
+> enforces a ~10 ms floor.
+>
+> **The display has to be switched on before it accepts a level**
+> (hardware-verified 2026-08-11, both G923 editions). `fn2` reports the live
+> effect, and a wheel answering **0** is displaying nothing: in that state
+> every `fn6` level is refused with HID++ error 5, `LogitechInternal`. The
+> `fn3 param 0x02` in the arm burst above is what starts it, after which the
+> identical level is accepted. An RS50 reports 2 and needs no such call, so
+> it must not be sent to a wheel already displaying: `fn2` is not a boolean,
+> and values 1-4 and 6-9 are the built-in sweeps and the owner's custom
+> slots, which `fn3` would overwrite.
+>
+> **`fn0` reports the strip length** in its second parameter: `0x0a` on the
+> direct-drive wheels, `0x05` on a G923. The level is a fraction of that
+> length, so a wheel told the wrong length shows the wrong fill.
 >
 > **RS50 accepts the same level command (hardware-verified 2026-07-20):**
 > writes to `wheel_rev_level` visibly drive the RS50's 10-LED strip too -
