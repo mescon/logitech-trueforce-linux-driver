@@ -120,34 +120,88 @@ def candidate_nodes():
     return out
 
 
-def drain(fd):
-    """Read anything the wheel has replied, so its queue does not back up."""
+# HID++ 2.0 error codes, as they come back in an error reply.
+HIDPP_ERRORS = {
+    0: "NoError",
+    1: "Unknown",
+    2: "InvalidArgument",
+    3: "OutOfRange",
+    4: "HWError",
+    5: "LogitechInternal",
+    6: "INVALID_FEATURE_INDEX",
+    7: "INVALID_FUNCTION_ID",
+    8: "Busy",
+    9: "Unsupported",
+}
+
+
+def describe_reply(b):
+    """One line for a reply, saying whether it is an error and to what.
+
+    The wheel answers every one of these commands, and until now this script
+    read those answers and threw them away. That is the same mistake the
+    rest of this investigation kept making: a test that reports only what it
+    SENT cannot tell "the wheel refused this" from "the wheel did it and the
+    lights are off for another reason". An error reply names the feature and
+    function that failed and why, which is the difference between guessing
+    and knowing.
+    """
+    if len(b) < 5:
+        return "short reply: %s" % b.hex(" ")
+    # An error reply carries 0xFF where a normal one echoes the feature
+    # index, then the feature and function it is complaining about.
+    if b[2] == 0xFF:
+        code = b[5] if len(b) > 5 else 0
+        return "ERROR on feature 0x%02X fn%d: %s (%d)" % (
+            b[3], b[4] >> 4, HIDPP_ERRORS.get(code, "code %d" % code), code)
+    return "ok: feature 0x%02X fn%d -> %s" % (b[2], b[3] >> 4, b[4:10].hex(" "))
+
+
+def drain(fd, seen):
+    """Collect the wheel's replies into `seen` instead of discarding them."""
     while True:
-        r, _, _ = select.select([fd], [], [], 0)
+        r, _, _ = select.select([fd], [], [], 0.002)
         if not r:
             return
         try:
-            os.read(fd, 64)
+            b = os.read(fd, 64)
         except OSError:
             return
+        # Ignore the axis reports the joystick interface streams constantly;
+        # only HID++ replies start with these report ids.
+        if b and b[0] in (0x10, 0x11, 0x12):
+            seen.append(describe_reply(b))
 
 
 def hold(fd, reports, seconds, level_on):
-    """Send `reports`, then repeat the level pair for `seconds`."""
+    """Send `reports`, then repeat the level pair for `seconds`.
+
+    Returns the distinct replies the wheel gave, in the order first seen.
+    Distinct rather than all of them: the level pair goes out about eleven
+    times a second for five seconds, so the raw list is a hundred copies of
+    the same two lines.
+    """
+    seen = []
     for r in reports:
         os.write(fd, r)
-        drain(fd)
+        drain(fd, seen)
         time.sleep(0.01)
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         for r in level_pair(level_on):
             os.write(fd, r)
-            drain(fd)
+            drain(fd, seen)
         time.sleep(REFRESH)
     # Leave it dark rather than stuck lit from the previous test.
     for r in level_pair(0):
         os.write(fd, r)
-        drain(fd)
+        drain(fd, seen)
+
+    distinct = []
+    for line in seen:
+        if line not in distinct:
+            distinct.append(line)
+    return distinct
 
 
 def main():
@@ -180,8 +234,16 @@ def main():
                 print("cannot open (%s)" % e.strerror)
                 continue
             try:
-                hold(fd, reports, HOLD, LEVEL)
+                replies = hold(fd, reports, HOLD, LEVEL)
                 print("sent")
+                if replies:
+                    for line in replies:
+                        print("          %s" % line)
+                else:
+                    # Nothing came back at all, which is itself a result: the
+                    # wheel answers HID++ on this interface, so silence means
+                    # the requests are not reaching it as HID++ requests.
+                    print("          (no HID++ reply of any kind)")
             except OSError as e:
                 print("refused (%s)" % e.strerror)
             finally:
