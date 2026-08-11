@@ -184,6 +184,29 @@ say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-u
 # test and hands EVERY HID device on the machine to the game: keyboards,
 # headsets, other controllers. It is still accepted here, as the fallback
 # when no wheel could be named and for anyone who set it by hand.
+# Turning this on REMOVES a working force-feedback path, and only Logitech's
+# own TrueForce files put one back.
+#
+# Without it, Proton hands the game an evdev-backed device and force feedback
+# works with nothing installed. With it, the game gets the raw HID device
+# instead, and this wheel's descriptor has no PID collection, so the older
+# Windows force-feedback protocol has nowhere to land. What remains is
+# Logitech's SDK, which is what those files are.
+#
+# So on a prefix without them, setting it costs the owner their force
+# feedback and gives nothing back. That is issue #60, where it read as
+# "logi-launch gives me no FFB". Checked here rather than in the plan
+# because only this wrapper knows which prefix the game is launching with.
+shim_dir="$prefix_root/pfx/drive_c/Program Files/Logi/Trueforce"
+have_tf_files=0
+if [ -n "$prefix_root" ]; then
+	# Any version directory holding the SDK dll counts; the version numbers
+	# are whatever that person's G HUB shipped.
+	for f in "$shim_dir"/*/trueforce_sdk_x64.dll; do
+		[ -f "$f" ] && have_tf_files=1 && break
+	done
+fi
+
 case "$want_hidraw" in
 "") ;;
 0)
@@ -191,8 +214,28 @@ case "$want_hidraw" in
 	say "set PROTON_ENABLE_HIDRAW=0"
 	;;
 *)
-	export PROTON_ENABLE_HIDRAW="$want_hidraw"
-	say "set PROTON_ENABLE_HIDRAW=$want_hidraw"
+	if [ "$have_tf_files" = "1" ] || [ -z "$prefix_root" ]; then
+		export PROTON_ENABLE_HIDRAW="$want_hidraw"
+		say "set PROTON_ENABLE_HIDRAW=$want_hidraw"
+	else
+		say "NOT setting PROTON_ENABLE_HIDRAW: this game wants it, but"
+		say "Logitech's TrueForce files are not in this prefix, and turning"
+		say "it on without them would take away the force feedback you have"
+		say "and give nothing back. Install them from the app's Setup page"
+		say "(TrueForce files), then start the game again."
+		say "Force feedback still works; the game's own TrueForce does not."
+		# Fall back to simulated TrueForce, which is exactly the recipe this
+		# title gets on a wheel that cannot receive the native kind. Asking
+		# for that answer rather than inventing one keeps the fallback in the
+		# registry with everything else.
+		if command -v logi-wheel >/dev/null 2>&1; then
+			fallback=$(logi-wheel --launch-plan "$this_app" --wheel classic 2>/dev/null)
+			want_tfsim=$(printf '%s\n' "$fallback" | sed -n 's/^tfsim=//p' | head -1)
+			want_relay=$(printf '%s\n' "$fallback" | sed -n 's/^relay=//p' | head -1)
+			[ "${want_tfsim:-0}" = "1" ] && \
+				say "using simulated TrueForce instead (relay=${want_relay:-none})"
+		fi
+	fi
 	;;
 esac
 

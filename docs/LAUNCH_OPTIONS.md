@@ -158,6 +158,25 @@ That line is the same on an RS50 and on a G923. Do not add
 that want it, and setting it yourself is how it ends up on a G923, where it
 costs that wheel its force feedback.
 
+### Turning it on is a trade, not a free upgrade
+
+Without it, Proton hands the game a device backed by the Linux input layer
+and force feedback works with nothing installed. With it, the game gets the
+raw HID device instead, and **this wheel's raw descriptor carries no force
+feedback protocol at all**. What replaces it is Logitech's SDK, which is what
+the TrueForce files are.
+
+So on a prefix without those files, setting this costs you force feedback and
+gives nothing back. `logi-launch` checks the prefix and declines rather than
+make that trade, saying so in the log, and falls back to simulated TrueForce
+so the wheel is not left with nothing. That is issue #60, where it read as
+"logi-launch gives me no FFB".
+
+The corollary is worth stating plainly: **for Assetto Corsa Competizione and
+Assetto Corsa EVO on a direct-drive wheel, Logitech's files are what carry
+force feedback**, not only TrueForce. They are optional only in the sense
+that you can leave the raw interface off and keep the ordinary path.
+
 ### Why it names your wheel rather than saying `1`
 
 Proton matches this variable as a **substring** against each device's own
