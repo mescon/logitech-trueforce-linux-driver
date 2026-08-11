@@ -412,11 +412,17 @@ fn launch_plan(
     // and while the proxy is running discovery can return it. Scoping the
     // variable to that would point Proton at a device the game's TrueForce
     // cannot reach, and the failure would be silent.
+    // The id test is part of choosing the wheel, not a check applied after
+    // choosing one. Applied afterwards, a first candidate that fails it (the
+    // logi-ffb virtual wheel while the proxy runs, or any device whose
+    // directory name is not in BUS:VID:PID.SEQ shape) yielded None for the
+    // whole chain, and the wrapper fell back to the bare `1` this exists to
+    // avoid. Keep looking instead.
     plan.hidraw_scope = wheels
         .iter()
-        .find(|d| d.wheel_caps().sdk_trueforce == caps.sdk_trueforce)
-        .and_then(|d| d.product_id())
-        .filter(|pid| {
+        .filter(|d| d.wheel_caps().sdk_trueforce == caps.sdk_trueforce)
+        .filter_map(|d| d.product_id())
+        .find(|pid| {
             logi_wheel_core::device::DD_PIDS.contains(pid)
                 || logi_wheel_core::device::G923_PIDS.contains(pid)
         })

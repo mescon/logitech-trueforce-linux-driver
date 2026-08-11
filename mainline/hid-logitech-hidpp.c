@@ -8120,27 +8120,15 @@ static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff)
 }
 
 /*
- * Ask the strip how long it is and whether it is displaying anything.
+ * Read the strip's length once, at discovery.
  *
- * Both answers are needed before the first level can be sent, and both come
- * from synchronous requests, so this runs at discovery rather than from the
- * flush worker: that worker holds send_mutex for the whole burst, and a
- * synchronous request takes the same lock.
+ * fn0's second parameter is the strip length: 0x05 on a G923 against 0x0a on
+ * the direct-drive wheels. The level is a fraction of it, so a wrong value
+ * halves or doubles everything the strip shows. This does not change while
+ * the wheel is plugged in, so unlike the display state it is safe to latch.
  *
- * fn0's second parameter is the strip length (0x0a on the direct-drive
- * wheels, 0x05 on a G923). fn2 reports the live LIGHTSYNC effect, where 0
- * means nothing is being shown; a wheel in that state refuses every level
- * with LogitechInternal, which is what kept the G923 Xbox edition's rev
- * lights dark for the whole of issue #27.
- *
- * Only state 0 counts as needing the switch-on. The other values are real
- * effects, 1-4 the built-in sweeps and 6-9 the owner's custom slots, and
- * switching one of those to effect 2 would throw away the colours that
- * owner picked. That is exactly why the fn3 call was removed from this
- * sequence once before.
- *
- * Best-effort throughout: a wheel that will not answer keeps the ten-LED
- * default and is never switched, which is no worse than before.
+ * Best-effort: a wheel that will not answer keeps the ten-LED default, which
+ * is what this code assumed before it asked at all.
  */
 static void hidpp_dd_rev_read_geometry(struct hidpp_device *hidpp,
 				       struct hidpp_dd_ff_data *ff)
@@ -8162,15 +8150,39 @@ static void hidpp_dd_rev_read_geometry(struct hidpp_device *hidpp,
 			dd_dbg(hid, "rev strip has %u LEDs\n", leds);
 		}
 	}
+}
+
+/*
+ * Is the rev display showing nothing right now?
+ *
+ * fn2 answers with the live LIGHTSYNC effect, where 0 means nothing is
+ * displayed and a wheel in that state refuses every level with
+ * LogitechInternal. Every other value is a real effect: 1-4 the built-in
+ * sweeps and 6-9 the owner's custom slots. Only 0 may be acted on, because
+ * the call that starts the display is SET_EFFECT and would replace any of
+ * the others.
+ *
+ * Asked immediately before arming rather than latched at probe, since the
+ * owner can change the effect at any point in between. Takes send_mutex
+ * internally, so it must not be called with that lock held.
+ *
+ * A wheel that will not answer reads as "displaying something", so silence
+ * never causes an effect to be overwritten.
+ */
+static bool hidpp_dd_rev_display_is_off(struct hidpp_device *hidpp,
+					struct hidpp_dd_ff_data *ff)
+{
+	struct hidpp_report response;
+	u8 params[3];
+	int ret;
 
 	memset(params, 0, sizeof(params));
 	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
 					  HIDPP_DD_LIGHTSYNC_FN_GET_STATE,
 					  params, 3, &response);
-	if (ret == 0 && response.fap.params[0] == 0) {
-		ff->rev_needs_enable = true;
-		dd_dbg(hid, "rev display is off; it will be switched on\n");
-	}
+	if (ret)
+		return false;
+	return response.fap.params[0] == 0;
 }
 
 /*
@@ -11424,6 +11436,19 @@ static void hidpp_dd_rev_work_handler(struct work_struct *work)
 	 * zeroes could satisfy hidpp_match_answer's lenient (sw-id-stripped)
 	 * path for a concurrent sync question on the same feature/function.
 	 */
+	/*
+	 * Ask, immediately before arming, whether the display is showing
+	 * anything. Deliberately outside send_mutex: the query takes that
+	 * lock itself, and a latched answer from probe time is not good
+	 * enough. fn3 is SET_EFFECT, so acting on a stale "it was off"
+	 * overwrites whatever LIGHTSYNC effect the owner selected in the
+	 * meantime, which is why this call was removed once before. The
+	 * converse is as bad: a display that goes off after probe would
+	 * never be re-enabled and every level would be refused.
+	 */
+	if (!ff->rev_armed)
+		ff->rev_needs_enable = hidpp_dd_rev_display_is_off(hidpp, ff);
+
 	mutex_lock(&hidpp->send_mutex);
 
 	if (!ff->rev_armed) {
@@ -11437,10 +11462,9 @@ static void hidpp_dd_rev_work_handler(struct work_struct *work)
 			msleep(HIDPP_DD_REV_ARM_GAP_MS);
 		}
 		/*
-		 * Start the display if discovery found it showing nothing.
-		 * Fire-and-forget like the rest of the burst: the answer was
-		 * already taken at discovery, because asking here would take
-		 * send_mutex a second time while this section holds it.
+		 * Start the display if it is showing nothing. Fire-and-forget
+		 * like the rest of the burst; the question was asked just
+		 * above, outside this lock.
 		 *
 		 * Never sent to a wheel that was showing something. fn2
 		 * reports the live effect, not a boolean, so a wheel on a
@@ -11532,15 +11556,52 @@ struct hidpp_g923_rev {
 	u8 idx;			/* 0x807A feature index on this wheel */
 	u8 leds;		/* strip length, from fn0 */
 	bool needs_enable;	/* fn2 reported 0: nothing is being displayed */
-	bool armed;		/* one-time arm burst sent (lock) */
-	struct mutex lock;
+	bool armed;		/* one-time arm burst sent; worker-only */
 	struct delayed_work work;
 	unsigned long last_write;	/* jiffies, for the pacing floor */
-	u8 target;		/* newest requested level, latest wins */
-	u8 sent;		/* last level actually written */
-	u8 mask;		/* which of the five classdevs are on */
+	/*
+	 * Newest requested level, latest wins. Plain word, READ_ONCE /
+	 * WRITE_ONCE rather than a mutex: it is written from
+	 * brightness_set, which must not sleep (the LED core calls it from
+	 * a timer softirq whenever a software blink trigger is active), so
+	 * taking a mutex there is a sleeping-in-atomic bug.
+	 */
+	u8 target;
+	u8 sent;		/* last level actually written; worker-only */
+	/*
+	 * Which of the five classdevs are on, as a bitmap so the five
+	 * sysfs files can be written concurrently. Each has its own
+	 * per-classdev lock in the LED core and nothing serialises them
+	 * against each other, so a plain read-modify-write here loses
+	 * updates and leaves an LED stuck.
+	 */
+	unsigned long mask;
 	struct led_classdev *led[HIDPP_G923_REV_LEDS];
 };
+
+/*
+ * Is this wheel's rev display showing nothing right now?
+ *
+ * Same question, and the same reasoning, as the direct-drive path's version:
+ * fn2 answers with the live effect, 0 means nothing is displayed, and only 0
+ * may be acted on because the call that starts the display would replace any
+ * other effect. Asked immediately before arming rather than latched, and
+ * outside send_mutex, which this takes itself.
+ */
+static bool hidpp_g923_rev_display_is_off(struct hidpp_g923_rev *rev)
+{
+	struct hidpp_report response;
+	u8 params[3];
+	int ret;
+
+	memset(params, 0, sizeof(params));
+	ret = hidpp_send_fap_command_sync(rev->hidpp, rev->idx,
+					  HIDPP_DD_LIGHTSYNC_FN_GET_STATE,
+					  params, 3, &response);
+	if (ret)
+		return false;
+	return response.fap.params[0] == 0;
+}
 
 /*
  * Flush the newest level, arming the strip the first time.
@@ -11559,9 +11620,15 @@ static void hidpp_g923_rev_work(struct work_struct *work)
 	u8 target;
 	int i, ret;
 
-	mutex_lock(&rev->lock);
-	target = rev->target;
-	mutex_unlock(&rev->lock);
+	target = READ_ONCE(rev->target);
+
+	/*
+	 * Ask now, not at probe: fn3 is SET_EFFECT, and acting on a stale
+	 * answer would replace an effect chosen in between. Outside
+	 * send_mutex, which the query takes itself.
+	 */
+	if (!rev->armed)
+		rev->needs_enable = hidpp_g923_rev_display_is_off(rev);
 
 	mutex_lock(&hidpp->send_mutex);
 	if (!rev->armed) {
@@ -11602,24 +11669,33 @@ out:
 }
 
 /*
- * The five classdevs are on/off pairs; the wheel takes a 0..leds fill level.
- * The strip always fills from the outermost pair, so the level is decided by
- * the highest lit pair rather than by how many are lit: that keeps a
- * non-contiguous mask (which nothing driving rev lights produces) from
- * reading as a shorter strip.
+ * Turn the five classdevs into the fill level the wheel wants.
+ *
+ * There are always five classdevs, matching the PlayStation edition's
+ * interface, but the strip they stand for is not always ten LEDs: this
+ * wheel reports five, the direct-drive wheels ten. So the highest lit
+ * classdev is scaled by the real strip length rather than doubled. Doubling
+ * would send 2 of 5 for one lit classdev and saturate at the third, making
+ * the top shift steps indistinguishable.
+ *
+ * Keyed on the highest lit classdev rather than a count, because the strip
+ * fills from the outside in and a non-contiguous mask should not read as a
+ * shorter strip.
+ *
+ * Must not sleep: reached from brightness_set.
  */
 static void hidpp_g923_rev_queue(struct hidpp_g923_rev *rev)
 {
 	unsigned long delay = 0;
-	u8 level;
+	unsigned long mask = READ_ONCE(rev->mask);
+	u8 level = 0;
 
-	level = rev->mask ? fls(rev->mask) * 2 : 0;
+	if (mask)
+		level = fls(mask) * rev->leds / HIDPP_G923_REV_LEDS;
 	if (level > rev->leds)
 		level = rev->leds;
 
-	mutex_lock(&rev->lock);
-	rev->target = level;
-	mutex_unlock(&rev->lock);
+	WRITE_ONCE(rev->target, level);
 
 	/* Same pacing floor the DD path uses; bursting starves the wheel. */
 	if (rev->last_write) {
@@ -11662,9 +11738,9 @@ static void hidpp_g923_rev_brightness_set(struct led_classdev *led_cdev,
 		if (rev->led[i] != led_cdev)
 			continue;
 		if (value == LED_OFF)
-			rev->mask &= ~(1 << i);
+			clear_bit(i, &rev->mask);
 		else
-			rev->mask |= 1 << i;
+			set_bit(i, &rev->mask);
 		hidpp_g923_rev_queue(rev);
 		return;
 	}
@@ -11679,7 +11755,7 @@ static enum led_brightness hidpp_g923_rev_brightness_get(struct led_classdev *le
 		return LED_OFF;
 	for (i = 0; i < HIDPP_G923_REV_LEDS; i++)
 		if (rev->led[i] == led_cdev)
-			return (rev->mask & (1 << i)) ? LED_FULL : LED_OFF;
+			return test_bit(i, &rev->mask) ? LED_FULL : LED_OFF;
 	return LED_OFF;
 }
 
@@ -11718,8 +11794,13 @@ static int hidpp_g923_rev_init(struct hid_device *hdev)
 		return -ENOMEM;
 	rev->hidpp = hidpp;
 	rev->idx = idx;
-	rev->leds = HIDPP_G923_REV_LEDS * 2;	/* until fn0 says otherwise */
-	mutex_init(&rev->lock);
+	/*
+	 * Until fn0 answers, assume the strip this subsystem exists for.
+	 * Ten was the old assumption and is what made a five-LED strip show
+	 * half of everything, so a wheel that will not answer must not
+	 * inherit it.
+	 */
+	rev->leds = HIDPP_G923_REV_LEDS;
 	INIT_DELAYED_WORK(&rev->work, hidpp_g923_rev_work);
 
 	/*
@@ -11738,17 +11819,13 @@ static int hidpp_g923_rev_init(struct hid_device *hdev)
 			rev->leds = leds;
 	}
 
-	/* fn2 reports the live effect; 0 means nothing is being displayed. */
-	memset(params, 0, sizeof(params));
-	ret = hidpp_send_fap_command_sync(hidpp, idx,
-					  HIDPP_DD_LIGHTSYNC_FN_GET_STATE,
-					  params, 3, &response);
-	if (ret == 0 && response.fap.params[0] == 0)
-		rev->needs_enable = true;
-
-	dd_info(hdev, "rev strip: 0x807A at index 0x%02x, %u LEDs%s\n",
-		idx, rev->leds,
-		rev->needs_enable ? ", display off (will be switched on)" : "");
+	/*
+	 * The display state is deliberately NOT read here. It is asked for
+	 * immediately before each arm instead, because the owner can change
+	 * the effect between probe and the first game.
+	 */
+	dd_info(hdev, "rev strip: 0x807A at index 0x%02x, %u LEDs\n",
+		idx, rev->leds);
 
 	name_sz = strlen(dev_name(&hdev->dev)) + 8;
 	for (i = 0; i < HIDPP_G923_REV_LEDS; i++) {
@@ -11769,7 +11846,13 @@ static int hidpp_g923_rev_init(struct hid_device *hdev)
 		led->brightness_set = hidpp_g923_rev_brightness_set;
 
 		rev->led[i] = led;
-		if (led_classdev_register(&hdev->dev, led)) {
+		/*
+		 * devm, so a probe that fails AFTER this point unwinds these
+		 * itself. Plain registration would leave live /sys/class/leds
+		 * entries pointing at devm memory the core frees on the way
+		 * out, since .remove is never called for a failed probe.
+		 */
+		if (devm_led_classdev_register(&hdev->dev, led)) {
 			dd_warn(hdev, "could not register rev LED %d\n", i + 1);
 			rev->led[i] = NULL;
 			goto err;
@@ -11804,14 +11887,16 @@ static void hidpp_g923_rev_remove(struct hid_device *hdev)
 	 * Unregister first so nothing can queue more work, then wait for the
 	 * worker: it touches the classdevs' owner and dereferences hidpp.
 	 */
-	for (i = 0; i < HIDPP_G923_REV_LEDS; i++) {
-		if (rev->led[i]) {
-			led_classdev_unregister(rev->led[i]);
-			rev->led[i] = NULL;
-		}
-	}
-	cancel_delayed_work_sync(&rev->work);
+	/*
+	 * The classdevs are devm-registered and the core unregisters them
+	 * after this returns, so only the worker has to be stopped here:
+	 * it dereferences hidpp, and nothing may queue it again once the
+	 * back-pointer is cleared.
+	 */
 	hidpp->g923_rev = NULL;
+	cancel_delayed_work_sync(&rev->work);
+	for (i = 0; i < HIDPP_G923_REV_LEDS; i++)
+		rev->led[i] = NULL;
 }
 
 
@@ -16706,7 +16791,22 @@ static int hidpp_dd_minimal_probe(struct hid_device *hdev)
 		dd_warn(hdev, "minimal probe: pid install failed: %d\n",
 			ret);
 
-	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
+	/*
+	 * No HID_CONNECT_FF on this interface.
+	 *
+	 * With PID injection on, interface 0's descriptor carries a full PID
+	 * output collection, which is exactly what the kernel's own
+	 * hid-pidff driver binds to: usbhid points ff_init at it for every
+	 * USB HID device, and hid_connect calls that whenever this flag is
+	 * set. It would then talk to the wheel directly for report ids the
+	 * firmware does not implement, and its requests would go out through
+	 * ll_driver->request, which the override does not replace.
+	 *
+	 * The injected collection exists for Wine's DirectInput writes,
+	 * which this driver translates itself. Nothing else should attach to
+	 * it.
+	 */
+	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT & ~HID_CONNECT_FF);
 	if (ret) {
 		dd_err(hdev, "minimal probe: hid_hw_start failed: %d\n", ret);
 		hidpp_dd_pid_uninstall(hdev);

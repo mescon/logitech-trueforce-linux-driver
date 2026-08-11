@@ -4798,7 +4798,10 @@ mod tests {
         // y plays; the main loop's tick reaps the exit.
         a.on_key(KeyCode::Char('t'));
         a.on_key(KeyCode::Char('y'));
-        assert!(a.tf_sweep_active());
+        // Carries the status line, because the only way this fails is the
+        // spawn itself, and "assertion failed: a.tf_sweep_active()" says
+        // nothing about why.
+        assert!(a.tf_sweep_active(), "sweep did not start: {}", a.status);
         for _ in 0..100 {
             a.tick_tf_sweep();
             if !a.tf_sweep_active() {
@@ -4825,7 +4828,10 @@ mod tests {
         enter_setup(&mut a, SetupSection::SimTf);
         a.on_key(KeyCode::Char('t'));
         a.on_key(KeyCode::Char('y'));
-        assert!(a.tf_sweep_active());
+        // Carries the status line, because the only way this fails is the
+        // spawn itself, and "assertion failed: a.tf_sweep_active()" says
+        // nothing about why.
+        assert!(a.tf_sweep_active(), "sweep did not start: {}", a.status);
         // s stops the sweep from anywhere in Setup; never the SDK editor.
         a.on_key(KeyCode::Char('s'));
         assert!(a.sdk_edit.is_none());

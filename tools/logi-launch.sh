@@ -229,7 +229,16 @@ case "$want_hidraw" in
 		# for that answer rather than inventing one keeps the fallback in the
 		# registry with everything else.
 		if command -v logi-wheel >/dev/null 2>&1; then
-			fallback=$(logi-wheel --launch-plan "$this_app" --wheel classic 2>/dev/null)
+			# Ask the same way the first query did. Using the appid
+			# here throws away --game, and a title named that way
+			# has no usable appid by definition, so the fallback
+			# came back as "unknown": simulated TrueForce with no
+			# relay, and therefore no telemetry to drive it.
+			if [ -n "$named_game" ]; then
+				fallback=$(logi-wheel --launch-plan --game "$named_game" --wheel classic 2>/dev/null)
+			else
+				fallback=$(logi-wheel --launch-plan "$this_app" --wheel classic 2>/dev/null)
+			fi
 			want_tfsim=$(printf '%s\n' "$fallback" | sed -n 's/^tfsim=//p' | head -1)
 			want_relay=$(printf '%s\n' "$fallback" | sed -n 's/^relay=//p' | head -1)
 			[ "${want_tfsim:-0}" = "1" ] && \

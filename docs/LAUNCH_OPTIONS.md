@@ -132,7 +132,7 @@ If something did not happen, that file says which step declined and why.
 |---|---|---|
 | `logi-launch %command%` | Works out everything below for this game and this wheel, and applies it | **Every racing game.** It is the only line most people need |
 | `PROTON_ENABLE_HIDRAW=0x046D/0xC276 %command%` | Lets the game talk to the wheel's raw HID interface, which is how Logitech's SDK delivers TrueForce | Set by `logi-launch`, scoped to your wheel. By hand: a **direct-drive wheel** (RS50, G PRO) in a game with its own TrueForce (ACC, Assetto Corsa EVO), with the TrueForce files installed. Use your own product id, not `0xC276` |
-| *(leave it out)* | The wheel stays an ordinary Linux force-feedback device | By hand: a **G923**, always |
+| *(no `PROTON_ENABLE_HIDRAW` at all)* | The wheel stays an ordinary Linux force-feedback device | By hand on a **G923**, always. This row is about that one variable, not about `logi-launch`, which every wheel wants |
 | `logi-ffb %command%` | Presents a virtual wheel that speaks the older DirectInput force-feedback protocol, and forwards it to your real wheel | Applied by `logi-launch`. By hand: games that only do DirectInput FFB (Le Mans Ultimate, rFactor 2, iRacing, RaceRoom), on **any** wheel including a G923 |
 
 The bottom three rows describe what `logi-launch` does for you. You only type
