@@ -408,13 +408,26 @@ generated from the same registry the app uses, so the two cannot disagree.
   prints the directory it checked, so if it disagrees with you, that line
   tells you where it looked.
 
-  One side effect to know about: with `PROTON_ENABLE_HIDRAW=1` some games
+  **Side effects to know about.** With `PROTON_ENABLE_HIDRAW` set, some games
   read the wheel's raw HID reports instead of the normal Linux input layer,
-  and read the pedals the other way up - resting reads as fully pressed. If
-  that happens, turn on the game's own "invert axis" option for the affected
-  pedals. Nothing is wrong with the wheel or the driver; the two layers just
-  use opposite conventions, and the game is reading the raw one. Confirmed
-  on Assetto Corsa EVO, and it goes away if you unset the variable.
+  and the two use opposite conventions for a control at rest. Nothing is
+  wrong with the wheel or the driver, and all of it goes away if you unset
+  the variable.
+
+  - **Pedals read the other way up**: resting registers as fully pressed.
+    Turn on the game's own "invert axis" option for the affected pedals.
+    Seen on Assetto Corsa EVO.
+  - **A control can read as permanently held**, for example a constant "up"
+    that makes menus impossible to navigate. Rebinding in the game usually
+    clears it. Reported on Assetto Corsa EVO under GE-Proton9-27.
+
+  If either makes a game unusable and you would rather have force feedback
+  than the game's own TrueForce, tell the wrapper so for that game in
+  `~/.config/logi-wheel/games.conf`:
+
+  ```
+  3058630  hidraw=0 tfsim=1 relay=ac-evo
+  ```
 
 - **DirectInput sims** (Le Mans Ultimate, for example): `logi-launch` routes
   these through `logi-ffb` for you. By hand it is `logi-ffb
@@ -547,9 +560,10 @@ attribute names it expects are exposed as well.
 
 ## Verified game support
 
-**Assetto Corsa Competizione** and **Assetto Corsa EVO** are verified end to end
-under Proton: steering, full force feedback, and TrueForce at once (with
-`PROTON_ENABLE_HIDRAW=1` and Steam Input disabled). Most other sims work out
+**Assetto Corsa Competizione** and **Assetto Corsa EVO** run under Proton with
+steering, force feedback and TrueForce at once on a direct-drive wheel. Put
+`logi-launch %command%` in the launch options and turn Steam Input off; it
+applies the rest. Most other sims work out
 of the box with standard force feedback, or need `logi-ffb` in their launch
 options; the full per-game table, and which needs what, is in
 [docs/GAME_SETUP.md](docs/GAME_SETUP.md) and on the
