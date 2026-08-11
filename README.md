@@ -111,7 +111,7 @@ lsusb | grep -i 046d
 | `c272` | RS50 in compatibility mode, **or** a G PRO (Xbox/PC) | Same as above. The two share this id; Logi Wheel names which one it found. |
 | `c268` | G PRO Racing Wheel (PS/PC) | Same as above. |
 | `c266`, `c267` | G923 PlayStation edition | Force feedback (no other Linux driver gives this wheel any), simulated TrueForce, rev lights, and the core settings. |
-| `c26d`, `c26e` | G923 Xbox edition | Force feedback and TrueForce, both confirmed on a real unit. Needs `usb_modeswitch` installed; see [G923 support](#g923-support). Rev lights are not solved yet ([#27](https://github.com/mescon/logitech-trueforce-linux-driver/issues/27)). |
+| `c26d`, `c26e` | G923 Xbox edition | Force feedback and TrueForce, both confirmed on a real unit. Rev lights are implemented and awaiting an owner's confirmation in a game. Needs `usb_modeswitch` installed; see [G923 support](#g923-support). |
 
 A wheel that plugs in as `c267` or `c26d` is switched to its PC mode
 automatically, so a different id after plugging in is expected, not a fault.
@@ -257,6 +257,21 @@ which force feedback alone cannot do.
 
 **Xbox edition** (`046d:c26e`) has **force feedback and TrueForce**, both
 confirmed on a real unit. Neither existed for this wheel on Linux before.
+
+**Rev lights are implemented**, after a long hunt in
+[#27](https://github.com/mescon/logitech-trueforce-linux-driver/issues/27).
+The wheel had two separate problems. Its rev display sits in an "off" state
+until something switches it on, and until then it refuses every level with an
+internal error, which is what made a correct command look ignored. And the
+wheel reached neither of the two driver paths that register LED devices, so
+even once the protocol was right there was nothing for a telemetry feeder to
+write to. Both are fixed: the strip is switched on when it reports itself
+off, and this edition now exposes the same five `::RPM1`..`RPM5` LED devices
+the PlayStation edition does.
+
+The strip has been made to light on a real Xbox wheel by its owner. Following
+RPM in a game is new code that no one has run yet, so treat it as expected
+rather than verified.
 
 It boots into a console-only mode that Linux cannot use, so install
 `usb_modeswitch`; a udev rule then flips it to PC mode automatically when you
