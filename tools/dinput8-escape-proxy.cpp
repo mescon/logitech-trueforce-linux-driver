@@ -24,6 +24,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <dinput.h>
+#include <dinputd.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -236,6 +237,53 @@ static void relay_send(float rpm, float max_rpm)
 	sendto(g_sock, (const char *)pkt, sizeof(pkt), 0, (sockaddr *)&g_dest, sizeof(g_dest));
 }
 
+// ------------------------------------- Logitech's OEM force-feedback driver
+//
+// On Windows, DirectInput does not talk to these wheels itself. It loads a
+// per-device OEM effect driver named under
+//
+//   ...\MediaProperties\PrivateProperties\Joystick\OEM\VID_046D&PID_xxxx\OEMForceFeedback
+//
+// and routes force-feedback effects and Escape to its IDirectInputEffectDriver.
+// For the HID++ wheels that driver is hidpp_forcefeedback_x64.dll, shipped by
+// G HUB. Wine has no equivalent, which is why Escape goes nowhere and why
+// force feedback depends on which backend Proton happened to pick.
+//
+// The driver itself runs under Wine: it instantiates and answers GetVersions.
+// So the missing piece is only the routing, which is what this does.
+//
+// Off unless LOGI_OEM_FFB=1. It is unproven on hardware, and it puts a
+// third-party driver in the path of every effect, so it must be asked for.
+
+// "Logitech HID++ Force Feedback Device", from the DLL's own DllRegisterServer.
+static const GUID CLSID_LogiHidppFF = { 0x62b43f0e,
+					0xe7db,
+					0x4329,
+					{ 0x8c, 0x13, 0xa9, 0x66, 0xd8, 0x4a, 0x28, 0x9f } };
+
+/// Product ids hidpp_forcefeedback_x64.dll actually claims.
+///
+/// Checked before DeviceID is ever called, because the driver does not
+/// handle "no supported device": probed against an RS50 in native mode
+/// (c276, absent from this list) it dereferences null and takes the process
+/// with it. An RS50 has to be in compatibility mode (c272) to be driven
+/// here at all, which is a property of Logitech's driver, not of Wine.
+static const unsigned short OEM_FFB_PIDS[] = { 0xc262, 0xc268, 0xc26e, 0xc272 };
+
+static bool oem_ffb_enabled(void)
+{
+	char v[8];
+	return GetEnvironmentVariableA("LOGI_OEM_FFB", v, sizeof(v)) && v[0] == '1';
+}
+
+static bool oem_ffb_claims(unsigned short pid)
+{
+	for (size_t i = 0; i < sizeof(OEM_FFB_PIDS) / sizeof(OEM_FFB_PIDS[0]); i++)
+		if (OEM_FFB_PIDS[i] == pid)
+			return true;
+	return false;
+}
+
 // -------------------------------------------- watching the SDK handshake
 //
 // The wheel is visible, the SDK opens the right interface, and then sends
@@ -351,8 +399,99 @@ class DeviceWrap : public IDirectInputDevice8W {
 	// the file stays bounded.
 	LONG m_escapes;
 
+	// Logitech's OEM effect driver, when this device is one it claims and
+	// the routing was asked for. Bound once, lazily: the device's ids are
+	// only readable after the caller has it.
+	IDirectInputEffectDriver *m_oem;
+	DWORD m_oem_id;
+	bool m_oem_tried;
+
+	/// Read this device's USB ids, or 0 if DirectInput will not say.
+	unsigned int vidpid(void)
+	{
+		DIPROPDWORD p;
+		ZeroMemory(&p, sizeof(p));
+		p.diph.dwSize = sizeof(p);
+		p.diph.dwHeaderSize = sizeof(p.diph);
+		p.diph.dwObj = 0;
+		p.diph.dwHow = DIPH_DEVICE;
+		if (FAILED(m_real->GetProperty(DIPROP_VIDPID, &p.diph)))
+			return 0;
+		return p.dwData;
+	}
+
+	/// Bind Logitech's effect driver to this device, once.
+	void bind_oem(void)
+	{
+		if (m_oem_tried)
+			return;
+		m_oem_tried = true;
+		if (!oem_ffb_enabled())
+			return;
+
+		unsigned int ids = vidpid();
+		unsigned short vid = LOWORD(ids), pid = HIWORD(ids);
+		if (vid != 0x046d) {
+			say("OEM force feedback: %04x:%04x is not a Logitech device", vid, pid);
+			return;
+		}
+		// Never call into the driver for a device it does not claim: it
+		// crashes rather than returning an error.
+		if (!oem_ffb_claims(pid)) {
+			say("OEM force feedback: Logitech's driver does not claim %04x:%04x.",
+			    vid, pid);
+			say("  It claims c262, c268, c26e and c272 only. An RS50 in native");
+			say("  mode (c276) has to be in compatibility mode (c272) to use it.");
+			return;
+		}
+
+		// The game has already initialised COM by this point; join
+		// whatever apartment it chose rather than forcing one.
+		HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+		bool we_init = SUCCEEDED(hr);
+		if (hr == RPC_E_CHANGED_MODE)
+			we_init = false;
+
+		IDirectInputEffectDriver *drv = nullptr;
+		hr = CoCreateInstance(CLSID_LogiHidppFF, nullptr, CLSCTX_INPROC_SERVER,
+				      IID_IDirectInputEffectDriver, (void **)&drv);
+		if (FAILED(hr) || !drv) {
+			say("OEM force feedback: driver not registered in this prefix (0x%08lx)",
+			    (unsigned long)hr);
+			say("  Install it with: tools/install-tf-shim.sh --oem-ffb");
+			if (we_init)
+				CoUninitialize();
+			return;
+		}
+
+		DIDRIVERVERSIONS ver;
+		ZeroMemory(&ver, sizeof(ver));
+		ver.dwSize = sizeof(ver);
+		if (SUCCEEDED(drv->GetVersions(&ver)))
+			say("OEM force feedback: driver version 0x%lx",
+			    (unsigned long)ver.dwFFDriverVersion);
+
+		// External and internal id are ours to choose; the driver maps
+		// them to whatever device it finds for itself.
+		hr = drv->DeviceID(DIRECTINPUT_VERSION, 0, TRUE, 0, nullptr);
+		if (FAILED(hr)) {
+			say("OEM force feedback: DeviceID refused (0x%08lx)",
+			    (unsigned long)hr);
+			drv->Release();
+			return;
+		}
+		m_oem = drv;
+		m_oem_id = 0;
+		say("OEM force feedback: bound to %04x:%04x, routing Escape to Logitech's driver",
+		    vid, pid);
+	}
+
 public:
-	DeviceWrap(IDirectInputDevice8W *real) : m_real(real), m_ref(1), m_escapes(0) {}
+	DeviceWrap(IDirectInputDevice8W *real)
+		: m_real(real), m_ref(1), m_escapes(0), m_oem(nullptr), m_oem_id(0),
+		  m_oem_tried(false)
+	{
+	}
 
 	// IUnknown
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **out) override
@@ -376,6 +515,13 @@ public:
 	{
 		LONG r = InterlockedDecrement(&m_ref);
 		if (!r) {
+			if (m_oem) {
+				// Tell the driver the association is over before
+				// dropping it, or it keeps the device open.
+				m_oem->DeviceID(DIRECTINPUT_VERSION, m_oem_id, FALSE, m_oem_id,
+						nullptr);
+				m_oem->Release();
+			}
 			m_real->Release();
 			delete this;
 		}
@@ -475,6 +621,7 @@ public:
 	HRESULT STDMETHODCALLTYPE Escape(LPDIEFFESCAPE e) override
 	{
 		LONG n = InterlockedIncrement(&m_escapes);
+		bind_oem();
 		// The streaming command repeats at haptic rate and its payload
 		// is three floats, so it is logged decoded and thinned: often
 		// enough to watch a value track the engine, rarely enough to
@@ -504,9 +651,19 @@ public:
 		} else if (loud) {
 			say("Escape #%ld  (null escape struct)", (long)n);
 		}
+		// Where Windows would have sent it. Wine's own Escape reports
+		// success while discarding the payload, so forwarding to it
+		// instead of the driver is the same as dropping the call.
+		if (m_oem) {
+			HRESULT hr = m_oem->Escape(m_oem_id, 0, e);
+			if (loud)
+				say("    -> 0x%08lx (Logitech's driver)", (unsigned long)hr);
+			return hr;
+		}
+
 		HRESULT hr = m_real->Escape(e);
 		if (loud)
-			say("    -> 0x%08lx", (unsigned long)hr);
+			say("    -> 0x%08lx (wine stub: discarded)", (unsigned long)hr);
 		return hr;
 	}
 

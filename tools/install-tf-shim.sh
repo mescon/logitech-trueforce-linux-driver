@@ -124,9 +124,127 @@ resolve_sdk_dir() {
 	# No Windows paths here: the writer derives them from the two directories
 	# above, so a version change cannot leave the registry pointing at the
 	# directory we no longer install into.
+
+	# G HUB's DirectInput force-feedback driver, which lives beside the SDK
+	# in a "Logitech" tree rather than the "Logi" one. This is the piece
+	# Windows routes force-feedback effects and Escape through, and the
+	# piece Wine has no equivalent for; see docs/DINPUT_ESCAPE.md.
+	OEM_FFB_DIR="$SDK_DIR/Logitech/Direct Input Force Feedback"
+	OEM_VER="$(newest_sdk_version "$OEM_FFB_DIR")"
+	: "${OEM_VER:=1_1_13}"
+	SRC_OEM_X64="$OEM_FFB_DIR/$OEM_VER/hidpp_forcefeedback_x64.dll"
+	OEM_PFX_DIR="drive_c/Program Files/Logitech/Direct Input Force Feedback/$OEM_VER"
 }
 
 RANGE_PROXY=${RANGE_PROXY:-0}
+
+# Install G HUB's DirectInput force-feedback driver too. Off by default: it
+# is unproven on hardware and puts a third-party driver in the path of every
+# effect, so it is asked for rather than assumed.
+OEM_FFB=${OEM_FFB:-0}
+
+# The CLSIDs hidpp_forcefeedback_x64.dll registers for itself, read back from
+# its own DllRegisterServer under Wine rather than guessed.
+OEM_FF_DEVICE_CLSID='{62B43F0E-E7DB-4329-8C13-A966D84A289F}'
+OEM_FF_API_CLSID='{88D042C8-EAC5-4F86-85D1-F4446AAFE1D4}'
+
+# The wheels that driver claims. An RS50 in native mode (c276) is not among
+# them and calling into the driver for one crashes it, so the proxy checks
+# this same list before binding.
+OEM_FF_PIDS='C262 C268 C26E C272'
+
+# Stage and register the OEM force-feedback driver into one prefix.
+install_oem_ffb() {
+	local prefix="$1"
+	local sys_reg="$prefix/system.reg"
+
+	if [ ! -f "$SRC_OEM_X64" ]; then
+		echo "  no DirectInput force-feedback driver found at:" >&2
+		echo "    $SRC_OEM_X64" >&2
+		echo "  Copy the whole 'Logitech' folder from a Windows G HUB install" >&2
+		echo "  next to the 'Logi' one, keeping its layout." >&2
+		return 1
+	fi
+
+	install -d "$prefix/$OEM_PFX_DIR"
+	install -m 0644 "$SRC_OEM_X64" "$prefix/$OEM_PFX_DIR/hidpp_forcefeedback_x64.dll"
+
+	python3 - "$sys_reg" "$OEM_PFX_DIR" "$OEM_FF_DEVICE_CLSID" "$OEM_FF_API_CLSID" \
+		"$OEM_FF_PIDS" <<'PY'
+import os, sys, time
+
+reg_path, pfx_dir, dev_clsid, api_clsid, pids = sys.argv[1:6]
+
+
+def wine_path(pfx, dll):
+    if not pfx.startswith("drive_c/"):
+        sys.exit(f"install path is not under drive_c: {pfx}")
+    return "C:\\" + pfx[len("drive_c/"):].replace("/", "\\") + "\\" + dll
+
+
+def reg_value(s):
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+dll = wine_path(pfx_dir, "hidpp_forcefeedback_x64.dll")
+
+# Wine keeps HKLM\System\CurrentControlSet as ControlSet001 on disk, and a
+# literal "CurrentControlSet" key written here would not alias to it.
+oem_base = "System\\\\ControlSet001\\\\Control\\\\MediaProperties\\\\" \
+           "PrivateProperties\\\\Joystick\\\\OEM"
+
+keys = []
+for clsid, name in ((dev_clsid, "Logitech HID++ Force Feedback Device"),
+                    (api_clsid, "Logitech HID++ Force Feedback API")):
+    keys.append((f"[Software\\\\Classes\\\\CLSID\\\\{clsid}]", [f'@="{name}"']))
+    keys.append((f"[Software\\\\Classes\\\\CLSID\\\\{clsid}\\\\InProcServer32]",
+                 [f'@="{reg_value(dll)}"', '"ThreadingModel"="Both"']))
+
+# The per-device hookup. On Windows this is written by G HUB's installer,
+# not by DllRegisterServer, which is why registering the DLL alone is not
+# enough.
+for pid in pids.split():
+    dev = f"VID_046D&PID_{pid}"
+    keys.append((f"[{oem_base}\\\\{dev}]", ['"OEMName"="Logitech Wheel"']))
+    keys.append((f"[{oem_base}\\\\{dev}\\\\OEMForceFeedback]",
+                 [f'@="{dev_clsid}"', f'"CLSID"="{dev_clsid}"']))
+
+with open(reg_path) as f:
+    lines = f.readlines()
+
+# Drop any previous copy of each block, then append a fresh one.
+starts = {k for k, _ in keys}
+out, skip = [], False
+for line in lines:
+    if any(line.startswith(k) for k in starts):
+        skip = True
+        continue
+    if skip:
+        if line.strip() == "":
+            skip = False
+        continue
+    out.append(line)
+
+if out and not out[-1].endswith("\n"):
+    out[-1] += "\n"
+if out and out[-1].strip() != "":
+    out.append("\n")
+
+ts = int(time.time())
+for key, values in keys:
+    out.append(f"{key} {ts}\n")
+    out.extend(v + "\n" for v in values)
+    out.append("\n")
+
+tmp = reg_path + ".new"
+with open(tmp, "w") as f:
+    f.writelines(out)
+os.replace(tmp, reg_path)
+PY
+
+	verify_registered_dll "$sys_reg" "$OEM_FF_DEVICE_CLSID" "$prefix" InProcServer32 || return 1
+	echo "  OEM force-feedback driver installed ($OEM_VER)"
+}
 
 usage() {
 	cat <<EOF
@@ -150,6 +268,14 @@ Options:
                                how a G923 gets TrueForce in ACC and AC EVO.
                                Spelled --range-proxy before it did the second
                                job; both names still work.
+  --oem-ffb                    Also install G HUB's DirectInput force-feedback
+                               driver (hidpp_forcefeedback), from a "Logitech"
+                               folder beside the "Logi" one. Windows routes
+                               force-feedback effects and TrueForce's Escape
+                               calls through it; Wine loads no such driver, so
+                               this only helps together with the dinput8 proxy
+                               that does the routing. Unproven on hardware.
+                               See docs/DINPUT_ESCAPE.md.
 EOF
 	exit 1
 }
@@ -358,16 +484,25 @@ PY
 	# five releases, so the postcondition is checked rather than assumed.
 	verify_registered_dll "$sys_reg" "$TF_CLSID" "$prefix" || return 1
 
+	# Independent of the SDK: a prefix can have one without the other, and
+	# a failure here should not undo an otherwise good SDK install.
+	if [ "$OEM_FFB" = "1" ]; then
+		install_oem_ffb "$prefix" || echo "  OEM force-feedback driver NOT installed" >&2
+	fi
+
 	echo "  installed $prefix"
 }
 
 # Resolve the path a CLSID advertises back to a real file under the prefix.
 verify_registered_dll() {
-	local reg=$1 clsid=$2 pfx=$3 win unix
-	win=$(python3 - "$reg" "$clsid" <<'PY'
+	local reg=$1 clsid=$2 pfx=$3 subkey=${4:-} win unix
+	win=$(python3 - "$reg" "$clsid" "$subkey" <<'PY'
 import re, sys
-reg_path, clsid = sys.argv[1:3]
-key = f"[Software\\\\Classes\\\\CLSID\\\\{clsid}]"
+reg_path, clsid, subkey = sys.argv[1:4]
+# Some registrations keep the path in the key's default value and some in a
+# sub-key, so the caller says which.
+tail = f"\\\\{subkey}" if subkey else ""
+key = f"[Software\\\\Classes\\\\CLSID\\\\{clsid}{tail}]"
 want = False
 for line in open(reg_path, encoding="utf-8", errors="replace"):
     if line.startswith(key):
@@ -526,6 +661,13 @@ while [ $# -gt 0 ]; do
 		# work; --proxy is the one the docs use.
 		RANGE_PROXY=1
 		;;
+	--oem-ffb)
+		# G HUB's DirectInput force-feedback driver. Windows routes
+		# effects and Escape through it; Wine does not load it at all,
+		# so installing it only helps together with the dinput8 proxy
+		# that does the routing. See docs/DINPUT_ESCAPE.md.
+		OEM_FFB=1
+		;;
 	--sdk-dir)
 		SDK_DIR_OVERRIDE="${2:-}"
 		[ -n "$SDK_DIR_OVERRIDE" ] || usage
@@ -577,6 +719,14 @@ case "$MODE" in
 	echo "sdk_dir=$SDK_DIR"
 	echo "tf_version=$TF_VER"
 	echo "wheel_version=$WHEEL_VER"
+	# Reported separately because it is a different tree ("Logitech", not
+	# "Logi") and is commonly absent: someone who copied only the SDK has
+	# no force-feedback driver, and that is worth being able to see.
+	if [ -f "$SRC_OEM_X64" ]; then
+		echo "oem_ffb_version=$OEM_VER"
+	else
+		echo "oem_ffb_version="
+	fi
 	;;
 *) usage ;;
 esac
