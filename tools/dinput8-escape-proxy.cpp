@@ -302,6 +302,33 @@ static FARPROC(WINAPI *real_getprocaddress)(HMODULE, LPCSTR);
 
 static LONG g_gpa_calls;
 
+// The TrueForce capability gate. The game calls this, is told something, and
+// then never calls a torque function, so its answer is the whole question.
+//
+// 0x8000000C is worth recognising on sight: the function returns it before
+// looking at the device at all, when a global latch in the library is set.
+// Every other export checks the same latch. If that is what comes back, the
+// library has disabled itself and the wheel is irrelevant.
+typedef int (*tf_supported_fn)(void *device, int *out);
+static tf_supported_fn g_tf_supported_real;
+
+static int tf_supported_wrapper(void *device, int *out)
+{
+	int probe = -1;
+	int status = g_tf_supported_real(device, out ? out : &probe);
+	int answer = out ? *out : probe;
+	const char *note = "";
+	if ((unsigned)status == 0x8000000cu)
+		note = "  <- the library has latched itself off; the wheel was never examined";
+	else if (status == 0 && !answer)
+		note = "  <- the library examined the wheel and says no";
+	else if (status == 0 && answer)
+		note = "  <- supported";
+	say("logiTrueForceSupportedByDirectInput(device=%p) status=0x%08x supported=%d%s", device,
+	    (unsigned)status, answer, note);
+	return status;
+}
+
 // --------------------------------------------- counting SDK calls safely
 //
 // The question the resolution list cannot answer: having resolved the whole
@@ -401,6 +428,22 @@ static FARPROC WINAPI getprocaddress_hook(HMODULE mod, LPCSTR name)
 		else
 			say("resolve %ls!#%u -> %s", base, (unsigned)(ULONG_PTR)name,
 			    p ? "found" : "NOT FOUND");
+	}
+
+	// The gate, wrapped properly rather than counted, because its answer
+	// is the thing we need and the counters cannot see it.
+	//
+	// Signature read from the function's own prologue in 1_3_12: RCX is
+	// the DirectInput device and RDX an out parameter, both null-checked
+	// against 0x80000001, with the status in EAX. That is the shape
+	// SDK_ABI_NOTES.md establishes for this family, so this one is safe
+	// to declare where the rest are not.
+	if (p && by_name && logi_module &&
+	    (!strcmp(name, "logiTrueForceSupportedByDirectInputW") ||
+	     !strcmp(name, "logiTrueForceSupportedByDirectInputA"))) {
+		g_tf_supported_real = (tf_supported_fn)p;
+		say("    (wrapping %s to report its answer)", name);
+		return (FARPROC)tf_supported_wrapper;
 	}
 
 	// Hand back a counting thunk for the calls worth watching. Only for a
