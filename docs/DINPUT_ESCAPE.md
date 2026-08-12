@@ -248,11 +248,12 @@ remembered before trusting any single capture:
   zero ep1 traffic, so "no input reports" alone never proves a wedged wheel
   (this is already recorded in the project's test notes, and was still
   misread twice today).
-- **Every "the wheel is swinging violently" observation was the in-game
-  wheel graphic**, reported remotely. The physical rim was measured moving
-  through near-full travel in exactly one capture. In-game wheel motion can
-  also follow from a frozen or off-centre input axis, which looks identical
-  from the driver's seat of a stream dump.
+- The physical rim was watched over a webcam during the runaway and really
+  was rotating violently, so that event was real force, not a graphic
+  artefact. The caveat that survives is narrower: in-game wheel motion and
+  physical rim motion are separate observables, and a frozen or off-centre
+  input axis can make the in-game wheel look wild while the rim sits still,
+  so captures should say which one they mean.
 
 ### It is not usable yet: the wheel runs away
 
