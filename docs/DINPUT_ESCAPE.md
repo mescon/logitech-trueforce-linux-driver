@@ -180,3 +180,68 @@ backend, and raw HID stops being a trade-off.
   ACL and open read/write as the desktop user; `winebus` holds all three open
   while a game runs.
 - **The SDK not finding the wheel.** It opens `mi_02`, the correct interface.
+
+## What the game actually does, measured 2026-08-12
+
+Instrumented with `tools/dinput8-escape-proxy.cpp` (a `GetProcAddress` hook in
+the game's own import table, which needs no signature), against Assetto Corsa
+EVO on an RS50 with `PROTON_ENABLE_HIDRAW` scoped to the wheel.
+
+The game is not refusing to drive the wheel. In order, it:
+
+1. calls `dllOpen`, once
+2. calls `logiWheelOpenByDirectInputW`, once, successfully (the wheel visibly
+   takes a position when the track loads)
+3. asks `logiTrueForceSupportedByDirectInputW` per device and is told **yes**
+   for the wheel, **no** for a gamepad
+4. reads the operating range
+5. calls `logiWheelSetForceMode(handle, 1)`, accepted
+6. streams torque with **`logiTrueForceSetTorqueKF`**, 33632 calls in one
+   session, roughly 190/sec
+
+It never calls `dllClose` or `logiWheelClose`, so it does not give up.
+
+**`SetTorqueKF`, not `SetTorqueTF`.** Watching only the `SetTorqueTF*` family
+showed zeros for hours and produced the wrong conclusion that the game sends
+nothing. The KF family is a full channel with its own gain, maximum torque,
+reconstruction filter and clear.
+
+### Answering the operating-range questions is load-bearing
+
+Same session, same driving, only the substitution in
+`dinput8-escape-proxy.cpp` toggled with `LOGI_RANGE_FIX`:
+
+| | answered by us | answered by the SDK |
+|---|---|---|
+| OUT packets per 6 s | 11745 (~2 kHz) | 56 (~9 Hz) |
+| packet type | `0x01`, the TrueForce stream | `0x0c` only, no stream |
+| payload | varying, real content | no stream at all |
+| wheel input reports on ep1 | 9918 | **0** |
+| the game | normal | stutters, car will not move |
+
+With Logitech's own implementations in the path the TrueForce stream never
+starts and the wheel stops reporting input altogether. There are **no** control
+transfers in either case, so this is not slow HID++ queries: those functions
+take the wheel's HID++ channel out of service.
+
+This is the same function family `tools/tf-range-proxy.c` was written against
+for issue #27's 90 degree clamp, which now looks like the same root cause seen
+from a different angle.
+
+### It is not usable yet: the wheel runs away
+
+With the range questions answered, the 2 kHz stream carries real content and
+the rim moves through roughly full travel. That is **not** a working force
+feedback reading. `logi-tf-sim`'s `ffb_keepalive` documents this exact failure
+for issue #57: streaming to a direct-drive wheel with no force session open
+drives it into its stops and oscillates there. Confirmed by feel report: the
+wheel swings violently.
+
+Holding a zero-level `FF_CONSTANT` open does stabilise it, and starts the 2 kHz
+stream on its own, but it also stops the `0x0c` traffic that carries the game's
+own values: a zero constant appears to cancel the game's torque.
+
+So the open question is how to keep a direct-drive wheel's force loop alive
+without zeroing what the game is sending. Doing it in the driver when it sees a
+TrueForce stream on the vendor interface would cover a game as well as our own
+daemon, and is a better depth for it than a userspace effect.
