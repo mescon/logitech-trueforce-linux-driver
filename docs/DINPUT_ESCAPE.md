@@ -26,9 +26,14 @@ Everything here was measured on an RS50 (`046d:c276`) in Assetto Corsa EVO on
 | The game loads the SDK | yes, verified by signature and loaded |
 | The game resolves the SDK API | yes, 56 of 59 symbols |
 | The SDK opens the wheel | yes, interface `mi_02`, the TrueForce interface |
-| The SDK writes to the wheel | **no. Zero USB output transfers in a whole session** |
-| Where the missing work happens on Windows | `hidpp_forcefeedback_x64.dll`, a DirectInput OEM effect driver |
-| Does Wine load such drivers | **no** |
+| The SDK writes to the wheel | **yes**, on endpoint 3, once the range questions are answered locally (see 2026-08-12 below) |
+| The game streams torque | **yes**, `logiTrueForceSetTorqueKF` at ~190/sec |
+| What still fails | the wheel oscillates: the force loop is not held open (#57) |
+
+> The first capture in this document showed zero output transfers and was
+> taken with a parked car and nobody touching the wheel, which is exactly
+> when a correct stream carries zeros. Later captures while driving show the
+> stream running. Do not read the early rows as evidence of a dead link.
 
 ## Three faults, stacked
 
@@ -43,8 +48,10 @@ Each of these hid the one below it, which is why this took so long to see.
    `--proxy` build is refused before its first instruction. This is a hard
    ceiling on replacing that DLL and explains several dead ends recorded
    against issue #27 as protocol problems.
-3. **Nothing routes DirectInput effects or `Escape` to Logitech's driver.**
-   This is the one that remains.
+3. **Logitech's own operating-range getters break the wheel's HID++ channel.**
+   Answering them locally is what lets the TrueForce stream start at all;
+   measured below. With that done the stream runs and the remaining problem
+   is the wheel running away for want of a force session (#57).
 
 ## What the game sends, and what it is not
 
