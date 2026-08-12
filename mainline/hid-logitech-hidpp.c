@@ -234,6 +234,36 @@ MODULE_PARM_DESC(inject_pid,
 	"PID injection on interface 0 of direct-drive (RS50/G PRO) wheels: 0=off (default), 1=dry-run, 2=actuate. BREAKS STEERING AND PEDALS on these wheels: the injected collection declares report ids that the wheel does not use, so input reports are then misparsed. Leave it off.");
 
 /*
+ * Go silent on the HID++ channel once another master is detected on it.
+ *
+ * A game driving a direct-drive wheel through Logitech's TrueForce SDK
+ * under Proton owns the wheel's HID++ interface through hidraw and
+ * transacts on it continuously. These wheels do not echo the software-id
+ * nibble in responses, so two masters cannot tell each other's replies
+ * apart - not by protocol, on this hardware, at all. The only safe
+ * multi-master policy is not to be one: whoever detects the other first
+ * must stop transacting.
+ *
+ * The range poll (and the auto-restore it drives) is the driver's one
+ * autonomous transaction source, added after v0.24.0. v0.24.0, which had
+ * no poll, coexisted with SDK sessions correctly; measured against
+ * Assetto Corsa EVO on an RS50, the poll's range GET colliding with the
+ * SDK's own range getter stalls the SDK's haptic thread (no TrueForce
+ * stream, input reporting stops, the game stutters), and the auto-restore
+ * fights the SDK's session-init 90-degree push in a visible dmesg war.
+ *
+ * So: the first externally-caused range change parks the poll for the
+ * rest of the bind. The healing the restore provided moves to userspace
+ * (logi-launch restores the pre-game range after the game exits - it
+ * knows where sessions end; this driver does not). A wheel_range write
+ * re-arms the poll, being explicit local intent.
+ */
+static bool range_foreign_quiesce = true;
+module_param(range_foreign_quiesce, bool, 0644);
+MODULE_PARM_DESC(range_foreign_quiesce,
+	"Park the rotation-range poll and auto-restore for the rest of the session once something else (a game's SDK) changes the range externally, instead of transacting alongside it. These wheels omit the software-id in replies, so concurrent HID++ masters corrupt each other; parking is what makes native TrueForce sessions work. Default on. A wheel_range write re-arms the poll.");
+
+/*
  * HID++ software-id OR'd into every request's funcindex_clientid.
  *
  * Upstream hid-logitech-hidpp uses 0x01. The RS50 / G PRO PEDAL unit, however,
@@ -5550,6 +5580,14 @@ struct hidpp_dd_ff_data {
 	 * wheel_range write.
 	 */
 	bool range_restore;
+	/*
+	 * Set when an external range change proved another HID++ master is
+	 * active (a game SDK session). Parks the range poll and restore
+	 * until an explicit wheel_range write re-arms them; see the
+	 * range_foreign_quiesce module parameter for why coexistence is
+	 * not an option on this hardware.
+	 */
+	bool foreign_quiesced;
 	u8 range_restore_attempts;
 	/*
 	 * Nonzero = a restore is owed: the range the wheel had before an
@@ -7246,6 +7284,9 @@ static void hidpp_dd_ff_range_maybe_restore(struct hidpp_dd_ff_data *ff)
 		return;
 	if (atomic_read_acquire(&ff->stopping))
 		return;
+	/* Never transact while a foreign HID++ master owns the channel. */
+	if (READ_ONCE(ff->foreign_quiesced))
+		return;
 	if (!READ_ONCE(ff->range_restore)) {
 		dd_dbg(hidpp->hid_dev, "range restore skipped (disabled)\n");
 		return;
@@ -7366,6 +7407,21 @@ static void hidpp_dd_ff_range_readback(struct hidpp_dd_ff_data *ff)
 	sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL, "wheel_range");
 
 	/*
+	 * An external change is proof of another HID++ master, and these
+	 * wheels give us no way to share the channel with one (no
+	 * software-id in replies). Park the poll and never arm a restore:
+	 * transacting alongside a game SDK stalls its haptic thread and
+	 * turns the restore into a range war (measured, AC EVO on RS50).
+	 * logi-launch heals the range after the game exits instead.
+	 */
+	if (range_foreign_quiesce) {
+		WRITE_ONCE(ff->foreign_quiesced, true);
+		dd_info(hidpp->hid_dev,
+			 "another HID++ master is driving this wheel (a game SDK session); parking the range poll and auto-restore. A wheel_range write re-arms them\n");
+		return;
+	}
+
+	/*
 	 * Only the known pathology earns a pending restore: an external
 	 * reset landing exactly on 90 (the SDK session-init push). Any
 	 * other externally-set value is a game applying its configured
@@ -7391,11 +7447,23 @@ static void hidpp_dd_ff_range_poll_work(struct work_struct *work)
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
 
+	/*
+	 * Parked: another HID++ master owns the channel (see the
+	 * range_foreign_quiesce parameter). Not rescheduled - going
+	 * silent is the point, and a wheel_range write requeues us.
+	 */
+	if (READ_ONCE(ff->foreign_quiesced))
+		return;
+
 	if (!READ_ONCE(ff->any_effect_playing)) {
 		hidpp_dd_ff_range_readback(ff);
 		/* Retry any owed restore until it lands or strikes out. */
 		hidpp_dd_ff_range_maybe_restore(ff);
 	}
+
+	/* The readback above may just have detected the foreign master. */
+	if (READ_ONCE(ff->foreign_quiesced))
+		return;
 
 	if (!atomic_read_acquire(&ff->stopping) && atomic_read(&ff->initialized))
 		queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
@@ -9206,6 +9274,17 @@ static ssize_t wheel_range_store(struct device *dev, struct device_attribute *at
 	/* A fresh explicit intent supersedes any owed auto-restore. */
 	ff->range_restore_attempts = 0;
 	ff->restore_want = 0;
+	/*
+	 * It also re-arms a parked poll: writing wheel_range is the local
+	 * side asserting ownership of the channel again (typically
+	 * logi-launch healing the range after a game exited).
+	 * queue_delayed_work is a no-op if the poll is already queued.
+	 */
+	if (READ_ONCE(ff->foreign_quiesced)) {
+		WRITE_ONCE(ff->foreign_quiesced, false);
+		queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
+				   msecs_to_jiffies(HIDPP_DD_FF_REFRESH_INTERVAL_MS));
+	}
 	dd_info(hid, "Rotation range set to %d degrees\n", range);
 	return count;
 }

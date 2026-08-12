@@ -377,12 +377,59 @@ if [ ${#helper_exes[@]} -gt 0 ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; 
 ) &
 fi
 
+# The rotation range, remembered across the game. A Logitech SDK session
+# pushes the wheel to 90 degrees at init, and the kernel driver deliberately
+# goes quiet once it sees that (these wheels cannot carry two HID++ masters;
+# see range_foreign_quiesce in the driver). Healing therefore happens here,
+# after the game exits, where no session is left to fight: put the pre-game
+# range back if the session left the wheel at exactly 90. Any other value is
+# a steering lock the game chose on purpose, and stays.
+range_file=""
+pre_range=""
+for f in /sys/class/hidraw/*/device/wheel_range; do
+	[ -r "$f" ] && [ -w "$f" ] || continue
+	range_file="$f"
+	pre_range=$(cat "$f" 2>/dev/null)
+	break
+done
+
+heal_range() {
+	[ -n "$range_file" ] && [ -n "$pre_range" ] || return 0
+	[ "$pre_range" != "90" ] || return 0
+	post=$(cat "$range_file" 2>/dev/null)
+	if [ "$post" = "90" ]; then
+		if echo "$pre_range" > "$range_file" 2>/dev/null; then
+			say "rotation range healed: the game session left 90 degrees, restored $pre_range"
+		else
+			say "rotation range left at 90 by the game session and could not be restored"
+		fi
+	fi
+}
+
+# Run the game in the foreground instead of exec, so the heal above has an
+# after. Signals are forwarded so Steam's stop button still lands.
+run_game() {
+	"$@" &
+	game_pid=$!
+	trap 'kill -TERM "$game_pid" 2>/dev/null' TERM INT
+	wait "$game_pid"
+	game_status=$?
+	trap - TERM INT
+	return $game_status
+}
+
 # A DirectInput title drives force feedback through the older Windows path,
 # which needs the logi-ffb proxy in front of the game. Chained rather than
 # asked of the user, so one prepend really is enough.
 if [ "$want_ffb" = "proxy" ] && command -v logi-ffb >/dev/null 2>&1; then
 	say "launching through logi-ffb for DirectInput force feedback"
-	exec logi-ffb "$@"
+	run_game logi-ffb "$@"
+	rc=$?
+	heal_range
+	exit $rc
 fi
 
-exec "$@"
+run_game "$@"
+rc=$?
+heal_range
+exit $rc
