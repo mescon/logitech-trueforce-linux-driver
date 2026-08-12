@@ -215,8 +215,12 @@ reconstruction filter and clear.
 
 ### Answering the operating-range questions is load-bearing
 
-Same session, same driving, only the substitution in
-`dinput8-escape-proxy.cpp` toggled with `LOGI_RANGE_FIX`:
+Separate launches, toggled with `LOGI_RANGE_FIX`. Honestly stated: this is
+a strong correlation, not a controlled single-variable experiment. The wheel
+carries state across game restarts (a disturbed session left it misbehaving
+into the next run at least once), so session hysteresis is a confound.
+Fix off was bad in two of two launches; fix on was good in two of three,
+with the bad one immediately following a deliberately torn-down stream:
 
 | | answered by us | answered by the SDK |
 |---|---|---|
@@ -234,6 +238,21 @@ take the wheel's HID++ channel out of service.
 This is the same function family `tools/tf-range-proxy.c` was written against
 for issue #27's 90 degree clamp, which now looks like the same root cause seen
 from a different angle.
+
+### Reading the captures: two traps
+
+Two measurement artefacts ran through this investigation and should be
+remembered before trusting any single capture:
+
+- **The wheel only sends input reports on change.** A parked rim produces
+  zero ep1 traffic, so "no input reports" alone never proves a wedged wheel
+  (this is already recorded in the project's test notes, and was still
+  misread twice today).
+- **Every "the wheel is swinging violently" observation was the in-game
+  wheel graphic**, reported remotely. The physical rim was measured moving
+  through near-full travel in exactly one capture. In-game wheel motion can
+  also follow from a frozen or off-centre input axis, which looks identical
+  from the driver's seat of a stream dump.
 
 ### It is not usable yet: the wheel runs away
 
