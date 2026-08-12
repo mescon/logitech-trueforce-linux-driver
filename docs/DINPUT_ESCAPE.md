@@ -255,6 +255,46 @@ remembered before trusting any single capture:
   input axis can make the in-game wheel look wild while the rim sits still,
   so captures should say which one they mean.
 
+## 2026-08-12 evening: the transport works; the SDK is the only thing not using it
+
+A power cycle reset the wheel, and every "no effects" symptom that followed
+is one finding: **Logitech's SDK does not emit the TrueForce stream under
+Proton on a clean wheel.** Measured across a full A/B:
+
+| module | ep1 input | ep3 TF stream | KF into SDK |
+|---|---|---|---|
+| current, this morning (keepalive running) | 9918 | 11745 | 33k |
+| current, tonight | 0 | 0 | 193 |
+| v0.24.0 baseline, tonight | 11980 | 0 | 22k |
+
+The kernel module is not the variable: v0.24.0 restored input reporting but
+still produced no ep3 stream. The game's handshake is byte-identical to the
+working morning run - dllOpen, SetForceMode(1) accepted, KF streaming at
+~190/sec - yet the SDK writes nothing to endpoint 3.
+
+**This morning's 11745-packet stream was almost certainly ours**, from the
+FF_CONSTANT keepalive session, which triggers the driver's own 68-packet TF
+init and streaming. Not the SDK's. The SDK has not been observed emitting
+the stream in any clean test.
+
+**Our TF transport, by contrast, works on the fresh wheel.** `logi-tf-sim
+--sweep` with no game running produced a correct session on ep3: init, START,
+2879 type-0x01 audio-sample packets at ~2 kHz with real varying content,
+STOP. Confirmed by feel - the owner felt the sweep.
+
+So the fix does not route through Logitech's SDK at all. The game's KF torque
+(190/sec, cleanly intercepted by the dinput8 proxy) is the SDK's *input*, and
+our TF channel is the transport the SDK would have used. Path: game -> KF
+torque -> proxy -> driver TF channel -> wheel. No Logitech binary in the force
+path, so no dependency on one that will not run correctly here. The forces are
+the game's own; only the interpolation from ~190 Hz to 2 kHz is ours (the SDK
+uses GetReconstructionFilterKF for the same step), which is the one thing that
+is close rather than provably bit-identical.
+
+### Superseded: the runaway theory
+The runaway below was real but is now understood as the range-clamp war plus
+an uncontrolled force session, not the core blocker. Kept for the record.
+
 ### It is not usable yet: the wheel runs away
 
 With the range questions answered, the 2 kHz stream carries real content and
