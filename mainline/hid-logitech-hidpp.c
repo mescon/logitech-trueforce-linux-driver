@@ -4784,6 +4784,14 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_FF_REFRESH_ID		0x05
 #define HIDPP_DD_FF_REFRESH_CMD		0x07
 #define HIDPP_DD_FF_REFRESH_INTERVAL_MS	20000	/* 20 seconds */
+/*
+ * The rotation-range poll runs far more often than the FFB keepalive: it is
+ * how the driver notices a game SDK's session-init clamp to 90 degrees and
+ * heals it. At 20 s a clamp at track load left the wheel wrong for up to a
+ * full lap; a game SDK clamps once and the heal holds, so a short poll costs
+ * one tiny HID++ GET every few seconds and makes the heal feel instant.
+ */
+#define HIDPP_DD_FF_RANGE_POLL_MS	3000	/* 3 seconds */
 
 /*
  * In-kernel TrueForce texture channel (KF/TF separation, issue #8).
@@ -7399,7 +7407,7 @@ static void hidpp_dd_ff_range_poll_work(struct work_struct *work)
 
 	if (!atomic_read_acquire(&ff->stopping) && atomic_read(&ff->initialized))
 		queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
-				   msecs_to_jiffies(HIDPP_DD_FF_REFRESH_INTERVAL_MS));
+				   msecs_to_jiffies(HIDPP_DD_FF_RANGE_POLL_MS));
 }
 
 /*
@@ -8816,7 +8824,7 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	 * launch-time rotation-range reset) and stays.
 	 */
 	queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
-			   msecs_to_jiffies(HIDPP_DD_FF_REFRESH_INTERVAL_MS));
+			   msecs_to_jiffies(HIDPP_DD_FF_RANGE_POLL_MS));
 
 	/*
 	 * Effect timer is started on-demand when effects play.
