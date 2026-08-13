@@ -5301,6 +5301,9 @@ struct hidpp_dd_ff_work {
 	u8 report_buf[HIDPP_DD_FF_REPORT_SIZE];
 };
 
+/* Defined next to the interceptor itself, further down. */
+struct hidpp_dd_texmerge_shim;
+
 /* Direct-drive FFB private data */
 struct hidpp_dd_ff_data {
 	struct hidpp_device *hidpp;
@@ -5311,12 +5314,13 @@ struct hidpp_dd_ff_data {
 	 * intercepts the SDK's outgoing interface-2 stream via an ll_driver
 	 * override (same pattern as hidpp_dd_pid_* on interface 0) and
 	 * splices RPM-synthesised texture into passing type-0x01 packets.
+	 *
+	 * The intercept state does NOT live here: it is devm-allocated on
+	 * interface 2's device so it outlives this struct (see struct
+	 * hidpp_dd_texmerge_shim). Set by hidpp_dd_texmerge_install, cleared
+	 * by hidpp_dd_texmerge_uninstall on every teardown path.
 	 */
-	struct hidpp_dd_texmerge tm;
-	spinlock_t tm_lock;
-	struct hid_ll_driver tm_over;		/* our override copy */
-	const struct hid_ll_driver *tm_real;	/* saved original */
-	bool tm_installed;
+	struct hidpp_dd_texmerge_shim *tm_shim;
 	struct input_dev *input;
 	struct workqueue_struct *wq;	/* Workqueue for async USB transfers */
 	struct delayed_work init_work;	/* Deferred initialization */
@@ -5617,6 +5621,9 @@ static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 				      struct hid_device *ff_hdev);
 static void hidpp_dd_texmerge_uninstall(struct hidpp_dd_ff_data *ff,
 					struct hid_device *ff_hdev);
+static struct hidpp_dd_texmerge_shim *
+hidpp_dd_texmerge_self_tx_begin(struct hidpp_dd_ff_data *ff);
+static void hidpp_dd_texmerge_self_tx_end(struct hidpp_dd_texmerge_shim *shim);
 static int hidpp_dd_response_curve_upload(struct hidpp_device *hidpp,
 					  struct hidpp_dd_ff_data *ff,
 					  u8 dev_idx, u8 axis, u8 idx,
@@ -6669,6 +6676,7 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
 {
 	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
 					       tf_init_work);
+	struct hidpp_dd_texmerge_shim *shim;
 	struct hid_device *hdev;
 	u8 *pkt;
 	int pass, i, ret = 0;
@@ -6707,6 +6715,10 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
 			memcpy(pkt, hidpp_dd_tf_init_packets[i],
 			       HIDPP_DD_TF_INIT_PACKET_LEN);
 			pkt[HIDPP_DD_TF_INIT_SEQ_OFFSET] = seq++;
+			/* Ours, not the SDK's: 9 of these packets are
+			 * splice-eligible and one is a type-0x0e that the
+			 * texture merge would read as a range push. */
+			shim = hidpp_dd_texmerge_self_tx_begin(ff);
 			ret = hid_hw_output_report(hdev, pkt,
 						   HIDPP_DD_FF_REPORT_SIZE);
 			/* Only -ENOSYS means ->output_report is unimplemented;
@@ -6718,6 +6730,7 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
 						HIDPP_DD_FF_REPORT_SIZE,
 						HID_OUTPUT_REPORT,
 						HID_REQ_SET_REPORT);
+			hidpp_dd_texmerge_self_tx_end(shim);
 			if (ret < 0)
 				break;
 		}
@@ -7105,6 +7118,7 @@ static void hidpp_dd_ff_work_handler(struct work_struct *work)
 {
 	struct hidpp_dd_ff_work *ff_work = container_of(work, struct hidpp_dd_ff_work, work);
 	struct hidpp_dd_ff_data *ff = ff_work->ff_data;
+	struct hidpp_dd_texmerge_shim *tm_shim;
 	struct hidpp_dd_ff_report *report;
 	struct hid_device *hdev;
 	int ret;
@@ -7155,6 +7169,9 @@ static void hidpp_dd_ff_work_handler(struct work_struct *work)
 	 * fall back to hid_hw_raw_request (uses SET_REPORT control transfer).
 	 * This mirrors what hidraw does in hidraw_write().
 	 */
+	/* Ours, not the SDK's: a KF constant-force report matches the texture
+	 * merge's splice filter, so exempt it from the interceptor. */
+	tm_shim = hidpp_dd_texmerge_self_tx_begin(ff);
 	ret = hid_hw_output_report(hdev, ff_work->report_buf, HIDPP_DD_FF_REPORT_SIZE);
 	/*
 	 * Only -ENOSYS means the transport has no ->output_report; fall back to
@@ -7167,6 +7184,7 @@ static void hidpp_dd_ff_work_handler(struct work_struct *work)
 					 ff_work->report_buf, HIDPP_DD_FF_REPORT_SIZE,
 					 HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
 	}
+	hidpp_dd_texmerge_self_tx_end(tm_shim);
 
 	if (ret < 0) {
 		/*
@@ -7435,6 +7453,7 @@ static void hidpp_dd_ff_refresh_work(struct work_struct *work)
 {
 	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
 					       refresh_work.work);
+	struct hidpp_dd_texmerge_shim *shim;
 	struct hid_device *hdev;
 	u8 *refresh_cmd;
 	int ret;
@@ -7465,7 +7484,9 @@ static void hidpp_dd_ff_refresh_work(struct work_struct *work)
 	refresh_cmd[7] = 0xFF;
 	refresh_cmd[8] = 0xFF;
 
-	/* Send the refresh command */
+	/* Send the refresh command. Ours, not the SDK's - keep it out of the
+	 * texture merge, same as every other in-kernel send. */
+	shim = hidpp_dd_texmerge_self_tx_begin(ff);
 	ret = hid_hw_output_report(hdev, refresh_cmd, HIDPP_DD_FF_REPORT_SIZE);
 	if (ret < 0 && ret != -EIO && ret != -ENODEV) {
 		/* output_report not available, try raw_request instead */
@@ -7473,6 +7494,7 @@ static void hidpp_dd_ff_refresh_work(struct work_struct *work)
 					 refresh_cmd, HIDPP_DD_FF_REPORT_SIZE,
 					 HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
 	}
+	hidpp_dd_texmerge_self_tx_end(shim);
 
 	kfree(refresh_cmd);
 
@@ -14582,8 +14604,10 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 	if (ff->ff_hdev_open && ff_hdev_cached) {
 		/* Unwrap the ll_driver before the underlying hid_device is
 		 * closed - hid_hw_close must run against the real transport,
-		 * not our override, and nothing after this point may call
-		 * back into hidpp_dd_texmerge_output_report/raw_request. */
+		 * not our override. This also cuts the shim's back-pointer to
+		 * ff, so a hidraw write still inside the wrapper (nothing on
+		 * the output path is drained by hid_hw_close) cannot reach the
+		 * allocation we are about to free. */
 		hidpp_dd_texmerge_uninstall(ff, ff_hdev_cached);
 		hid_hw_close(ff_hdev_cached);
 		ff->ff_hdev_open = false;
@@ -15995,12 +16019,65 @@ static void hidpp_dd_pid_uninstall(struct hid_device *hdev)
 /* RPM-synthesised engine texture into it in place, then forward the         */
 /* (possibly modified) buffer to the real transport unchanged otherwise.      */
 /*                                                                            */
-/* Unlike the PID state above, there is no separate allocation: tm, tm_lock,  */
-/* tm_over and tm_real live directly on hidpp_dd_ff_data (declared next to    */
-/* ff_hdev), because a texmerge state always has exactly one owner - the FFB  */
-/* struct for this wheel - and never needs the devm/hidpp_get_drvdata dance   */
-/* the PID override uses to be reachable from interface 0.                    */
+/* The intercept state deliberately does NOT live on hidpp_dd_ff_data. The    */
+/* wrappers run from hidraw writers on interface 2, which can still be in     */
+/* flight when interface 1 frees ff (hid_hw_close drains nothing on the       */
+/* output path), so the state is devm-allocated on interface 2's own device   */
+/* and outlives every such call - the same lifetime guarantee the PID         */
+/* override on interface 0 relies on. ff is reachable from the shim only      */
+/* through a back-pointer that teardown NULLs under the shim's lock.          */
 /* -------------------------------------------------------------------------- */
+
+struct hidpp_dd_texmerge_shim {
+	spinlock_t lock;
+	struct hidpp_dd_texmerge tm;
+	struct hid_ll_driver over;		/* our override copy */
+	const struct hid_ll_driver *real;	/* saved original */
+	bool installed;
+
+	/*
+	 * Owning FFB state, or NULL once it is gone. Read only under `lock`;
+	 * hidpp_dd_texmerge_uninstall NULLs it there before ff is freed, so a
+	 * wrapper already past the ll_driver read finds NULL rather than
+	 * freed memory.
+	 */
+	struct hidpp_dd_ff_data *ff;
+
+	/*
+	 * Non-zero while one of the driver's OWN send sites is inside
+	 * hid_hw_output_report / hid_hw_raw_request on interface 2. Our
+	 * traffic goes through the wrapper as well, and it is splice-eligible:
+	 * the KF constant-force reports match the splice filter, so do 9 of
+	 * the 68 TF-init packets, and the init sequence carries a type-0x0e
+	 * packet that would read as an SDK range push. The merge and the
+	 * in-kernel TrueForce channel are mutually exclusive by design, so
+	 * self-traffic is exempted here mechanically - no future toggle can
+	 * arrange for us to splice into our own stream.
+	 */
+	atomic_t self_inflight;
+};
+
+/*
+ * Bracket one of the driver's own sends to interface 2. Returns the shim the
+ * counter was raised on (NULL if the override isn't installed); pass exactly
+ * that back to _end so the pair stays balanced even if teardown clears
+ * ff->tm_shim in between.
+ */
+static struct hidpp_dd_texmerge_shim *
+hidpp_dd_texmerge_self_tx_begin(struct hidpp_dd_ff_data *ff)
+{
+	struct hidpp_dd_texmerge_shim *shim = READ_ONCE(ff->tm_shim);
+
+	if (shim)
+		atomic_inc(&shim->self_inflight);
+	return shim;
+}
+
+static void hidpp_dd_texmerge_self_tx_end(struct hidpp_dd_texmerge_shim *shim)
+{
+	if (shim)
+		atomic_dec(&shim->self_inflight);
+}
 
 /*
  * Filled in by the range-restore work (see docs/NATIVE_TF_TEXTURE_MERGE_DESIGN.md).
@@ -16019,112 +16096,164 @@ static void hidpp_dd_texmerge_seen_range_push(struct hidpp_dd_ff_data *ff,
 /*
  * Classify one outgoing interface-2 report and either hand it to the
  * range-push tracker or splice texture into it. Common to both the
- * output_report and raw_request wrappers below. Caller holds tm_lock.
+ * output_report and raw_request wrappers below. Takes the shim lock itself;
+ * the caller must not hold it, and forwards to the real transport only after
+ * this returns (that call can sleep, this is a spinlock).
  */
-static void hidpp_dd_texmerge_classify(struct hidpp_dd_ff_data *ff, u8 *buf,
-				       size_t len)
+static void hidpp_dd_texmerge_classify(struct hidpp_dd_texmerge_shim *shim,
+				       u8 *buf, size_t len)
 {
-	if (len == 64 && buf[0] == 0x01 && buf[4] == 0x0e)
-		hidpp_dd_texmerge_seen_range_push(ff, buf);
-	else
-		hidpp_dd_texmerge_splice(&ff->tm, buf, len, ktime_get_ns());
+	unsigned long flags;
+
+	/* Our own packets are not the SDK's: never splice them, never read
+	 * them as a range push. See self_inflight above. */
+	if (atomic_read(&shim->self_inflight) > 0)
+		return;
+
+	spin_lock_irqsave(&shim->lock, flags);
+	if (len == 64 && buf[0] == 0x01 && buf[4] == 0x0e) {
+		if (shim->ff)
+			hidpp_dd_texmerge_seen_range_push(shim->ff, buf);
+	} else if (shim->tm.enabled) {
+		/* enabled is checked before the clock read on purpose: a
+		 * disabled merge must not cost a ktime_get_ns per packet. */
+		hidpp_dd_texmerge_splice(&shim->tm, buf, len, ktime_get_ns());
+	}
+	spin_unlock_irqrestore(&shim->lock, flags);
 }
 
 /*
  * ll_driver override: intercept output_report on interface 2. hdev->ll_driver
- * points at our embedded tm_over copy while installed, so container_of gets
- * back to the owning hidpp_dd_ff_data directly - no drvdata lookup needed.
+ * points at the shim's `over` copy while installed, so container_of gets back
+ * to the shim directly - no drvdata lookup needed. Discarding the const on
+ * ll_driver is deliberate: what it lands in is our own mutable state.
  */
 static int hidpp_dd_texmerge_output_report(struct hid_device *hdev,
 					   u8 *buf, size_t len)
 {
-	struct hidpp_dd_ff_data *ff =
-		container_of(hdev->ll_driver, struct hidpp_dd_ff_data, tm_over);
-	unsigned long flags;
+	struct hidpp_dd_texmerge_shim *shim =
+		container_of(hdev->ll_driver, struct hidpp_dd_texmerge_shim,
+			     over);
+	const struct hid_ll_driver *real = shim->real;
 
-	spin_lock_irqsave(&ff->tm_lock, flags);
-	hidpp_dd_texmerge_classify(ff, buf, len);
-	spin_unlock_irqrestore(&ff->tm_lock, flags);
+	hidpp_dd_texmerge_classify(shim, buf, len);
 
 	/* Forward outside the lock: the real transport's output_report can
-	 * block (USB URB submission), and tm_lock is a spinlock, so it must
-	 * never be held across a call that may sleep. */
-	return ff->tm_real->output_report(hdev, buf, len);
+	 * block (USB URB submission), and the shim lock is a spinlock, so it
+	 * must never be held across a call that may sleep. */
+	return real->output_report(hdev, buf, len);
 }
 
 /*
  * ll_driver override: intercept raw_request on interface 2. Only a
  * SET_REPORT of an output report can carry the SDK's FFB stream; every
  * other request (GET_REPORT, feature reports, etc.) passes straight
- * through untouched.
+ * through untouched. Same deliberate const discard as above.
  */
 static int hidpp_dd_texmerge_raw_request(struct hid_device *hdev,
 					 unsigned char reportnum, u8 *buf,
 					 size_t len, unsigned char rtype,
 					 int reqtype)
 {
-	struct hidpp_dd_ff_data *ff =
-		container_of(hdev->ll_driver, struct hidpp_dd_ff_data, tm_over);
-	unsigned long flags;
+	struct hidpp_dd_texmerge_shim *shim =
+		container_of(hdev->ll_driver, struct hidpp_dd_texmerge_shim,
+			     over);
+	const struct hid_ll_driver *real = shim->real;
 
-	if (rtype == HID_OUTPUT_REPORT && reqtype == HID_REQ_SET_REPORT) {
-		spin_lock_irqsave(&ff->tm_lock, flags);
-		hidpp_dd_texmerge_classify(ff, buf, len);
-		spin_unlock_irqrestore(&ff->tm_lock, flags);
-	}
-	return ff->tm_real->raw_request(hdev, reportnum, buf, len, rtype,
-					reqtype);
+	if (rtype == HID_OUTPUT_REPORT && reqtype == HID_REQ_SET_REPORT)
+		hidpp_dd_texmerge_classify(shim, buf, len);
+
+	return real->raw_request(hdev, reportnum, buf, len, rtype, reqtype);
 }
 
 /*
  * Install the ll_driver override on interface 2's hid_device, right after
  * hid_hw_open succeeds. Mirrors hidpp_dd_pid_install's swap-and-save shape,
- * but the saved/override state lives on the caller's hidpp_dd_ff_data
- * instead of a separately allocated struct.
+ * including the devm allocation that ties the state to the device whose
+ * transport we are wrapping.
  *
  * The feature stays inert until something (the sysfs surface, later) flips
- * tm.enabled: hidpp_dd_texmerge_splice no-ops whenever tm.enabled is false,
+ * tm.enabled: the classifier skips the splice whenever tm.enabled is false,
  * so installing the override by itself changes nothing observable.
  */
 static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 				      struct hid_device *ff_hdev)
 {
-	if (!ff_hdev->ll_driver || !ff_hdev->ll_driver->output_report ||
-	    !ff_hdev->ll_driver->raw_request)
+	struct hidpp_dd_texmerge_shim *shim;
+
+	if (ff->tm_shim)	/* already installed - never wrap ourselves */
 		return;
 
-	spin_lock_init(&ff->tm_lock);
-	ff->tm.intensity = 100;
-	ff->tm.cylinders = 8;
-	ff->tm.enabled = false;
+	if (!ff_hdev->ll_driver || !ff_hdev->ll_driver->output_report ||
+	    !ff_hdev->ll_driver->raw_request) {
+		dd_warn(ff_hdev,
+			"texmerge: cannot install override, no real ll_driver\n");
+		return;
+	}
 
-	ff->tm_real = ff_hdev->ll_driver;
-	ff->tm_over = *ff_hdev->ll_driver;
-	ff->tm_over.output_report = hidpp_dd_texmerge_output_report;
-	ff->tm_over.raw_request = hidpp_dd_texmerge_raw_request;
-	ff_hdev->ll_driver = &ff->tm_over;
-	ff->tm_installed = true;
+	shim = devm_kzalloc(&ff_hdev->dev, sizeof(*shim), GFP_KERNEL);
+	if (!shim) {
+		dd_warn(ff_hdev,
+			"texmerge: cannot install override, out of memory\n");
+		return;
+	}
+
+	spin_lock_init(&shim->lock);
+	shim->tm.intensity = 100;
+	shim->tm.cylinders = 8;
+	shim->tm.enabled = false;
+	atomic_set(&shim->self_inflight, 0);
+	shim->ff = ff;
+
+	shim->real = ff_hdev->ll_driver;
+	shim->over = *ff_hdev->ll_driver;
+	shim->over.output_report = hidpp_dd_texmerge_output_report;
+	shim->over.raw_request = hidpp_dd_texmerge_raw_request;
+	shim->installed = true;
+	ff->tm_shim = shim;
+
+	/* Publish last, and only once the shim is complete: the first caller
+	 * through the new pointer dereferences every field above. */
+	smp_wmb();
+	WRITE_ONCE(ff_hdev->ll_driver, &shim->over);
 
 	dd_dbg(ff_hdev, "texmerge: installed ll_driver override on interface 2 (real=%p over=%p)\n",
-		ff->tm_real, &ff->tm_over);
+		shim->real, &shim->over);
 }
 
 /*
- * Teardown: restore ff_hdev->ll_driver to the real one. Called from
- * hidpp_dd_ff_destroy BEFORE hid_hw_close(ff_hdev_cached), using the same
- * cached pointer that call uses - by the time hid_hw_close runs the wrapper
- * must be gone, or a late in-flight call could dereference an ff that is
- * about to be freed. Safe to call even if install never ran or already
- * failed its capability check.
+ * Teardown: restore ff_hdev->ll_driver to the real one and cut the shim's
+ * back-pointer to ff. Called from both teardown paths - hidpp_dd_ff_destroy
+ * (before hid_hw_close) and interface 2's own thin-probe removal (before
+ * hid_hw_stop) - because either can run first. Calling it twice is a no-op.
+ *
+ * The shim itself is not freed here: it is devm memory on interface 2's
+ * device, so it stays valid for any hidraw write still inside the wrapper,
+ * long after ff is gone.
  */
 static void hidpp_dd_texmerge_uninstall(struct hidpp_dd_ff_data *ff,
 					struct hid_device *ff_hdev)
 {
-	if (!ff->tm_installed)
+	struct hidpp_dd_texmerge_shim *shim;
+	unsigned long flags;
+
+	if (!ff || !ff->tm_shim)
 		return;
-	if (ff_hdev->ll_driver == &ff->tm_over)
-		ff_hdev->ll_driver = ff->tm_real;
-	ff->tm_installed = false;
+	shim = ff->tm_shim;
+
+	if (shim->installed && ff_hdev &&
+	    READ_ONCE(ff_hdev->ll_driver) == &shim->over) {
+		WRITE_ONCE(ff_hdev->ll_driver, shim->real);
+		smp_wmb();
+	}
+	shim->installed = false;
+
+	/* Drop both directions of the ff <-> shim link so neither dangles,
+	 * whichever interface is torn down first. */
+	spin_lock_irqsave(&shim->lock, flags);
+	shim->ff = NULL;
+	spin_unlock_irqrestore(&shim->lock, flags);
+	ff->tm_shim = NULL;
 }
 
 static int hidpp_input_mapping(struct hid_device *hdev, struct hid_input *hi,
@@ -17449,6 +17578,15 @@ static void hidpp_remove(struct hid_device *hdev)
 			 */
 			cancel_work_sync(&ff->tf_init_work);
 			cancel_delayed_work_sync(&ff->refresh_work);
+			/*
+			 * Unwrap before hid_hw_stop. This branch already
+			 * cleared ff_hdev_open above, so hidpp_dd_ff_destroy's
+			 * matching uninstall would be skipped entirely - and
+			 * ll_driver would be left pointing at the shim's
+			 * override copy, into memory devres frees the moment
+			 * this device is unbound.
+			 */
+			hidpp_dd_texmerge_uninstall(ff, hdev);
 		}
 		/*
 		 * Two statements, not `return hid_hw_stop(hdev);`. Returning a
