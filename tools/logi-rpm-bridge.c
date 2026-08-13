@@ -26,7 +26,7 @@ static const char *find_sysfs(char *buf, size_t n)
 
 	if (env && *env)
 		return env;
-	if (!glob("/sys/bus/hid/devices/*046D:C27*/wheel_texture_rpm",
+	if (!glob("/sys/bus/hid/devices/*046D:C2*/wheel_texture_rpm",
 		  0, NULL, &g) && g.gl_pathc) {
 		snprintf(buf, n, "%s", g.gl_pathv[0]);
 		globfree(&g);

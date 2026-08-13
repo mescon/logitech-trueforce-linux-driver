@@ -295,14 +295,20 @@ if [ "$want_texture" = "merge" ] && \
 		say "not staging the dinput8 proxy (no game dir or dll found);"
 		say "the texture merge will idle without its RPM feed"
 	fi
+	bridge_bin=""
 	if command -v logi-rpm-bridge >/dev/null 2>&1; then
-		logi-rpm-bridge >>"$LOG" 2>&1 &
+		bridge_bin="logi-rpm-bridge"
+	elif [ -x "$(dirname "$0")/logi-rpm-bridge" ]; then
+		bridge_bin="$(dirname "$0")/logi-rpm-bridge"
+	fi
+	if [ -n "$bridge_bin" ]; then
+		"$bridge_bin" >>"$LOG" 2>&1 &
 		rpm_bridge_pid=$!
 		say "started logi-rpm-bridge (pid $rpm_bridge_pid)"
 	else
 		say "logi-rpm-bridge is not installed; the texture merge has no RPM feed"
 	fi
-	for d in /sys/bus/hid/devices/*046D:C27*/wheel_tf_merge; do
+	for d in /sys/bus/hid/devices/*046D:C2*/wheel_tf_merge; do
 		[ -w "$d" ] && echo 1 > "$d" && merge_enabled=1 && \
 			say "texture merge enabled ($d)"
 	done
@@ -453,7 +459,7 @@ fi
 if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ]; then
 	texture_merge_off() {
 		[ -n "$rpm_bridge_pid" ] && kill "$rpm_bridge_pid" 2>/dev/null
-		for d in /sys/bus/hid/devices/*046D:C27*/wheel_tf_merge; do
+		for d in /sys/bus/hid/devices/*046D:C2*/wheel_tf_merge; do
 			[ -w "$d" ] && echo 0 > "$d"
 		done
 		say "texture merge disabled"
