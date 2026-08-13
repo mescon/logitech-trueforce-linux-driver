@@ -79,6 +79,36 @@ static void test_intensity_scales(void)
 	CHECK(fabs(ratio - 0.5) < 0.05, "intensity 50 ratio %.2f, want 0.50", ratio);
 }
 
+static void test_range_push_decode(void)
+{
+	/* The two REAL captured type-0x0e frames (AC EVO usbmon captures):
+	 * a 90-degree push and a 2700-degree push. Bytes 6-9 carry the range
+	 * as an IEEE-754 float little-endian; the driver decodes it without
+	 * FP in hidpp_dd_texmerge_decode_push_deg, the same expression
+	 * hidpp_dd_texmerge_seen_range_push runs on live pushes. */
+	static const u8 push_90[10] = {
+		0x01, 0x00, 0x00, 0x00, 0x0e, 0x46, 0x00, 0x00, 0xb4, 0x42,
+	};
+	static const u8 push_2700[10] = {
+		0x01, 0x00, 0x00, 0x00, 0x0e, 0x32, 0x00, 0xc0, 0x28, 0x45,
+	};
+	u8 tiny[10];
+
+	CHECK(hidpp_dd_texmerge_decode_push_deg(push_90) == 90,
+	      "90-deg push decodes to %u, want 90",
+	      hidpp_dd_texmerge_decode_push_deg(push_90));
+	CHECK(hidpp_dd_texmerge_decode_push_deg(push_2700) == 2700,
+	      "2700-deg push decodes to %u, want 2700",
+	      hidpp_dd_texmerge_decode_push_deg(push_2700));
+
+	/* exponents outside the 1.0..4096.0 coverage decode to 0 */
+	memcpy(tiny, push_90, sizeof(tiny));
+	tiny[6] = 0x00; tiny[7] = 0x00; tiny[8] = 0x00; tiny[9] = 0x3f; /* 0.5f */
+	CHECK(hidpp_dd_texmerge_decode_push_deg(tiny) == 0,
+	      "0.5f decodes to %u, want 0",
+	      hidpp_dd_texmerge_decode_push_deg(tiny));
+}
+
 static void mk_stream_pkt(u8 *pkt, u16 cur, u8 seq)
 {
 	memset(pkt, 0, 64);
@@ -207,6 +237,7 @@ int main(void)
 	test_oscillator_rms();
 	test_oscillator_continuity();
 	test_intensity_scales();
+	test_range_push_decode();
 	test_eligibility();
 	test_splice_preserves_base();
 	test_splice_gates();

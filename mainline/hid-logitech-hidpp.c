@@ -8896,8 +8896,20 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	 * Open interface 2's HID device for FFB I/O.
 	 * This enables hid_hw_output_report() to send FFB commands.
 	 * Without this, output reports to interface 2 will fail silently.
+	 *
+	 * Only while it is still bound: usb_get_intfdata() above returns the
+	 * hid_device regardless of whether any driver is bound to it, and
+	 * hid_hw_open dereferences hdev->driver unconditionally when the open
+	 * count goes 0 -> 1, so opening an interface that was unbound in the
+	 * window since probe would oops. The device lock pins the binding
+	 * across check + open. Deadlock note: interface 2's remove runs under
+	 * this same lock, so nothing that remove waits on may run this work
+	 * item to completion - which is why hidpp_remove's thin-probe branch
+	 * must never cancel_delayed_work_sync(init_work).
 	 */
-	ret = hid_hw_open(ff_hdev);
+	device_lock(&ff_hdev->dev);
+	ret = ff_hdev->driver ? hid_hw_open(ff_hdev) : -ENODEV;
+	device_unlock(&ff_hdev->dev);
 	if (ret) {
 		dd_err(hid, "Cannot open FFB interface (error %d) - FFB disabled\n", ret);
 		/*
@@ -14744,14 +14756,54 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 	 * never run (FFB.F15).
 	 */
 	if (ff->ff_hdev_open && ff_hdev_cached) {
-		/* Unwrap the ll_driver before the underlying hid_device is
-		 * closed - hid_hw_close must run against the real transport,
-		 * not our override. This also cuts the shim's back-pointer to
-		 * ff, so a hidraw write still inside the wrapper (nothing on
-		 * the output path is drained by hid_hw_close) cannot reach the
-		 * allocation we are about to free. */
-		hidpp_dd_texmerge_uninstall(ff, ff_hdev_cached);
-		hid_hw_close(ff_hdev_cached);
+		/*
+		 * Interface 2 can lose its driver binding without this
+		 * driver's remove ever seeing a matching teardown for it
+		 * (observed live 2026-08-14: rmmod oopsed here because the
+		 * cached hid_device was already unbound, and hid_hw_close
+		 * dereferences hdev->driver unconditionally once
+		 * ll_open_count reaches zero - hidpp_remove's thin-probe
+		 * branch only clears ff_hdev_open when it both runs and
+		 * matches, so this guard must not rely on it). Pin the
+		 * binding with the device lock - the lock the driver core
+		 * itself holds across probe and remove - so it cannot change
+		 * between the check and the close. Lock order device_lock ->
+		 * ll_open_lock matches hid_device_remove -> hid_hw_close;
+		 * dev->mutex is lockdep-novalidate, so taking interface 2's
+		 * while holding interface 1's is fine, and interface 2's
+		 * remove never waits on anything this remove holds (its
+		 * thin-probe branch must never cancel init_work - see there).
+		 */
+		device_lock(&ff_hdev_cached->dev);
+		if (ff_hdev_cached->driver) {
+			/* Unwrap the ll_driver before the underlying
+			 * hid_device is closed - hid_hw_close must run
+			 * against the real transport, not our override. This
+			 * also cuts the shim's back-pointer to ff, so a
+			 * hidraw write still inside the wrapper (nothing on
+			 * the output path is drained by hid_hw_close) cannot
+			 * reach the allocation we are about to free. */
+			hidpp_dd_texmerge_uninstall(ff, ff_hdev_cached);
+			hid_hw_close(ff_hdev_cached);
+		} else {
+			/*
+			 * Unbound: hid_hw_close would oops on the NULL
+			 * hdev->driver, and the shim - devres on interface
+			 * 2's device - was freed by that unbind. Drop our
+			 * pointer without touching the shim's memory; the
+			 * ll_driver override, if still installed, points into
+			 * freed devres that only USB-level teardown of the
+			 * now-driverless interface will ever reach. The open
+			 * count leaks with the dead binding by design: there
+			 * is no bound driver left to close against.
+			 */
+			unsigned long tm_flags;
+
+			spin_lock_irqsave(&ff->tm_shim_lock, tm_flags);
+			ff->tm_shim = NULL;
+			spin_unlock_irqrestore(&ff->tm_shim_lock, tm_flags);
+		}
+		device_unlock(&ff_hdev_cached->dev);
 		ff->ff_hdev_open = false;
 	}
 
@@ -16321,27 +16373,17 @@ static void hidpp_dd_texmerge_seen_range_push(struct hidpp_dd_ff_data *ff,
 					      const u8 *buf)
 {
 	/*
-	 * Wire layout of the SDK's type-0x0e range push, confirmed against a
-	 * live AC EVO usbmon capture: buf[0]=0x01, buf[4]=0x0e, buf[5]=the
-	 * push's sequence byte, and the range as an IEEE-754 float at bytes
-	 * 6-9 little-endian. Two captured frames:
-	 *   90.0   = .. 0e <seq> 00 00 b4 42
-	 *   2700.0 = .. 0e <seq> 00 c0 28 45
+	 * Wire layout and the no-FP float decode live with the arithmetic in
+	 * hidpp_dd_texmerge_decode_push_deg() (hidpp_dd_texture_merge.h), so
+	 * the userspace tests exercise the exact expression this path runs.
 	 * Bytes 8-11 (the previous offset here) land one byte past the float
 	 * and decode as garbage (exp=0) on every real push, which is why the
 	 * restore never fired in live sessions despite passing synthetic
 	 * tests built on the same wrong assumption.
 	 */
-	u32 fbits = get_unaligned_le32(&buf[6]);
-	/* float decode without FP: 90.0f = 0x42b40000. Only the integer
-	 * range matters; the exponent path below covers 1.0..4096.0. */
-	u32 exp = (fbits >> 23) & 0xff;
-	u32 deg = 0;
+	u32 deg = hidpp_dd_texmerge_decode_push_deg(buf);
 	u16 cur;
 
-	if (exp >= 127 && exp <= 138)
-		deg = (u32)(((fbits & 0x7fffff) | 0x800000) >>
-			    (23 - (exp - 127)));
 	if (!deg || deg > 2700)
 		return;
 
@@ -18210,6 +18252,14 @@ static void hidpp_remove(struct hid_device *hdev)
 			 * this hid_device is freed right after. Flush them
 			 * while the device is still valid; the owner's
 			 * hidpp_dd_ff_destroy cancels again later (no-op).
+			 *
+			 * init_work must NOT be cancelled synchronously
+			 * here: it takes device_lock(&ff_hdev->dev) around
+			 * its hid_hw_open, and this remove runs under that
+			 * very lock - cancel_delayed_work_sync on it would
+			 * deadlock. It is safe to leave running: once this
+			 * remove drops the lock the work sees driver == NULL
+			 * and declines to open.
 			 */
 			cancel_work_sync(&ff->tf_init_work);
 			cancel_delayed_work_sync(&ff->refresh_work);

@@ -33,6 +33,13 @@ static inline void put_unaligned_le16(u16 v, void *p)
 {
 	u8 *b = p; b[0] = v & 0xff; b[1] = v >> 8;
 }
+static inline u32 get_unaligned_le32(const void *p)
+{
+	const u8 *b = p;
+
+	return (u32)b[0] | ((u32)b[1] << 8) | ((u32)b[2] << 16) |
+	       ((u32)b[3] << 24);
+}
 #endif
 
 #define HIDPP_DD_TEXMERGE_FS		4000	/* sample clock, Hz */
@@ -262,6 +269,27 @@ static inline s16 hidpp_dd_texmerge_next_sample(struct hidpp_dd_texmerge *tm,
 static inline bool hidpp_dd_texmerge_eligible(const u8 *buf, size_t len)
 {
 	return len == 64 && buf[0] == 0x01 && buf[4] == 0x01 && buf[10] == 0x00;
+}
+
+/*
+ * Decode the rotation range from an SDK type-0x0e operating-range push.
+ * Wire layout, confirmed against a live AC EVO usbmon capture: buf[0]=0x01,
+ * buf[4]=0x0e, buf[5]=the push's sequence byte, and the range as an IEEE-754
+ * float at bytes 6-9 little-endian. Two captured frames:
+ *   90.0   = .. 0e <seq> 00 00 b4 42
+ *   2700.0 = .. 0e <seq> 00 c0 28 45
+ * Decoded without FP (90.0f = 0x42b40000): the exponent path covers
+ * 1.0..4096.0, everything outside decodes to 0. Only the integer part of the
+ * float matters. Returns whole degrees, 0 when out of coverage.
+ */
+static inline u32 hidpp_dd_texmerge_decode_push_deg(const u8 *buf)
+{
+	u32 fbits = get_unaligned_le32(&buf[6]);
+	u32 exp = (fbits >> 23) & 0xff;
+
+	if (exp < 127 || exp > 138)
+		return 0;
+	return (u32)(((fbits & 0x7fffff) | 0x800000) >> (23 - (exp - 127)));
 }
 
 static inline int hidpp_dd_texmerge_splice(struct hidpp_dd_texmerge *tm,
