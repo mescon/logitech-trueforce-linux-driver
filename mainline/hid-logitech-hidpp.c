@@ -5345,6 +5345,19 @@ struct hidpp_dd_ff_data {
 	 * unplug. See hidpp_dd_texmerge_self_tx_begin/_end below.
 	 */
 	atomic_t self_inflight;
+	/*
+	 * One-shot restore of the SDK's operating-range push (see
+	 * hidpp_dd_texmerge_seen_range_push). Set under shim->lock from the
+	 * interceptor when a type-0x0e push is first seen; tm_restore_work
+	 * does the actual HID++ SET and clears tm_push_seen again once it is
+	 * done, which is what lets the NEXT push (a later game launch)
+	 * arm again - ff_hdev_open only ever flips true->false across this
+	 * device's whole attached lifetime, so it cannot mark individual
+	 * game sessions and isn't used for that here.
+	 */
+	bool tm_push_seen;
+	u16 tm_restore_deg;
+	struct work_struct tm_restore_work;
 	struct input_dev *input;
 	struct workqueue_struct *wq;	/* Workqueue for async USB transfers */
 	struct delayed_work init_work;	/* Deferred initialization */
@@ -5647,6 +5660,7 @@ static void hidpp_dd_texmerge_uninstall(struct hidpp_dd_ff_data *ff,
 					struct hid_device *ff_hdev);
 static void hidpp_dd_texmerge_self_tx_begin(struct hidpp_dd_ff_data *ff);
 static void hidpp_dd_texmerge_self_tx_end(struct hidpp_dd_ff_data *ff);
+static void hidpp_dd_texmerge_restore_work(struct work_struct *work);
 /*
  * wheel_tf_merge / wheel_texture_rpm / wheel_texture_intensity /
  * wheel_texture_cylinders: prototyped here so the DEVICE_ATTR() pair can
@@ -9308,6 +9322,15 @@ static ssize_t wheel_range_store(struct device *dev, struct device_attribute *at
 	/* A fresh explicit intent supersedes any owed auto-restore. */
 	ff->range_restore_attempts = 0;
 	ff->restore_want = 0;
+	/*
+	 * Same for the SDK push-restore: an explicit write here is the user
+	 * (or a script) overriding things right now, which supersedes
+	 * whatever the interceptor thinks it still owes from a push it saw
+	 * earlier. Leaves tm_restore_work itself alone - if it is already
+	 * in flight it still completes, but a subsequent push is free to
+	 * arm again immediately rather than waiting on it.
+	 */
+	WRITE_ONCE(ff->tm_push_seen, false);
 	dd_info(hid, "Rotation range set to %d degrees\n", range);
 	return count;
 }
@@ -14509,6 +14532,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	INIT_WORK(&ff->settings_refresh_work, hidpp_dd_ff_settings_refresh_work);
 	INIT_WORK(&ff->accessory_rescan_work, hidpp_dd_accessory_rescan_work);
 	INIT_WORK(&ff->tf_init_work, hidpp_dd_tf_init_work_handler);
+	INIT_WORK(&ff->tm_restore_work, hidpp_dd_texmerge_restore_work);
 
 	/* Store for cleanup in hidpp_remove() */
 	hidpp->private_data = ff;
@@ -14654,6 +14678,15 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 	cancel_work_sync(&ff->settings_refresh_work);
 	cancel_work_sync(&ff->accessory_rescan_work);
 	cancel_work_sync(&ff->tf_init_work);
+	/*
+	 * tm_restore_work runs on the default system workqueue (schedule_work),
+	 * not ff->wq, so drain_workqueue below never reaches it; cancel it
+	 * explicitly like the other non-ff->wq work above. It only touches ff
+	 * and does HID++ I/O on interface 1, so cancelling it here, before
+	 * ff_hdev is torn down and before kfree(ff) below, is sufficient - the
+	 * interface-2 thin-probe remove path does not need a matching cancel.
+	 */
+	cancel_work_sync(&ff->tm_restore_work);
 
 	dd_dbg(hid, "Cancelling effect timer\n");
 	hrtimer_cancel(&ff->effect_timer);
@@ -16149,17 +16182,101 @@ static void hidpp_dd_texmerge_self_tx_end(struct hidpp_dd_ff_data *ff)
 }
 
 /*
- * Filled in by the range-restore work (see docs/NATIVE_TF_TEXTURE_MERGE_DESIGN.md).
- * A type-0x0e packet is the SDK's operating-range push; the range-restore
- * logic needs to see every one that goes out so it can tell a game-requested
- * range change from the auto-heal writing its own. Stubbed here so this
- * interceptor builds standalone; the body arrives with the range-restore task.
+ * Deferred half of the range-push restore (see hidpp_dd_texmerge_seen_range_push
+ * below). Sleepable: does the real HID++ range SET. Queued with schedule_work,
+ * not on ff->wq - ff->wq is reserved for the FFB send path, and this is a
+ * rare, one-shot side channel; hidpp_dd_ff_destroy cancels it explicitly
+ * since drain_workqueue(ff->wq) does not reach the default system queue.
+ */
+static void hidpp_dd_texmerge_restore_work(struct work_struct *work)
+{
+	struct hidpp_dd_ff_data *ff =
+		container_of(work, struct hidpp_dd_ff_data, tm_restore_work);
+	u16 want = ff->tm_restore_deg;
+
+	/*
+	 * Let the SDK finish its init burst - captures show more packets,
+	 * occasionally more range pushes, in the tens of ms right after the
+	 * first one - before writing over whatever it settles on.
+	 */
+	msleep(150);
+
+	/*
+	 * A manual wheel_range write during the sleep clears tm_push_seen
+	 * (see wheel_range_store) to say the user's fresh intent supersedes
+	 * this restore; honour that by skipping the SET rather than
+	 * clobbering it with the stale pre-push value.
+	 */
+	if (READ_ONCE(ff->tm_push_seen) && !atomic_read_acquire(&ff->stopping)) {
+		if (hidpp_dd_set_range_hw(ff, want) == 0)
+			dd_info(ff->hidpp->hid_dev,
+				"restored range to %u after SDK push\n", want);
+		else
+			dd_warn(ff->hidpp->hid_dev,
+				"range restore to %u after SDK push failed\n",
+				want);
+	}
+
+	/*
+	 * Re-arm for the next push. This packet's one-shot flag is the only
+	 * per-session state the driver has for it - there is no game-exit
+	 * signal to reset on - so clearing it here, once this push has been
+	 * fully handled, is what lets a later game session's push be caught
+	 * again. No retry on failure: that is what the existing 3-strike
+	 * poll-based restore (hidpp_dd_ff_range_maybe_restore) is for.
+	 */
+	WRITE_ONCE(ff->tm_push_seen, false);
+}
+
+/*
+ * Called from hidpp_dd_texmerge_classify under shim->lock (spinlock,
+ * atomic context) whenever an outgoing type-0x0e packet passes the
+ * interceptor; shim->ff has already been checked non-NULL by the caller.
+ * Self-generated packets (including this file's own range SET below) never
+ * reach here - hidpp_dd_texmerge_classify's self_inflight check runs first
+ * and skips classification entirely while one of our own sends is in
+ * flight. A genuine SDK push landing in that same narrow window is the one
+ * case this cannot see; when that happens the restore simply does not fire
+ * and the existing manual `echo N > wheel_range` step is the fallback, same
+ * as before this task.
+ *
+ * Only atomic-safe work happens here: decode the float, record what to
+ * restore, and hand off to tm_restore_work for the sleepable HID++ SET.
+ * tm_shim_lock (the outer, ff-level lock) is never taken from here - doing
+ * so would invert against the shim->lock this runs under.
  */
 static void hidpp_dd_texmerge_seen_range_push(struct hidpp_dd_ff_data *ff,
 					      const u8 *buf)
 {
-	(void)ff;
-	(void)buf;
+	u32 fbits = get_unaligned_le32(&buf[8]);
+	/* float decode without FP: 90.0f = 0x42b40000. Only the integer
+	 * range matters; the exponent path below covers 1.0..4096.0. */
+	u32 exp = (fbits >> 23) & 0xff;
+	u32 deg = 0;
+	u16 cur;
+
+	if (exp >= 127 && exp <= 138)
+		deg = (u32)(((fbits & 0x7fffff) | 0x800000) >>
+			    (23 - (exp - 127)));
+	if (!deg || deg > 2700)
+		return;
+
+	if (READ_ONCE(ff->tm_push_seen))
+		return;
+
+	/*
+	 * Nothing to restore if the cached range already matches what was
+	 * just pushed, or was never established. Leave tm_push_seen clear so
+	 * a later push - later in this same burst, or a future session -
+	 * still gets a chance to arm.
+	 */
+	cur = READ_ONCE(ff->range);
+	if (!cur || cur == deg)
+		return;
+
+	WRITE_ONCE(ff->tm_push_seen, true);
+	ff->tm_restore_deg = cur;
+	schedule_work(&ff->tm_restore_work);
 }
 
 /*
@@ -16289,6 +16406,17 @@ static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 	shim->tm.cylinders = 8;
 	shim->tm.enabled = false;
 	shim->ff = ff;
+
+	/*
+	 * Fresh interceptor, fresh push-restore state. ff is kzalloc'd so
+	 * this is already false the first time through; stated explicitly
+	 * because install is the natural per-attach boundary for this
+	 * state (ff_hdev_open itself only ever flips true->false once,
+	 * across this device's whole attached lifetime, so it is not a
+	 * useful reset point on its own - see the field comment on
+	 * hidpp_dd_ff_data).
+	 */
+	WRITE_ONCE(ff->tm_push_seen, false);
 
 	shim->real = ff_hdev->ll_driver;
 	shim->over = *ff_hdev->ll_driver;
