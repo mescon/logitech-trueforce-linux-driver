@@ -1,7 +1,39 @@
 # Native TrueForce Texture Merge - Design
 
 **Date:** 2026-08-13
-**Status:** Design, pending implementation plan
+**Status:** Implemented, hardware-validated 2026-08-13 (RS50, module `9C1B5855`)
+
+## Status update: implemented
+
+Everything below shipped as designed, with two deltas found during review and
+one framing question that came up more than once and was settled explicitly.
+
+**Delta 1: the merge state lives in a devm shim, not on `ff` directly.**
+The design below describes `ff->tm`/`ff->tm_lock`. Review hardening moved
+that state onto its own `struct hidpp_dd_texmerge_shim`, devm-allocated
+against interface 2's device and reached through `ff->tm_shim` (which
+may be `NULL` across teardown), with the shim's own spinlock serializing
+every read and write against the classifier - not just against other sysfs
+writers, since the classifier reads the whole struct on every packet on the
+ll_driver hot path.
+
+**Delta 2: the oscillator gained a Nyquist harmonic guard.** In the
+harmonic loop, any harmonic whose frequency would reach 0.45 of the sample
+rate is skipped rather than accumulated, so high RPM cannot fold a harmonic
+back down into the audible band as aliasing. The phase accumulator still
+advances underneath a skipped harmonic, so it re-enters cleanly in range
+without a phase jump.
+
+**Framing: the synthesis-fitted-to-capture approach was raised and approved
+explicitly, not assumed.** The game supplies no texture at all - every SDK
+packet from AC EVO carries `byte10=0`. On Windows the buzz is not something
+sent over the wire and decoded; it is G HUB inventing it from the game's RPM
+on the host and merging it into the same stream. There was accordingly no
+protocol to reverse-engineer for the texture itself, only a shape to fit
+(`docs/TF_TEXTURE_RECIPE.md`, from the Windows capture). That this project
+should do the same synthesis, in the kernel, rather than keep hunting for a
+wire format that does not exist, was confirmed before implementation started
+rather than discovered as a fallback partway through.
 
 ## Goal
 

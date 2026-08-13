@@ -312,3 +312,63 @@ So the open question is how to keep a direct-drive wheel's force loop alive
 without zeroing what the game is sending. Doing it in the driver when it sees a
 TrueForce stream on the vendor interface would cover a game as well as our own
 daemon, and is a better depth for it than a userspace effect.
+
+## 2026-08-12 late: NATIVE FFB WORKS, and the texture is decoded from Windows captures
+
+**Native base force feedback through Logitech's real SDK works under Proton.**
+Verified by feel and by wire: after a wheel power cycle, with the dinput8
+proxy answering the four operating-range getters, the SDK streams type-0x01
+packets at 2 kHz with the game's live force in `cur` (11883 packets/6 s,
+sane values, felt correct). The steering-ratio problem was the SDK's
+session-init clamp to 90 degrees: the quiesce patch had removed the
+auto-heal, so it stuck. The quiesce is reverted (a single heal holds; the
+SDK clamps once and does not fight), and the range poll now runs every 3 s
+so the heal lands within seconds of track load.
+
+The haptic-
+
+## 2026-08-13: shipped - the texture is a kernel splice, and the OEM path is closed
+
+Two things this document was open on are now settled.
+
+**The base FFB recipe above is productized, not a manual step anymore.**
+`logi-launch %command%` stages the range-answering proxy itself for Assetto
+Corsa EVO on a direct-drive wheel: it copies `dinput8-escape.dll` into the
+game's install directory and sets `WINEDLLOVERRIDES=dinput8=n,b`, tearing
+both down again on exit. The power cycle this document found necessary for a
+clean SDK session is still the user's to do; nothing here changes that.
+
+**The engine-note texture is a kernel splice into the SDK's own stream, and
+it is hardware-validated.** Rather than chase the SDK into sending texture it
+was never observed sending on any OS, the driver now inserts synthesised
+samples into the type-0x01 packets it is already relaying, the same point
+G HUB merges at on Windows. Measured on the RS50 (module `9C1B5855`,
+2026-08-13):
+
+- merge off is byte-identical passthrough: 7847 packets, every one
+  `byte10=00`, `cur=0x8000`;
+- merge on with no RPM fed is untouched, proving the stale/zero gate on real
+  hardware, not just in the unit tests;
+- merge on with 6000 rpm fed splices every packet at the 4 kHz sample budget,
+  `cur` bit-identical in every packet, sample rms 523.2 counts against the
+  524-count capture-fit target (0.2% off), and the dominant frequency exactly
+  400 Hz, which is a 6000 rpm V8's firing frequency;
+- the SDK's operating-range push still lands (90.0 degrees), and the driver's
+  auto-heal restores 900 in under 2 s with no manual write, logged as
+  `restored range to 900 after SDK push (attempt 1/3)`;
+- killing the RPM feed lets the texture die out inside the 200 ms staleness
+  window, rather than droning on stale data.
+
+`logi-launch %command%` arms this automatically for Assetto Corsa EVO on a
+direct-drive wheel: proxy staged, `logi-rpm-bridge` started, the merge turned
+on, all torn down again when the game exits.
+
+**The OEM driver / compat-mode path is a dead end, not an unfinished lead.**
+`hidpp_forcefeedback_x64.dll`'s device id list never contains `C276`, the
+RS50's native mode, on Windows either, so there was never a version of this
+where that driver had something to say about this wheel's native identity.
+More to the point, the texture it would have carried is not a wire format to
+reverse: on Windows it is G HUB synthesising it from the game's RPM on the
+host and merging it into the SDK stream, the same operation this feature now
+does in the kernel. There was no captured protocol to complete; the destination
+was always synthesis, and the driver now does that synthesis itself.

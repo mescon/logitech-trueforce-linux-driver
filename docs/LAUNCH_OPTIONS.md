@@ -189,6 +189,24 @@ forces travel, and whether the game's TrueForce can travel at all. No
 measurement here says the SDK route feels better than the evdev one; the
 gain that is established is native TrueForce over simulated.
 
+### The engine buzz, and a stale variable to remove
+
+Real TrueForce through the SDK carries the game's steering forces but not the
+fine engine-note texture. On Windows that texture is G HUB's own addition,
+synthesised from the game's RPM and merged into the same stream, not
+something the game sends itself. Since 2026-08-13 the driver does the same
+merge, and `logi-launch` wires all of it up for you: for Assetto Corsa EVO on
+a direct-drive wheel, plain `logi-launch %command%` stages the proxy DLL,
+starts `logi-rpm-bridge`, and turns on the merge, tearing both down again
+when the game exits. Nothing else to add, and nothing to type differently
+from any other title.
+
+**IMPORTANT: remove `LOGI_ESCAPE_RELAY=0` if it is sitting in a game's launch
+options from an older manual recipe.** That variable turns the dinput8 proxy
+into capture-only, so it stops relaying the RPM the texture merge needs, and
+the wheel goes back to force with no buzz for no reason that shows up
+anywhere. `logi-launch` never sets it, and the relay must stay on.
+
 ### Why it names your wheel rather than saying `1`
 
 Proton matches this variable as a **substring** against each device's own

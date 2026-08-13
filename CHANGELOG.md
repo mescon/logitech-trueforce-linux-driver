@@ -7,6 +7,25 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**Assetto Corsa EVO's TrueForce now has the engine-note texture, not just
+steering force.** The SDK stream that carries the game's real forces has
+never carried texture: every packet from the game has an empty sample
+field, because on Windows the buzz is not part of what the game or the SDK
+sends, it is G HUB synthesising it from RPM and merging it into the same
+stream on the host. The driver now does that same merge, splicing an
+RPM-driven engine note into the SDK's own packets on the way out, with the
+game's own force left byte-for-byte untouched. Hardware-validated on an
+RS50: with the feature off the wire is unchanged; with it on and no RPM fed
+nothing changes either; fed 6000 rpm, every packet carries a spliced sample
+whose loudness and 400 Hz frequency match the fitted recipe, and the
+game's own force bytes stay identical throughout. `logi-launch %command%`
+is still the whole recipe for Assetto Corsa EVO: it stages what the merge
+needs and tears it down again on exit, same as everything else it does.
+
+If a game's launch options still carry `LOGI_ESCAPE_RELAY=0` from an older
+manual recipe, remove it: that variable now starves the texture merge of
+the RPM feed it needs.
+
 **Native TrueForce has been impossible since 0.27.1, and is fixed.** The
 installer registers Logitech's SDK by writing its path into the Windows
 registry inside each game's Proton folder. Since 0.27.1 that path was written
