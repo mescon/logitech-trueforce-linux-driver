@@ -283,10 +283,12 @@ static inline int hidpp_dd_texmerge_splice(struct hidpp_dd_texmerge *tm,
 	 * spliced"), so gate on ordering alone. */
 	if (now_ns > tm->last_ns) {
 		u64 dt = now_ns - tm->last_ns;
-		/* debt_q8 += dt * FS / 1e9, in Q8 */
+
+		if (dt > 1000000000ULL)	/* cap at 1s: caller was idle/first-call */
+			dt = 1000000000ULL;
 		tm->debt_q8 += (u32)((dt * HIDPP_DD_TEXMERGE_FS * 256) /
 				     1000000000ULL);
-		if (tm->debt_q8 > 16 * 256)	/* clamp runaway after a stall */
+		if (tm->debt_q8 > 16 * 256)
 			tm->debt_q8 = 16 * 256;
 	}
 	tm->last_ns = now_ns;

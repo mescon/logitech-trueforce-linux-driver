@@ -178,9 +178,9 @@ static void test_splice_pacing(void)
 
 static void test_nyquist_guard(void)
 {
-	/* At f0 = 600 Hz (V8 at 9000 rpm), h4 (2400 Hz) and h5 (3000 Hz)
-	 * exceed 0.45*FS = 1800 Hz and must be silent: the output must
-	 * contain no alias energy. Compare rms against an h1-h3-only
+	/* At f0 = 600 Hz (V8 at 9000 rpm), h3 (1800 Hz) sits exactly at the
+	 * 0.45*FS threshold and h4/h5 exceed it; all three are silenced
+	 * (threshold is >=). The output must contain no alias energy. Compare rms against an h1-h2-only
 	 * expectation: with band 290+ gains (h4/h5 small), dropping h4/h5
 	 * changes rms by only a few percent, so simply assert the sample
 	 * stream stays finite and the rms is within 20% of the target
