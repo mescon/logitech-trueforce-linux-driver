@@ -23,6 +23,7 @@
 #include <stdbool.h>
 typedef uint8_t u8;  typedef uint16_t u16; typedef uint32_t u32;
 typedef uint64_t u64; typedef int16_t s16;  typedef int32_t s32;
+typedef int64_t s64;
 static inline void put_unaligned_le16(u16 v, void *p)
 {
 	u8 *b = p; b[0] = v & 0xff; b[1] = v >> 8;
@@ -195,11 +196,61 @@ static const struct hidpp_dd_texmerge_band hidpp_dd_texmerge_bands[5] = {
 };
 /* GENERATED-TABLES-END */
 
-/* implemented in later tasks */
-#if 0
-static inline u32 hidpp_dd_texmerge_f0_x100(const struct hidpp_dd_texmerge *tm);
+static inline u32 hidpp_dd_texmerge_f0_x100(const struct hidpp_dd_texmerge *tm)
+{
+	/* firing frequency = rpm/60 * cylinders/2 (4-stroke)
+	 * f0_x100 = (rpm_x10/10)/60 * cyl/2 * 100 = rpm_x10 * cyl * 10 / 120 */
+	return (u32)(((u64)tm->rpm_x10 * tm->cylinders * 10) / 120);
+}
+
+static inline const struct hidpp_dd_texmerge_band *
+hidpp_dd_texmerge_band_for(u32 f0_x100)
+{
+	int i;
+
+	for (i = (int)(sizeof(hidpp_dd_texmerge_bands) /
+		       sizeof(hidpp_dd_texmerge_bands[0])) - 1; i > 0; i--)
+		if (f0_x100 >= hidpp_dd_texmerge_bands[i].f0_min_x100)
+			return &hidpp_dd_texmerge_bands[i];
+	return &hidpp_dd_texmerge_bands[0];
+}
+
 static inline s16 hidpp_dd_texmerge_next_sample(struct hidpp_dd_texmerge *tm,
-						u32 f0_x100);
+						u32 f0_x100)
+{
+	const struct hidpp_dd_texmerge_band *band =
+		hidpp_dd_texmerge_band_for(f0_x100);
+	/* target rms in counts = 72 + 1.13 * f0_hz, from the capture fit */
+	u32 rms = 72 + (113 * (f0_x100 / 100)) / 100;
+	/* h1 amplitude in counts */
+	u32 amp = (rms * band->amp_q8) >> 8;
+	s32 acc = 0;
+	int k;
+
+	/* phase increment for h1, Q32 turns: f0 / FS per sample */
+	u32 inc = (u32)(((u64)f0_x100 << 32) /
+			(100ULL * HIDPP_DD_TEXMERGE_FS));
+
+	for (k = 0; k < HIDPP_DD_TEXMERGE_HARMONICS; k++) {
+		s32 lut;
+
+		tm->phase[k] += inc * (k + 1);
+		lut = hidpp_dd_texmerge_sine_lut[tm->phase[k] >> 22]; /* /2^22 = x1024 */
+		acc += (lut * (s32)band->gain_q12[k]) >> 12;	/* Q15 of 1.0 */
+	}
+	/* scale by amplitude and intensity percent; clamp to s16 */
+	{
+		s32 v = (s32)(((s64)acc * amp) >> 15);
+
+		v = (s32)(((s64)v * tm->intensity) / 100);
+		if (v > 32767) v = 32767;
+		if (v < -32768) v = -32768;
+		return (s16)v;
+	}
+}
+
+/* implemented in a later task */
+#if 0
 static inline bool hidpp_dd_texmerge_eligible(const u8 *buf, size_t len);
 static inline int hidpp_dd_texmerge_splice(struct hidpp_dd_texmerge *tm,
 					   u8 *buf, size_t len, u64 now_ns);
