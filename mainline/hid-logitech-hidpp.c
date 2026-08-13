@@ -5321,6 +5321,18 @@ struct hidpp_dd_ff_data {
 	 * by hidpp_dd_texmerge_uninstall on every teardown path.
 	 */
 	struct hidpp_dd_texmerge_shim *tm_shim;
+	/*
+	 * Non-zero while one of the driver's OWN send sites is inside
+	 * hid_hw_output_report / hid_hw_raw_request on interface 2. Lives
+	 * here, not on the shim above: ff is guaranteed alive across every
+	 * sender site (ff->wq is drained before kfree(ff); tf_init_work is
+	 * cancel_work_sync'd first), whereas the shim is devm memory on
+	 * interface 2's device whose owning FFB work handler is NOT
+	 * cancelled by interface 2's thin-probe remove - a shim-based
+	 * counter could be decremented into devres-freed memory after
+	 * unplug. See hidpp_dd_texmerge_self_tx_begin/_end below.
+	 */
+	atomic_t self_inflight;
 	struct input_dev *input;
 	struct workqueue_struct *wq;	/* Workqueue for async USB transfers */
 	struct delayed_work init_work;	/* Deferred initialization */
@@ -5621,9 +5633,8 @@ static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 				      struct hid_device *ff_hdev);
 static void hidpp_dd_texmerge_uninstall(struct hidpp_dd_ff_data *ff,
 					struct hid_device *ff_hdev);
-static struct hidpp_dd_texmerge_shim *
-hidpp_dd_texmerge_self_tx_begin(struct hidpp_dd_ff_data *ff);
-static void hidpp_dd_texmerge_self_tx_end(struct hidpp_dd_texmerge_shim *shim);
+static void hidpp_dd_texmerge_self_tx_begin(struct hidpp_dd_ff_data *ff);
+static void hidpp_dd_texmerge_self_tx_end(struct hidpp_dd_ff_data *ff);
 static int hidpp_dd_response_curve_upload(struct hidpp_device *hidpp,
 					  struct hidpp_dd_ff_data *ff,
 					  u8 dev_idx, u8 axis, u8 idx,
@@ -6676,7 +6687,6 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
 {
 	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
 					       tf_init_work);
-	struct hidpp_dd_texmerge_shim *shim;
 	struct hid_device *hdev;
 	u8 *pkt;
 	int pass, i, ret = 0;
@@ -6718,7 +6728,7 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
 			/* Ours, not the SDK's: 9 of these packets are
 			 * splice-eligible and one is a type-0x0e that the
 			 * texture merge would read as a range push. */
-			shim = hidpp_dd_texmerge_self_tx_begin(ff);
+			hidpp_dd_texmerge_self_tx_begin(ff);
 			ret = hid_hw_output_report(hdev, pkt,
 						   HIDPP_DD_FF_REPORT_SIZE);
 			/* Only -ENOSYS means ->output_report is unimplemented;
@@ -6730,7 +6740,7 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work)
 						HIDPP_DD_FF_REPORT_SIZE,
 						HID_OUTPUT_REPORT,
 						HID_REQ_SET_REPORT);
-			hidpp_dd_texmerge_self_tx_end(shim);
+			hidpp_dd_texmerge_self_tx_end(ff);
 			if (ret < 0)
 				break;
 		}
@@ -7118,7 +7128,6 @@ static void hidpp_dd_ff_work_handler(struct work_struct *work)
 {
 	struct hidpp_dd_ff_work *ff_work = container_of(work, struct hidpp_dd_ff_work, work);
 	struct hidpp_dd_ff_data *ff = ff_work->ff_data;
-	struct hidpp_dd_texmerge_shim *tm_shim;
 	struct hidpp_dd_ff_report *report;
 	struct hid_device *hdev;
 	int ret;
@@ -7171,7 +7180,7 @@ static void hidpp_dd_ff_work_handler(struct work_struct *work)
 	 */
 	/* Ours, not the SDK's: a KF constant-force report matches the texture
 	 * merge's splice filter, so exempt it from the interceptor. */
-	tm_shim = hidpp_dd_texmerge_self_tx_begin(ff);
+	hidpp_dd_texmerge_self_tx_begin(ff);
 	ret = hid_hw_output_report(hdev, ff_work->report_buf, HIDPP_DD_FF_REPORT_SIZE);
 	/*
 	 * Only -ENOSYS means the transport has no ->output_report; fall back to
@@ -7184,7 +7193,7 @@ static void hidpp_dd_ff_work_handler(struct work_struct *work)
 					 ff_work->report_buf, HIDPP_DD_FF_REPORT_SIZE,
 					 HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
 	}
-	hidpp_dd_texmerge_self_tx_end(tm_shim);
+	hidpp_dd_texmerge_self_tx_end(ff);
 
 	if (ret < 0) {
 		/*
@@ -7453,7 +7462,6 @@ static void hidpp_dd_ff_refresh_work(struct work_struct *work)
 {
 	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
 					       refresh_work.work);
-	struct hidpp_dd_texmerge_shim *shim;
 	struct hid_device *hdev;
 	u8 *refresh_cmd;
 	int ret;
@@ -7486,7 +7494,7 @@ static void hidpp_dd_ff_refresh_work(struct work_struct *work)
 
 	/* Send the refresh command. Ours, not the SDK's - keep it out of the
 	 * texture merge, same as every other in-kernel send. */
-	shim = hidpp_dd_texmerge_self_tx_begin(ff);
+	hidpp_dd_texmerge_self_tx_begin(ff);
 	ret = hid_hw_output_report(hdev, refresh_cmd, HIDPP_DD_FF_REPORT_SIZE);
 	if (ret < 0 && ret != -EIO && ret != -ENODEV) {
 		/* output_report not available, try raw_request instead */
@@ -7494,7 +7502,7 @@ static void hidpp_dd_ff_refresh_work(struct work_struct *work)
 					 refresh_cmd, HIDPP_DD_FF_REPORT_SIZE,
 					 HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
 	}
-	hidpp_dd_texmerge_self_tx_end(shim);
+	hidpp_dd_texmerge_self_tx_end(ff);
 
 	kfree(refresh_cmd);
 
@@ -14348,6 +14356,13 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	atomic_set(&ff->pending_work, 0);
 	atomic_set(&ff->stopping, 0);
 	atomic_set(&ff->initialized, 0);
+	/*
+	 * ff is kzalloc'd so this is already 0; set it explicitly anyway,
+	 * here at the shim-install-independent init site, since the texture
+	 * merge shim (installed later, separately, and only on interface 2)
+	 * is no longer where this counter's lifetime comes from.
+	 */
+	atomic_set(&ff->self_inflight, 0);
 	ff->last_err_log = 0;
 	ff->err_count = 0;
 
@@ -16042,41 +16057,25 @@ struct hidpp_dd_texmerge_shim {
 	 * freed memory.
 	 */
 	struct hidpp_dd_ff_data *ff;
-
-	/*
-	 * Non-zero while one of the driver's OWN send sites is inside
-	 * hid_hw_output_report / hid_hw_raw_request on interface 2. Our
-	 * traffic goes through the wrapper as well, and it is splice-eligible:
-	 * the KF constant-force reports match the splice filter, so do 9 of
-	 * the 68 TF-init packets, and the init sequence carries a type-0x0e
-	 * packet that would read as an SDK range push. The merge and the
-	 * in-kernel TrueForce channel are mutually exclusive by design, so
-	 * self-traffic is exempted here mechanically - no future toggle can
-	 * arrange for us to splice into our own stream.
-	 */
-	atomic_t self_inflight;
 };
 
 /*
- * Bracket one of the driver's own sends to interface 2. Returns the shim the
- * counter was raised on (NULL if the override isn't installed); pass exactly
- * that back to _end so the pair stays balanced even if teardown clears
- * ff->tm_shim in between.
+ * Bracket one of the driver's own sends to interface 2. The counter this
+ * touches lives on ff, not on the shim (see struct hidpp_dd_ff_data): ff
+ * outlives every one of the three sender sites, while the shim is devm
+ * memory on interface 2's device whose owning FFB work is not cancelled by
+ * interface 2's own thin-probe remove, so a shim-based counter could be
+ * decremented after the shim's device is gone. Touching only ff here means
+ * begin/end need no shim lookup and cannot race the shim's teardown at all.
  */
-static struct hidpp_dd_texmerge_shim *
-hidpp_dd_texmerge_self_tx_begin(struct hidpp_dd_ff_data *ff)
+static void hidpp_dd_texmerge_self_tx_begin(struct hidpp_dd_ff_data *ff)
 {
-	struct hidpp_dd_texmerge_shim *shim = READ_ONCE(ff->tm_shim);
-
-	if (shim)
-		atomic_inc(&shim->self_inflight);
-	return shim;
+	atomic_inc(&ff->self_inflight);
 }
 
-static void hidpp_dd_texmerge_self_tx_end(struct hidpp_dd_texmerge_shim *shim)
+static void hidpp_dd_texmerge_self_tx_end(struct hidpp_dd_ff_data *ff)
 {
-	if (shim)
-		atomic_dec(&shim->self_inflight);
+	atomic_dec(&ff->self_inflight);
 }
 
 /*
@@ -16105,12 +16104,21 @@ static void hidpp_dd_texmerge_classify(struct hidpp_dd_texmerge_shim *shim,
 {
 	unsigned long flags;
 
-	/* Our own packets are not the SDK's: never splice them, never read
-	 * them as a range push. See self_inflight above. */
-	if (atomic_read(&shim->self_inflight) > 0)
-		return;
-
 	spin_lock_irqsave(&shim->lock, flags);
+
+	/*
+	 * Our own packets are not the SDK's: never splice them, never read
+	 * them as a range push. self_inflight lives on ff, not on the shim
+	 * (see struct hidpp_dd_ff_data): ff outlives every sender site, the
+	 * shim does not outlive the unsynced FFB work handler on unplug.
+	 * shim->ff is read under this same lock, the one uninstall() NULLs
+	 * it under before ff is freed, so a torn-down shim finds NULL here
+	 * rather than a stale ff - and NULL means there is no in-kernel
+	 * sender left to exempt.
+	 */
+	if (shim->ff && atomic_read(&shim->ff->self_inflight))
+		goto out;
+
 	if (len == 64 && buf[0] == 0x01 && buf[4] == 0x0e) {
 		if (shim->ff)
 			hidpp_dd_texmerge_seen_range_push(shim->ff, buf);
@@ -16119,6 +16127,7 @@ static void hidpp_dd_texmerge_classify(struct hidpp_dd_texmerge_shim *shim,
 		 * disabled merge must not cost a ktime_get_ns per packet. */
 		hidpp_dd_texmerge_splice(&shim->tm, buf, len, ktime_get_ns());
 	}
+out:
 	spin_unlock_irqrestore(&shim->lock, flags);
 }
 
@@ -16202,7 +16211,6 @@ static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 	shim->tm.intensity = 100;
 	shim->tm.cylinders = 8;
 	shim->tm.enabled = false;
-	atomic_set(&shim->self_inflight, 0);
 	shim->ff = ff;
 
 	shim->real = ff_hdev->ll_driver;
@@ -16210,7 +16218,9 @@ static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 	shim->over.output_report = hidpp_dd_texmerge_output_report;
 	shim->over.raw_request = hidpp_dd_texmerge_raw_request;
 	shim->installed = true;
-	ff->tm_shim = shim;
+	/* WRITE_ONCE for publish/clear symmetry with the clear in
+	 * hidpp_dd_texmerge_uninstall below. */
+	WRITE_ONCE(ff->tm_shim, shim);
 
 	/* Publish last, and only once the shim is complete: the first caller
 	 * through the new pointer dereferences every field above. */
@@ -16249,11 +16259,15 @@ static void hidpp_dd_texmerge_uninstall(struct hidpp_dd_ff_data *ff,
 	shim->installed = false;
 
 	/* Drop both directions of the ff <-> shim link so neither dangles,
-	 * whichever interface is torn down first. */
+	 * whichever interface is torn down first. shim->ff is cleared under
+	 * the shim's own lock, the same lock hidpp_dd_texmerge_classify reads
+	 * it under, so a classify() already past this point never sees a
+	 * stale ff. ff->tm_shim is WRITE_ONCE for publish/clear symmetry
+	 * with the install-site WRITE_ONCE above. */
 	spin_lock_irqsave(&shim->lock, flags);
 	shim->ff = NULL;
 	spin_unlock_irqrestore(&shim->lock, flags);
-	ff->tm_shim = NULL;
+	WRITE_ONCE(ff->tm_shim, NULL);
 }
 
 static int hidpp_input_mapping(struct hid_device *hdev, struct hid_input *hi,
