@@ -5635,6 +5635,35 @@ static void hidpp_dd_texmerge_uninstall(struct hidpp_dd_ff_data *ff,
 					struct hid_device *ff_hdev);
 static void hidpp_dd_texmerge_self_tx_begin(struct hidpp_dd_ff_data *ff);
 static void hidpp_dd_texmerge_self_tx_end(struct hidpp_dd_ff_data *ff);
+/*
+ * wheel_tf_merge / wheel_texture_rpm / wheel_texture_intensity /
+ * wheel_texture_cylinders: prototyped here so the DEVICE_ATTR() pair can
+ * sit next to the rest of the wheel-config attrs (~wheel_texture_route),
+ * but defined down with the texmerge interceptor, the only place
+ * `struct hidpp_dd_texmerge_shim` is a complete type.
+ */
+static ssize_t wheel_tf_merge_show(struct device *dev,
+				   struct device_attribute *attr, char *buf);
+static ssize_t wheel_tf_merge_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count);
+static ssize_t wheel_texture_rpm_show(struct device *dev,
+				      struct device_attribute *attr, char *buf);
+static ssize_t wheel_texture_rpm_store(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count);
+static ssize_t wheel_texture_intensity_show(struct device *dev,
+					    struct device_attribute *attr,
+					    char *buf);
+static ssize_t wheel_texture_intensity_store(struct device *dev,
+					     struct device_attribute *attr,
+					     const char *buf, size_t count);
+static ssize_t wheel_texture_cylinders_show(struct device *dev,
+					    struct device_attribute *attr,
+					    char *buf);
+static ssize_t wheel_texture_cylinders_store(struct device *dev,
+					     struct device_attribute *attr,
+					     const char *buf, size_t count);
 static int hidpp_dd_response_curve_upload(struct hidpp_device *hidpp,
 					  struct hidpp_dd_ff_data *ff,
 					  u8 dev_idx, u8 axis, u8 idx,
@@ -12646,6 +12675,30 @@ static DEVICE_ATTR(wheel_texture_route, 0664,
 		   wheel_texture_route_store);
 
 /*
+ * wheel_tf_merge / wheel_texture_rpm / wheel_texture_intensity /
+ * wheel_texture_cylinders: the sysfs control surface for the native
+ * texture merge (docs/NATIVE_TF_TEXTURE_MERGE_DESIGN.md). The state
+ * these read and write lives on the interface-2 shim
+ * (`struct hidpp_dd_texmerge_shim`), not on `ff`, so every show/store
+ * below re-resolves `ff->tm_shim` and treats a NULL shim (interceptor
+ * never installed, or interface 2 already unbound) as an inert device:
+ * shows report the quiescent value, stores return -ENODEV. The
+ * function bodies live further down, next to the shim's definition.
+ */
+static DEVICE_ATTR(wheel_tf_merge, 0664,
+		   wheel_tf_merge_show,
+		   wheel_tf_merge_store);
+static DEVICE_ATTR(wheel_texture_rpm, 0664,
+		   wheel_texture_rpm_show,
+		   wheel_texture_rpm_store);
+static DEVICE_ATTR(wheel_texture_intensity, 0664,
+		   wheel_texture_intensity_show,
+		   wheel_texture_intensity_store);
+static DEVICE_ATTR(wheel_texture_cylinders, 0664,
+		   wheel_texture_cylinders_show,
+		   wheel_texture_cylinders_store);
+
+/*
  * wheel_range_restore: automatically restore the rotation range after
  * an external silent reset (games' SDK sessions pushing an operating
  * range at start - AC EVO pushes 90). Heavily gated; see
@@ -14122,6 +14175,10 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_ffb_constant_sign.attr,
 	&dev_attr_wheel_spring_damping.attr,
 	&dev_attr_wheel_texture_route.attr,
+	&dev_attr_wheel_tf_merge.attr,
+	&dev_attr_wheel_texture_rpm.attr,
+	&dev_attr_wheel_texture_intensity.attr,
+	&dev_attr_wheel_texture_cylinders.attr,
 	&dev_attr_wheel_serial.attr,
 	&dev_attr_wheel_firmware.attr,
 	&dev_attr_wheel_accessory.attr,
@@ -16268,6 +16325,245 @@ static void hidpp_dd_texmerge_uninstall(struct hidpp_dd_ff_data *ff,
 	shim->ff = NULL;
 	spin_unlock_irqrestore(&shim->lock, flags);
 	WRITE_ONCE(ff->tm_shim, NULL);
+}
+
+/*
+ * wheel_tf_merge / wheel_texture_rpm / wheel_texture_intensity /
+ * wheel_texture_cylinders bodies: prototyped and registered up with the
+ * rest of the wheel-config attrs (~wheel_texture_route); defined here
+ * because this is the first point `struct hidpp_dd_texmerge_shim` is a
+ * complete type. Every one of them re-resolves `ff->tm_shim` rather than
+ * caching it: the shim can be installed, or go away on interface-2
+ * unbind, independently of interface 1's attribute file staying open.
+ */
+static ssize_t wheel_tf_merge_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_dd_texmerge_shim *shim;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	shim = READ_ONCE(ff->tm_shim);
+	if (!shim)
+		return sysfs_emit(buf, "0\n");
+	return sysfs_emit(buf, "%d\n", READ_ONCE(shim->tm.enabled) ? 1 : 0);
+}
+
+static ssize_t wheel_tf_merge_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_dd_texmerge_shim *shim;
+	bool on;
+	unsigned long flags;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	if (kstrtobool(buf, &on))
+		return -EINVAL;
+
+	shim = READ_ONCE(ff->tm_shim);
+	if (!shim)
+		return -ENODEV;
+
+	spin_lock_irqsave(&shim->lock, flags);
+	shim->tm.enabled = on;
+	if (!on)
+		shim->tm.debt_q8 = 0;
+	spin_unlock_irqrestore(&shim->lock, flags);
+	return count;
+}
+
+static ssize_t wheel_texture_rpm_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_dd_texmerge_shim *shim;
+	u64 age_ms = 0, stamp;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	shim = READ_ONCE(ff->tm_shim);
+	if (!shim)
+		return sysfs_emit(buf, "0 0 0\n");
+
+	stamp = READ_ONCE(shim->tm.rpm_stamp_ns);
+	if (stamp)
+		age_ms = div_u64(ktime_get_ns() - stamp, 1000000);
+	return sysfs_emit(buf, "%u %u %llu\n",
+			  READ_ONCE(shim->tm.rpm_x10) / 10,
+			  READ_ONCE(shim->tm.max_rpm_x10) / 10, age_ms);
+}
+
+static ssize_t wheel_texture_rpm_store(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_dd_texmerge_shim *shim;
+	unsigned int rpm, max_rpm;
+	unsigned long flags;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	if (sscanf(buf, "%u %u", &rpm, &max_rpm) != 2 || rpm > 30000 ||
+	    max_rpm > 30000)
+		return -EINVAL;
+
+	shim = READ_ONCE(ff->tm_shim);
+	if (!shim)
+		return -ENODEV;
+
+	spin_lock_irqsave(&shim->lock, flags);
+	shim->tm.rpm_x10 = rpm * 10;
+	shim->tm.max_rpm_x10 = max_rpm * 10;
+	shim->tm.rpm_stamp_ns = ktime_get_ns();
+	spin_unlock_irqrestore(&shim->lock, flags);
+	return count;
+}
+
+static ssize_t wheel_texture_intensity_show(struct device *dev,
+					    struct device_attribute *attr,
+					    char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_dd_texmerge_shim *shim;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	shim = READ_ONCE(ff->tm_shim);
+	if (!shim)
+		return sysfs_emit(buf, "0\n");
+	return sysfs_emit(buf, "%u\n", READ_ONCE(shim->tm.intensity));
+}
+
+static ssize_t wheel_texture_intensity_store(struct device *dev,
+					     struct device_attribute *attr,
+					     const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_dd_texmerge_shim *shim;
+	unsigned int v;
+	unsigned long flags;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	if (kstrtouint(buf, 10, &v) || v > 200)
+		return -EINVAL;
+
+	shim = READ_ONCE(ff->tm_shim);
+	if (!shim)
+		return -ENODEV;
+
+	spin_lock_irqsave(&shim->lock, flags);
+	shim->tm.intensity = (u16)v;
+	spin_unlock_irqrestore(&shim->lock, flags);
+	return count;
+}
+
+static ssize_t wheel_texture_cylinders_show(struct device *dev,
+					    struct device_attribute *attr,
+					    char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_dd_texmerge_shim *shim;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	shim = READ_ONCE(ff->tm_shim);
+	if (!shim)
+		return sysfs_emit(buf, "0\n");
+	return sysfs_emit(buf, "%u\n", READ_ONCE(shim->tm.cylinders));
+}
+
+static ssize_t wheel_texture_cylinders_store(struct device *dev,
+					     struct device_attribute *attr,
+					     const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+	struct hidpp_dd_texmerge_shim *shim;
+	unsigned int v;
+	unsigned long flags;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+
+	if (kstrtouint(buf, 10, &v) || v < 1 || v > 16)
+		return -EINVAL;
+
+	shim = READ_ONCE(ff->tm_shim);
+	if (!shim)
+		return -ENODEV;
+
+	spin_lock_irqsave(&shim->lock, flags);
+	shim->tm.cylinders = (u8)v;
+	spin_unlock_irqrestore(&shim->lock, flags);
+	return count;
 }
 
 static int hidpp_input_mapping(struct hid_device *hdev, struct hid_input *hi,

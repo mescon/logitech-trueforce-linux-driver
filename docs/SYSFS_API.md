@@ -485,6 +485,71 @@ cat wheel_texture_route      # -> tf
 echo kf > wheel_texture_route   # A/B back to the legacy mixing
 ```
 
+### wheel_tf_merge
+**Access**: Read/Write
+**Values**: `0` or `1`
+**Default**: `0`
+**Availability**: all direct-drive wheels (RS50 native/compat and real G PRO - every family PID runs the same `hidpp_dd_ff_*` FFB path). Backed by the native texture-merge interceptor on interface 2: if it is not installed (interface 2 not yet bound, or already torn down), reads back `0` and writes fail with `-ENODEV`.
+
+Master switch for the native texture merge. When `1`, outgoing SDK
+stream packets on interface 2 that carry no audio samples get engine
+texture spliced in (synthesised from `wheel_texture_rpm`, fitted to
+the Windows capture in `docs/TF_TEXTURE_RECIPE.md`). The base force
+bytes are never modified. With no fresh RPM (200 ms staleness window)
+or below 300 rpm the stream passes through untouched. Turning it off
+also zeroes the internal sample-debt counter, so re-enabling starts
+clean rather than bursting queued samples.
+
+```bash
+cat wheel_tf_merge           # -> 0
+echo 1 > wheel_tf_merge
+```
+
+### wheel_texture_rpm
+**Access**: Read/Write
+**Values**: store `"<rpm> <max_rpm>"` as plain unsigned decimals, rpm units (e.g. `6500 14000`); each capped at 30000, larger values rejected with `-EINVAL`. Show prints `rpm max_rpm age_ms`.
+**Default**: `0 0 0`
+**Availability**: same as `wheel_tf_merge`, including the NULL-shim fallback (reads back `0 0 0`, writes fail with `-ENODEV`).
+
+Live engine RPM feed for the texture merge. Normally written by
+logi-rpm-bridge at roughly 60 Hz from the game's telemetry relay;
+writable by hand for bench tests. `age_ms` on read is how long ago the
+value was last written, and is what `wheel_tf_merge` checks against
+its 200 ms staleness window.
+
+```bash
+cat wheel_texture_rpm        # -> 6500 14000 12
+echo "6500 14000" > wheel_texture_rpm
+```
+
+### wheel_texture_intensity
+**Access**: Read/Write
+**Values**: `0` to `200` (percent)
+**Default**: `100`
+**Availability**: same as `wheel_tf_merge`, including the NULL-shim fallback (reads back `0`, writes fail with `-ENODEV`).
+
+Texture amplitude as a percentage of the capture fit. `0` silences
+the texture, `200` doubles it.
+
+```bash
+cat wheel_texture_intensity  # -> 100
+echo 150 > wheel_texture_intensity
+```
+
+### wheel_texture_cylinders
+**Access**: Read/Write
+**Values**: `1` to `16`
+**Default**: `8`
+**Availability**: same as `wheel_tf_merge`, including the NULL-shim fallback (reads back `0`, writes fail with `-ENODEV`).
+
+Cylinder count for the firing-frequency model driving the texture
+synthesis (`f0 = rpm/60 * cylinders/2`).
+
+```bash
+cat wheel_texture_cylinders  # -> 8
+echo 6 > wheel_texture_cylinders
+```
+
 ### wheel_calibrate
 **Access**: Write-only (mode 0220)
 **Values**: `0` to `65535` (raw encoder position)
