@@ -5322,6 +5322,14 @@ struct hidpp_dd_ff_data {
 	 */
 	struct hidpp_dd_texmerge_shim *tm_shim;
 	/*
+	 * The real ll_driver, cached at install time (copied straight out of
+	 * shim->real, never read back through the shim later). Lets
+	 * hidpp_dd_ff_destroy's unbound branch put interface 2's ll_driver
+	 * back without dereferencing tm_shim, which may already be
+	 * devres-freed by an unbind that skipped our uninstall.
+	 */
+	const struct hid_ll_driver *tm_real_ll;
+	/*
 	 * Guards every sysfs accessor's resolve-through-use of tm_shim
 	 * against hidpp_dd_texmerge_uninstall clearing it and interface 2's
 	 * devres freeing the shim on unbind. An accessor must take this
@@ -5681,6 +5689,17 @@ static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 				      struct hid_device *ff_hdev);
 static void hidpp_dd_texmerge_uninstall(struct hidpp_dd_ff_data *ff,
 					struct hid_device *ff_hdev);
+static void hidpp_dd_texmerge_unbind_recover(struct hidpp_dd_ff_data *ff,
+					     struct hid_device *ff_hdev_cached);
+/*
+ * Forward-declared so hidpp_dd_ff_destroy() and hidpp_dd_ff_init_work() can
+ * compare a cached hid_device's ->driver against our own driver by address
+ * (see the FIX 4 comments at both use sites) instead of a bare non-NULL
+ * check, which cannot tell "still bound to us" apart from "rebound to a
+ * different driver in between". Defined in full, as usual, down with
+ * hidpp_module_init/exit.
+ */
+static struct hid_driver hidpp_driver;
 static void hidpp_dd_texmerge_self_tx_begin(struct hidpp_dd_ff_data *ff);
 static void hidpp_dd_texmerge_self_tx_end(struct hidpp_dd_ff_data *ff);
 static void hidpp_dd_texmerge_restore_work(struct work_struct *work);
@@ -8906,9 +8925,37 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	 * this same lock, so nothing that remove waits on may run this work
 	 * item to completion - which is why hidpp_remove's thin-probe branch
 	 * must never cancel_delayed_work_sync(init_work).
+	 *
+	 * Checked against &hidpp_driver, not merely non-NULL, for the same
+	 * reason as hidpp_dd_ff_destroy's bound check: a rebind to a
+	 * different driver between probe and here would leave `driver`
+	 * non-NULL over a device we no longer own.
+	 *
+	 * ff->ff_hdev_open and the texmerge install both happen INSIDE this
+	 * locked region now, not after unlock: interface 2's remove clears
+	 * ff_hdev_open (and uninstalls the shim) under this same lock, and
+	 * this is the only other writer of ff_hdev_open. Leaving the lock
+	 * between a successful open and these two stores opened a window
+	 * where that remove could run in between, clear ff_hdev_open, and
+	 * then have this code set it back to true (and install the override)
+	 * over an interface it no longer owns. Doing both stores before
+	 * dropping the lock closes that gap. devm_kzalloc(GFP_KERNEL) inside
+	 * hidpp_dd_texmerge_install may sleep; device_lock is a plain mutex,
+	 * so that is fine.
 	 */
 	device_lock(&ff_hdev->dev);
-	ret = ff_hdev->driver ? hid_hw_open(ff_hdev) : -ENODEV;
+	ret = (ff_hdev->driver == &hidpp_driver) ? hid_hw_open(ff_hdev) : -ENODEV;
+	if (!ret) {
+		ff->ff_hdev_open = true;
+
+		/*
+		 * Wrap interface 2's ll_driver so the native texture merge can
+		 * see (and splice into) the SDK's outgoing FFB stream. See the
+		 * hidpp_dd_texmerge_* block above; inert until tm.enabled is
+		 * set.
+		 */
+		hidpp_dd_texmerge_install(ff, ff_hdev);
+	}
 	device_unlock(&ff_hdev->dev);
 	if (ret) {
 		dd_err(hid, "Cannot open FFB interface (error %d) - FFB disabled\n", ret);
@@ -8931,14 +8978,6 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 		input_ff_destroy(input);
 		return;
 	}
-	ff->ff_hdev_open = true;
-
-	/*
-	 * Wrap interface 2's ll_driver so the native texture merge can see
-	 * (and splice into) the SDK's outgoing FFB stream. See the
-	 * hidpp_dd_texmerge_* block above; inert until tm.enabled is set.
-	 */
-	hidpp_dd_texmerge_install(ff, ff_hdev);
 
 	/* Mark as fully initialized - timer was already set up in hidpp_dd_ff_init() */
 	atomic_set(&ff->initialized, 1);
@@ -14757,6 +14796,23 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 	 */
 	if (ff->ff_hdev_open && ff_hdev_cached) {
 		/*
+		 * The whole scheme below - taking interface 2's device_lock
+		 * from inside interface 1's (the owner's) remove - rests on
+		 * interface 2 never being the ff owner itself: only the
+		 * owner calls hid_hw_open()/caches ff_hdev, and by
+		 * construction that is always interface 1. If a future
+		 * change ever let interface 2 become its own owner,
+		 * device_lock(&ff_hdev_cached->dev) below would be relocking
+		 * a mutex the driver core already holds for THIS remove
+		 * (mutex_lock is not recursive) and rmmod would hang instead
+		 * of crashing. Assert the invariant instead of trusting it
+		 * silently, and decline the close on the (never expected)
+		 * failure rather than deadlock.
+		 */
+		if (WARN_ON_ONCE(ff_hdev_cached == hidpp->hid_dev)) {
+			ff->ff_hdev_open = false;
+		} else {
+		/*
 		 * Interface 2 can lose its driver binding without this
 		 * driver's remove ever seeing a matching teardown for it
 		 * (observed live 2026-08-14: rmmod oopsed here because the
@@ -14773,9 +14829,20 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 		 * while holding interface 1's is fine, and interface 2's
 		 * remove never waits on anything this remove holds (its
 		 * thin-probe branch must never cancel init_work - see there).
+		 *
+		 * Checked against &hidpp_driver specifically, not merely
+		 * non-NULL: interface 2 can be unbound from us and rebound
+		 * to hid-generic (or anything else) between our probe and
+		 * this remove. `driver` would then be non-NULL again, but
+		 * our shim is already devres-freed and ll_driver belongs to
+		 * whatever now owns the interface - taking the bound branch
+		 * in that case would call hidpp_dd_texmerge_uninstall() and
+		 * hid_hw_close() against a device we no longer own. Matching
+		 * the exact driver routes that case into the unbound branch
+		 * below instead, which touches neither.
 		 */
 		device_lock(&ff_hdev_cached->dev);
-		if (ff_hdev_cached->driver) {
+		if (ff_hdev_cached->driver == &hidpp_driver) {
 			/* Unwrap the ll_driver before the underlying
 			 * hid_device is closed - hid_hw_close must run
 			 * against the real transport, not our override. This
@@ -14787,24 +14854,27 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 			hid_hw_close(ff_hdev_cached);
 		} else {
 			/*
-			 * Unbound: hid_hw_close would oops on the NULL
-			 * hdev->driver, and the shim - devres on interface
-			 * 2's device - was freed by that unbind. Drop our
-			 * pointer without touching the shim's memory; the
-			 * ll_driver override, if still installed, points into
-			 * freed devres that only USB-level teardown of the
-			 * now-driverless interface will ever reach. The open
-			 * count leaks with the dead binding by design: there
-			 * is no bound driver left to close against.
+			 * Unbound, or bound to a different driver: either way
+			 * hid_hw_close() must not run against our shim/ll_open
+			 * bookkeeping - it would either oops on a NULL
+			 * hdev->driver or close a device we no longer own. The
+			 * shim - devres on interface 2's device - was freed by
+			 * whatever unbind got us here. Restore the real
+			 * ll_driver and drop our pointer without touching the
+			 * shim's memory - see hidpp_dd_texmerge_unbind_recover
+			 * for why the comparison it does is safe against the
+			 * freed devres. A surviving hidraw node on this
+			 * now-driverless (or now-differently-bound) interface
+			 * then calls through the real transport instead of a
+			 * freed shim. The open count leaks with the dead
+			 * binding by design: there is no bound driver left to
+			 * close against.
 			 */
-			unsigned long tm_flags;
-
-			spin_lock_irqsave(&ff->tm_shim_lock, tm_flags);
-			ff->tm_shim = NULL;
-			spin_unlock_irqrestore(&ff->tm_shim_lock, tm_flags);
+			hidpp_dd_texmerge_unbind_recover(ff, ff_hdev_cached);
 		}
 		device_unlock(&ff_hdev_cached->dev);
 		ff->ff_hdev_open = false;
+		}
 	}
 
 	/*
@@ -16562,6 +16632,12 @@ static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 	ff->tm_restore_gen++;
 
 	shim->real = ff_hdev->ll_driver;
+	/*
+	 * Second copy of the same pointer, held on ff rather than the shim:
+	 * hidpp_dd_ff_destroy's unbound branch needs the real ll_driver but
+	 * must not dereference tm_shim (see hidpp_dd_texmerge_unbind_recover).
+	 */
+	ff->tm_real_ll = ff_hdev->ll_driver;
 	shim->over = *ff_hdev->ll_driver;
 	shim->over.output_report = hidpp_dd_texmerge_output_report;
 	shim->over.raw_request = hidpp_dd_texmerge_raw_request;
@@ -16634,6 +16710,39 @@ static void hidpp_dd_texmerge_uninstall(struct hidpp_dd_ff_data *ff,
 	spin_unlock_irqrestore(&shim->lock, shim_flags);
 	ff->tm_shim = NULL;
 
+	spin_unlock_irqrestore(&ff->tm_shim_lock, flags);
+}
+
+/*
+ * hidpp_dd_ff_destroy's unbound branch: interface 2 lost its driver binding
+ * without hidpp_dd_texmerge_uninstall() ever running for it (no thin-probe
+ * remove, no bound-branch close), so tm_shim - devres memory on interface
+ * 2's device - may already be freed by that unbind. Put ff_hdev_cached's
+ * ll_driver back to the real transport without dereferencing tm_shim: the
+ * comparison below only ever forms an ADDRESS from ff->tm_shim (plain
+ * pointer arithmetic through offsetof, no load through it), and the value
+ * written back is ff->tm_real_ll, cached on ff itself at install time, never
+ * shim->real. Called under ff_hdev_cached's device_lock, so nothing else is
+ * concurrently touching ff_hdev_cached->ll_driver.
+ *
+ * If tm_shim's old storage was already freed AND reused for something else
+ * by the time this runs, the address comparison can in theory false-match
+ * or false-miss; either outcome still leaves ll_driver as a valid function
+ * table (either the real one, restored here, or whatever the override was
+ * left as) - there is no path back to a dereference of freed memory.
+ */
+static void hidpp_dd_texmerge_unbind_recover(struct hidpp_dd_ff_data *ff,
+					     struct hid_device *ff_hdev_cached)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ff->tm_shim_lock, flags);
+	if (ff->tm_shim && ff->tm_real_ll &&
+	    (const void *)ff_hdev_cached->ll_driver ==
+	    (const void *)((const char *)ff->tm_shim +
+			   offsetof(struct hidpp_dd_texmerge_shim, over)))
+		WRITE_ONCE(ff_hdev_cached->ll_driver, ff->tm_real_ll);
+	ff->tm_shim = NULL;
 	spin_unlock_irqrestore(&ff->tm_shim_lock, flags);
 }
 
