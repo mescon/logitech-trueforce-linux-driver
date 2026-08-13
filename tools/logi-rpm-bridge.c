@@ -7,6 +7,7 @@
  *   cc -O2 -Wall -o logi-rpm-bridge logi-rpm-bridge.c
  */
 #include <arpa/inet.h>
+#include <errno.h>
 #include <glob.h>
 #include <signal.h>
 #include <stdio.h>
@@ -42,6 +43,7 @@ int main(void)
 	struct sockaddr_in addr = { 0 };
 	unsigned char pkt[64];
 	struct timespec last = { 0 };
+	time_t last_warn = 0;
 	int fd;
 
 	if (!path) {
@@ -83,23 +85,36 @@ int main(void)
 			continue;
 		memcpy(&rpm, pkt + 14, 4);
 		memcpy(&max_rpm, pkt + 18, 4);
+		/* Deliberate asymmetry: an out-of-range rpm drops the whole
+		 * packet because the sample itself is garbage, while an
+		 * out-of-range max_rpm is only clamped below, since a silly
+		 * max should not cost us an otherwise good rpm sample. */
 		if (!(rpm >= 0.0f && rpm < 30000.0f))
 			continue;
-		/* max_rpm shares the kernel store's bound (wheel_texture_rpm_store
-		 * rejects > 30000), but a bad max_rpm should not throw away a good
-		 * rpm sample: clamp instead of dropping the packet. */
 		if (max_rpm < 0.0f)
 			max_rpm = 0.0f;
 		else if (max_rpm >= 30000.0f)
 			max_rpm = 29999.0f;
 		clock_gettime(CLOCK_MONOTONIC, &now);
-		if (now.tv_sec == last.tv_sec &&
-		    now.tv_nsec - last.tv_nsec < 10 * 1000 * 1000)
-			continue;
+		{
+			long ns = (now.tv_sec - last.tv_sec) * 1000000000L
+				+ (now.tv_nsec - last.tv_nsec);
+			if (ns < 10 * 1000 * 1000)
+				continue;
+		}
 		last = now;
 		f = fopen(path, "w");
-		if (!f)
+		if (!f) {
+			time_t nowt = time(NULL);
+
+			if (nowt - last_warn >= 30) {
+				fprintf(stderr,
+					"logi-rpm-bridge: cannot write %s: %s\n",
+					path, strerror(errno));
+				last_warn = nowt;
+			}
 			continue;	/* wheel unplugged; keep listening */
+		}
 		fprintf(f, "%.0f %.0f", rpm, max_rpm);
 		fclose(f);
 	}
