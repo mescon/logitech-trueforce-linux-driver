@@ -325,8 +325,6 @@ auto-heal, so it stuck. The quiesce is reverted (a single heal holds; the
 SDK clamps once and does not fight), and the range poll now runs every 3 s
 so the heal lands within seconds of track load.
 
-The haptic-
-
 ## 2026-08-13: shipped - the texture is a kernel splice, and the OEM path is closed
 
 Two things this document was open on are now settled.

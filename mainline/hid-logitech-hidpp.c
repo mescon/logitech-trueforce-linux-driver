@@ -16333,6 +16333,10 @@ static void hidpp_dd_texmerge_seen_range_push(struct hidpp_dd_ff_data *ff,
 	if (!deg || deg > 2700)
 		return;
 
+	/* the user's detect-only opt-out covers the push-triggered restore too */
+	if (!READ_ONCE(ff->range_restore))
+		return;
+
 	if (READ_ONCE(ff->tm_push_seen))
 		return;
 

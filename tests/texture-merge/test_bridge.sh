@@ -5,7 +5,7 @@ cc -O2 -Wall -o /tmp/logi-rpm-bridge ../../tools/logi-rpm-bridge.c
 out=$(mktemp)
 : > "$out"
 LOGI_RPM_SYSFS="$out" /tmp/logi-rpm-bridge & bpid=$!
-trap 'kill "$bpid" 2>/dev/null' EXIT
+trap 'kill "$bpid" 2>/dev/null || true' EXIT
 sleep 0.3
 python3 - <<'PY'
 import socket, struct

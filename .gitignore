@@ -194,8 +194,14 @@ sphinx_*/
 # Build logs
 /mainline/logs/
 
+# Compiled Linux tool binaries (source is tracked, binary is not - unlike
+# the Windows tools/*.exe cross-compiled artifacts below, these build fine
+# with the host toolchain)
+/tools/logi-rpm-bridge
+
 # Compiled test binaries (sources are tracked, binaries are not)
 /tests/ff_matrix_test
+/tests/texture-merge/test_texmerge
 
 # Python bytecode
 __pycache__/
