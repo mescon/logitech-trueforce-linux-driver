@@ -10,10 +10,19 @@ u16 LE offset-binary.
 
 On Windows the ep3 stream carries BOTH the base force (`cur`, 1 kHz) and
 real audio texture (`byte[10]=4` in 62,535 of 119,028 packets). Under Proton
-tonight the SDK's stream carried `cur` only, `byte[10]=0` always. The
-missing texture is the audio slots, and the injector on Windows is G HUB's
-side (the OEM driver synthesises engine texture from the game's Escape RPM
-stream; the game itself calls SetTorqueTF* zero times).
+the SDK's stream carries `cur` only, `byte[10]=0` always. The missing texture
+is the audio slots.
+
+**Who injects it (corrected 2026-08-13):** the injector is **G HUB the running
+process**, synthesising the engine note from the game's Escape RPM and merging
+it into ep3. It is NOT Logitech's OEM DirectInput driver
+(`hidpp_forcefeedback_x64.dll`): this capture is on `c276` (native mode), and
+that driver does not claim c276 at all (only c262/c268/c26e/c272; it
+null-derefs on c276). The game itself calls `SetTorqueTF*` zero times. So the
+texture is G HUB's synthesis, and there is no G HUB on Linux and no
+non-synthesised signal to obtain - reproducing it means synthesising like G HUB
+and fitting to this capture. The compat-mode(c272)/OEM-driver path is a dead
+end for AC EVO texture (and c272 needs a physical wheel-OLED switch).
 
 ## The texture recipe (the tuning table)
 
@@ -34,6 +43,25 @@ An engine-firing-frequency harmonic stack, amplitude subtle:
   relative to the real thing unless intensity is well below 100.
 - At idle the fundamental may be suppressed (peaks at 2x/3x/4x of ~56.5 Hz
   for a ~850 rpm V8); at mid/high revs the fundamental dominates.
+
+### Rigorous re-measurement 2026-08-13 (2048-pt windowed FFT, FS=3983 Hz)
+
+251,299 samples reconstructed; overall rms **1.48% FS**, 88% non-zero.
+Fundamental (firing freq) ranges 41-385 Hz. Median harmonic ratios and
+amplitude, binned by f0:
+
+| f0 band (Hz) | rms (%FS) | h2/h1 | h3/h1 | h4/h1 | h5/h1 |
+|---|---|---|---|---|---|
+| 40-140 (idle, f0 suppressed) | 0.67 | 0.38 | 0.22 | 0.16 | 0.14 |
+| 140-190 | 0.48 | 0.11 | 0.08 | 0.05 | 0.02 |
+| 190-240 | 0.57 | 0.15 | 0.09 | 0.08 | 0.03 |
+| 240-290 | 1.27 | 0.23 | 0.13 | 0.08 | 0.07 |
+| 290-360 | 1.61 | 0.27 | 0.25 | 0.07 | 0.05 |
+
+Confirms the earlier table: h2 rises ~0.11->0.27 and h3 ~0.08->0.25 with revs,
+amplitude climbs ~0.5%->1.6% FS. The idle band's high ratios reflect the
+suppressed fundamental (energy sits at 2x/3x). Extraction:
+`/tmp/tex_samples.txt` from the awk+numpy pipeline in the 2026-08-13 session.
 
 BeamNG on Windows (`g_pro_tf_2026-04-19/2026-04-19_trueforce_beamng.pcapng`)
 carries 46,883 sample-packets and can cross-check the model on a second
