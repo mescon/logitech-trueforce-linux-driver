@@ -5356,7 +5356,30 @@ struct hidpp_dd_ff_data {
 	 * game sessions and isn't used for that here.
 	 */
 	bool tm_push_seen;
+	/*
+	 * Strike counter for tm_push_seen re-arms, same shape as
+	 * range_restore_attempts above: caps the SDK push-restore at 3 SETs
+	 * per session so a persistent external writer (one that keeps
+	 * re-pushing a range on every classify) cannot re-arm this forever.
+	 * Incremented in tm_restore_work when it actually performs the SET;
+	 * reset by the same explicit wheel_range write that clears
+	 * tm_push_seen.
+	 */
+	u8 tm_restore_attempts;
 	u16 tm_restore_deg;
+	/*
+	 * Generation counter closing the stale-restore race: seen_range_push
+	 * bumps this every time it arms, and tm_restore_work snapshots both
+	 * tm_restore_deg (as `want`) and this counter at entry. After its
+	 * sleep, the work proceeds only if the snapshot generation still
+	 * matches - a re-arm (new push) or an explicit wheel_range write
+	 * during the sleep bumps it, so a run that started before either of
+	 * those cannot clobber the newer intent with its now-stale `want`.
+	 * Same READ_ONCE/WRITE_ONCE discipline as tm_push_seen: the stub
+	 * writes it under shim->lock, the store and handler use
+	 * READ_ONCE/WRITE_ONCE directly.
+	 */
+	unsigned int tm_restore_gen;
 	struct work_struct tm_restore_work;
 	struct input_dev *input;
 	struct workqueue_struct *wq;	/* Workqueue for async USB transfers */
@@ -9331,6 +9354,16 @@ static ssize_t wheel_range_store(struct device *dev, struct device_attribute *at
 	 * arm again immediately rather than waiting on it.
 	 */
 	WRITE_ONCE(ff->tm_push_seen, false);
+	ff->tm_restore_attempts = 0;
+	/*
+	 * Bump the generation too, same reasoning as the field comment on
+	 * tm_restore_gen: this write is fresh user intent right now, so even
+	 * a tm_restore_work run that is still asleep from an earlier arm
+	 * must not clobber it later - invalidating the generation here means
+	 * that run's snapshot can no longer match, with or without a
+	 * subsequent re-arm.
+	 */
+	WRITE_ONCE(ff->tm_restore_gen, READ_ONCE(ff->tm_restore_gen) + 1);
 	dd_info(hid, "Rotation range set to %d degrees\n", range);
 	return count;
 }
@@ -14678,15 +14711,6 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 	cancel_work_sync(&ff->settings_refresh_work);
 	cancel_work_sync(&ff->accessory_rescan_work);
 	cancel_work_sync(&ff->tf_init_work);
-	/*
-	 * tm_restore_work runs on the default system workqueue (schedule_work),
-	 * not ff->wq, so drain_workqueue below never reaches it; cancel it
-	 * explicitly like the other non-ff->wq work above. It only touches ff
-	 * and does HID++ I/O on interface 1, so cancelling it here, before
-	 * ff_hdev is torn down and before kfree(ff) below, is sufficient - the
-	 * interface-2 thin-probe remove path does not need a matching cancel.
-	 */
-	cancel_work_sync(&ff->tm_restore_work);
 
 	dd_dbg(hid, "Cancelling effect timer\n");
 	hrtimer_cancel(&ff->effect_timer);
@@ -14730,6 +14754,28 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 		hid_hw_close(ff_hdev_cached);
 		ff->ff_hdev_open = false;
 	}
+
+	/*
+	 * tm_restore_work runs on the default system workqueue
+	 * (schedule_work), not ff->wq, so drain_workqueue above never reaches
+	 * it; cancel it explicitly like the other non-ff->wq work above. It
+	 * must come AFTER the texmerge_uninstall block just above, not
+	 * before: until uninstall has actually run, the interceptor is still
+	 * wrapping interface 2's ll_driver and a fresh SDK push can still
+	 * schedule_work() this handler. Cancelling first leaves a window
+	 * where that later schedule lands after the cancel and the work then
+	 * runs against ff after the kfree() below - use-after-free.
+	 *
+	 * This is safe on both unbind orders. If this function's own
+	 * uninstall call just ran (the branch above), the interceptor is
+	 * already gone by the time we get here. If interface 2's thin-probe
+	 * remove ran uninstall earlier instead (ff_hdev_open was already
+	 * false, so the branch above was skipped), the interceptor was torn
+	 * down before this function was even entered. Either way, by this
+	 * point nothing can still schedule tm_restore_work, so the cancel is
+	 * final.
+	 */
+	cancel_work_sync(&ff->tm_restore_work);
 
 	dd_dbg(hid, "Freeing resources\n");
 	/* ff_hdev was cleared by the WRITE_ONCE above; no redundant clear here. */
@@ -16193,6 +16239,7 @@ static void hidpp_dd_texmerge_restore_work(struct work_struct *work)
 	struct hidpp_dd_ff_data *ff =
 		container_of(work, struct hidpp_dd_ff_data, tm_restore_work);
 	u16 want = ff->tm_restore_deg;
+	unsigned int gen = READ_ONCE(ff->tm_restore_gen);
 
 	/*
 	 * Let the SDK finish its init burst - captures show more packets,
@@ -16206,15 +16253,30 @@ static void hidpp_dd_texmerge_restore_work(struct work_struct *work)
 	 * (see wheel_range_store) to say the user's fresh intent supersedes
 	 * this restore; honour that by skipping the SET rather than
 	 * clobbering it with the stale pre-push value.
+	 *
+	 * The generation check closes a second, narrower race: a later push
+	 * can re-arm (tm_push_seen true again, want/gen updated) while THIS
+	 * run is still asleep. Without the gen check, this run would then
+	 * wake, see tm_push_seen true, and SET its own stale `want` on top
+	 * of whatever the newer arm is about to install. Comparing against
+	 * the snapshot taken above means only the run that matches the
+	 * CURRENT arm proceeds; an earlier, superseded run quietly no-ops
+	 * here instead (the newer run still completes normally).
 	 */
-	if (READ_ONCE(ff->tm_push_seen) && !atomic_read_acquire(&ff->stopping)) {
+	if (READ_ONCE(ff->tm_push_seen) && READ_ONCE(ff->tm_restore_gen) == gen &&
+	    !atomic_read_acquire(&ff->stopping)) {
+		ff->tm_restore_attempts++;
 		if (hidpp_dd_set_range_hw(ff, want) == 0)
 			dd_info(ff->hidpp->hid_dev,
-				"restored range to %u after SDK push\n", want);
+				"restored range to %u after SDK push (attempt %u/3)\n",
+				want, ff->tm_restore_attempts);
 		else
 			dd_warn(ff->hidpp->hid_dev,
 				"range restore to %u after SDK push failed\n",
 				want);
+		if (ff->tm_restore_attempts == 3)
+			dd_warn(ff->hidpp->hid_dev,
+				"an external writer keeps pushing the rotation range; giving up on SDK push-restore for this session\n");
 	}
 
 	/*
@@ -16224,8 +16286,18 @@ static void hidpp_dd_texmerge_restore_work(struct work_struct *work)
 	 * fully handled, is what lets a later game session's push be caught
 	 * again. No retry on failure: that is what the existing 3-strike
 	 * poll-based restore (hidpp_dd_ff_range_maybe_restore) is for.
+	 *
+	 * Gated on the same generation check as above, re-read fresh: a run
+	 * that found itself stale up there must not clear tm_push_seen down
+	 * here either. tm_push_seen true is what the newer, still-sleeping
+	 * run depends on to recognise its own arm when IT wakes; an earlier
+	 * run clearing it first would erase that arm before the newer run
+	 * ever gets to act on it, and neither run would then restore
+	 * anything. Leaving it set costs nothing: the newer run clears it
+	 * itself once it is done.
 	 */
-	WRITE_ONCE(ff->tm_push_seen, false);
+	if (READ_ONCE(ff->tm_restore_gen) == gen)
+		WRITE_ONCE(ff->tm_push_seen, false);
 }
 
 /*
@@ -16265,6 +16337,16 @@ static void hidpp_dd_texmerge_seen_range_push(struct hidpp_dd_ff_data *ff,
 		return;
 
 	/*
+	 * Strike counter, same idea as range_restore_attempts: a persistent
+	 * external writer that keeps re-pushing a range on every classify
+	 * would otherwise re-arm this without bound. Once tm_restore_work has
+	 * actually performed 3 SETs this session, a further external writer
+	 * wins and this stops trying.
+	 */
+	if (ff->tm_restore_attempts >= 3)
+		return;
+
+	/*
 	 * Nothing to restore if the cached range already matches what was
 	 * just pushed, or was never established. Leave tm_push_seen clear so
 	 * a later push - later in this same burst, or a future session -
@@ -16276,6 +16358,14 @@ static void hidpp_dd_texmerge_seen_range_push(struct hidpp_dd_ff_data *ff,
 
 	WRITE_ONCE(ff->tm_push_seen, true);
 	ff->tm_restore_deg = cur;
+	/*
+	 * Bump the generation so a run of tm_restore_work that is still
+	 * asleep from an earlier arm (see the field comment on
+	 * tm_restore_gen) recognises itself as stale once it wakes: this
+	 * arm's snapshot will not match, so it skips its SET instead of
+	 * clobbering the range this arm is about to install.
+	 */
+	WRITE_ONCE(ff->tm_restore_gen, READ_ONCE(ff->tm_restore_gen) + 1);
 	schedule_work(&ff->tm_restore_work);
 }
 
