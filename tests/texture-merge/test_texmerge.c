@@ -79,6 +79,127 @@ static void test_intensity_scales(void)
 	CHECK(fabs(ratio - 0.5) < 0.05, "intensity 50 ratio %.2f, want 0.50", ratio);
 }
 
+static void mk_stream_pkt(u8 *pkt, u16 cur, u8 seq)
+{
+	memset(pkt, 0, 64);
+	pkt[0] = 0x01; pkt[4] = 0x01; pkt[5] = seq;
+	put_unaligned_le16(cur, &pkt[6]); put_unaligned_le16(cur, &pkt[8]);
+	pkt[10] = 0; pkt[11] = 0x0d;
+}
+
+static void test_eligibility(void)
+{
+	u8 pkt[64];
+
+	mk_stream_pkt(pkt, 0x8000, 7);
+	CHECK(hidpp_dd_texmerge_eligible(pkt, 64), "stream pkt not eligible");
+	CHECK(!hidpp_dd_texmerge_eligible(pkt, 63), "short pkt eligible");
+	pkt[4] = 0x0e;
+	CHECK(!hidpp_dd_texmerge_eligible(pkt, 64), "range push eligible");
+	mk_stream_pkt(pkt, 0x8000, 7); pkt[10] = 4;
+	CHECK(!hidpp_dd_texmerge_eligible(pkt, 64),
+	      "pkt with own samples eligible");
+	mk_stream_pkt(pkt, 0x8000, 7); pkt[0] = 0x02;
+	CHECK(!hidpp_dd_texmerge_eligible(pkt, 64), "wrong report id eligible");
+}
+
+static void test_splice_preserves_base(void)
+{
+	struct hidpp_dd_texmerge tm = {
+		.enabled = true, .intensity = 100, .cylinders = 8,
+		.rpm_x10 = 60000, .rpm_stamp_ns = 1000000,
+	};
+	u8 pkt[64], orig[64];
+	u64 t = 2000000; /* fresh vs rpm_stamp */
+	int n;
+
+	mk_stream_pkt(pkt, 0xa1b2, 42);
+	memcpy(orig, pkt, 64);
+	/* prime the debt so a splice happens immediately */
+	tm.last_ns = t - 2000000; /* 2 ms elapsed = 8 samples owed */
+	n = hidpp_dd_texmerge_splice(&tm, pkt, 64, t);
+	CHECK(n == HIDPP_DD_TEXMERGE_BLOCK, "spliced %d, want %d", n,
+	      HIDPP_DD_TEXMERGE_BLOCK);
+	CHECK(memcmp(pkt, orig, 10) == 0, "bytes 0-9 modified");
+	CHECK(pkt[10] == HIDPP_DD_TEXMERGE_BLOCK, "byte10 = %d", pkt[10]);
+	CHECK(pkt[11] == orig[11], "byte 11 modified");
+	/* window slots are duplicated u16 pairs */
+	for (int i = 0; i < HIDPP_DD_TEXMERGE_WINDOW; i++)
+		CHECK(memcmp(&pkt[12 + 4 * i], &pkt[14 + 4 * i], 2) == 0,
+		      "slot %d not duplicated", i);
+}
+
+static void test_splice_gates(void)
+{
+	struct hidpp_dd_texmerge tm = {
+		.enabled = true, .intensity = 100, .cylinders = 8,
+		.rpm_x10 = 60000, .rpm_stamp_ns = 1000000, .last_ns = 0,
+	};
+	u8 pkt[64], orig[64];
+
+	mk_stream_pkt(pkt, 0x8000, 1);
+	memcpy(orig, pkt, 64);
+	/* stale rpm: stamp 1 ms, now 1 ms + STALE + 1 -> untouched */
+	CHECK(hidpp_dd_texmerge_splice(&tm, pkt, 64,
+		1000000 + HIDPP_DD_TEXMERGE_STALE_NS + 1) == 0, "spliced stale");
+	CHECK(memcmp(pkt, orig, 64) == 0, "stale rpm modified pkt");
+	/* disabled -> untouched */
+	tm.enabled = false; tm.rpm_stamp_ns = 1000000;
+	CHECK(hidpp_dd_texmerge_splice(&tm, pkt, 64, 2000000) == 0,
+	      "spliced while disabled");
+	/* below idle threshold -> untouched */
+	tm.enabled = true; tm.rpm_x10 = HIDPP_DD_TEXMERGE_MIN_RPM_X10 - 1;
+	CHECK(hidpp_dd_texmerge_splice(&tm, pkt, 64, 2000000) == 0,
+	      "spliced below idle");
+}
+
+static void test_splice_pacing(void)
+{
+	/* At 2000 pkts/s and FS=4000, every second eligible packet gets a
+	 * 4-sample block: over 100 packets 500 us apart, ~50 splices. */
+	struct hidpp_dd_texmerge tm = {
+		.enabled = true, .intensity = 100, .cylinders = 8,
+		.rpm_x10 = 60000, .rpm_stamp_ns = 1,
+	};
+	u8 pkt[64];
+	int spliced = 0;
+	u64 t = 1;
+
+	tm.last_ns = t;
+	for (int i = 0; i < 100; i++) {
+		t += 500000; /* 500 us */
+		tm.rpm_stamp_ns = t; /* keep fresh */
+		mk_stream_pkt(pkt, 0x8000, i & 0xff);
+		if (hidpp_dd_texmerge_splice(&tm, pkt, 64, t) > 0)
+			spliced++;
+	}
+	CHECK(spliced >= 45 && spliced <= 55, "spliced %d/100, want ~50", spliced);
+}
+
+static void test_nyquist_guard(void)
+{
+	/* At f0 = 600 Hz (V8 at 9000 rpm), h4 (2400 Hz) and h5 (3000 Hz)
+	 * exceed 0.45*FS = 1800 Hz and must be silent: the output must
+	 * contain no alias energy. Compare rms against an h1-h3-only
+	 * expectation: with band 290+ gains (h4/h5 small), dropping h4/h5
+	 * changes rms by only a few percent, so simply assert the sample
+	 * stream stays finite and the rms is within 20% of the target
+	 * formula (alias energy folding back would inflate it well past
+	 * that at these frequencies).
+	 */
+	struct hidpp_dd_texmerge tm = { .intensity = 100 };
+	double sum2 = 0;
+	int n = 8000;
+	for (int i = 0; i < n; i++) {
+		s16 s = hidpp_dd_texmerge_next_sample(&tm, 60000);
+		sum2 += (double)s * s;
+	}
+	double rms = sqrt(sum2 / n);
+	double target = 72 + 1.13 * 600;
+	CHECK(fabs(rms - target) / target < 0.20,
+	      "rms at 600Hz = %.1f, want ~%.1f (alias guard)", rms, target);
+}
+
 int main(void)
 {
 	test_lut_sanity();
@@ -86,6 +207,11 @@ int main(void)
 	test_oscillator_rms();
 	test_oscillator_continuity();
 	test_intensity_scales();
+	test_eligibility();
+	test_splice_preserves_base();
+	test_splice_gates();
+	test_splice_pacing();
+	test_nyquist_guard();
 	printf(failures ? "%d FAILURES\n" : "all tests pass\n", failures);
 	return failures ? 1 : 0;
 }

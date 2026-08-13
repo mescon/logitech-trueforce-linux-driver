@@ -16,7 +16,12 @@
 
 #ifdef __KERNEL__
 #include <linux/types.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+#include <linux/unaligned.h>
+#else
 #include <asm/unaligned.h>
+#endif
 #else
 #include <stdint.h>
 #include <stddef.h>
@@ -235,6 +240,11 @@ static inline s16 hidpp_dd_texmerge_next_sample(struct hidpp_dd_texmerge *tm,
 		s32 lut;
 
 		tm->phase[k] += inc * (k + 1);
+		/* Nyquist guard: a harmonic at or past 0.45*FS aliases badly;
+		 * drop it from the sum but keep advancing its phase so it
+		 * resumes in step if f0 drops back into range. */
+		if ((u64)(k + 1) * f0_x100 >= (u64)45 * HIDPP_DD_TEXMERGE_FS)
+			continue;
 		lut = hidpp_dd_texmerge_sine_lut[tm->phase[k] >> 22]; /* /2^22 = x1024 */
 		acc += (lut * (s32)band->gain_q12[k]) >> 12;	/* Q15 of 1.0 */
 	}
@@ -249,11 +259,56 @@ static inline s16 hidpp_dd_texmerge_next_sample(struct hidpp_dd_texmerge *tm,
 	}
 }
 
-/* implemented in a later task */
-#if 0
-static inline bool hidpp_dd_texmerge_eligible(const u8 *buf, size_t len);
+static inline bool hidpp_dd_texmerge_eligible(const u8 *buf, size_t len)
+{
+	return len == 64 && buf[0] == 0x01 && buf[4] == 0x01 && buf[10] == 0x00;
+}
+
 static inline int hidpp_dd_texmerge_splice(struct hidpp_dd_texmerge *tm,
-					   u8 *buf, size_t len, u64 now_ns);
-#endif
+					   u8 *buf, size_t len, u64 now_ns)
+{
+	u32 f0;
+	int i;
+
+	if (!tm->enabled || !hidpp_dd_texmerge_eligible(buf, len))
+		return 0;
+	if (!tm->rpm_stamp_ns ||
+	    now_ns - tm->rpm_stamp_ns > HIDPP_DD_TEXMERGE_STALE_NS)
+		return 0;
+	if (tm->rpm_x10 < HIDPP_DD_TEXMERGE_MIN_RPM_X10)
+		return 0;
+
+	/* sample-debt pacing: owe FS samples per second of wall time.
+	 * last_ns == 0 is a legitimate prior timestamp (not just "never
+	 * spliced"), so gate on ordering alone. */
+	if (now_ns > tm->last_ns) {
+		u64 dt = now_ns - tm->last_ns;
+		/* debt_q8 += dt * FS / 1e9, in Q8 */
+		tm->debt_q8 += (u32)((dt * HIDPP_DD_TEXMERGE_FS * 256) /
+				     1000000000ULL);
+		if (tm->debt_q8 > 16 * 256)	/* clamp runaway after a stall */
+			tm->debt_q8 = 16 * 256;
+	}
+	tm->last_ns = now_ns;
+	if (tm->debt_q8 < HIDPP_DD_TEXMERGE_BLOCK * 256)
+		return 0;
+	tm->debt_q8 -= HIDPP_DD_TEXMERGE_BLOCK * 256;
+
+	f0 = hidpp_dd_texmerge_f0_x100(tm);
+	/* shift the rolling window and append a fresh block */
+	for (i = 0; i < HIDPP_DD_TEXMERGE_WINDOW - HIDPP_DD_TEXMERGE_BLOCK; i++)
+		tm->window[i] = tm->window[i + HIDPP_DD_TEXMERGE_BLOCK];
+	for (; i < HIDPP_DD_TEXMERGE_WINDOW; i++)
+		tm->window[i] = hidpp_dd_texmerge_next_sample(tm, f0);
+
+	buf[10] = HIDPP_DD_TEXMERGE_BLOCK;
+	for (i = 0; i < HIDPP_DD_TEXMERGE_WINDOW; i++) {
+		u16 v = (u16)(tm->window[i] + 32768); /* offset binary */
+
+		put_unaligned_le16(v, &buf[12 + 4 * i]);
+		put_unaligned_le16(v, &buf[14 + 4 * i]);
+	}
+	return HIDPP_DD_TEXMERGE_BLOCK;
+}
 
 #endif /* HIDPP_DD_TEXTURE_MERGE_H */
