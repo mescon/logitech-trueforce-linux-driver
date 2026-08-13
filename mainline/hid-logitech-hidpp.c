@@ -16497,16 +16497,11 @@ static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 	shim->tm.enabled = false;
 	shim->ff = ff;
 
-	/*
-	 * Fresh interceptor, fresh push-restore state. ff is kzalloc'd so
-	 * this is already false the first time through; stated explicitly
-	 * because install is the natural per-attach boundary for this
-	 * state (ff_hdev_open itself only ever flips true->false once,
-	 * across this device's whole attached lifetime, so it is not a
-	 * useful reset point on its own - see the field comment on
-	 * hidpp_dd_ff_data).
-	 */
+	/* New interface-2 bind = new session: the restore strike counter
+	 * and armed state start fresh, like the poll path's counter does. */
+	ff->tm_restore_attempts = 0;
 	WRITE_ONCE(ff->tm_push_seen, false);
+	ff->tm_restore_gen++;
 
 	shim->real = ff_hdev->ll_driver;
 	shim->over = *ff_hdev->ll_driver;
