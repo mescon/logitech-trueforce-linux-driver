@@ -9,8 +9,12 @@ cur stays 0x8000 (zero force) in every packet, so the wheel produces no
 steering force, only the 1-2 percent fullscale texture buzz.
 
 Usage: synthetic_stream.py [seconds]   (default 10)
+       synthetic_stream.py --push-range DEG   (send one type-0x0e range
+           push instead of streaming; DEG is encoded as an IEEE-754 float
+           at bytes 6-9, matching the SDK's real wire layout confirmed by
+           usbmon capture - see hidpp_dd_texmerge_seen_range_push)
 """
-import glob, os, subprocess, sys, time
+import glob, os, struct, subprocess, sys, time
 
 
 def find_iface2():
@@ -45,7 +49,27 @@ def pkt(cmd, seq=0, cur=0x8000):
     return bytes(p)
 
 
+def push_range_pkt(deg, seq=0):
+    """Build a type-0x0e range-push packet with the float at bytes 6-9,
+    the real SDK layout (see hidpp_dd_texmerge_seen_range_push)."""
+    p = bytearray(64)
+    p[0] = 0x01
+    p[4] = 0x0E
+    p[5] = seq & 0xFF
+    p[6:10] = struct.pack("<f", deg)
+    return bytes(p)
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--push-range":
+        deg = float(sys.argv[2])
+        dev = find_iface2()
+        fd = os.open(dev, os.O_RDWR)
+        os.write(fd, push_range_pkt(deg))
+        os.close(fd)
+        print(f"pushed range {deg} on {dev}")
+        return
+
     secs = float(sys.argv[1]) if len(sys.argv) > 1 else 10.0
     here = os.path.dirname(os.path.abspath(__file__))
     init = os.path.join(here, "../../tools/logi-tf-init.py")

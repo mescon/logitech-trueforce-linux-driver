@@ -16320,7 +16320,19 @@ static void hidpp_dd_texmerge_restore_work(struct work_struct *work)
 static void hidpp_dd_texmerge_seen_range_push(struct hidpp_dd_ff_data *ff,
 					      const u8 *buf)
 {
-	u32 fbits = get_unaligned_le32(&buf[8]);
+	/*
+	 * Wire layout of the SDK's type-0x0e range push, confirmed against a
+	 * live AC EVO usbmon capture: buf[0]=0x01, buf[4]=0x0e, buf[5]=the
+	 * push's sequence byte, and the range as an IEEE-754 float at bytes
+	 * 6-9 little-endian. Two captured frames:
+	 *   90.0   = .. 0e <seq> 00 00 b4 42
+	 *   2700.0 = .. 0e <seq> 00 c0 28 45
+	 * Bytes 8-11 (the previous offset here) land one byte past the float
+	 * and decode as garbage (exp=0) on every real push, which is why the
+	 * restore never fired in live sessions despite passing synthetic
+	 * tests built on the same wrong assumption.
+	 */
+	u32 fbits = get_unaligned_le32(&buf[6]);
 	/* float decode without FP: 90.0f = 0x42b40000. Only the integer
 	 * range matters; the exponent path below covers 1.0..4096.0. */
 	u32 exp = (fbits >> 23) & 0xff;
