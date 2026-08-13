@@ -122,6 +122,8 @@ Proton prefixes.
 %{_datadir}/logitech-trueforce/tf-range-proxy.dll
 %{_datadir}/logitech-trueforce/liblogi_tf_scs.so
 %{_datadir}/logitech-trueforce/logi-tf-relay.exe
+%{_datadir}/logitech-trueforce/dinput8-escape.dll
+%{_bindir}/logi-rpm-bridge
 %{_bindir}/logi-g923-modeswitch
 %{_bindir}/logi-rebind-wheel
 %{_bindir}/logi-launch
@@ -193,6 +195,10 @@ done
 # cargo fetches crate dependencies over the network at build time (nothing
 # is vendored); enable networking for the COPR project or the build.
 cargo build --release --manifest-path userspace/logi-wheel/Cargo.toml
+# logi-rpm-bridge: the small C bridge that feeds relayed game RPM to the
+# driver's kernel texture merge; logi-launch starts and stops it around a
+# game session.
+gcc %{optflags} -o tools/logi-rpm-bridge tools/logi-rpm-bridge.c
 
 %install
 for kver in %{?kernel_versions}; do
@@ -235,6 +241,15 @@ install -D -m 0755 tools/install-tf-shim.sh \
 # is a Windows DLL and its users run Linux without a cross-compiler.
 install -D -m 0644 tools/tf-range-proxy.dll \
     "%{buildroot}%{_datadir}/logitech-trueforce/tf-range-proxy.dll"
+# The dinput8 escape proxy logi-launch stages into an SDK game's own
+# directory: it answers the SDK's range getters and relays the game's RPM
+# telemetry for the kernel texture merge. Prebuilt, same reason.
+install -D -m 0644 tools/dinput8-escape.dll \
+    "%{buildroot}%{_datadir}/logitech-trueforce/dinput8-escape.dll"
+# The RPM feed for the kernel texture merge; logi-launch starts and stops
+# it around a game session.
+install -D -m 0755 tools/logi-rpm-bridge \
+    "%{buildroot}%{_bindir}/logi-rpm-bridge"
 install -D -m 0644 userspace/logi-wheel/target/release/liblogi_tf_scs.so \
     "%{buildroot}%{_datadir}/logitech-trueforce/liblogi_tf_scs.so"
 # A Windows executable: it runs inside the game's Proton prefix.

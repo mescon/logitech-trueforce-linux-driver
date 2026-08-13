@@ -27,6 +27,7 @@
 #include <dinputd.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 static HMODULE g_real;                 // Wine's builtin dinput8
 static FILE *g_log;
@@ -284,6 +285,377 @@ static bool oem_ffb_claims(unsigned short pid)
 	return false;
 }
 
+
+// ------------------------------- answering the operating-range questions
+//
+// Logitech's SDK faults on these. Measured in Assetto Corsa EVO: the game
+// calls them and the exception unwinds from trueforce_sdk_x64+0x526b through
+// GetOperatingRangeBoundsDegrees+0x60, and when that one is answered here
+// instead, the next call lands in GetOperatingRangeDegrees+0x60. The same
+// offset in both, so they share an inlined helper that dereferences
+// something it does not have.
+//
+// A game that catches the exception survives and quietly abandons
+// TrueForce, which is the silence we could not otherwise explain.
+//
+// The answers come from the wheel itself, the same way tools/tf-range-proxy.c
+// gets them, so a game asking the range is told the truth rather than a
+// constant.
+
+static int read_int_file(const char *path)
+{
+	HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+			       OPEN_EXISTING, 0, nullptr);
+	if (h == INVALID_HANDLE_VALUE)
+		return -1;
+	char buf[64];
+	DWORD n = 0;
+	int v = -1;
+	if (ReadFile(h, buf, sizeof(buf) - 1, &n, nullptr) && n) {
+		buf[n] = 0;
+		v = atoi(buf);
+	}
+	CloseHandle(h);
+	return v;
+}
+
+static int wheel_range_degrees(void)
+{
+	WIN32_FIND_DATAA fd;
+	HANDLE h = FindFirstFileA("Z:\\sys\\class\\hidraw\\*", &fd);
+	if (h == INVALID_HANDLE_VALUE)
+		return -1;
+	do {
+		if (fd.cFileName[0] == '.')
+			continue;
+		char path[MAX_PATH + 64];
+		static const char *const attrs[] = { "wheel_range", "range" };
+		for (int a = 0; a < 2; a++) {
+			const char *attr = attrs[a];
+			snprintf(path, sizeof(path),
+				 "Z:\\sys\\class\\hidraw\\%s\\device\\%s", fd.cFileName, attr);
+			int v = read_int_file(path);
+			if (v > 0) {
+				FindClose(h);
+				return v;
+			}
+		}
+	} while (FindNextFileA(h, &fd));
+	FindClose(h);
+	return -1;
+}
+
+static const double RANGE_MIN_DEG = 90.0;
+static const double RANGE_MAX_DEG = 2700.0;
+static const double DEG_TO_RAD = 3.14159265358979323846 / 180.0;
+static bool g_range_fix_off;
+
+// int f(int index, double *out), verified in docs/SDK_ABI_NOTES.md.
+static int range_degrees(int index, double *out)
+{
+	(void)index;
+	if (!out)
+		return 0x80000001;
+	int v = wheel_range_degrees();
+	if (v <= 0) {
+		say("GetOperatingRangeDegrees: no range in sysfs, answering %.0f",
+		    RANGE_MAX_DEG);
+		v = (int)RANGE_MAX_DEG;
+	}
+	*out = (double)v;
+	return 0;
+}
+
+static int range_radians(int index, double *out)
+{
+	int r = range_degrees(index, out);
+	if (!r && out)
+		*out *= DEG_TO_RAD;
+	return r;
+}
+
+// int f(int index, double *lo, double *hi): the least and greatest range
+// that can be set, 90 to 2700 per docs/PROTOCOL_SPECIFICATION.md.
+static int range_bounds_degrees(int index, double *lo, double *hi)
+{
+	(void)index;
+	if (!lo || !hi)
+		return 0x80000001;
+	*lo = RANGE_MIN_DEG;
+	*hi = RANGE_MAX_DEG;
+	return 0;
+}
+
+static int range_bounds_radians(int index, double *lo, double *hi)
+{
+	int r = range_bounds_degrees(index, lo, hi);
+	if (!r) {
+		*lo *= DEG_TO_RAD;
+		*hi *= DEG_TO_RAD;
+	}
+	return r;
+}
+
+
+// logiWheelSetForceMode is the last call the game makes before going quiet.
+//
+// Signature from its own prologue in 1_3_12: RCX a 64-bit handle, and the
+// second argument stored as a single byte (mov %dl,0x10(%rsp)), so a bool.
+// Status in EAX, as with the rest of this family.
+typedef int (*set_force_mode_fn)(void *handle, unsigned char mode);
+static set_force_mode_fn g_setforcemode_real;
+
+static int setforcemode_wrapper(void *handle, unsigned char mode)
+{
+	int st = g_setforcemode_real(handle, mode);
+	say("logiWheelSetForceMode(handle=%p, mode=%u) -> 0x%08x%s", handle, (unsigned)mode,
+	    (unsigned)st, st ? "   <- REFUSED" : "");
+	return st;
+}
+
+
+// ------------------------------ the range setter, and the 90 degree clamp
+//
+// Something in this path sets the wheel to 90 degrees while a game runs. The
+// kernel driver sees it and heals it back:
+//
+//   rotation range changed externally: 1080 -> 90 degrees
+//   Rotation change broadcast -> 1080 degrees
+//
+// repeatedly, so the steering range flips under the game's force loop, which
+// is enough on its own to make the wheel oscillate and the game stutter. This
+// is issue #27's clamp, seen live.
+//
+// 90 is the least range these wheels accept, which is what a failed or
+// defaulted lookup produces. Anything else the game asks for is its own
+// choice and passes through untouched: the wheel must feel like the game
+// intends, not like we prefer.
+typedef int (*set_range_fn)(void *handle, double value);
+static set_range_fn g_set_range_deg_real, g_set_range_rad_real;
+static bool g_range_guard_off;
+
+static const double RAD90 = 90.0 * 3.14159265358979323846 / 180.0;
+
+static int set_range_deg_wrapper(void *handle, double deg)
+{
+	if (!g_range_guard_off && deg <= 90.5) {
+		say("logiWheelSetOperatingRangeDegrees(%.1f) BLOCKED: that is the floor, "
+		    "and it is what clamps the wheel to 90 degrees mid-session", deg);
+		return 0;
+	}
+	int st = g_set_range_deg_real(handle, deg);
+	say("logiWheelSetOperatingRangeDegrees(%.1f) -> 0x%08x", deg, (unsigned)st);
+	return st;
+}
+
+static int set_range_rad_wrapper(void *handle, double rad)
+{
+	if (!g_range_guard_off && rad <= RAD90 * 1.005) {
+		say("logiWheelSetOperatingRangeRadians(%.4f = %.1f deg) BLOCKED: the floor",
+		    rad, rad * 180.0 / 3.14159265358979323846);
+		return 0;
+	}
+	int st = g_set_range_rad_real(handle, rad);
+	say("logiWheelSetOperatingRangeRadians(%.4f) -> 0x%08x", rad, (unsigned)st);
+	return st;
+}
+
+
+
+static volatile LONGLONG g_kf_handle = 0;   // 64-bit SDK handle from the KF stream
+typedef int (*set_torque_kf_fn)(long long handle, double torque);
+static set_torque_kf_fn g_set_torque_kf_real;
+static volatile LONGLONG g_kf_calls;
+
+static int set_torque_kf_wrapper(long long handle, double torque)
+{
+	// Transparent pass-through: capture the handle, forward unchanged.
+	InterlockedExchange64(&g_kf_handle, handle);
+	InterlockedIncrement64((LONGLONG *)&g_kf_calls);
+	return g_set_torque_kf_real ? g_set_torque_kf_real(handle, torque) : 0;
+}
+
+
+// ----------------------- native-topology TrueForce texture (option A)
+//
+// On Windows the same ep3 packet carries the base force (cur, from the
+// game's KF torque) AND engine-texture audio samples; one writer, both
+// payloads (measured: 79% of texture packets also carry live cur). The
+// texture enters the SDK through its own audio API, pushed by G HUB's side,
+// synthesised from the same Escape RPM stream the game emits. The game
+// calls SetTorqueTF* zero times on either OS.
+//
+// This reproduces that topology exactly: synthesise the engine note from
+// the live Escape RPM and push it into the game's own SDK session via
+// logiTrueForceSetTorqueTFfloat. Logitech's DLL then does everything
+// downstream - mixing, windowing, sequencing, packet assembly - so the
+// whole stream is native machinery; only the waveform source is ours.
+//
+// The recipe is fitted to a Windows capture of this same game (see
+// docs/TF_TEXTURE_RECIPE.md): a firing-frequency harmonic stack, h2/h3
+// rising with revs, amplitude 0.7%..1.5% of fullscale. Ship tuning happens
+// against capture diffs, not by ear.
+//
+// Off by default: the kernel-side texture merge (wheel_tf_merge) is the
+// shipping path, and it renders on the wheel itself from the relayed RPM.
+// LOGI_TF_TEXTURE=1 turns this in-session synth back on, for experiments
+// only. The synth thread self-paces on the SDK's own ring (SetTorqueTF
+// blocks when full, per the API contract).
+
+typedef int (*set_torque_tf_float_fn)(long long handle, const float *samples, int count);
+static set_torque_tf_float_fn g_set_tf_real;
+static volatile LONG g_rpm_mhz;        // live rpm, millihertz-free: stored as rpm*10
+static volatile LONG g_limiter_x10;
+static volatile LONG g_texture_on = -1; // -1 unresolved, 0 off, 1 on
+static HANDLE g_tex_thread;
+
+static DWORD WINAPI texture_thread(LPVOID)
+{
+	// 4 kHz like the native stream; 32-sample blocks = 8 ms cadence.
+	const float FS = 4000.0f;
+	const int BLOCK = 32;
+	float phase[5] = { 0, 0, 0, 0, 0 };
+	float buf[BLOCK];
+	// Capture-fitted gains at low revs -> high revs (h1..h5), interpolated
+	// on the fundamental. docs/TF_TEXTURE_RECIPE.md.
+	const float f_lo = 150.0f, f_hi = 330.0f;
+	const float g_lo[5] = { 1.0f, 0.19f, 0.10f, 0.06f, 0.04f };
+	const float g_hi[5] = { 1.0f, 0.28f, 0.30f, 0.09f, 0.07f };
+	const float CYL_HALF = 4.0f;   // V8 firing: rpm/60*4; TODO per-car
+	for (;;) {
+		long long h = InterlockedCompareExchange64(&g_kf_handle, 0, 0);
+		float rpm = (float)g_rpm_mhz / 10.0f;
+		if (!h || !g_set_tf_real || rpm < 100.0f) {
+			Sleep(20);
+			continue;
+		}
+		float f0 = rpm / 60.0f * CYL_HALF;
+		if (f0 > FS * 0.45f)
+			f0 = FS * 0.45f;
+		// interpolate gains + amplitude on f0
+		float x = (f0 - f_lo) / (f_hi - f_lo);
+		if (x < 0) x = 0;
+		if (x > 1) x = 1;
+		// rms 72 + 1.13*f0 counts of 32768 fullscale (capture fit)
+		float rms = (72.0f + 1.13f * f0) / 32768.0f;
+		float g[5], norm = 0;
+		for (int k = 0; k < 5; k++) {
+			g[k] = g_lo[k] + x * (g_hi[k] - g_lo[k]);
+			norm += g[k] * g[k];
+		}
+		float scale = rms / (float)sqrt(norm / 2.0f); // sine rms = a/sqrt2
+		const float TWO_PI = 6.28318530718f;
+		for (int i = 0; i < BLOCK; i++) {
+			float s = 0;
+			for (int k = 0; k < 5; k++) {
+				phase[k] += TWO_PI * f0 * (k + 1) / FS;
+				if (phase[k] > TWO_PI)
+					phase[k] -= TWO_PI;
+				s += g[k] * (float)sin(phase[k]);
+			}
+			buf[i] = s * scale;
+		}
+		// Blocks when the SDK ring is full: exactly the self-pacing the
+		// API documents, so no explicit clock is needed.
+		g_set_tf_real(h, buf, BLOCK);
+	}
+	return 0;
+}
+
+static void texture_maybe_start(void)
+{
+	if (g_texture_on == -1) {
+		char v[8];
+		/* Kernel-side merge is the shipping texture path; this
+		 * in-session synth stays available for experiments only. */
+		g_texture_on = (GetEnvironmentVariableA("LOGI_TF_TEXTURE", v,
+							sizeof(v)) &&
+				v[0] == '1');
+		if (!g_texture_on)
+			say("texture synth off (kernel merge is the shipping path)");
+	}
+	if (!g_texture_on || g_tex_thread)
+		return;
+	if (!g_set_tf_real) {
+		HMODULE m = GetModuleHandleW(L"trueforce_sdk_x64.dll");
+		if (m)
+			g_set_tf_real = (set_torque_tf_float_fn)GetProcAddress(
+				m, "logiTrueForceSetTorqueTFfloat");
+	}
+	if (g_set_tf_real && InterlockedCompareExchange64(&g_kf_handle, 0, 0)) {
+		g_tex_thread = CreateThread(nullptr, 0, texture_thread, nullptr, 0, nullptr);
+		say("texture synth started (capture-fitted engine note into the SDK's own stream)");
+	}
+}
+
+// --------------------------------- is the SDK's haptic thread even running?
+//
+// The SDK loads, opens the wheel, accepts KF torque at 190/sec, and writes
+// nothing to endpoint 3. This asks the SDK directly whether its streaming
+// (haptic) thread is alive, at what rate, and whether it is paused. All three
+// have the same prologue in 1_3_12: RCX index, RDX a null-checked out pointer,
+// status in EAX. Resolved from the already-loaded module, so no signature is
+// guessed for a call the game did not make.
+typedef int (*diag_fn)(long long handle, void *out);
+static diag_fn g_thread_status, g_haptic_rate, g_is_paused;
+static bool g_diag_done;
+
+static void resolve_diag(void)
+{
+	if (g_thread_status)
+		return;
+	HMODULE m = GetModuleHandleW(L"trueforce_sdk_x64.dll");
+	if (!m)
+		return;
+	g_thread_status = (diag_fn)GetProcAddress(m, "logiTrueForceGetHapticThreadStatus");
+	g_haptic_rate   = (diag_fn)GetProcAddress(m, "logiTrueForceGetHapticRate");
+	g_is_paused     = (diag_fn)GetProcAddress(m, "logiTrueForceIsPaused");
+}
+
+static DWORD WINAPI haptic_diag_thread(LPVOID)
+{
+	resolve_diag();
+	long long h = InterlockedCompareExchange64(&g_kf_handle, 0, 0);
+	if (!h) {
+		say("HAPTIC diagnostic: no KF handle captured yet; skipping");
+		return 0;
+	}
+	// Generous zeroed buffers; the functions write <= 8 bytes.
+	unsigned char buf[16];
+	if (g_thread_status) {
+		memset(buf, 0, sizeof(buf));
+		int st = g_thread_status(h, buf);
+		say("HAPTIC thread status(h=%p): call=0x%08x  out.i32=%d out.i64=%lld out.f64=%.3f",
+		    (void *)h, (unsigned)st, *(int *)buf, *(long long *)buf, *(double *)buf);
+	} else {
+		say("HAPTIC thread status: function not resolvable");
+	}
+	if (g_haptic_rate) {
+		memset(buf, 0, sizeof(buf));
+		int st = g_haptic_rate(h, buf);
+		say("HAPTIC rate(h=%p): call=0x%08x  out.i32=%d out.f64=%.3f", (void *)h,
+		    (unsigned)st, *(int *)buf, *(double *)buf);
+	}
+	if (g_is_paused) {
+		memset(buf, 0, sizeof(buf));
+		int st = g_is_paused(h, buf);
+		say("HAPTIC is_paused(h=%p): call=0x%08x  out.i32=%d", (void *)h, (unsigned)st,
+		    *(int *)buf);
+	}
+	return 0;
+}
+
+static void run_haptic_diagnostic(void)
+{
+	if (g_diag_done)
+		return;
+	g_diag_done = true;
+	// Detached thread, so a call that blocks cannot freeze the game.
+	HANDLE th = CreateThread(nullptr, 0, haptic_diag_thread, nullptr, 0, nullptr);
+	if (th)
+		CloseHandle(th);
+}
+
 // -------------------------------------------- watching the SDK handshake
 //
 // The wheel is visible, the SDK opens the right interface, and then sends
@@ -301,33 +673,6 @@ static bool oem_ffb_claims(unsigned short pid)
 static FARPROC(WINAPI *real_getprocaddress)(HMODULE, LPCSTR);
 
 static LONG g_gpa_calls;
-
-// The TrueForce capability gate. The game calls this, is told something, and
-// then never calls a torque function, so its answer is the whole question.
-//
-// 0x8000000C is worth recognising on sight: the function returns it before
-// looking at the device at all, when a global latch in the library is set.
-// Every other export checks the same latch. If that is what comes back, the
-// library has disabled itself and the wheel is irrelevant.
-typedef int (*tf_supported_fn)(void *device, int *out);
-static tf_supported_fn g_tf_supported_real;
-
-static int tf_supported_wrapper(void *device, int *out)
-{
-	int probe = -1;
-	int status = g_tf_supported_real(device, out ? out : &probe);
-	int answer = out ? *out : probe;
-	const char *note = "";
-	if ((unsigned)status == 0x8000000cu)
-		note = "  <- the library has latched itself off; the wheel was never examined";
-	else if (status == 0 && !answer)
-		note = "  <- the library examined the wheel and says no";
-	else if (status == 0 && answer)
-		note = "  <- supported";
-	say("logiTrueForceSupportedByDirectInput(device=%p) status=0x%08x supported=%d%s", device,
-	    (unsigned)status, answer, note);
-	return status;
-}
 
 // --------------------------------------------- counting SDK calls safely
 //
@@ -388,21 +733,23 @@ static void *const g_tf_thunks[TRACKED_CALLS] = {
 /// "how far did it get" is the useful answer: an open that never happens and
 /// a torque call that never happens point at completely different things.
 static const char *const g_tracked[TRACKED_CALLS] = {
-	// Opening the library and the wheel.
-	"dllOpen",
-	"logiWheelSupportedByDirectInputW",
-	"logiWheelSupportedByDirectInputA",
-	"logiWheelOpenByDirectInputW",
-	"logiWheelOpenByDirectInputA",
-	"logiWheelSdkHasControl",
-	// Asking whether TrueForce is on offer.
-	"logiTrueForceAvailable",
-	"logiTrueForceSupported",
-	"logiTrueForceSupportedByDirectInputW",
-	// Actually using it.
+	// Every way this SDK can be handed a force, because watching two of
+	// them and concluding "the game sends nothing" was not sound: the
+	// float setter is one of five, and the KF family is separate again.
+	"logiTrueForceSetTorqueTFdouble",
 	"logiTrueForceSetTorqueTFfloat",
+	"logiTrueForceSetTorqueTFint8",
+	"logiTrueForceSetTorqueTFint16",
+	"logiTrueForceSetTorqueTFint32",
 	"logiTrueForceSetStreamTF",
-	"logiWheelSetRpmLeds",
+	"logiTrueForceSetTorqueKF",
+	"logiTrueForceSetTorqueKFPiecewise",
+	// Housekeeping a streaming caller does around the setters.
+	"logiTrueForceSync",
+	"logiTrueForceClearTF",
+	"logiTrueForceSetGainTF",
+	// One anchor, so an all-zero table still proves the mechanism ran.
+	"dllOpen",
 };
 
 static FARPROC WINAPI getprocaddress_hook(HMODULE mod, LPCSTR name)
@@ -430,20 +777,39 @@ static FARPROC WINAPI getprocaddress_hook(HMODULE mod, LPCSTR name)
 			    p ? "found" : "NOT FOUND");
 	}
 
-	// The gate, wrapped properly rather than counted, because its answer
-	// is the thing we need and the counters cannot see it.
-	//
-	// Signature read from the function's own prologue in 1_3_12: RCX is
-	// the DirectInput device and RDX an out parameter, both null-checked
-	// against 0x80000001, with the status in EAX. That is the shape
-	// SDK_ABI_NOTES.md establishes for this family, so this one is safe
-	// to declare where the rest are not.
-	if (p && by_name && logi_module &&
-	    (!strcmp(name, "logiTrueForceSupportedByDirectInputW") ||
-	     !strcmp(name, "logiTrueForceSupportedByDirectInputA"))) {
-		g_tf_supported_real = (tf_supported_fn)p;
-		say("    (wrapping %s to report its answer)", name);
-		return (FARPROC)tf_supported_wrapper;
+	if (p && by_name && logi_module && !strcmp(name, "logiWheelSetForceMode")) {
+		g_setforcemode_real = (set_force_mode_fn)p;
+		say("    (wrapping logiWheelSetForceMode to report its argument and answer)");
+		return (FARPROC)setforcemode_wrapper;
+	}
+
+	if (p && by_name && logi_module && !strcmp(name, "logiTrueForceSetTorqueKF")) {
+		g_set_torque_kf_real = (set_torque_kf_fn)p;
+		say("    (capturing SetTorqueKF index for the haptic diagnostic)");
+		return (FARPROC)set_torque_kf_wrapper;
+	}
+
+	if (p && by_name && logi_module && !strcmp(name, "logiWheelSetOperatingRangeDegrees")) {
+		g_set_range_deg_real = (set_range_fn)p;
+		say("    (watching logiWheelSetOperatingRangeDegrees)");
+		return (FARPROC)set_range_deg_wrapper;
+	}
+	if (p && by_name && logi_module && !strcmp(name, "logiWheelSetOperatingRangeRadians")) {
+		g_set_range_rad_real = (set_range_fn)p;
+		say("    (watching logiWheelSetOperatingRangeRadians)");
+		return (FARPROC)set_range_rad_wrapper;
+	}
+
+	// The operating-range getters, answered here: the SDK faults on them.
+	if (p && by_name && logi_module && !g_range_fix_off &&
+	    !strncmp(name, "logiWheelGetOperatingRange", 26)) {
+		bool bounds = strstr(name, "Bounds") != nullptr;
+		bool radians = strstr(name, "Radians") != nullptr;
+		say("    (answering %s here: the SDK faults on it)", name);
+		if (bounds)
+			return (FARPROC)(radians ? (void *)range_bounds_radians :
+						   (void *)range_bounds_degrees);
+		return (FARPROC)(radians ? (void *)range_radians : (void *)range_degrees);
 	}
 
 	// Hand back a counting thunk for the calls worth watching. Only for a
@@ -515,6 +881,10 @@ static void watch_sdk_handshake(void)
 	// Installing it from DirectInput8Create was too late: the SDK loaded
 	// about a second before input was initialised, and every resolution
 	// had already happened.
+	char rv[8];
+	g_range_fix_off = GetEnvironmentVariableA("LOGI_RANGE_FIX", rv, sizeof(rv)) && rv[0] == '0';
+	char gv[8];
+	g_range_guard_off = GetEnvironmentVariableA("LOGI_RANGE_GUARD", gv, sizeof(gv)) && gv[0] == '0';
 	g_hook_result = hook_iat("GetProcAddress", (void *)getprocaddress_hook,
 				 (void **)&real_getprocaddress) ?
 				1 :
@@ -772,6 +1142,9 @@ public:
 			// The third field is the limiter, which is what the
 			// daemon means by max_rpm; RPM can briefly exceed it.
 			relay_send(f[0], f[2]);
+			InterlockedExchange(&g_rpm_mhz, (LONG)(f[0] * 10.0f));
+			InterlockedExchange(&g_limiter_x10, (LONG)(f[2] * 10.0f));
+			texture_maybe_start();
 			if (loud)
 				say("Escape #%ld  stream type=%u  rpm=%.1f  b=%.1f  limit=%.1f",
 				    (long)n, type, f[0], f[1], f[2]);
@@ -780,6 +1153,8 @@ public:
 			// interesting answer is usually all zeros, which says
 			// the game resolved the whole API and then never used
 			// it, so it is reported even when nothing was called.
+			if (n == 200)
+				run_haptic_diagnostic();
 			if (n == 200 || (n % 5600) == 0) {
 				for (int i = 0; i < TRACKED_CALLS; i++)
 					say("    calls: %-32s %lld", g_tracked[i],

@@ -86,6 +86,10 @@ TAG+="uaccess", MODE="0660"
 
 # wheel_* sysfs attributes (only exist on the HID++ interface's hidraw
 # node; the RUN invocation is a no-op on interfaces that lack them).
+# The wheel_* glob deliberately covers the texture-merge controls too
+# (wheel_tf_merge, wheel_texture_rpm, wheel_texture_intensity,
+# wheel_texture_cylinders): logi-launch and logi-rpm-bridge write those
+# from the user session, so they need the same 0666 as the other knobs.
 # Note: "$$f" not "$f" - udev treats a lone "$" as a substitution
 # marker, so a literal shell "$f" must be written "$$f" (passes
 # udevadm verify; on lenient udev versions "$f" happened to survive

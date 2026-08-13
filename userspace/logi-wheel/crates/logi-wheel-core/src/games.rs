@@ -884,6 +884,16 @@ pub struct LaunchPlan {
     pub supported: bool,
     /// Why the plan is what it is, in the order it should be shown.
     pub notes: Vec<String>,
+    /// Enable the driver's kernel texture merge for this session: the
+    /// engine-note texture is rendered on the wheel itself, mixed into the
+    /// game's own TrueForce stream. `logi-launch` responds by staging the
+    /// dinput8 escape proxy into the game's directory (it relays the RPM
+    /// telemetry the merge is driven by), starting `logi-rpm-bridge`, and
+    /// writing 1 to `wheel_tf_merge`, undoing all of it when the game
+    /// exits. Only granted where the native TrueForce path itself is: on a
+    /// wheel that cannot receive the SDK stream there is nothing to merge
+    /// into.
+    pub texture_merge: bool,
     /// The `PROTON_ENABLE_HIDRAW` value to use when [`Self::hidraw`] is on:
     /// `0xVID/0xPID` naming the attached wheel.
     ///
@@ -947,6 +957,15 @@ impl LaunchPlan {
         // game is already sending.
         if game.setup_action(caps) == SetupAction::InstallShim {
             plan.notes.push("simulated TrueForce stays off, so it does not double the real thing".into());
+            // The kernel texture merge rides the native stream, so it is
+            // granted exactly as widely as hidraw: withheld on an ambiguous
+            // rig for the same reason, and gated per title because the
+            // escape proxy's RPM relay is only validated for AC EVO.
+            if plan.hidraw == Some(true)
+                && game.simulated_tf.live_id() == Some("ac-evo")
+            {
+                plan.texture_merge = true;
+            }
             return plan;
         }
 
@@ -987,6 +1006,9 @@ impl LaunchPlan {
             Some(false) => out.push("hidraw=0".into()),
             None => {}
         }
+        if self.texture_merge {
+            out.push("texture=merge".into());
+        }
         if self.ffb_proxy {
             out.push("ffb=proxy".into());
         }
@@ -1019,6 +1041,11 @@ impl LaunchPlan {
             )),
             Some(false) => parts.push("sets PROTON_ENABLE_HIDRAW=0, which this game needs for force feedback".into()),
             None => {}
+        }
+        if self.texture_merge {
+            parts.push(
+                "merges the engine-note texture into the game's own TrueForce on the wheel".into(),
+            );
         }
         if self.ffb_proxy {
             parts.push("runs the game through logi-ffb for force feedback".into());
@@ -1162,6 +1189,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The kernel texture merge goes exactly where the native TrueForce
+    /// path goes, and only for the title whose RPM relay is validated.
+    #[test]
+    fn only_ac_evo_on_a_direct_drive_wheel_gets_the_texture_merge() {
+        let evo = compat_for_appid(3058630).expect("Assetto Corsa EVO is in the registry");
+
+        let dd = LaunchPlan::for_game(evo, DD, false);
+        assert!(dd.texture_merge, "AC EVO on a direct-drive wheel is the shipping merge case");
+        assert!(
+            dd.lines().contains(&"texture=merge".to_string()),
+            "logi-launch reads this by exact prefix; {:?}",
+            dd.lines()
+        );
+
+        // No native stream on a G923, so nothing to merge into.
+        let classic = LaunchPlan::for_game(evo, G923, false);
+        assert!(!classic.texture_merge, "a G923 has no native stream to merge into");
+
+        // An ambiguous rig is withheld hidraw, and the merge follows it.
+        let ambiguous = LaunchPlan::for_game(evo, DD, true);
+        assert!(!ambiguous.texture_merge, "the merge must follow a withheld hidraw");
+
+        // ACC's RPM relay through the escape proxy is unvalidated, so it
+        // must not inherit AC EVO's recipe by accident.
+        let acc_dd = LaunchPlan::for_game(acc(), DD, false);
+        assert!(!acc_dd.texture_merge, "only AC EVO's RPM relay is validated");
     }
 
     /// An unknown title still gets the daemon: the UDP sims need nothing

@@ -32,6 +32,14 @@ override_dh_auto_build:
 	# requires >= 1.92), so the GUI no longer gets a tolerated-failure
 	# build: it is a declared binary package and must build.
 	cargo build --release --manifest-path userspace/logi-wheel/Cargo.toml
+	# logi-rpm-bridge: the small C bridge that feeds relayed game RPM to
+	# the driver's kernel texture merge; logi-launch starts and stops it
+	# around a game session.
+	cc -O2 -Wall -o tools/logi-rpm-bridge tools/logi-rpm-bridge.c
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -f tools/logi-rpm-bridge
 
 override_dh_install:
 	# Module source DKMS compiles in /usr/src (the .c keeps its historical
@@ -56,6 +64,15 @@ override_dh_install:
 	# to run `make -C tools` in a directory a package user does not have.
 	install -D -m 0644 tools/tf-range-proxy.dll \
 		$(TUI)/usr/share/logitech-trueforce/tf-range-proxy.dll
+	# The dinput8 escape proxy logi-launch stages into an SDK game's own
+	# directory: it answers the SDK's range getters and relays the game's
+	# RPM telemetry for the kernel texture merge. Prebuilt, same reason.
+	install -D -m 0644 tools/dinput8-escape.dll \
+		$(TUI)/usr/share/logitech-trueforce/dinput8-escape.dll
+	# The RPM feed for the kernel texture merge; logi-launch starts and
+	# stops it around a game session.
+	install -D -m 0755 tools/logi-rpm-bridge \
+		$(TUI)/usr/bin/logi-rpm-bridge
 	# The truck sims load this from inside the game rather than from a
 	# Proton prefix, so it ships beside the proxy rather than in bin.
 	install -D -m 0644 userspace/logi-wheel/target/release/liblogi_tf_scs.so \

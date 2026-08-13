@@ -172,7 +172,8 @@ want_hidraw=$(plan_get hidraw)
 want_ffb=$(plan_get ffb)
 want_relay=$(plan_get relay)
 want_tfsim=$(plan_get tfsim)
-say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-unset} ffb=${want_ffb:-native} relay=${want_relay:-none} tfsim=${want_tfsim:-0}"
+want_texture=$(plan_get texture)
+say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-unset} ffb=${want_ffb:-native} relay=${want_relay:-none} tfsim=${want_tfsim:-0} texture=${want_texture:-none}"
 
 # TrueForce in an SDK title needs the game to reach the wheel's raw HID
 # interface. Set here so nobody has to remember it, and NEVER guessed: on a
@@ -247,6 +248,65 @@ case "$want_hidraw" in
 	fi
 	;;
 esac
+
+# The kernel texture merge: the driver mixes an engine-note texture into
+# the game's own TrueForce stream, on the wheel itself. Three pieces, all
+# undone when the game exits:
+#   - the dinput8 escape proxy staged into the game's directory. It answers
+#     the SDK's range getters (without which the SDK's stream never comes
+#     up under Proton) and relays the game's RPM telemetry over the Escape
+#     channel as localhost UDP.
+#   - logi-rpm-bridge, which turns that UDP into wheel_texture_rpm writes.
+#   - wheel_tf_merge=1, which tells the driver to render the texture.
+# Gated on the TrueForce files exactly like hidraw above: without the SDK
+# there is no native stream to merge into. The no-prefix case passes for
+# the same reason it does there: the prefix may simply not exist yet.
+rpm_bridge_pid=""
+merge_enabled=""
+if [ "$want_texture" = "merge" ] && \
+   { [ "$have_tf_files" = "1" ] || [ -z "$prefix_root" ]; }; then
+	# The game's own directory, taken from the .exe in the command Steam
+	# hands us. A native Linux game or a bare test command has none, and
+	# then there is nowhere to stage the proxy: say so and move on.
+	game_exe=$(printf '%s\n' "$@" | grep -m1 -e '\.exe$' || true)
+	game_dir=""
+	[ -n "$game_exe" ] && game_dir=$(dirname "$game_exe")
+	proxy_src="/usr/share/logitech-trueforce/dinput8-escape.dll"
+	[ -r "$proxy_src" ] || proxy_src="$(dirname "$0")/dinput8-escape.dll"
+	if [ -n "$game_dir" ] && [ -d "$game_dir" ] && [ -r "$proxy_src" ]; then
+		# cmp, not a timestamp: Steam validation rewrites files and a
+		# stale proxy looks exactly like a missing one.
+		if ! cmp -s "$proxy_src" "$game_dir/dinput8.dll" 2>/dev/null; then
+			if cp -f "$proxy_src" "$game_dir/dinput8.dll" 2>/dev/null; then
+				say "staged dinput8 proxy into $game_dir"
+			else
+				say "could not copy the dinput8 proxy into $game_dir"
+			fi
+		fi
+		# Merge with whatever the user already set; never clobber it.
+		case "${WINEDLLOVERRIDES:-}" in
+		*dinput8*) ;;
+		*)
+			export WINEDLLOVERRIDES="dinput8=n,b${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
+			say "set WINEDLLOVERRIDES=$WINEDLLOVERRIDES"
+			;;
+		esac
+	else
+		say "not staging the dinput8 proxy (no game dir or dll found);"
+		say "the texture merge will idle without its RPM feed"
+	fi
+	if command -v logi-rpm-bridge >/dev/null 2>&1; then
+		logi-rpm-bridge >>"$LOG" 2>&1 &
+		rpm_bridge_pid=$!
+		say "started logi-rpm-bridge (pid $rpm_bridge_pid)"
+	else
+		say "logi-rpm-bridge is not installed; the texture merge has no RPM feed"
+	fi
+	for d in /sys/bus/hid/devices/*046D:C27*/wheel_tf_merge; do
+		[ -w "$d" ] && echo 1 > "$d" && merge_enabled=1 && \
+			say "texture merge enabled ($d)"
+	done
+fi
 
 # Work out what to start in the prefix, if the caller did not say.
 if [ -z "$HELPER_EXE" ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; then
@@ -382,7 +442,25 @@ fi
 # asked of the user, so one prepend really is enough.
 if [ "$want_ffb" = "proxy" ] && command -v logi-ffb >/dev/null 2>&1; then
 	say "launching through logi-ffb for DirectInput force feedback"
-	exec logi-ffb "$@"
+	set -- logi-ffb "$@"
+fi
+
+# With the texture merge armed there is teardown to do after the game
+# exits, so the game runs as a child rather than by exec: the bridge dies
+# with the session, and the merge switches off so a later non-SDK session
+# does not inherit a texture with no RPM behind it. Everything else keeps
+# the historical exec, which leaves no wrapper process behind.
+if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ]; then
+	texture_merge_off() {
+		[ -n "$rpm_bridge_pid" ] && kill "$rpm_bridge_pid" 2>/dev/null
+		for d in /sys/bus/hid/devices/*046D:C27*/wheel_tf_merge; do
+			[ -w "$d" ] && echo 0 > "$d"
+		done
+		say "texture merge disabled"
+	}
+	trap texture_merge_off EXIT
+	"$@"
+	exit $?
 fi
 
 exec "$@"
