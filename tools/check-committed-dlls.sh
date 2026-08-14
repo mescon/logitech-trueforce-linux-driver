@@ -41,7 +41,12 @@ cd "$REPO_ROOT"
 # worth avoiding: the fix CI would demand needs a toolchain most
 # contributors lack).
 DINPUT8_SOURCES="tools/dinput8-escape-proxy.cpp tools/build-dinput8-proxy.sh"
-RANGE_SOURCES="tools/tf-range-proxy.c tools/tf-range-proxy.def tools/Makefile"
+# tools/Makefile is deliberately excluded: it also builds tf-pipe-probe.exe
+# and carries header comments, so edits to it routinely change nothing
+# about tf-range-proxy.dll's bytes. Including it here made the DLL look
+# stale after comment-only Makefile changes, a false positive with the
+# same teeth as the gen-proxy-def.sh case above.
+RANGE_SOURCES="tools/tf-range-proxy.c tools/tf-range-proxy.def"
 
 commit_time() {
 	git log -1 --format=%ct -- "$@" 2>/dev/null || echo 0

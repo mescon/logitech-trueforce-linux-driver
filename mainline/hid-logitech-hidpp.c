@@ -6608,6 +6608,9 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 					 * anyway, so go silent without the
 					 * pair rather than spinning.
 					 */
+					dd_warn(ff->hidpp->hid_dev,
+						"KF idle-gate teardown pair could not be queued after %u ticks; going silent without it\n",
+						HIDPP_DD_TF_STOP_MAX_ATTEMPTS);
 					ff->tf_stop_sent = false;
 					ff->tf_stop_attempts = 0;
 					ff->kf_gated = true;

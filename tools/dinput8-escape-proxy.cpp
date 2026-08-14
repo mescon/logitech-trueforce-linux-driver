@@ -717,10 +717,27 @@ static bool readable8(const void *p)
 		return false;
 	if (mi.State != MEM_COMMIT)
 		return false;
+	// PAGE_GUARD (0x100) rides in the high byte of Protect, alongside the
+	// base protection in the low byte; masking with 0xff below drops it,
+	// so a guard page would otherwise pass as e.g. plain PAGE_READWRITE
+	// and the memcpy below would raise a guard-page exception on first
+	// touch. Reject it explicitly before the mask.
+	if (mi.Protect & PAGE_GUARD)
+		return false;
 	DWORD prot = mi.Protect & 0xff;
-	return prot == PAGE_READONLY || prot == PAGE_READWRITE ||
-	       prot == PAGE_EXECUTE_READ || prot == PAGE_EXECUTE_READWRITE ||
-	       prot == PAGE_WRITECOPY || prot == PAGE_EXECUTE_WRITECOPY;
+	// PAGE_NOACCESS (0x01) and PAGE_EXECUTE (0x10) are already excluded:
+	// they are simply not in this allow-list.
+	if (prot != PAGE_READONLY && prot != PAGE_READWRITE &&
+	    prot != PAGE_EXECUTE_READ && prot != PAGE_EXECUTE_READWRITE &&
+	    prot != PAGE_WRITECOPY && prot != PAGE_EXECUTE_WRITECOPY)
+		return false;
+	// Only the byte at p was checked above (VirtualQuery reports the
+	// region containing p, not the 8 bytes we are about to read); reject
+	// a read that would cross into an unmapped or differently-protected
+	// neighbour.
+	if ((const char *)p + 8 > (const char *)mi.BaseAddress + mi.RegionSize)
+		return false;
+	return true;
 }
 
 static void gate_log(int idx, long long a, void *b, void *c, int st)
