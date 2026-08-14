@@ -235,6 +235,21 @@ MODULE_PARM_DESC(inject_pid,
 	"PID injection on interface 0 of direct-drive (RS50/G PRO) wheels: 0=off (default), 1=dry-run, 2=actuate. BREAKS STEERING AND PEDALS on these wheels: the injected collection declares report ids that the wheel does not use, so input reports are then misparsed. Leave it off.");
 
 /*
+ * Zero-force idle gate for the classic (KF) force stream. When the effect
+ * timer has computed an exactly-zero force with no effect playing for
+ * HIDPP_DD_KF_IDLE_GRACE_MS, the driver sends the captured 0x04+0x03
+ * teardown pair and stops the 1 kHz keepalive instead of streaming
+ * zero-force packets forever (whine-investigation.md, holder #5); the
+ * stream resumes transparently the moment any force returns. N restores
+ * the old always-stream behaviour, as a cheap escape hatch if hardware
+ * validation shows the wheel needs the continuous keepalive.
+ */
+static bool kf_idle_gate = true;
+module_param(kf_idle_gate, bool, 0644);
+MODULE_PARM_DESC(kf_idle_gate,
+	"Stop the 1 kHz zero-force FFB keepalive after 500 ms of exact-zero force (Y, default). N restores the old always-stream behaviour.");
+
+/*
  * HID++ software-id OR'd into every request's funcindex_clientid.
  *
  * Upstream hid-logitech-hidpp uses 0x01. The RS50 / G PRO PEDAL unit, however,
@@ -4878,6 +4893,26 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_TF_INIT_MAX_ATTEMPTS	3
 
 /*
+ * Attempt cap for queueing the wind-down / idle-gate teardown pair. The
+ * pair retries once per timer tick while the send queue is saturated;
+ * without a cap a permanently dead queue (USB stalled, device gone
+ * mid-teardown) retried at 1 kHz forever. 1000 ticks is one second of
+ * retries at the 1 kHz tick, mirroring tf_init_attempts' bounded-retry
+ * pattern: log once on exhaustion and degrade instead of spinning.
+ */
+#define HIDPP_DD_TF_STOP_MAX_ATTEMPTS	1000
+
+/*
+ * Grace period for the zero-force idle gate (kf_idle_gate module param):
+ * how long the computed force must stay exactly zero, with no effect
+ * playing, before the keepalive stream is torn down with the 0x04+0x03
+ * pair. 500 ms mirrors userspace's LOGITF_TF_IDLE_GRACE_TICKS.
+ */
+#define HIDPP_DD_KF_IDLE_GRACE_MS	500
+#define HIDPP_DD_KF_IDLE_GRACE_TICKS \
+	(HIDPP_DD_KF_IDLE_GRACE_MS / HIDPP_DD_FF_TICK_MS)
+
+/*
  * Direct-drive wheel HID++ feature PAGE IDs for wheel settings.
  * These are used with hidpp_root_get_feature() to discover the actual
  * feature indices, which vary per device. Never use hardcoded indices!
@@ -5627,6 +5662,9 @@ struct hidpp_dd_ff_data {
 	bool tf_stop_sent;		/* wind-down STOP queued; awaiting the trailing arm */
 	u8 tf_seq;			/* TF stream sequence counter */
 	u8 tf_init_attempts;		/* hard init failures so far (cap: HIDPP_DD_TF_INIT_MAX_ATTEMPTS) */
+	u16 tf_stop_attempts;		/* ticks spent retrying a teardown pair (cap: HIDPP_DD_TF_STOP_MAX_ATTEMPTS) */
+	u16 kf_idle_ticks;		/* consecutive exactly-zero-force idle ticks (kf_idle_gate) */
+	bool kf_gated;			/* keepalive gated off: pair sent, stream silent until force returns */
 	u16 tf_window[HIDPP_DD_TF_WINDOW];	/* rolling window, offset binary */
 	struct work_struct tf_init_work; /* runs the 2x68-packet init (system_unbound_wq) */
 	/*
@@ -5680,6 +5718,7 @@ static void hidpp_dd_ff_send_force(struct hidpp_dd_ff_data *ff, s32 force);
 static bool hidpp_dd_ff_effect_is_texture(const struct ff_effect *eff);
 static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 			 const s32 *samples, s32 force);
+static bool hidpp_dd_tf_queue_ctrl(struct hidpp_dd_ff_data *ff, u8 cmd);
 static void hidpp_dd_tf_init_work_handler(struct work_struct *work);
 static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff);
 static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range);
@@ -6518,10 +6557,72 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 	 */
 	{
 		bool force_sent = false;
+		/*
+		 * Zero-force idle gate (kf_idle_gate): candidate ticks are
+		 * those where the wire would carry exactly zero and nothing
+		 * needs the cadence. Invariant: the gate can NEVER fire while
+		 * any effect is uploaded-and-playing (any_playing covers
+		 * that, whatever its instantaneous force) or while the
+		 * autocenter spring is exerting force - with no effect
+		 * playing, `force` IS the autocenter contribution, so
+		 * force == 0 implies the spring is at rest. A nonzero
+		 * autocenter contribution is force and keeps streaming.
+		 */
+		bool kf_idle = force == 0 && !any_playing && !any_texture &&
+			       !ff->tf_streaming;
 
 		if (any_texture || ff->tf_streaming)
 			force_sent = hidpp_dd_tf_tick(ff, any_texture,
 						      tf_sample, force);
+
+		if (READ_ONCE(kf_idle_gate) && kf_idle) {
+			if (ff->kf_idle_ticks < HIDPP_DD_KF_IDLE_GRACE_TICKS) {
+				/* Grace: keep the keepalive flowing. */
+				ff->kf_idle_ticks++;
+			} else if (!ff->kf_gated) {
+				/*
+				 * Grace expired: tear down like every clean
+				 * Windows session does - 0x04 (stop/clear)
+				 * then 0x03 (arm), then host silence. Reuses
+				 * the wind-down machinery: tf_stop_sent
+				 * carries a half-sent pair across ticks (and
+				 * into hidpp_dd_tf_tick's start path, which
+				 * re-arms before samples if a texture starts
+				 * while the arm is still owed). Only silent
+				 * once BOTH halves queued; until then the
+				 * keepalive below keeps this tick's cadence.
+				 */
+				if (!ff->tf_stop_sent)
+					ff->tf_stop_sent =
+						hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_STOP);
+				if (ff->tf_stop_sent &&
+				    hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_START)) {
+					ff->tf_stop_sent = false;
+					ff->tf_stop_attempts = 0;
+					ff->kf_gated = true;
+				} else if (++ff->tf_stop_attempts >=
+					   HIDPP_DD_TF_STOP_MAX_ATTEMPTS) {
+					/*
+					 * Send queue dead for a full second:
+					 * nothing is reaching the wheel
+					 * anyway, so go silent without the
+					 * pair rather than spinning.
+					 */
+					ff->tf_stop_sent = false;
+					ff->tf_stop_attempts = 0;
+					ff->kf_gated = true;
+				}
+			}
+		} else {
+			/*
+			 * Force is back (or an effect/texture is): resume the
+			 * stream transparently. The pair's trailing 0x03 left
+			 * the engine armed, and KF force packets need no
+			 * session preamble, so resuming is just sending.
+			 */
+			ff->kf_idle_ticks = 0;
+			ff->kf_gated = false;
+		}
 
 		/*
 		 * Push the current force on each timer tick (unless the
@@ -6539,7 +6640,7 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 		 * (This read ~32 KB/s for a while, the 500 Hz figure
 		 * carried forward unchanged past the rate change.)
 		 */
-		if (!force_sent)
+		if (!force_sent && !ff->kf_gated)
 			hidpp_dd_ff_send_force(ff, force);
 	}
 	ff->last_force = force;
@@ -6553,10 +6654,13 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 	 * and while autocenter is set so the centring spring keeps
 	 * tracking the wheel.
 	 *
-	 * Known cost: nonzero autocenter streams keepalives forever, an
-	 * open session at zero force (whine-investigation.md holder #5).
-	 * A zero-force silence gate here is deliberately deferred to a
-	 * hardware-verified step post-0.35.0.
+	 * Nonzero autocenter used to stream keepalives forever, an open
+	 * session at zero force (whine-investigation.md holder #5); the
+	 * kf_idle_gate block above now gates the packets off after the
+	 * grace period while THIS timer keeps ticking, so the spring
+	 * still tracks the wheel and packets resume the instant it
+	 * deflects. The timer staying alive is what makes the gated
+	 * resume transparent.
 	 */
 	if ((any_playing || ff->tf_streaming || READ_ONCE(ff->autocenter)) &&
 	    !atomic_read_acquire(&ff->stopping) &&
@@ -6963,6 +7067,25 @@ static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 			    hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_START)) {
 				ff->tf_streaming = false;
 				ff->tf_stop_sent = false;
+				ff->tf_stop_attempts = 0;
+			} else if (++ff->tf_stop_attempts >=
+				   HIDPP_DD_TF_STOP_MAX_ATTEMPTS) {
+				/*
+				 * Bounded retry, mirroring tf_init_attempts:
+				 * a queue that has stayed saturated for a
+				 * full second of ticks is not recovering,
+				 * and an unbounded wind-down retried at
+				 * 1 kHz forever. Log once, abandon the
+				 * stream state; the wheel may hold its last
+				 * window until the next session's init pair
+				 * clears it.
+				 */
+				dd_warn(ff->hidpp->hid_dev,
+					"TrueForce wind-down teardown pair could not be queued after %u ticks; abandoning the stream\n",
+					HIDPP_DD_TF_STOP_MAX_ATTEMPTS);
+				ff->tf_streaming = false;
+				ff->tf_stop_sent = false;
+				ff->tf_stop_attempts = 0;
 			}
 			return sent;
 		}
@@ -6982,6 +7105,7 @@ static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 		ff->tf_streaming = true;
 		ff->tf_recentre_sent = false;
 		ff->tf_stop_sent = false;
+		ff->tf_stop_attempts = 0;
 	}
 
 	gain = READ_ONCE(ff->gain);
@@ -14555,6 +14679,9 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->tf_recentre_sent = false;
 	ff->tf_stop_sent = false;
 	ff->tf_init_attempts = 0;
+	ff->tf_stop_attempts = 0;
+	ff->kf_idle_ticks = 0;
+	ff->kf_gated = false;
 	mutex_init(&ff->rev_lock);
 	memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW); /* offset-binary centre */
 	spin_lock_init(&ff->effects_lock);
