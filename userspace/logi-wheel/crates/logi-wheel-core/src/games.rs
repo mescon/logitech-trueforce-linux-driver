@@ -620,7 +620,13 @@ docs/SHARED_MEMORY_RELAY.md).",
         name: "iRacing",
         linux: Linux::Proton,
         ffb: Ffb::DirectInput,
-        native_trueforce: Support::No,
+        // Real on Windows: first-party G Hub/iRacing captures show its
+        // native TrueForce on 0x8123 (docs/PROTOCOL_SPECIFICATION.md,
+        // issue #20 lineage). Expected, not Yes: nobody has shown the SDK
+        // loading under Proton, and its working FFB here is DirectInput
+        // through logi-ffb, which hidraw would kill. The ffb field
+        // therefore stays DirectInput on purpose.
+        native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("iracing"),
         setup: "Now Linux-playable; set PROTON_ENABLE_HIDRAW=0 or launch with \
 logi-ffb %command%; Steam Input off. Simulated TrueForce needs logi-tf-relay \
@@ -648,11 +654,18 @@ docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
     },
     GameCompat {
         name: "BeamNG.drive",
-        linux: Linux::Proton,
+        // Ships a native Linux build; a native build never goes through
+        // Proton, so the SDK/hidraw questions do not arise on the primary
+        // route. Its Windows TrueForce is real (the TRUEFORCE_PROTOCOL
+        // captures are BeamNG captures) but unconfirmed on this driver,
+        // hence Expected below.
+        linux: Linux::Native,
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("beamng"),
-        setup: "Plain force feedback; for simulated TrueForce, enable OutGauge to 127.0.0.1:4444 and run logi-tf-sim.",
+        setup: "Plain force feedback on the native Linux build (Proton also \
+works); for simulated TrueForce, enable OutGauge to 127.0.0.1:4444 and run \
+logi-tf-sim.",
         confidence: Confidence::Expected,
     },
     GameCompat {

@@ -56,7 +56,7 @@ instead of wrapping it.
 | Assetto Corsa EVO (early access) | Proton | TrueForce shim | Install the shim<br>`PROTON_ENABLE_HIDRAW=1 %command%` | Turn on simulated TrueForce<br>and leave `PROTON_ENABLE_HIDRAW` unset |
 | Assetto Corsa Rally (early access) * | Proton | Native FFB | Nothing to do | Nothing to do |
 | Automobilista 2 | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
-| BeamNG.drive * | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
+| BeamNG.drive * | Native Linux | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
 | CarX Drift Racing Online | Proton | Native FFB | Nothing to do | Nothing to do |
 | Dakar Desert Rally * | Proton | Native FFB | Nothing to do | Nothing to do |
 | DiRT 4 | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
