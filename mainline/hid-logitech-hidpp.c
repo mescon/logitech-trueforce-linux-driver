@@ -5471,15 +5471,17 @@ struct hidpp_dd_ff_data {
 	u8 idx_lightsync;		/* Feature index for LIGHTSYNC effects */
 	u8 idx_rgb_config;		/* Feature index for RGB Zone Config */
 	/*
-	 * Real-G-PRO rev-light state (level-based 0x807A protocol; see
+	 * Rev-light state (level-based 0x807A protocol; see
 	 * wheel_rev_level_store). Serialised by rev_lock: sysfs stores queue
-	 * rev_work, which owns every send; the arm burst must run exactly
-	 * once. rev_target is the newest requested level (latest-value-wins);
-	 * the worker always flushes the latest, never stale intermediates.
+	 * rev_work, which owns every send. rev_target is the newest
+	 * requested level (latest-value-wins); the worker always flushes
+	 * the latest, never stale intermediates. No arm state: per G HUB's
+	 * live captures the strip takes fn2+fn6 level pairs bare, and the
+	 * old first-write arm burst broke native TrueForce sessions when it
+	 * fired mid-SDK-init (hw A/B 2026-08-14).
 	 */
 	struct mutex rev_lock;
 	struct delayed_work rev_work;	/* coalescing flush; runs on system_unbound_wq */
-	bool rev_armed;			/* one-time arm burst sent (rev_lock) */
 	/*
 	 * How many LEDs this wheel's strip has, from 0x807A fn0's second
 	 * parameter (0x0a on the direct-drive wheels, 0x05 on a G923). The
@@ -5488,16 +5490,6 @@ struct hidpp_dd_ff_data {
 	 * and treated as the ten-LED default until then.
 	 */
 	u8 rev_leds;
-	/*
-	 * Whether the rev display has to be switched on before it will take
-	 * a level. 0x807A fn2 reports the live effect: 0 means nothing is
-	 * being shown, and a wheel in that state refuses every level with
-	 * LogitechInternal. fn3 with effect 2 starts it.
-	 *
-	 * Latched at discovery, where synchronous requests are safe. The
-	 * flush worker holds send_mutex and must not ask a question there.
-	 */
-	bool rev_needs_enable;
 	bool rev_err_logged;		/* worker: send-fail warned once this streak (rev_lock) */
 	u8 rev_level;			/* last successfully commanded level 0-10 (reported by _show) */
 	u8 rev_target;			/* newest requested level, WRITE_ONCE/READ_ONCE */
@@ -8461,39 +8453,6 @@ static void hidpp_dd_rev_read_geometry(struct hidpp_device *hidpp,
 			dd_dbg(hid, "rev strip has %u LEDs\n", leds);
 		}
 	}
-}
-
-/*
- * Is the rev display showing nothing right now?
- *
- * fn2 answers with the live LIGHTSYNC effect, where 0 means nothing is
- * displayed and a wheel in that state refuses every level with
- * LogitechInternal. Every other value is a real effect: 1-4 the built-in
- * sweeps and 6-9 the owner's custom slots. Only 0 may be acted on, because
- * the call that starts the display is SET_EFFECT and would replace any of
- * the others.
- *
- * Asked immediately before arming rather than latched at probe, since the
- * owner can change the effect at any point in between. Takes send_mutex
- * internally, so it must not be called with that lock held.
- *
- * A wheel that will not answer reads as "displaying something", so silence
- * never causes an effect to be overwritten.
- */
-static bool hidpp_dd_rev_display_is_off(struct hidpp_device *hidpp,
-					struct hidpp_dd_ff_data *ff)
-{
-	struct hidpp_report response;
-	u8 params[3];
-	int ret;
-
-	memset(params, 0, sizeof(params));
-	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_lightsync,
-					  HIDPP_DD_LIGHTSYNC_FN_GET_STATE,
-					  params, 3, &response);
-	if (ret)
-		return false;
-	return response.fap.params[0] == 0;
 }
 
 /*
@@ -11791,10 +11750,10 @@ static int hidpp_dd_rev_send_level(struct hidpp_device *hidpp, u8 idx, u8 level,
 /*
  * Coalescing rev-light flush (process context, system_unbound_wq).
  *
- * Runs on system_unbound_wq, not ff->wq: it does synchronous-ish 0x807A
- * sends (the arm burst msleeps between packets) and must never
- * head-of-line-block the 1 kHz force stream on the singlethread ff->wq -
- * same rationale as tf_init_work / range_poll_work.
+ * Runs on system_unbound_wq, not ff->wq: it does 0x807A sends under
+ * send_mutex and must never head-of-line-block the 1 kHz force stream on
+ * the singlethread ff->wq - same rationale as tf_init_work /
+ * range_poll_work.
  *
  * Latest-value-wins: the store publishes rev_target and (re)queues us; we
  * always send whatever rev_target holds now, so a fast telemetry feeder
@@ -11808,7 +11767,7 @@ static void hidpp_dd_rev_work_handler(struct work_struct *work)
 						   rev_work.work);
 	struct hidpp_device *hidpp = ff->hidpp;
 	u8 target;
-	int ret = 0, i;
+	int ret;
 
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
@@ -11831,58 +11790,20 @@ static void hidpp_dd_rev_work_handler(struct work_struct *work)
 	 * replies. Without it, a rev-elicited reply whose sw-id the wheel
 	 * zeroes could satisfy hidpp_match_answer's lenient (sw-id-stripped)
 	 * path for a concurrent sync question on the same feature/function.
+	 *
+	 * No arm burst and no SET_EFFECT here, on purpose. G HUB's live
+	 * captures (AC EVO full session + iRacing LED init) drive this strip
+	 * with NOTHING but the fn2+fn6 pair hidpp_dd_rev_send_level sends:
+	 * discovery reads happen once at wheel attach (our probe's geometry
+	 * read covers that) and fn3 never appears at all. Our old
+	 * first-write burst (sync fn2 query + four shorts + conditional fn3)
+	 * fired at whatever moment userspace first stored a level - during a
+	 * game launch that is the middle of the SDK's session init, and it
+	 * reproducibly killed native TrueForce sessions (hw A/B 2026-08-14).
 	 */
-	/*
-	 * Ask, immediately before arming, whether the display is showing
-	 * anything. Deliberately outside send_mutex: the query takes that
-	 * lock itself, and a latched answer from probe time is not good
-	 * enough. fn3 is SET_EFFECT, so acting on a stale "it was off"
-	 * overwrites whatever LIGHTSYNC effect the owner selected in the
-	 * meantime, which is why this call was removed once before. The
-	 * converse is as bad: a display that goes off after probe would
-	 * never be re-enabled and every level would be refused.
-	 */
-	if (!ff->rev_armed)
-		ff->rev_needs_enable = hidpp_dd_rev_display_is_off(hidpp, ff);
-
 	mutex_lock(&hidpp->send_mutex);
-
-	if (!ff->rev_armed) {
-		static const u8 arm_fns[] = { 0, 1, 2, 0 };
-
-		for (i = 0; i < ARRAY_SIZE(arm_fns); i++) {
-			ret = hidpp_dd_rev_send_short(hidpp, ff->idx_lightsync,
-						      arm_fns[i], 0);
-			if (ret < 0)
-				goto out_send;
-			msleep(HIDPP_DD_REV_ARM_GAP_MS);
-		}
-		/*
-		 * Start the display if it is showing nothing. Fire-and-forget
-		 * like the rest of the burst; the question was asked just
-		 * above, outside this lock.
-		 *
-		 * Never sent to a wheel that was showing something. fn2
-		 * reports the live effect, not a boolean, so a wheel on a
-		 * built-in sweep or a custom slot reports non-zero and is
-		 * left alone; switching it to effect 2 would discard the
-		 * colours its owner chose, which is why this call was
-		 * removed from the sequence once before.
-		 */
-		if (ff->rev_needs_enable) {
-			ret = hidpp_dd_rev_send_short(hidpp, ff->idx_lightsync,
-						      HIDPP_DD_LIGHTSYNC_FN_SET_EFFECT >> 4,
-						      HIDPP_DD_REV_EFFECT_DISPLAY);
-			if (ret < 0)
-				goto out_send;
-			msleep(HIDPP_DD_REV_ARM_GAP_MS);
-		}
-		ff->rev_armed = true;
-	}
-
 	ret = hidpp_dd_rev_send_level(hidpp, ff->idx_lightsync, target,
 				      ff->rev_leds);
-out_send:
 	mutex_unlock(&hidpp->send_mutex);
 
 	/*
@@ -12345,8 +12266,8 @@ static ssize_t wheel_rev_level_store(struct device *dev,
 	/*
 	 * Latest-value-wins: publish the target, then queue the worker for
 	 * the next cadence slot and return. No send, no sleep here - the
-	 * worker (hidpp_dd_rev_work_handler) owns the arm burst, the sends
-	 * and the send_mutex serialisation. queue_delayed_work is a no-op if
+	 * worker (hidpp_dd_rev_work_handler) owns the sends and the
+	 * send_mutex serialisation. queue_delayed_work is a no-op if
 	 * the worker is already pending, so a burst of stores coalesces onto
 	 * the single already-scheduled flush, which picks up this newest
 	 * rev_target when it runs.
@@ -12363,13 +12284,12 @@ static ssize_t wheel_rev_level_store(struct device *dev,
 	 * Delay to the next allowed slot, computed ONCE as a signed delta:
 	 * re-deriving it after a time_before() check races the jiffies tick,
 	 * and an unsigned "deadline - jiffies" that crosses zero underflows
-	 * into a near-infinite queue delay. Before the arm burst there is no
-	 * prior pair to pace against, so fire immediately.
+	 * into a near-infinite queue delay.
 	 */
 	delay = 0;
 	remaining = (long)(ff->rev_last_write +
 			   msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS) - jiffies);
-	if (ff->rev_armed && remaining > 0)
+	if (ff->rev_last_write && remaining > 0)
 		delay = remaining;
 	queue_delayed_work(system_unbound_wq, &ff->rev_work, delay);
 	mutex_unlock(&ff->rev_lock);
