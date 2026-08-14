@@ -160,7 +160,15 @@ byte[60-63]: window[12]
   sample only because the games stream their FFB there - AC EVO carries its
   game force in cur and independent audio in the window of the same packet.
   (Semantics from the TF4ALL project's Windows captures.)
-- Bytes 10 (`0x04`) and 11 (`0x0d`) are constants per capture.
+- Bytes 10 and 11 are a **demux pair, not independent constants**
+  (hardware-proven 2026-08-14): every sample-carrying packet pairs
+  `byte10 != 0` with `byte11 = 0x0d`, and every no-new-samples packet
+  (menu keepalive, plain force) pairs `byte10 = 0x00` with
+  `byte11 = 0x00`. The combination `byte10 = 0x04` + `byte11 = 0x00`
+  never occurs in Windows captures, and the wheel **silently discards
+  the whole sample window** of such a packet while still honouring its
+  cur bytes - a wire-perfect texture stream that renders nothing. Any
+  producer that adds samples to a packet must also stamp `0x0d`.
 
 Packet cadence in libtrueforce is 250 Hz (4 new samples * 250 Hz = 1000 sample/s effective); the kernel driver's unified stream runs 1000 Hz (4 kHz slot rate, 4 kHz unique content) since 0.30.0, having really run at 333 Hz before it. Games vary: ACC captures show 250-500 pkt/s, AC EVO up to ~1000 pkt/s (4 kHz audio) per TF4ALL measurements - the wheel accepts the whole range. If userspace can't keep up the thread repeats the previous window (Windows does the same under input starvation) and the wheel gradually unwinds. If userspace overruns the ring, `logitf_stream_push_s16()` blocks on `ring_space`.
 
@@ -215,9 +223,14 @@ write is one-shot at session init.
 Two firmware behaviours discovered while reproducing this
 (2026-07-03, live wheel):
 
-- **Type-`0x0e` is session-scoped**: a bare `0x0e` packet on an
-  otherwise idle interface is ignored; the range write only takes
-  effect inside an initialised TF session (init sequence sent).
+- **Type-`0x0e` is session-scoped, and the scope is the started
+  stream, not the init** (sharpened 2026-08-14, live wheel + felt
+  stops): a `0x0e` push is ignored on an idle interface AND after the
+  init sequence alone - the canonical init's own `2700.0` pushes are
+  no-ops because they precede the `0x03` START. The range write only
+  takes effect between `0x03` START and `0x04` STOP. A mid-stream
+  push applies immediately (900 -> 90 clamp felt at the rim; the
+  wheel broadcasts the change over HID++).
 - **Idle revert**: if a TF session goes quiet (no stream packets,
   roughly a minute) the firmware reverts the session's range change
   on its own and broadcasts the restored value over HID++. A running
