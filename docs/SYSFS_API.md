@@ -520,6 +520,17 @@ writable by hand for bench tests. `age_ms` on read is how long ago the
 value was last written, and is what `wheel_tf_merge` checks against
 its 200 ms staleness window.
 
+Besides writing `rpm max_rpm` here, logi-rpm-bridge also drives
+`wheel_rev_level` from the same telemetry. The default mapping is a
+full rev bar: LED 1 lights as soon as rpm > 0 and all 10 are lit at
+the limiter (works for legacy 28-byte relay senders too).
+`LOGI_REV_MODE=shift` selects the dash band instead: dark below the
+first-shift-light rpm, level 1 exactly there, 10 at the limiter (needs
+the 32-byte relay form that carries the first-shift-light rpm).
+`LOGI_REV_SYSFS` overrides the LED target attribute and
+`LOGI_RPM_PORT` the UDP port. The strip darkens on telemetry loss
+(1 s) and on bridge exit.
+
 ```bash
 cat wheel_texture_rpm        # -> 6500 14000 12
 echo "6500 14000" > wheel_texture_rpm
@@ -542,14 +553,17 @@ echo 150 > wheel_texture_intensity
 ### wheel_texture_cylinders
 **Access**: Read/Write
 **Values**: `1` to `16`
-**Default**: `8`
+**Default**: `4`
 **Availability**: same as `wheel_tf_merge`, including the NULL-shim fallback (reads back `0`, writes fail with `-ENODEV`).
 
 Cylinder count for the firing-frequency model driving the texture
-synthesis (`f0 = rpm/60 * cylinders/2`).
+synthesis (`f0 = rpm/60 * cylinders/2`). Treat it as a feel knob, not
+a realism setting: rim excursion falls as 1/f^2, so higher counts push
+the firing frequency across the rev range above what a direct-drive
+rim can physically express, and the texture fades out of reach.
 
 ```bash
-cat wheel_texture_cylinders  # -> 8
+cat wheel_texture_cylinders  # -> 4
 echo 6 > wheel_texture_cylinders
 ```
 
@@ -798,25 +812,27 @@ wrong after an upload. Whether curves persist across power cycles is untested.
 **Access**: Read/Write
 **Values**: `0`-`10` (number of rev LEDs lit)
 **Availability**: real G PRO rim AND the RS50's LIGHTSYNC strip
-(hardware-verified 2026-07-20). On the RS50 the level fills the strip
-with the SELECTED custom slot's stored config: during testing the fill
-tracked slot 0's stored direction (all four directions watched live)
-while slot 0 was selected. An earlier draft of this note said the fill
-was "not a rendering of the active custom slot"; that observation came
-from the then-broken slot switch (the driver pinned selection to
-CUSTOM 1, fixed 2026-07-20), so the fill's source is simply the
-selected slot - a fill taken after selecting a different slot is
-expected to render that slot's colours and direction, but this has not
-been directly re-observed post-fix (expected, re-verify). A written
+(hardware-verified 2026-07-20, re-verified with the current wire form
+2026-08-14). On the RS50 the display renders **center-out by
+default**, so a 10-LED strip shows 5 mirrored visual steps across a
+0-10 level sweep. The display pattern is a separate concern from the
+level protocol: the level write says how much of the bar is lit, the
+wheel's stored display config says how that amount is drawn.
+Reconfiguring the pattern mid-session (feature `0x807B`) is NOT part
+of G HUB's own mid-session vocabulary and is untested during live
+TrueForce sessions, so do not assume it is safe there. A written
 level holds until the next write; write `wheel_led_effect` to restore
 the normal idle pattern.
 
 Rev-light level for the G PRO rim. The G PRO's rim lights are
 level-based: the host commands how many LEDs are lit (0-10) and the
 wheel's onboard profile owns colours, direction and scaling. Protocol
-decoded from a G HUB capture by the TF4ALL project (see
-`docs/PROTOCOL_SPECIFICATION.md` section 9). The first write arms the
-feature. Writes return immediately: the driver coalesces them and
+decoded from G HUB captures (see
+`docs/PROTOCOL_SPECIFICATION.md` section 9). No arming is needed:
+from the onboard power-on state the strip renders bare levels exactly
+(hardware-proven 2026-08-14; the earlier "the first write arms the
+feature" belief is disproven, and the driver's direct-drive path sends
+no arm burst). Writes return immediately: the driver coalesces them and
 flushes only the newest level at a ~10 ms floor, comfortably above
 G HUB's own measured ~60 Hz rev-light rate (faster
 bursts would starve the wheel's shared HID++ command processor), so a
@@ -824,6 +840,12 @@ fast telemetry feeder always shows the latest value with no queueing
 lag. The
 wheel holds a level for a while but reverts eventually - a telemetry
 feeder should refresh at ~1 Hz or faster (natural for rev-light use).
+
+Level writes coexist safely with a live native TrueForce SDK session
+since the driver moved to the bare fn2+fn6 wire form: base FFB +
+TrueForce texture + telemetry-driven levels are hardware-validated
+running together (2026-08-14). The old arm-burst form did NOT coexist:
+it killed the SDK session at init and killed wheel input mid-session.
 
 **Status: hardware-validated on the RS50 (2026-07-20, live 0-10-0 sweep
 demos; fill semantics per the note above); not yet validated on a real

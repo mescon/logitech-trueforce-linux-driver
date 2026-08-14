@@ -67,18 +67,22 @@ BeamNG on Windows (`g_pro_tf_2026-04-19/2026-04-19_trueforce_beamng.pcapng`)
 carries 46,883 sample-packets and can cross-check the model on a second
 title.
 
-## Where to inject under Proton (open design question)
+## Where to inject under Proton (resolved: kernel-side merge)
 
-The SDK owns the ep3 stream (single writer) and fills only `cur`. Options:
+The SDK owns the ep3 stream (single writer) and fills only `cur`. Options
+considered:
 
 1. **Kernel-side merge**: the stream passes through the kernel (hidraw
    write path); rewrite passing type-0x01 packets to add synth samples +
    count, exactly where Windows merges them. Base force stays bit-identical
-   SDK output; texture is ours, tuned from this recipe, fed RPM via the
-   existing wheel_rev_level/relay path.
+   SDK output; texture is ours, tuned from this recipe, fed RPM via
+   `wheel_texture_rpm`, written by `logi-rpm-bridge` from the proxy's
+   telemetry relay.
 2. **Own the stream**: drop the SDK, forward KF through libtrueforce and
    mix texture in userspace. Simpler layering, but replaces the SDK's
    bit-identical cur with our reconstruction.
 
-Option 1 preserves the native base force exactly and matches the Windows
-merge point. Not yet designed in detail.
+**Resolved**: option 1 was implemented and hardware-validated (2026-08-14,
+texture felt on the rim during a live SDK stream). See
+`docs/NATIVE_TF_TEXTURE_MERGE_DESIGN.md` for the shipped design, including
+the byte10/byte11 demux pair the wheel gates rendering on.

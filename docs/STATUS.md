@@ -54,7 +54,11 @@ proportionally, and custom colours follow what is written across count,
 position, global colour, half-and-half and per-LED alternation. The wire
 traffic for the rev display was compared byte for byte against a G HUB
 capture from the same model and matches, including the transport (control
-SET_REPORT) and the setup packet.
+SET_REPORT) and the setup packet. (Superseded 2026-08-14: there is no
+setup packet any more - the driver now sends only the bare fn2+fn6 level
+pair, matching what current G HUB captures actually show, after the old
+arm form proved fatal to live native TrueForce sessions. See
+`PROTOCOL_SPECIFICATION.md` section 9.)
 
 The kernel effect tick, on an RS50 with a kprobe on the timer callback:
 1000.2 Hz on bare metal, median period 1.000 ms, p99 1.003 ms, no tick

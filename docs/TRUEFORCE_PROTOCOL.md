@@ -96,7 +96,7 @@ The 68 packets are stored verbatim in `userspace/libtrueforce/src/tf_init_data.h
 |---------|------|---------|
 | 1-48 | `0x05` | 48 parameters (indices `0x00`-`0x1d` and `0x2b`-`0x3c`) as IEEE 754 LE floats |
 | 49 | `0x01` | Neutral sample (primes the stream) |
-| 50 | `0x0e` | Operating range = float `2700.0` (the wheel's max range) |
+| 50 | `0x0e` | Operating range = float `2700.0` (the wheel's max range). A **pre-START no-op**: `0x0e` only takes effect between `0x03` START and `0x04` STOP, and this packet precedes the START at packet 68 (see the type-`0x0e` session-scoping notes below) |
 | 51 | `0x01` | Neutral sample |
 | 52 | `0x07` | Handshake / query |
 | 53 | `0x01` | Neutral sample |
@@ -139,8 +139,9 @@ byte[4]:     01                    Command type
 byte[5]:     sequence              Rolling counter
 byte[6-7]:   u16 LE                Most-recent sample (newest-so-far)
 byte[8-9]:   u16 LE                Duplicate of bytes 6-7
-byte[10]:    0x04                  Number of new samples in this packet
-byte[11]:    0x0d                  Constant (observed byte, rarely varies)
+byte[10]:    0x04                  Number of new samples in this packet (0x00 when none)
+byte[11]:    0x0d                  Sample-window valid flag: 0x0d whenever byte[10] != 0,
+                                   0x00 when byte[10] = 0 (demux pair, see invariants below)
 byte[12-15]: window[0] L, window[0] R (u16 LE each, mono duplicated)
 byte[16-19]: window[1]
 ...
@@ -157,9 +158,16 @@ byte[60-63]: window[12]
   two u16 LE. While a TrueForce session is active the wheel steers by cur and
   the window plays additively on top as audio; cur OVERRIDES the HID++ 0x8123
   force path. In G Hub/SDK captures cur usually tracks the newest window
-  sample only because the games stream their FFB there - AC EVO carries its
-  game force in cur and independent audio in the window of the same packet.
-  (Semantics from the TF4ALL project's Windows captures.)
+  sample only because the games stream their FFB there. AC EVO carries its
+  game force in cur; the independent audio in the window of the same packet
+  is NOT the game's - AC EVO never calls the SDK's texture entry points
+  (`SetTorqueTF`/`SetStreamTF`, never even probes `GetTorqueTFRateBounds`),
+  so the window content in Windows captures is the driver stack's own
+  synthesis, fed by the game's Escape telemetry and serialized into the
+  same stream as the game's SDK force (which is why the sequence counter
+  is continuous). The kernel driver's texture merge replicates that
+  architecture. (cur semantics from the TF4ALL project's Windows captures;
+  synthesis attribution established 2026-08-14.)
 - Bytes 10 and 11 are a **demux pair, not independent constants**
   (hardware-proven 2026-08-14): every sample-carrying packet pairs
   `byte10 != 0` with `byte11 = 0x0d`, and every no-new-samples packet
@@ -252,9 +260,30 @@ observed on real hardware:
   streaming ep `0x83` IN reports at 2 kHz indefinitely, with nothing on
   the host consuming them, until the base is power-cycled.
 
+Refinement (2026-08-14): after a session dies without its teardown
+reaching the wheel (hard kill, crash), the next session's
+`logiWheelSetForceMode(1)` **returns success** yet there is zero ep3
+traffic **in both directions** - and a healthy session also carries a
+~1 kHz ep3 IN status stream, so its absence is the diagnostic, not
+just missing OUT packets. Power-cycling the base before launch
+recovers it. Running `logi-tf-init` between sessions is
+untested/inconclusive as a recovery. An experimental pre-launch re-arm
+exists: `LOGI_TF_REARM=1` makes `logi-launch` send the `0x04`+`0x03`
+pair and then the 68-packet init twice from `tools/tf-init.bin` before
+the game starts; it is off by default pending hardware validation.
+
 Anyone reproducing SDK captures or writing session teardown code needs
 to power-cycle the base between sessions, not just close and reopen
 the handle.
+
+**LED / HID++ traffic during a live session** (hardware, 2026-08-14):
+the driver's old rev-LED form - an arm burst plus per-level fn3
+activation - was fatal to a native TrueForce SDK session: sent at init
+it killed the session, sent mid-session it killed wheel input. The
+current form (bare SHORT fn2 GET_STATE + LONG fn6 level, nothing else)
+coexists cleanly: base FFB + TrueForce texture + telemetry-driven rev
+LEDs are hardware-validated running together. See
+`PROTOCOL_SPECIFICATION.md` section 9 for the rev-LED wire protocol.
 
 **Which wheels honour it** (2026-07-30):
 
@@ -383,7 +412,7 @@ Used for constant force values with extended precision.
 ## Open Items
 
 - libtrueforce consumes type-`0x02` device responses while a stream is active and exposes them via `logitf_get_stream_feedback()` (2026-07-02). The motor field (bytes 6-7), status byte (8), and byte 17 checksum-like field are still undecoded; correlating the motor field against commanded torque on a live wheel would pin it down.
-- The constant flag word at byte 11 (`0x0d`) is passed through verbatim; its exact meaning is still not decoded. Value `0x05` has been seen instead of `0x04` in byte 10 in some captures, corresponding to 5 new samples; libtrueforce uses the 4-new-samples variant exclusively.
+- ~~The constant flag word at byte 11 (`0x0d`) is passed through verbatim; its exact meaning is still not decoded.~~ **Resolved 2026-08-14**: byte 11 is the sample-window valid flag, one half of the byte10/byte11 demux pair (see the stream layout invariants above); the wheel discards the window of any packet that carries samples without it. Value `0x05` has been seen instead of `0x04` in byte 10 in some captures, corresponding to 5 new samples; libtrueforce uses the 4-new-samples variant exclusively.
 - Per-title parameter variation (are the 48 init floats game-specific or universal?) is unconfirmed. So far the same data produces audible TRUEFORCE across BeamNG and ACC.
 
 

@@ -198,8 +198,10 @@ something the game sends itself. Since 2026-08-13 the driver does the same
 merge, and `logi-launch` wires all of it up for you: for Assetto Corsa EVO on
 a direct-drive wheel, plain `logi-launch %command%` stages the proxy DLL,
 starts `logi-rpm-bridge`, and turns on the merge, tearing both down again
-when the game exits. Nothing else to add, and nothing to type differently
-from any other title.
+when the game exits. The same telemetry lights the rev strip: the proxy
+relays the game's live rpm, first-shift-light rpm and redline, and
+`logi-rpm-bridge` drives `wheel_rev_level` with them. Nothing else to add,
+and nothing to type differently from any other title.
 
 **IMPORTANT: remove `LOGI_ESCAPE_RELAY=0` if it is sitting in a game's launch
 options from an older manual recipe.** That variable turns the dinput8 proxy
@@ -301,6 +303,8 @@ app's Setup page, **Install relay**.
 | `LOGI_LAUNCH_SETTLE` | `15` | Seconds to let the game create its sections first |
 | `LOGI_LAUNCH_TF_SIM` | `1` | `0` leaves the `logi-tf-sim` daemon alone, for running it yourself |
 | `LOGI_LAUNCH_LOG` | `/tmp/logi-launch.log` | Where it writes what it did |
+| `LOGI_REV_MODE` | full bar | `shift` makes `logi-rpm-bridge` map the rev strip to the dash band: dark below the car's first shift light, level 1 exactly there, 10 at the limiter. The default lights LED 1 as soon as rpm > 0 and all 10 at the limiter |
+| `LOGI_TF_REARM` | `0` | **Experimental.** `1` makes `logi-launch` re-arm the TrueForce session before the game starts (the stop/start pair plus the 68-packet init, twice, from `tools/tf-init.bin`), for recovering from a previous session that died without teardown. Off by default pending hardware validation; a power cycle of the base remains the proven recovery |
 
 `LOGI_LAUNCH_EXE` replaces the relay, so simulated TrueForce and the rev
 lights lose their telemetry. That is the right choice only when you want
@@ -503,7 +507,7 @@ built-in plan asks for). To force something off, state it: `texture=none`,
 | `ffb` | `proxy` | launch through `logi-ffb`, for games that drive force feedback the DirectInput way |
 | `relay` | `acc`, `ac-evo`, `assetto`, `iracing`, `raceroom`, `rf2`, `lmu`, `none` | which decoder the in-prefix telemetry relay should use |
 | `tfsim` | `1`, `0` | run `logi-tf-sim`. Set `0` for a game whose own TrueForce already reaches your wheel |
-| `texture` | `merge`, `none` | mix the driver's engine-note texture into the game's own TrueForce on the wheel. `merge` makes `logi-launch` stage the dinput8 escape proxy into the game's directory, start `logi-rpm-bridge` and switch `wheel_tf_merge` on, undoing all of it when the game exits. Only does anything for a direct-drive wheel in an SDK title with the TrueForce files installed |
+| `texture` | `merge`, `none` | mix the driver's engine-note texture into the game's own TrueForce on the wheel. `merge` makes `logi-launch` stage the dinput8 escape proxy into the game's directory, start `logi-rpm-bridge` and switch `wheel_tf_merge` on, undoing all of it when the game exits. The same chain also lights the rev strip from the game's own telemetry: the proxy relays live rpm, first-shift-light rpm and redline, and `logi-rpm-bridge` drives `wheel_rev_level` with them (full bar by default, `LOGI_REV_MODE=shift` for the dash band). Only does anything for a direct-drive wheel in an SDK title with the TrueForce files installed |
 
 A line that works for you is also exactly the report needed to add the game
 properly, so please open an issue with it.

@@ -46,6 +46,16 @@ analysis, and teardown was hardened with `device_lock` validation after a
 pre-existing close-path oops (`hid_hw_close` on an unbound `hid_device`) was
 found during rmmod testing.
 
+**Delta 4: the splicer stamps `pkt[11] = 0x0d` (2026-08-14).** The design
+below said to leave `pkt[11]` untouched. That was the one-byte gate between
+"wire-perfect stream" and "texture actually felt": bytes 10 and 11 are a
+demux pair (`byte10 != 0` always pairs with `byte11 = 0x0d` in Windows
+captures; no-sample packets carry `0x00 0x00`), and the wheel silently
+discards the whole sample window of a `byte10 != 0` + `byte11 = 0x00`
+packet while still honouring its cur bytes. The splicer now stamps `0x0d`
+whenever it adds samples (commit `9b15131`); the merge is felt working on
+hardware. See `docs/TRUEFORCE_PROTOCOL.md`, stream layout invariants.
+
 ## Goal
 
 Add fine engine-texture haptics (the "buzz") to native TrueForce games under
@@ -95,8 +105,12 @@ All the mechanics already exist in `mainline/hid-logitech-hidpp.c`:
   `usb_get_intfdata(iface2)` and kept open; existing `READ_ONCE`/`WRITE_ONCE`
   guards handle the remove-race.
 - **RPM out of the game is solved.** The dinput8 proxy relays the game's Escape
-  RPM as a 28-byte UDP datagram (`LTFR`, `rpm`+`max_rpm`) to
-  `127.0.0.1:20780` at ~62 Hz into the userspace daemon.
+  telemetry as a UDP datagram (`LTFR`) to `127.0.0.1:20780` at ~62 Hz into
+  the userspace daemon. Since 2026-08-14 the datagram is **32 bytes**: the
+  28-byte version-2 layout (`rpm`+`max_rpm` among its fields) plus an
+  appended f32 LE first-shift-light rpm at offset 28, append-only so old
+  consumers keep reading the first 28 bytes (see
+  `docs/SHARED_MEMORY_RELAY.md`).
 
 ## Scope
 
@@ -152,8 +166,10 @@ FFB path is untouched.
 
 `splice(pkt[64], samples[], count)`:
 - Assert/require `pkt[0]==0x01 && pkt[4]==0x01`.
-- Leave bytes 0-9 (`cur` + `seq` + header) and `pkt[11]` untouched.
-- Set `pkt[10]` = new-sample count and write the window slots (bytes 12+) using
+- Leave bytes 0-9 (`cur` + `seq` + header) untouched.
+- Set `pkt[10]` = new-sample count, stamp `pkt[11] = 0x0d` (see Delta 4: the
+  wheel discards the window of a sample-carrying packet without it), and
+  write the window slots (bytes 12+) using
   the same duplicated-u16 layout as `hidpp_dd_tf_queue_stream`.
 - Sample count and window semantics **match the existing builder** so the
   wheel's stream engine sees a well-formed stream.
@@ -167,7 +183,10 @@ Fixed-point, no kernel floating point (sine lookup table + integer phase
 accumulators). Per call, produce the next `count` samples:
 
 - **fundamental** `f0 = RPM/60 * (cylinders/2)` (4-stroke firing frequency);
-  `cylinders` is a sysfs param (default 8).
+  `cylinders` is a sysfs param (default 4 since commit `90a7489`; the design
+  originally said 8, but higher counts push the firing frequency above what
+  a direct-drive rim can express - excursion falls as 1/f^2 - so 4 feels
+  right and the knob is a feel setting).
 - **harmonic stack** h1..h5 with gains interpolated by RPM and an amplitude
   curve, seeded from `docs/TF_TEXTURE_RECIPE.md` (which fits the Windows
   capture). Values there are a starting point; the sysfs knobs make them
@@ -201,7 +220,7 @@ game engine RPM
   -> write wheel_texture_rpm (sysfs) @ ~62 Hz
   -> [kernel] oscillator generates samples from RPM + params
   -> [kernel] SDK writes ep3 packet -> ll_driver override -> splicer
-       (cur preserved, byte10 + window filled)
+       (cur preserved, byte10 + window filled, byte11 stamped 0x0d)
   -> real output_report -> USB ep3 -> wheel (adds texture to base force)
 ```
 

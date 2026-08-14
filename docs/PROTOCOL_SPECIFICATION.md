@@ -1229,59 +1229,69 @@ direction setting for the built-in sweep effects.
 > **This section describes RS50 rim hardware only** (in both native and
 > compat enumeration - the rim does not change with the PID). The **real
 > G PRO rim** uses the same 0x807A feature page for a completely different,
-> LEVEL-based rev-light protocol with no per-LED RGB: after a one-time arm
-> burst (SHORT fn0, fn1, fn2, fn3 param 0x02, fn0), the host repeats a
-> SHORT fn2 + LONG fn6 pair where the LONG's byte 9 carries a 0-10 "LEDs
-> lit" level; colours, direction and scaling belong to the wheel's onboard
-> profile. Decoded by the TF4ALL project from a G HUB capture (2026-05-16);
-> exposed by this driver as `wheel_rev_level` on real G PROs, with the RGB
-> attributes hidden there. Caution from the same source: bursting these
+> LEVEL-based rev-light protocol with no per-LED RGB. The direct-drive
+> rev path, decoded from G HUB's own live captures (2026-08-14): at
+> attach time the host performs **discovery reads only** - SHORT fn0,
+> fn1, fn2, fn0, once - and then the level stream is a bare repeated
+> pair: SHORT fn2 GET_STATE + LONG fn6 with params
+> `00 01 00 0a 00 LEVEL` (level 0-10). **No arming exists on this
+> path**: fn3, fn4 and fn7 are NEVER used, and from the onboard
+> power-on state the strip renders bare fn2+fn6 levels exactly
+> (hardware-proven; the earlier "must be fn3-armed or it refuses every
+> level" belief is disproven). Colours, direction and scaling belong to
+> the wheel's onboard profile. Exposed by this driver as
+> `wheel_rev_level`, with the RGB attributes hidden on real G PROs.
+> Caution from the TF4ALL project's original decode: bursting these
 > writes starves the wheel's shared HID++ command processor and cuts FFB
 > out on the Windows FFB path, so level writes are paced. The ~160 ms
 > figure quoted from that source is wrong: a first-party G HUB capture
 > (issue #20, iRacing) measures ~16.5 ms per pair, about 60 Hz. The driver
 > enforces a ~10 ms floor.
 >
-> **The display has to be switched on before it accepts a level**
-> (hardware-verified 2026-08-11, both G923 editions). `fn2` reports the live
-> effect, and a wheel answering **0** is displaying nothing: in that state
-> every `fn6` level is refused with HID++ error 5, `LogitechInternal`. The
-> `fn3 param 0x02` in the arm burst above is what starts it, after which the
-> identical level is accepted. An RS50 reports 2 and needs no such call, so
-> it must not be sent to a wheel already displaying: `fn2` is not a boolean,
-> and values 1-4 and 6-9 are the built-in sweeps and the owner's custom
-> slots, which `fn3` would overwrite.
+> **G923 editions only: the display has to be switched on before it
+> accepts a level** (hardware-verified 2026-08-11, both G923 editions).
+> On those wheels `fn2` reports the live effect, and a wheel answering
+> **0** is displaying nothing: in that state every `fn6` level is
+> refused with HID++ error 5, `LogitechInternal`, until an
+> `fn3 param 0x02` starts the display, after which the identical level
+> is accepted. This is a G923 quirk, not part of the direct-drive
+> path: the DD wheels need no enable call (see above), and the G923
+> editions keep their own separate arming code in the driver. `fn3` is
+> not a boolean switch either way: values 1-4 and 6-9 are the built-in
+> sweeps and the owner's custom slots, which a careless `fn3` would
+> overwrite.
 >
 > **`fn0` reports the strip length** in its second parameter: `0x0a` on the
 > direct-drive wheels, `0x05` on a G923. The level is a fraction of that
 > length, so a wheel told the wrong length shows the wrong fill.
 >
-> **RS50 accepts the same level command (hardware-verified 2026-07-20):**
-> writes to `wheel_rev_level` visibly drive the RS50's 10-LED strip too -
+> **RS50 accepts the same level command (hardware-verified 2026-07-20,
+> re-verified with the bare fn2+fn6 form 2026-08-14):** writes to
+> `wheel_rev_level` visibly drive the RS50's 10-LED strip too -
 > 0 = all dark, 10 = all lit, intermediate values a partial fill. The
-> fill renders the SELECTED slot's stored config: while slot 0 was
-> selected, the fill tracked slot 0's stored direction (all four
-> directions watched live per the 9.4.1 mapping). An earlier draft of
-> this note concluded the fill was "NOT a renderer of the active custom
-> slot" because the fill kept its look after "slot 3 was applied" - but
-> the driver's slot switch was broken at the time (it hardcoded effect
-> `0x05` = CUSTOM 1, see revision 7.0), so slot 3 was never actually
-> selected and that observation is consistent with fill = selected slot.
-> With slot selection fixed, a fill taken after selecting another slot
-> is expected to render that slot's colours and direction (expected,
-> re-verify: no direct post-fix fill observation yet). The arm semantics
-> still await a G HUB rev-feed capture (requested in issue #20). A
+> display renders **center-out by default**, so the 10-LED strip shows
+> 5 mirrored visual steps across a 0-10 level sweep. The display
+> pattern is a separate concern from the level protocol: the level says
+> how much of the bar is lit, the wheel's stored display config
+> (colours, direction) says how that amount is drawn. Reconfiguring the
+> pattern mid-session via `0x807B` is NOT part of G HUB's mid-session
+> vocabulary and is untested during live TrueForce sessions, so it must
+> not be assumed safe there. The arm-semantics question this note once
+> deferred to a future capture is settled: there ARE no arm semantics on
+> the direct-drive path (see the attach-time discovery reads above). A
 > written level holds until the next level write; writing
-> `wheel_led_effect` restores the idle pattern. A live RPM rev display
-> works on the RS50 today regardless.
+> `wheel_led_effect` restores the idle pattern.
 >
-> **The arm burst stomps the active effect (hardware-verified
-> 2026-07-20):** the burst's "fn3 param 0x02" is a plain SET_EFFECT, so
-> arming force-switches the wheel to effect 2 (Outside-In) - post-arm
-> fills always animated edges-in regardless of the user's effect, since
-> fills render with whatever effect is currently active. The driver
-> therefore re-asserts the pre-arm effect (and, in Custom mode, re-applies
-> the active slot) immediately after the one-time burst.
+> **Historical: the old arm burst stomped the active effect
+> (hardware-verified 2026-07-20).** When the driver still sent an arm
+> burst, its "fn3 param 0x02" was a plain SET_EFFECT that force-switched
+> the wheel to effect 2 (Outside-In), so the driver had to re-assert the
+> pre-arm effect afterwards. The burst is gone from the direct-drive
+> path (2026-08-14, see above) - and had to go: sent during a native
+> TrueForce SDK session it killed the session at init and killed wheel
+> input mid-session, while the bare fn2+fn6 form coexists with a live
+> session (see section 12.5). This paragraph is kept only to explain
+> older captures and driver versions.
 
 ### 9.1 Physical LED Layout
 
@@ -1502,6 +1512,13 @@ When G Hub starts with wheel already on, it queries feature 0x0B:
 4. 10 FF 0B 4C 00 0A 00   - fn4: SET_LEDS (param = LED count?)
 5. 10 FF 0B 7C 00 00 00   - fn7: REFRESH
 ```
+
+> **Correction (2026-08-14)**: current G HUB captures show **neither
+> fn4 nor fn7 on the rev-light path**. The attach-time reads on that
+> path are fn0, fn1, fn2, fn0, and nothing else (see the section 9
+> intro). The listing above is kept as recorded from its own capture;
+> treat fn4/fn7 as belonging to the RGB slot-upload flow, not to rev
+> levels.
 
 #### G Hub Color Change Sequence (from lightsync_custom_save.pcapng)
 
@@ -1841,6 +1858,13 @@ Step  Feature  Function  Purpose                    Parameters
 10 FF 0B 7C 00 00 00      fn7: Enable LED subsystem
 ```
 
+Scoping note (2026-08-14, verified against the current driver): this
+fn7, and this whole sequence, belong to the **RGB slot path only**
+(`hidpp_dd_lightsync_enable()` at probe and the slot-upload flow
+below). The rev-light level path sends no fn7, no fn4 and no fn3 at
+any point: its only traffic is the attach-time discovery reads and
+the bare fn2+fn6 level pair (see the section 9 intro).
+
 #### Color Change Sequence (runs for each update)
 
 ```
@@ -2053,7 +2077,7 @@ force to HID++, and 12.5 gives reason to expect they are not.
 0x01`. The OLED turned out not to be any of them, so they remain unexplained
 rather than ruled out.
 
-### 12.4 Rev-light stream: arm sequence, acknowledgements and flashing
+### 12.4 Rev-light stream: attach-time discovery reads, acknowledgements and flashing
 
 This section is entirely about the **rim's 10-LED rev strip**, feature
 `0x807A`. It has nothing to do with the base's OLED screen (12.3): the two
@@ -2063,8 +2087,12 @@ the display.
 From four first-party G Hub/iRacing captures contributed by @PeposCJ in
 issue #20 (2026-07-27). These settled three questions and found one bug.
 
-**Arm sequence.** After `0x807A` resolves to its runtime index, G Hub sends
-fn0, fn1, fn2, then fn0 again, and only then begins the fn2 + fn6 stream:
+**Attach-time discovery reads** (this used to be called an "arm sequence";
+2026-08-14 hardware work settled that nothing here arms anything - they are
+plain reads, done once at wheel attach, and the strip renders bare fn2+fn6
+levels from the onboard power-on state without them). After `0x807A`
+resolves to its runtime index, G Hub sends fn0, fn1, fn2, then fn0 again,
+and only then begins the fn2 + fn6 stream:
 
 ```
 10 ff 00 0c 80 7a 00   ->  12 ff 00 0c 0b 00 00      resolve 0x807A to index 0x0B
@@ -2152,10 +2180,18 @@ coexist is not known.
 **What this means for this driver.** Mostly nothing today, and that is worth
 stating explicitly so it is not mistaken for a latent bug:
 
-- **Direct-drive wheels are not exposed.** Their force rides endpoint `0x03`,
-  not HID++, so `wheel_led_*` and the rev-level writes never compete with
-  force on the same endpoint. Games cannot put force there either: force
-  reaches the wheel through this driver, which sends it to `0x03`.
+- **Direct-drive wheels are not exposed to THIS interference class.** Their
+  force rides endpoint `0x03`, not HID++, so `wheel_led_*` and the rev-level
+  writes never compete with force on the same endpoint. Games cannot put
+  force there either: force reaches the wheel through this driver, which
+  sends it to `0x03`. They turned out to have an interference class of
+  their own, though (hardware, 2026-08-14): while a **native TrueForce SDK
+  session** is live, the driver's old rev-LED form - arm burst plus
+  per-level fn3 - killed the session at init and killed wheel input
+  mid-session. The fix was making the driver speak exactly what G HUB
+  speaks: bare fn2+fn6 levels, no arming (commit `9d4b68a`). In that form,
+  base FFB + TrueForce texture + telemetry LEDs are hardware-validated
+  running together.
 - **The PlayStation G923 is not exposed.** Its force is the classic engine's
   plain HID output reports, and its rev LEDs are `led_classdev` entries
   driven by the same engine. Neither is HID++.

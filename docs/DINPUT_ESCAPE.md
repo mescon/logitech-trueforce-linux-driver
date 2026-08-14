@@ -63,8 +63,8 @@ The game calls `IDirectInputDevice8::Escape` at 187 calls per second with a
 | 0 | 4 | struct size, always 20 |
 | 4 | 4 | type, always 1 so far |
 | 8 | 4 | **float: engine RPM, live** |
-| 12 | 4 | float: car constant, believed shift point |
-| 16 | 4 | float: car constant, believed limiter |
+| 12 | 4 | **float: first-shift-light rpm** (established 2026-08-14, verified against the in-game dash; per-car, live in every packet) |
+| 16 | 4 | **float: redline** (established 2026-08-14, dash-verified; per-car, live in every packet) |
 
 RPM was established, not guessed: with the car **stationary**, four rev cycles
 and a held fifth pull reproduced exactly that shape in the live field, and
@@ -141,8 +141,12 @@ relevance is narrower and still real:
   the half that currently dies under `PROTON_ENABLE_HIDRAW`. If it can be
   driven under Wine, force feedback stops depending on Proton's evdev
   backend and the hidraw trade-off disappears.
-- It is the only thing that consumes the `Escape` engine-state stream, so it
-  is also where rev lights would come from.
+- It consumes the `Escape` engine-state stream on Windows. The "so it is
+  also where rev lights would come from" conclusion this line once drew is
+  **superseded** (2026-08-14): the dinput8-escape proxy now relays the
+  Escape telemetry triple (live rpm, first-shift-light rpm, redline) over
+  the LTFR datagram, and `logi-rpm-bridge` drives the rev strip through
+  `wheel_rev_level` - rev lights work with no OEM driver in the path.
 
 It is not the explanation for the SDK going quiet, and treating it as one
 would be chasing the wrong thing.

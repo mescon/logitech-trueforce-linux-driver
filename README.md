@@ -13,9 +13,12 @@ Logitech's high-frequency haptic layer - engine note, road surface and tyre
 texture felt through the rim, on top of ordinary force feedback - and until
 this project it did not exist here at all. It arrives two ways:
 
-- **Native**, in sims that support Logitech's SDK. The haptics are the
-  game's own TrueForce signal, carried to the wheel unchanged: what you feel
-  is what the developers authored, not an approximation of it.
+- **Native**, in sims that support Logitech's SDK. The steering force is the
+  game's own signal, carried to the wheel unchanged. The engine texture on
+  top is synthesised by the driver stack from the game's live telemetry -
+  which is how TrueForce texture works on every platform: on Windows too,
+  the game supplies force and telemetry and the driver stack supplies the
+  texture. This driver replicates that architecture in the kernel.
 - **Simulated**, in everything else. Where a game has no TrueForce,
   `logi-tf-sim` synthesises it from that game's live telemetry - engine RPM,
   speed, surface - so wheels still get texture in titles that never shipped
@@ -54,8 +57,9 @@ across Steam, Lutris and Heroic, and each row has the buttons for that game:
   it, because that wheel does not answer Logitech's SDK.
 
   **With these files installed, this is the configuration to want**: the
-  game's own TrueForce reaches the wheel, which is what its developers
-  authored rather than the engine note this project synthesises.
+  game's own force reaches the wheel unchanged, with the engine texture
+  synthesised from its live telemetry - the same division of labour the
+  Windows driver stack uses, done here in the kernel.
 
   **Without them, do not switch the raw HID interface on.** Reaching that
   interface is what lets Logitech's SDK deliver TrueForce, and switching it
@@ -91,7 +95,12 @@ That line is the same for every game and every wheel, and for most people it
 is the only setup step. `logi-launch` works out what this game needs on the
 wheel you have plugged in, and does it: force feedback for older DirectInput
 sims, the game's own TrueForce where it supports it, simulated TrueForce and
-live rev lights everywhere else. Logi Wheel's Setup page shows what it will do
+live rev lights everywhere else. For native-SDK sims like AC EVO it also
+arranges the in-kernel texture merge and the telemetry rev-light chain: the
+SDK proxy relays the game's live rpm, first-shift-light rpm and redline,
+and `logi-rpm-bridge` feeds them to the wheel as engine texture
+(`wheel_texture_rpm`) and rev-light levels (`wheel_rev_level`).
+Logi Wheel's Setup page shows what it will do
 for each of your games, which differs by wheel. Full detail in
 [docs/LAUNCH_OPTIONS.md](docs/LAUNCH_OPTIONS.md).
 
@@ -157,7 +166,8 @@ to work · 🟡 needs a tester · `-` not applicable.
 | Pedal response curves, sensitivity, deadzones, combined pedals | ✅ | 🟢 |
 | RS Shifter & Handbrake (shift, digital + analog handbrake) | ✅ | 🟢 |
 | LIGHTSYNC RGB LEDs (slots, colors, direction; edits apply live) | ✅ (faceplate strip, see note) | 🟡 (rev lights) |
-| RPM rev-light display (level fill, direction-aware) | ✅ | 🟡 |
+| RPM rev-light display (level fill; drawn center-out by default - the strip's pattern comes from the wheel's stored display config, separate from the level itself) | ✅ | 🟡 |
+| Native texture merge + telemetry rev lights in AC EVO (relay triple -> logi-rpm-bridge -> wheel) | ✅ | 🟢 |
 
 > **If the strip stays dark, check which onboard profile is active.** The
 > wheel stores five, and a profile can keep the strip off entirely. Every

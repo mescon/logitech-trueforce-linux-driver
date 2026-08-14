@@ -237,8 +237,20 @@ grants `texture=merge` (the registry in
 `userspace/logi-wheel/crates/logi-wheel-core/src/games.rs`; today only
 AC EVO, because grants ride hardware evidence).
 
-The wire format, LTFR version 2 (28 bytes, little-endian, fixed size; the
-authoritative copy lives in `logi-wheel-core`'s `relay.rs`):
+`logi-rpm-bridge` is also the rev-light feeder: besides
+`wheel_texture_rpm`, it drives `wheel_rev_level` from the same datagrams.
+The default mapping is a full rev bar (LED 1 as soon as rpm > 0, all 10 at
+the limiter; works for 28-byte senders too). `LOGI_REV_MODE=shift`
+selects the dash band instead: dark below the first-shift-light rpm,
+level 1 exactly there, 10 at the limiter (needs the 32-byte form below).
+`LOGI_REV_SYSFS` overrides the LED target attribute and `LOGI_RPM_PORT`
+the UDP port. The strip darkens on telemetry loss (1 s) and on bridge
+exit.
+
+The wire format, LTFR version 2 (32 bytes since 2026-08-14, little-endian,
+append-only - the first 28 bytes are the original version-2 layout, the
+version byte is unchanged, and old consumers keep reading just those 28;
+the authoritative copy lives in `logi-wheel-core`'s `relay.rs`):
 
 | offset | field    | type   | notes |
 |---|---|---|---|
@@ -250,6 +262,7 @@ authoritative copy lives in `logi-wheel-core`'s `relay.rs`):
 | 18 | max_rpm  | f32 LE  | engine redline, rpm |
 | 22 | throttle | f32 LE  | 0.0-1.0; 0 = the sender cannot tell |
 | 26 | gear     | i16 LE  | -1 reverse, 0 neutral, 1..N; 0 also = unknown |
+| 28 | shift_rpm | f32 LE | first-shift-light rpm (appended field; absent from 28-byte senders, which is fine) |
 
 Send at roughly 60 Hz; consumers rate-limit on their side, and
 `logi-rpm-bridge` drops packets whose rpm is not in `[0, 30000)`. Fields a
