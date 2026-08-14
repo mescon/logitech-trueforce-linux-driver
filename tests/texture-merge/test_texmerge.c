@@ -178,7 +178,7 @@ static void mk_stream_pkt(u8 *pkt, u16 cur, u8 seq)
 	memset(pkt, 0, 64);
 	pkt[0] = 0x01; pkt[4] = 0x01; pkt[5] = seq;
 	put_unaligned_le16(cur, &pkt[6]); put_unaligned_le16(cur, &pkt[8]);
-	pkt[10] = 0; pkt[11] = 0x0d;
+	pkt[10] = 0; pkt[11] = 0; /* real SDK packets are byte10/11 = 00/00 */
 }
 
 static void test_eligibility(void)
@@ -216,7 +216,7 @@ static void test_splice_preserves_base(void)
 	      HIDPP_DD_TEXMERGE_BLOCK);
 	CHECK(memcmp(pkt, orig, 10) == 0, "bytes 0-9 modified");
 	CHECK(pkt[10] == HIDPP_DD_TEXMERGE_BLOCK, "byte10 = %d", pkt[10]);
-	CHECK(pkt[11] == orig[11], "byte 11 modified");
+	CHECK(pkt[11] == 0x0d, "byte 11 = %#x, want 0x0d (texture marker)", pkt[11]);
 	/* window slots are duplicated u16 pairs */
 	for (int i = 0; i < HIDPP_DD_TEXMERGE_WINDOW; i++)
 		CHECK(memcmp(&pkt[12 + 4 * i], &pkt[14 + 4 * i], 2) == 0,

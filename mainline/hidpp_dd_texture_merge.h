@@ -331,7 +331,14 @@ static inline int hidpp_dd_texmerge_splice(struct hidpp_dd_texmerge *tm,
 	for (; i < HIDPP_DD_TEXMERGE_WINDOW; i++)
 		tm->window[i] = hidpp_dd_texmerge_next_sample(tm, f0);
 
+	/* The wheel demuxes texture on the byte10/byte11 pair, not byte10
+	 * alone: every sample-carrying packet in the Windows G HUB capture is
+	 * byte10=0x04 + byte11=0x0d, and 0x04/0x00 never occurs (the SDK's
+	 * own packets are always 0x00/0x00). Splicing without stamping 0x0d
+	 * produced wire-perfect windows the wheel silently discarded
+	 * (hw session 2026-08-14). */
 	buf[10] = HIDPP_DD_TEXMERGE_BLOCK;
+	buf[11] = 0x0d;
 	for (i = 0; i < HIDPP_DD_TEXMERGE_WINDOW; i++) {
 		u16 v = (u16)(tm->window[i] + 32768); /* offset binary */
 
