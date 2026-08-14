@@ -35,6 +35,17 @@ should do the same synthesis, in the kernel, rather than keep hunting for a
 wire format that does not exist, was confirmed before implementation started
 rather than discovered as a fallback partway through.
 
+**Delta 3: validated against the live SDK stream, two overnight fixes
+(2026-08-14).** The merge was re-validated against the LIVE Logitech SDK
+stream rather than a replay - 11,217 of 11,219 real stream packets spliced,
+sample rms 411.2 against the 411 capture-fit target, spectrum peak exactly at
+the fed firing frequency, SDK `cur` bytes byte-identical throughout. Two
+fixes came out of the same pass: the type-`0x0e` range-push decode was
+corrected to the true wire layout (bytes 6-9, not 8-11) after capture
+analysis, and teardown was hardened with `device_lock` validation after a
+pre-existing close-path oops (`hid_hw_close` on an unbound `hid_device`) was
+found during rmmod testing.
+
 ## Goal
 
 Add fine engine-texture haptics (the "buzz") to native TrueForce games under

@@ -217,7 +217,10 @@ Safety gates, each earned from a real incident:
 `0` = detect-and-report only: the
 change is still logged and `wheel_range` stays honest, but recovery
 is manual (`wheel_profile=0` then `wheel_range=<degrees>` once FFB
-is idle).
+is idle). The same opt-out also governs the push-triggered one-shot
+restore performed when the interceptor sees the SDK's type-`0x0e`
+range push directly (`docs/TRUEFORCE_PROTOCOL.md`): `0` means
+detect-only for both mechanisms, not just the poll-based one.
 
 ### wheel_strength
 **Access**: Read/Write

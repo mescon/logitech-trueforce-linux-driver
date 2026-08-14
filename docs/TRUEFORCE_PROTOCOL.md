@@ -168,7 +168,16 @@ Packet cadence in libtrueforce is 250 Hz (4 new samples * 250 Hz = 1000 sample/s
 
 Decoded 2026-07-02 from a live usbmon capture of an AC EVO launch on
 Linux: type-`0x0e` carries the wheel's operating range as an IEEE 754
-LE float in degrees at payload bytes 6-9. Evidence:
+LE float in degrees. Byte-exact layout:
+
+```
+byte[0]:     01                    Report header
+byte[4]:     0e                    Command type
+byte[5]:     sequence              Rolling counter
+byte[6-9]:   f32 LE                Operating range, degrees
+```
+
+Evidence:
 
 - The canonical init's packet 50 carries `2700.0` - exactly the
   wheel's maximum range, not a plausible sample rate.
@@ -178,6 +187,18 @@ LE float in degrees at payload bytes 6-9. Evidence:
   traffic on interface 1 (confirmed: the only interface-1 range
   packets in the entire capture are the Linux driver's own polls,
   whose replies flip from 900 to 90).
+- Two captured frames, byte-for-byte, confirm bytes 6-9 and not any
+  neighbouring offset: `90.0` = `01 00 00 00 0e 46 00 00 b4 42`,
+  `2700.0` = `01 00 00 00 0e 32 00 c0 28 45` (2026-08-14 usbmon, AC
+  EVO session init).
+
+A session init sends **multiple** `0x0e` pushes, not one: the
+2026-08-14 capture shows `2700.0`, then `90.0`, then `2700.0` again in
+the same init, which reads as the SDK negotiating its bounds around
+the clamp rather than writing the final value once. Consumers of this
+packet (the kernel driver's decode, any replay tooling) must not
+assume a single push per session and must track the latest value seen,
+not the first.
 
 This is `logiWheelSetOperatingRange*()` on the wire, and it explains
 why the launch-time range reset never produced a HID++ broadcast: it
@@ -202,6 +223,25 @@ Two firmware behaviours discovered while reproducing this
   on its own and broadcasts the restored value over HID++. A running
   game keeps its session alive, which is why real launch-time resets
   persist.
+
+### Session state and the force-mode latch
+
+Hardware-proven across many sessions: `logiWheelSetForceMode(1)`
+latches in the wheel itself, not just in the SDK, and stays latched
+until a REAL power cycle. A USB reset is not enough, because the base
+has its own PSU independent of the USB bus. Consequences, both
+observed on real hardware:
+
+- A second SDK session started without a power cycle comes up with a
+  dead haptic thread: status `0x80000008`, no ep3 OUT stream at all.
+- A hard-killed session (game terminated rather than closed cleanly)
+  leaves the wheel's stream engine running on its own: the wheel keeps
+  streaming ep `0x83` IN reports at 2 kHz indefinitely, with nothing on
+  the host consuming them, until the base is power-cycled.
+
+Anyone reproducing SDK captures or writing session teardown code needs
+to power-cycle the base between sessions, not just close and reopen
+the handle.
 
 **Which wheels honour it** (2026-07-30):
 

@@ -370,3 +370,17 @@ reverse: on Windows it is G HUB synthesising it from the game's RPM on the
 host and merging it into the SDK stream, the same operation this feature now
 does in the kernel. There was no captured protocol to complete; the destination
 was always synthesis, and the driver now does that synthesis itself.
+
+**2026-08-14**: the merge was re-validated against the LIVE Logitech SDK
+stream rather than a replay - 11,217 of 11,219 real stream packets spliced,
+sample rms 411.2 against the 411 capture-fit target, spectrum peak exactly
+at the fed firing frequency, and the SDK's own `cur` bytes byte-identical
+throughout. Two bugs surfaced during the same pass and are fixed: the
+90-degree auto-restore's original decode read the range push at the wrong
+bytes (8-11 instead of the real 6-9, see `docs/TRUEFORCE_PROTOCOL.md`), so it
+ignored every real push from a live session while a synthetic test built
+against the same wrong offset kept passing - fixed and unit-tested against
+the captured frames; and a pre-existing rmmod NULL-deref in the interface-2
+close path was found (`hid_hw_close` on a `hid_device` that had already lost
+its driver binding), with teardown now validating the binding under
+`device_lock` before touching it.

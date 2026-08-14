@@ -26,6 +26,17 @@ If a game's launch options still carry `LOGI_ESCAPE_RELAY=0` from an older
 manual recipe, remove it: that variable now starves the texture merge of
 the RPM feed it needs.
 
+Re-validated against the LIVE Logitech SDK stream, not a replay: 11,217 of
+11,219 real stream packets spliced, sample rms 411.2 against the 411
+capture-fit target, spectrum peak exactly at the fed firing frequency, and
+the SDK's own force bytes byte-identical throughout. That pass found and
+fixed two bugs: the 90-degree auto-restore's range-push decode was reading
+the wrong bytes (8-11 instead of the wire's real 6-9), so it silently
+ignored every real push from a live session; and a pre-existing rmmod crash
+in the interface-2 close path (`hid_hw_close` on a device that had already
+lost its driver binding) is now fixed, with teardown validating the binding
+before touching it.
+
 **Native TrueForce has been impossible since 0.27.1, and is fixed.** The
 installer registers Logitech's SDK by writing its path into the Windows
 registry inside each game's Proton folder. Since 0.27.1 that path was written
