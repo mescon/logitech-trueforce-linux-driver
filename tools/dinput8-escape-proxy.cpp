@@ -206,10 +206,15 @@ static bool relay_open(void)
 	return true;
 }
 
-// The 28-byte relay datagram, laid out to match logi_wheel_core::relay.
+// The relay datagram, laid out to match logi_wheel_core::relay. The first
+// 28 bytes are the version-2 layout every consumer understands; bytes 28-31
+// append the first-shift-light rpm from the game's telemetry triple
+// (rpm, first-led, redline - confirmed against the in-game dash 2026-08-14).
+// Appending keeps the packet valid for old consumers, which read only the
+// first 28 bytes; new ones detect the field by datagram length.
 // Throttle and gear are not carried by the escape payload; they are left at
 // zero, which is what that format means by "the sender cannot tell".
-static void relay_send(float rpm, float max_rpm)
+static void relay_send(float rpm, float max_rpm, float first_led_rpm)
 {
 	if (g_relay_off || !relay_open())
 		return;
@@ -225,16 +230,17 @@ static void relay_send(float rpm, float max_rpm)
 		return;
 	last_ms = now;
 
-	unsigned char pkt[28];
+	unsigned char pkt[32];
 	ZeroMemory(pkt, sizeof(pkt));
 	memcpy(pkt, "LTFR", 4);
-	pkt[4] = 2; // wire version
+	pkt[4] = 2; // wire version (unchanged: the extension is append-only)
 	pkt[5] = 0; // flags: airborne unknown from here
 	size_t n = strlen(g_game_id);
 	memcpy(pkt + 6, g_game_id, n > 8 ? 8 : n);
 	memcpy(pkt + 14, &rpm, 4);
 	memcpy(pkt + 18, &max_rpm, 4);
 	// 22..26 throttle, 26..28 gear: already zero.
+	memcpy(pkt + 28, &first_led_rpm, 4);
 	sendto(g_sock, (const char *)pkt, sizeof(pkt), 0, (sockaddr *)&g_dest, sizeof(g_dest));
 }
 
@@ -1301,7 +1307,8 @@ public:
 			// log is thinned to stay readable, the haptics are not.
 			// The third field is the limiter, which is what the
 			// daemon means by max_rpm; RPM can briefly exceed it.
-			relay_send(f[0], f[2]);
+			// The second is where the dash shift lights start.
+			relay_send(f[0], f[2], f[1]);
 			InterlockedExchange(&g_rpm_mhz, (LONG)(f[0] * 10.0f));
 			InterlockedExchange(&g_limiter_x10, (LONG)(f[2] * 10.0f));
 			texture_maybe_start();

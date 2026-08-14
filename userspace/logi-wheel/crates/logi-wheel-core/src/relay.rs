@@ -151,12 +151,17 @@ fn game_id_from_wire(raw: &[u8]) -> &'static str {
     GAME_IDS.iter().copied().find(|g| *g == name).unwrap_or(ID)
 }
 
-/// Decode one relay datagram. Returns `None` for a wrong length, a bad
+/// Decode one relay datagram. Returns `None` for a short length, a bad
 /// magic or an unsupported version; a caller that wants to know which of
 /// those failed should re-check the raw bytes itself, this is a strict
 /// accept/reject gate.
+///
+/// The wire format is append-only within a version: a sender may extend
+/// the packet past [`PACKET_LEN`] (the dinput8 escape proxy appends the
+/// game's first-shift-light rpm at bytes 28-31 for the rev-LED bridge),
+/// and this decoder reads the 28 bytes it knows and ignores the rest.
 pub fn decode(pkt: &[u8]) -> Option<RelayTelemetry> {
-    if pkt.len() != PACKET_LEN {
+    if pkt.len() < PACKET_LEN {
         return None;
     }
     if pkt[0..4] != MAGIC || pkt[4] != VERSION {
@@ -196,6 +201,18 @@ mod tests {
         let encoded = encode(&rt);
         assert_eq!(encoded.len(), PACKET_LEN);
         assert_eq!(decode(&encoded), Some(rt));
+    }
+
+    #[test]
+    fn accepts_append_only_extensions() {
+        // The escape proxy appends the first-shift-light rpm at 28-31;
+        // the known fields must decode identically from the longer form.
+        let rt = RelayTelemetry { game_id: "relay", rpm: 2950.0, max_rpm: 14250.0, throttle: 0.0, gear: 0, airborne: false };
+        let mut extended = encode(&rt).to_vec();
+        extended.extend_from_slice(&11250.0_f32.to_le_bytes());
+        assert_eq!(decode(&extended), Some(rt));
+        // Short datagrams stay rejected.
+        assert_eq!(decode(&extended[..27]), None);
     }
 
     #[test]
@@ -240,12 +257,15 @@ mod tests {
     }
 
     #[test]
-    fn short_and_long_buffers_are_rejected() {
+    fn short_buffers_are_rejected_long_ones_accepted() {
+        // Append-only wire contract: senders may extend past PACKET_LEN
+        // (the escape proxy does, for the rev-LED first-light field) and
+        // the extension must not cost them the packet.
         let pkt = encode(&RelayTelemetry { game_id: "ets2", rpm: 1.0, max_rpm: 1.0, throttle: 0.0, gear: 0 , airborne: false });
         assert!(decode(&pkt[..PACKET_LEN - 1]).is_none(), "truncated");
         let mut long = pkt.to_vec();
         long.push(0);
-        assert!(decode(&long).is_none(), "oversized");
+        assert!(decode(&long).is_some(), "append-only extension");
         assert!(decode(&[]).is_none(), "empty");
     }
 
