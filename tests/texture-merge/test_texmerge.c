@@ -65,6 +65,41 @@ static void test_oscillator_continuity(void)
 	CHECK(max_step < 1500, "max step %.0f too large (discontinuity)", max_step);
 }
 
+static void test_oscillator_phase_continuity(void)
+{
+	/* The max-step bound above cannot tell a continued oscillator from
+	 * one whose phases were silently reset: a reset landing near a zero
+	 * crossing produces no visible step at all. Pin the phase state
+	 * directly instead. At 250 Hz the h1 phase increment is exactly
+	 * 1/16 turn per sample (2^32 * 250 / 4000 in Q32), so after 4001
+	 * samples the continued oscillator's next sample evaluates h1 at
+	 * 45 degrees while a phase-zeroed twin's next evaluates it at
+	 * 22.5 degrees - all integer math, fully deterministic. */
+	struct hidpp_dd_texmerge a = { .intensity = 100 };
+	struct hidpp_dd_texmerge b, r;
+	s16 cont_a, cont_b, reset;
+
+	for (int i = 0; i < 4001; i++)
+		(void)hidpp_dd_texmerge_next_sample(&a, 25000);
+	b = a;			/* continued twin: same phases */
+	r = a;			/* reset twin: fresh phases */
+	memset(r.phase, 0, sizeof(r.phase));
+
+	cont_a = hidpp_dd_texmerge_next_sample(&a, 25000);
+	cont_b = hidpp_dd_texmerge_next_sample(&b, 25000);
+	reset = hidpp_dd_texmerge_next_sample(&r, 25000);
+
+	/* Twin determinism first, so the inequality below is meaningful. */
+	CHECK(cont_a == cont_b, "continued twins diverge (%d vs %d)",
+	      cont_a, cont_b);
+	/* A reset sequence must be DISTINGUISHABLE from a continued one:
+	 * sin(45) vs sin(22.5) of the h1 amplitude alone is ~0.3x amp,
+	 * far above any rounding slack. */
+	CHECK(cont_a != reset, "phase reset not detected (both %d)", cont_a);
+	CHECK(abs((int)cont_a - (int)reset) > 50,
+	      "reset barely detectable (%d vs %d)", cont_a, reset);
+}
+
 static void test_intensity_scales(void)
 {
 	struct hidpp_dd_texmerge a = { .intensity = 100 };
@@ -236,6 +271,7 @@ int main(void)
 	test_f0();
 	test_oscillator_rms();
 	test_oscillator_continuity();
+	test_oscillator_phase_continuity();
 	test_intensity_scales();
 	test_range_push_decode();
 	test_eligibility();

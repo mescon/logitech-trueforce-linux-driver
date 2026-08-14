@@ -16813,7 +16813,7 @@ static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 	 * and armed state start fresh, like the poll path's counter does. */
 	ff->tm_restore_attempts = 0;
 	WRITE_ONCE(ff->tm_push_seen, false);
-	ff->tm_restore_gen++;
+	WRITE_ONCE(ff->tm_restore_gen, READ_ONCE(ff->tm_restore_gen) + 1);
 
 	shim->real = ff_hdev->ll_driver;
 	/*
