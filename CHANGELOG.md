@@ -5,68 +5,89 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.35.0 - 2026-08-14
 
-**Assetto Corsa EVO's TrueForce now has the engine-note texture, not just
-steering force.** The SDK stream that carries the game's real forces has
-never carried texture: every packet from the game has an empty sample
-field, because on Windows the buzz is not part of what the game or the SDK
-sends, it is G HUB synthesising it from RPM and merging it into the same
-stream on the host. The driver now does that same merge, splicing an
-RPM-driven engine note into the SDK's own packets on the way out, with the
-game's own force left byte-for-byte untouched. Hardware-validated on an
-RS50: with the feature off the wire is unchanged; with it on and no RPM fed
-nothing changes either; fed 6000 rpm, every packet carries a spliced sample
-whose loudness and 400 Hz frequency match the fitted recipe, and the
-game's own force bytes stay identical throughout. `logi-launch %command%`
-is still the whole recipe for Assetto Corsa EVO: it stages what the merge
-needs and tears it down again on exit, same as everything else it does.
+**Native TrueForce works, end to end, and Assetto Corsa EVO gets the
+engine texture.** Two faults of ours had made the native path impossible:
+since 0.27.1 the installer wrote the SDK's registry path with broken
+separators, so games never loaded Logitech's DLL at all (reinstall the
+TrueForce files once from the Setup page or `install-tf-shim.sh` to get
+the corrected registration, which is now read back and verified before
+the installer reports success); and even a loaded SDK asks the wheel's
+operating range through calls only G HUB answers on Windows, so its
+streaming thread never started. `logi-launch` now stages a small dinput8
+forwarder per game that answers those calls with the wheel's real values
+and passes everything else through.
 
-If a game's launch options still carry `LOGI_ESCAPE_RELAY=0` from an older
-manual recipe, remove it: that variable now starves the texture merge of
-the RPM feed it needs.
+On top of that, AC EVO's engine buzz: the game itself sends no texture
+on any platform, its packets carry force with an empty sample field
+while its live RPM streams out over a telemetry channel, and on Windows
+it is G HUB that synthesises the buzz from that RPM and merges it into
+the same stream. The driver now performs that same merge, an RPM-driven
+engine note fitted to a capture of the real Windows output, spliced only
+into packets whose sample field is empty, with the game's force bytes
+left untouched. Along the way the session uncovered the render gate: the
+wheel only plays a packet's samples when the sample count is paired with
+the `0x0d` marker at byte 11, a pairing every Windows capture honours,
+and one byte short of which the texture is silently discarded. Seat
+verdict on an RS50: kerbs, engine and force all present together. The
+texture pitch defaults to 4 cylinders after back-to-back comparison
+(`wheel_texture_cylinders` tunes it live, it is a feel knob more than an
+engine spec).
 
-Re-validated against the LIVE Logitech SDK stream, not a replay: 11,217 of
-11,219 real stream packets spliced, sample rms 411.2 against the 411
-capture-fit target, spectrum peak exactly at the fed firing frequency, and
-the SDK's own force bytes byte-identical throughout. That pass found and
-fixed two bugs: the 90-degree auto-restore's range-push decode was reading
-the wrong bytes (8-11 instead of the wire's real 6-9), so it silently
-ignored every real push from a live session; and a pre-existing rmmod crash
-in the interface-2 close path (`hid_hw_close` on a device that had already
-lost its driver binding) is now fixed, with teardown validating the binding
-before touching it.
+**The rev lights come on.** The telemetry the game was already streaming
+turns out to carry Logitech's full LED triple: live rpm, the car's own
+first-shift-light rpm, and its redline. `logi-rpm-bridge` now maps that
+onto the wheel's rev strip: by default a full rev bar (first LED as soon
+as the engine turns, all ten at the limiter), or `LOGI_REV_MODE=shift`
+for the same band the car's dashboard shows. Per-car thresholds arrive
+live from the game; nothing is configured. Making this safe took a
+protocol correction: the driver's old first-write arming sequence, sent
+mid-session, reliably killed a native TrueForce session, and G HUB's own
+captures show no arming at all, just a bare two-command level update.
+The driver now speaks exactly that, and force feedback, TrueForce
+texture and telemetry rev lights are validated running together.
 
-**Native TrueForce has been impossible since 0.27.1, and is fixed.** The
-installer registers Logitech's SDK by writing its path into the Windows
-registry inside each game's Proton folder. Since 0.27.1 that path was written
-with half its separators missing, so it named a file that did not exist, and
-no game could load the SDK. Nothing reported an error: the key was written,
-the installer said it had succeeded, and the files really were where the path
-was meant to point. Games simply asked for TrueForce, got nothing, and carried
-on without it.
+**The 90-degree lock heals itself.** The SDK writes range values straight
+to the wheel at session start; the driver's automatic restore now decodes
+those pushes from the wire's real bytes (the old decode read the wrong
+offsets and silently ignored every live push) and puts your range back
+within a strike-capped budget. Also established on hardware: those pushes
+only take effect while a stream session is started, so only a live game
+can move your range in the first place.
 
-If you installed the TrueForce files under any release from 0.27.1 to 0.34.1,
-reinstall them from the app's Setup page (or rerun `install-tf-shim.sh`) to
-get a registration that works.
+**Session lifecycle, learned from Windows captures.** Idle keepalives
+carry the exact bytes Windows sends, every teardown sends the same
+stop-and-arm pair Windows sends, a producer that dies mid-waveform decays
+to centre instead of holding torque, and the simulated-TrueForce daemon
+goes quiet in menus instead of streaming zeros. One firmware behaviour
+survives: a session killed before its teardown reaches the wheel leaves
+the next session opening successfully but never streaming, and only a
+power cycle of the wheel recovers it today. `LOGI_TF_REARM=1` enables an
+experimental pre-launch reset-and-rearm that may replace the power
+cycle; it is off by default until validated on hardware.
 
-The installer now reads the registration back and refuses to report success
-unless it resolves to a file that is really there, which is the check whose
-absence let this survive five releases.
+**Crash and regression fixes.**
 
-Two related things it also does now, both off by default:
+- 0.34.0 defaulted `inject_pid=2`, which broke steering and pedals; the
+  default is reverted (#59, #63).
+- A long-standing crash when unloading the module with the wheel attached
+  is fixed, and interface teardown is hardened against unbind/rebind races.
+- If a game's launch options still carry `LOGI_ESCAPE_RELAY=0` or a
+  manually set `PROTON_ENABLE_HIDRAW` from an older recipe, remove them:
+  `logi-launch %command%` is the entire recipe now, and stale variables
+  starve the texture merge and the rev lights of the telemetry they need.
 
-- `--oem-ffb` stages G HUB's DirectInput force-feedback driver into a prefix.
-  Windows drives these wheels through that driver rather than from DirectInput
-  itself, which is why force feedback dies when the raw HID interface is on.
-  It only does anything together with the tooling in `docs/DINPUT_ESCAPE.md`,
-  and is unproven on hardware.
-- `--print-sdk-dir` reports whether that driver was found, alongside the SDK
-  versions.
+**App.**
 
-**Known, and not fixed here:** on Assetto Corsa EVO the SDK now loads, opens
-the wheel and still sends it nothing. That is a separate fault from this one
-and is being tracked in `docs/DINPUT_ESCAPE.md`.
+- Every profile card has a Save button that updates the profile in place
+  (#61).
+- New TrueForce texture group on the wheel settings page (intensity,
+  cylinders, live RPM-feed status).
+- The onboard-slot editor's slot picker can be backed out of.
+- Recipes: BeamNG.drive recorded as the native Linux title it is; iRacing
+  marked TrueForce-capable per capture evidence.
+
 
 ## 0.34.1 - 2026-08-11
 

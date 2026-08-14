@@ -548,7 +548,7 @@ pub const GAMES: &[GameCompat] = &[
         // silence. Competizione publishes the same shared memory as Assetto
         // Corsa, byte for byte, so this needed no new decoder.
         simulated_tf: SimTf::LiveNow("acc"),
-        setup: "Install the TrueForce shim; set PROTON_ENABLE_HIDRAW=1; turn Steam Input off.",
+        setup: "Install the TrueForce shim once; launch options `logi-launch %command%` (it turns raw HID on and stages everything this game needs); turn Steam Input off.",
         confidence: Confidence::Verified,
     },
     GameCompat {
@@ -562,7 +562,7 @@ pub const GAMES: &[GameCompat] = &[
         // redline into the physics block, so unlike Competizione it needed
         // its own decoder rather than Assetto Corsa's unchanged.
         simulated_tf: SimTf::LiveNow("ac-evo"),
-        setup: "Install the TrueForce shim; set PROTON_ENABLE_HIDRAW=1; turn Steam Input off.",
+        setup: "Install the TrueForce shim once; launch options `logi-launch %command%` (it turns raw HID on and stages everything this game needs); turn Steam Input off.",
         confidence: Confidence::Verified,
     },
     GameCompat {
@@ -608,10 +608,7 @@ docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
         ffb: Ffb::DirectInput,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("rf2"),
-        setup: "Set PROTON_ENABLE_HIDRAW=0, or launch with logi-ffb %command%; \
-Steam Input off. Simulated TrueForce needs the community \
-rF2SharedMemoryMapPlugin plus logi-tf-relay in the prefix (see \
-docs/SHARED_MEMORY_RELAY.md).",
+        setup: "Launch options `logi-launch %command%` (it keeps raw HID off and runs the logi-ffb helper for you); Steam Input off. Simulated TrueForce needs the community rF2SharedMemoryMapPlugin plus logi-tf-relay in the prefix (see docs/SHARED_MEMORY_RELAY.md).",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -620,10 +617,7 @@ docs/SHARED_MEMORY_RELAY.md).",
         ffb: Ffb::DirectInput,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("lmu"),
-        setup: "Set PROTON_ENABLE_HIDRAW=0, or launch with logi-ffb %command%; \
-Steam Input off. Simulated TrueForce needs the community \
-rF2SharedMemoryMapPlugin plus logi-tf-relay in the prefix (see \
-docs/SHARED_MEMORY_RELAY.md).",
+        setup: "Launch options `logi-launch %command%` (it keeps raw HID off and runs the logi-ffb helper for you); Steam Input off. Simulated TrueForce needs the community rF2SharedMemoryMapPlugin plus logi-tf-relay in the prefix (see docs/SHARED_MEMORY_RELAY.md).",
         confidence: Confidence::Verified,
     },
     GameCompat {
@@ -638,9 +632,7 @@ docs/SHARED_MEMORY_RELAY.md).",
         // therefore stays DirectInput on purpose.
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("iracing"),
-        setup: "Now Linux-playable; set PROTON_ENABLE_HIDRAW=0 or launch with \
-logi-ffb %command%; Steam Input off. Simulated TrueForce needs logi-tf-relay \
-in the prefix (see docs/SHARED_MEMORY_RELAY.md).",
+        setup: "Now Linux-playable; launch options `logi-launch %command%` (it keeps raw HID off and runs the logi-ffb helper for you); Steam Input off. Simulated TrueForce needs logi-tf-relay in the prefix (see docs/SHARED_MEMORY_RELAY.md).",
         // Expected: the decoder reads iRacing's own self-describing variable
         // table rather than guessed offsets, and is tested against the
         // documented layout, but nobody has yet confirmed the game even
@@ -654,9 +646,7 @@ in the prefix (see docs/SHARED_MEMORY_RELAY.md).",
         ffb: Ffb::DirectInput,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("raceroom"),
-        setup: "Set PROTON_ENABLE_HIDRAW=0, or launch with logi-ffb %command%; \
-Steam Input off. Simulated TrueForce needs logi-tf-relay in the prefix (see \
-docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
+        setup: "Launch options `logi-launch %command%` (it keeps raw HID off and runs the logi-ffb helper for you); Steam Input off. Simulated TrueForce needs logi-tf-relay in the prefix (see docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
         // Expected: the decoder is written against KW Studios' own published
         // `r3e.h`, whose major version it checks in-band before reading, but
         // nobody has yet confirmed the game publishes `$R3E` under Proton.
