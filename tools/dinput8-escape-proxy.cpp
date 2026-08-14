@@ -588,7 +588,7 @@ static DWORD WINAPI texture_thread(LPVOID)
 		// API documents, so no explicit clock is needed.
 		g_set_tf_real(h, buf, BLOCK);
 	}
-	return 0;
+	// No return: the loop never exits, the thread dies with the process.
 }
 
 static void texture_maybe_start(void)
