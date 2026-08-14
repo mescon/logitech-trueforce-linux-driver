@@ -390,8 +390,9 @@ generated from the same registry the app uses, so the two cannot disagree.
   had. Install the shim with `--proxy` instead. That puts this project's own
   SDK proxy in the game's path, where it copies the TrueForce the game is
   already producing and streams it to the wheel directly, so a G923 gets the
-  game's real haptics without the SDK needing to cooperate. New, and not yet
-  confirmed by anyone driving it. See [G923 support](#g923-support).
+  game's real haptics without the SDK needing to cooperate. The same proxy
+  answers the game's rotation question, which is the packaged fix for the
+  90-degree clamp (#27). See [G923 support](#g923-support).
 
   **Where the SDK files go.** Copy the `Logi` folder out of a Windows G HUB
   install into `~/.local/share/logitech-trueforce/sdk`, keeping its own

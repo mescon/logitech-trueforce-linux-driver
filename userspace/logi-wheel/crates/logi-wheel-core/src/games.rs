@@ -399,9 +399,10 @@ impl GameCompat {
              force feedback. For haptics, turn this game on under Simulated \
              TrueForce and run logi-tf-relay in its prefix (see \
              docs/SHARED_MEMORY_RELAY.md); that route is confirmed working \
-             on a G923. Installing the shim WITH --proxy aims to carry the \
-             game's own TrueForce instead, which would be better, but no \
-             one has yet got it to load. Steam Input off."
+             on a G923. Installing the shim WITH --proxy carries the game's \
+             own TrueForce to the wheel instead, the same proxy that ships \
+             the 90-degree rotation fix; the apps do not install it yet, so \
+             use tools/install-tf-shim.sh --proxy. Steam Input off."
         } else {
             self.setup
         }

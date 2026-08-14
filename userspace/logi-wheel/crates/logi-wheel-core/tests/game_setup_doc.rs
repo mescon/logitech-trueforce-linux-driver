@@ -97,11 +97,13 @@ fn render() -> String {
          game's own telemetry, read out of its shared memory by a small relay\n\
          (`docs/SHARED_MEMORY_RELAY.md`). Confirmed working on a G923 in\n\
          Assetto Corsa Competizione and EVO.\n\n\
-         There is a second route that would be better if it worked: installing\n\
-         the shim with `--proxy` puts this project's own SDK proxy in the\n\
-         game's path to copy the TrueForce the game is already producing,\n\
-         which is the real thing rather than an imitation of it. Nobody has\n\
-         yet got the game to load that proxy, so it is not the recommendation.\n\n",
+         There is a second route that carries the real thing: installing the\n\
+         shim with `--proxy` puts this project's own SDK proxy in the game's\n\
+         path, where it copies the TrueForce the game is already producing\n\
+         and streams it to the wheel. It is the same proxy that ships the\n\
+         packaged fix for the 90-degree rotation clamp, so it loads and\n\
+         works; the apps do not install it yet, so\n\
+         `tools/install-tf-shim.sh --proxy` is how to turn it on.\n\n",
     );
     out.push_str(
         "Launch options go in Steam under the game's Properties. Paste them\n\
