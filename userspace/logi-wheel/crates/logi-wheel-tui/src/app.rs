@@ -1486,14 +1486,17 @@ impl<S: SysfsIo> App<S> {
         }
     }
 
-    /// The Steam launch options the selected game wants on this wheel, or
-    /// `None` when it needs none. Shown and copied, never written: see
-    /// [`games::GameCompat::launch_options`].
+    /// The Steam launch options to copy for the selected game: the one
+    /// [`games::LAUNCH_WRAPPER`] line for every registry title, because
+    /// `logi-launch` works the per-wheel specifics out itself and handing
+    /// out those specifics here is how a G923 owner ended up pasting the
+    /// direct-drive recipe. `None` for a game the registry does not know,
+    /// where offering a guess would be worse than offering nothing.
+    /// Shown and copied, never written to the user's Steam config.
     pub fn selected_game_launch_options(&self) -> Option<&'static str> {
-        let caps = self.wheel_caps();
         self.selected_game()
             .and_then(|g| games::match_title(&g.name))
-            .and_then(|c| c.launch_options(caps))
+            .map(|_| games::LAUNCH_WRAPPER)
     }
 
     /// Take the shim run the last key press queued, if any; see
@@ -2727,7 +2730,7 @@ impl<S: SysfsIo> App<S> {
                         Some(opts) => {
                             format!("no clipboard tool (install wl-clipboard or xclip); launch options: {opts}")
                         }
-                        None => "this game needs no launch options".to_string(),
+                        None => "not in the registry, so there is no launch line to copy".to_string(),
                     };
                 }
                 Char('g') if inside && section == SetupSection::Games => {
@@ -2938,15 +2941,26 @@ mod tests {
         a.on_key(KeyCode::Enter);
 
         assert_eq!(a.selected_game_action(), Some(SetupAction::WorksOutOfBox));
-        assert_eq!(a.selected_game_launch_options(), None);
+        // The advice is the wrapper line, which is safe on every wheel: the
+        // per-wheel hazard (PROTON_ENABLE_HIDRAW) stays inside logi-launch,
+        // which refuses it for this wheel.
+        assert_eq!(
+            a.selected_game_launch_options(),
+            Some(logi_wheel_core::games::LAUNCH_WRAPPER)
+        );
 
         a.on_key(KeyCode::Char('i'));
         assert_eq!(a.take_pending_shim(), None, "no shim run queued: {}", a.status);
 
         a.on_key(KeyCode::Char('c'));
         assert!(
-            a.status.contains("no launch options"),
-            "c must say there are none rather than copy the DD recipe: {}",
+            a.status.contains(logi_wheel_core::games::LAUNCH_WRAPPER),
+            "c must offer the wrapper line, never the DD recipe: {}",
+            a.status
+        );
+        assert!(
+            !a.status.contains("PROTON_ENABLE_HIDRAW"),
+            "the DD recipe must never reach a G923 owner: {}",
             a.status
         );
     }
@@ -2961,7 +2975,7 @@ mod tests {
         assert_eq!(a.selected_game_action(), Some(SetupAction::InstallShim));
         assert_eq!(
             a.selected_game_launch_options(),
-            Some(logi_wheel_core::games::LAUNCH_HIDRAW)
+            Some(logi_wheel_core::games::LAUNCH_WRAPPER)
         );
         a.on_key(KeyCode::Char('i'));
         assert!(a.take_pending_shim().is_some(), "status: {}", a.status);

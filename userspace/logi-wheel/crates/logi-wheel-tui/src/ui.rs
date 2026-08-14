@@ -768,21 +768,21 @@ fn setup_sections<S: SysfsIo>(
                     for text in [
                         "Games that use the older DirectInput force-feedback",
                         "method (for example Le Mans Ultimate) get no force",
-                        "feedback through Proton by default. Launch them with",
-                        "logi-ffb to get force feedback via a virtual wheel.",
+                        "feedback through Proton by default. logi-launch runs",
+                        "them through logi-ffb (a virtual wheel) for you.",
                     ] {
                         lines.push(Line::from(format!("  {text}")));
                     }
                     lines.push(Line::from(vec![Span::raw("  logi-ffb: "), ffb_span]));
                     lines.push(Line::from(vec![
                         Span::raw("  Steam launch options: "),
-                        Span::styled(logi_wheel_core::games::LAUNCH_LOGI_FFB, Style::default().fg(Color::Yellow)),
+                        Span::styled(logi_wheel_core::games::LAUNCH_WRAPPER, Style::default().fg(Color::Yellow)),
                     ]));
                 } else {
                     lines.push(Line::from(vec![
                         Span::styled("  logi-ffb: ", dim),
                         ffb_span,
-                        Span::styled(format!("   launch: {}", logi_wheel_core::games::LAUNCH_LOGI_FFB), dim),
+                        Span::styled(format!("   launch: {}", logi_wheel_core::games::LAUNCH_WRAPPER), dim),
                     ]));
                 }
             }
@@ -883,7 +883,7 @@ fn setup_sections<S: SysfsIo>(
                                 }
                             }
                             Some(logi_wheel_core::games::SetupAction::UseLogiFfb) => Span::styled(
-                                format!("launch: {}", logi_wheel_core::games::LAUNCH_LOGI_FFB),
+                                format!("launch: {}", logi_wheel_core::games::LAUNCH_WRAPPER),
                                 Style::default().fg(Color::Yellow),
                             ),
                             Some(logi_wheel_core::games::SetupAction::SimulatedTrueForce) => {
@@ -930,17 +930,39 @@ fn setup_sections<S: SysfsIo>(
                                 format!("    {}", c.setup_line(app.wheel_caps())),
                                 dim,
                             )));
-                            // The launch options this title needs on this
-                            // wheel, spelled out so they can be copied (c)
-                            // or read off the screen. Nothing is written to
-                            // the user's Steam config.
-                            if let Some(opts) = c.launch_options(app.wheel_caps()) {
-                                lines.push(Line::from(vec![
-                                    Span::styled("    launch options: ", dim),
-                                    Span::styled(opts, Style::default().fg(Color::Yellow)),
-                                    Span::styled("  [c copies]", dim),
-                                ]));
-                            }
+                            // One launch line for every title, spelled out
+                            // so it can be copied (c) or read off the
+                            // screen: logi-launch works the per-wheel
+                            // specifics out itself, so showing those here
+                            // taught people to paste a setting that is
+                            // right for one wheel and wrong for the other.
+                            // Nothing is written to the user's Steam
+                            // config.
+                            lines.push(Line::from(vec![
+                                Span::styled("    launch options: ", dim),
+                                Span::styled(
+                                    logi_wheel_core::games::LAUNCH_WRAPPER,
+                                    Style::default().fg(Color::Yellow),
+                                ),
+                                Span::styled("  [c copies]", dim),
+                            ]));
+                            // What the wrapper will do for this title on
+                            // this wheel, as information rather than as
+                            // settings to paste: the same plan the wrapper
+                            // reads, from the same function the GUI's
+                            // Setup page shows.
+                            lines.push(Line::from(Span::styled(
+                                format!(
+                                    "    {}",
+                                    logi_wheel_core::games::LaunchPlan::for_game(
+                                        c,
+                                        app.wheel_caps(),
+                                        false,
+                                    )
+                                    .describe()
+                                ),
+                                dim,
+                            )));
                         } else {
                             lines.push(Line::from(Span::styled(
                                 "    Added by you; remove if this game does not use TrueForce.",

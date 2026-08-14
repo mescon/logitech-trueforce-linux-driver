@@ -255,6 +255,15 @@ pub fn launch_option_appid_groups() -> (Vec<u32>, Vec<u32>) {
     (sdk, dinput)
 }
 
+/// The one launch line the front-ends advise for every recognised title:
+/// the wrapper reads the [`LaunchPlan`] itself and applies it to the game
+/// being launched on the wheel attached. Advising the plan's raw pieces
+/// instead taught people to paste a setting that is right for one wheel
+/// and wrong for the other (issue #60), and left out everything the
+/// wrapper does beyond environment variables (the proxy staging, the
+/// bridge, the daemon).
+pub const LAUNCH_WRAPPER: &str = "logi-launch %command%";
+
 /// The Steam launch options a DirectInput title needs: the logi-ffb
 /// helper wraps the game and gives it force feedback at all.
 pub const LAUNCH_LOGI_FFB: &str = "logi-ffb %command%";

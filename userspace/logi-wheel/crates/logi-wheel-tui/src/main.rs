@@ -405,20 +405,34 @@ fn launch_plan(
     // wrapper's recipe and the GUI's description of it cannot disagree.
     // They did before: only this printer knew which wheel was attached.
     let mut plan = games::LaunchPlan::for_game(game, caps, ambiguous);
-    // Name the wheel in PROTON_ENABLE_HIDRAW rather than saying "1", which
-    // Proton reads as "every HID device on this machine" (issue #60). With
-    // several wheels attached, scope to the one whose recipe this is.
-    // Only a real wheel's id: logi-ffb's virtual wheel is a HID device too,
-    // and while the proxy is running discovery can return it. Scoping the
-    // variable to that would point Proton at a device the game's TrueForce
-    // cannot reach, and the failure would be silent.
-    // The id test is part of choosing the wheel, not a check applied after
-    // choosing one. Applied afterwards, a first candidate that fails it (the
-    // logi-ffb virtual wheel while the proxy runs, or any device whose
-    // directory name is not in BUS:VID:PID.SEQ shape) yielded None for the
-    // whole chain, and the wrapper fell back to the bare `1` this exists to
-    // avoid. Keep looking instead.
-    plan.hidraw_scope = wheels
+    plan.hidraw_scope = hidraw_scope_for(&wheels, caps);
+    for line in plan.lines() {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// The `PROTON_ENABLE_HIDRAW` value naming the attached wheel, or `None`
+/// when no wheel of `caps`' kind can be named.
+///
+/// Name the wheel rather than saying "1", which Proton reads as "every HID
+/// device on this machine" (issue #60). With several wheels attached, scope
+/// to the one whose recipe this is.
+/// Only a real wheel's id: logi-ffb's virtual wheel is a HID device too,
+/// and while the proxy is running discovery can return it. Scoping the
+/// variable to that would point Proton at a device the game's TrueForce
+/// cannot reach, and the failure would be silent.
+/// The id test is part of choosing the wheel, not a check applied after
+/// choosing one. Applied afterwards, a first candidate that fails it (the
+/// logi-ffb virtual wheel while the proxy runs, or any device whose
+/// directory name is not in BUS:VID:PID.SEQ shape) yielded None for the
+/// whole chain, and the wrapper fell back to the bare `1` this exists to
+/// avoid. Keep looking instead.
+fn hidraw_scope_for<S: logi_wheel_core::sysfs::SysfsIo>(
+    wheels: &[logi_wheel_core::Device<S>],
+    caps: logi_wheel_core::games::WheelCaps,
+) -> Option<String> {
+    wheels
         .iter()
         .filter(|d| d.wheel_caps().sdk_trueforce == caps.sdk_trueforce)
         .filter_map(|d| d.product_id())
@@ -426,50 +440,40 @@ fn launch_plan(
             logi_wheel_core::device::DD_PIDS.contains(pid)
                 || logi_wheel_core::device::G923_PIDS.contains(pid)
         })
-        .map(|pid| format!("0x046D/0x{pid:04X}"));
-    for line in plan.lines() {
-        println!("{line}");
-    }
-    Ok(())
+        .map(|pid| format!("0x046D/0x{pid:04X}"))
 }
 
 /// Every title the registry knows, with the name to pass to `--game` and
-/// the launch line for it. Printed rather than kept only in the app so a
-/// wiki page, an issue reply or a script can be built from the same source
-/// as the app's own advice.
+/// the plan for it. Printed rather than kept only in the app so a wiki
+/// page, an issue reply or a script can be built from the same source as
+/// the app's own advice.
 fn launch_plan_list() -> Result<(), Box<dyn std::error::Error>> {
-    use logi_wheel_core::games::{self, Ffb, SimTf};
-    let caps = match logi_wheel_core::Device::discover() {
-        Ok(d) => d.wheel_caps(),
-        Err(_) => games::WheelCaps::assumed(),
-    };
+    use logi_wheel_core::games;
+    // The same discovery, caps and hidraw scope as `--launch-plan` itself,
+    // so this table IS the recipe the wrapper will apply. The first
+    // version re-derived the settings by hand here and drifted: it never
+    // showed `texture=merge`, and it printed the bare `hidraw=1` the
+    // scoped form exists to avoid.
+    let wheels = Device::discover_all();
+    let caps =
+        wheels.first().map(|d| d.wheel_caps()).unwrap_or_else(games::WheelCaps::assumed);
+    let scope = hidraw_scope_for(&wheels, caps);
     println!("# for a {} wheel", if caps.sdk_trueforce { "direct-drive" } else { "classic" });
-    println!("{:<28} {:<9} {:<11} title", "--game", "appid", "settings");
+    println!("{:<28} {:<9} {:<34} settings", "--game", "appid", "title");
     for g in games::GAMES {
         let slug = games::slug_for(g.name);
         let appid = games::appid_for(g.name).map(|a| a.to_string()).unwrap_or_else(|| "-".into());
-        let mut bits: Vec<String> = Vec::new();
-        match g.launch_options(caps) {
-            Some(games::LAUNCH_HIDRAW) => bits.push("hidraw=1".into()),
-            Some(games::LAUNCH_LOGI_FFB) => bits.push("ffb=proxy".into()),
-            _ => {}
-        }
-        if g.ffb == Ffb::DirectInput && g.launch_options(caps).is_none() {
-            bits.push("hidraw=0".into());
-        }
-        if g.setup_action(caps) == games::SetupAction::InstallShim {
-            bits.push("tfsim=0".into());
-        } else if let SimTf::LiveNow(id) = g.simulated_tf {
-            bits.push("tfsim=1".into());
-            if matches!(id, "acc" | "ac-evo" | "assetto" | "iracing" | "raceroom" | "rf2" | "lmu") {
-                bits.push(format!("relay={id}"));
-            }
-        }
-        let settings = if bits.is_empty() { "-".to_string() } else { bits.join(" ") };
-        println!("{slug:<28} {appid:<9} {settings:<11} {}", g.name);
+        let mut plan = games::LaunchPlan::for_game(g, caps, false);
+        plan.hidraw_scope = scope.clone();
+        // The key=value settings without the prose: note= lines carry
+        // whole sentences, which belong to `--launch-plan`'s full output
+        // rather than to a table cell.
+        let settings: Vec<String> =
+            plan.lines().into_iter().filter(|l| !l.starts_with("note=")).collect();
+        println!("{slug:<28} {appid:<9} {:<34} {}", g.name, settings.join(" "));
     }
     println!();
-    println!("Use: logi-launch --game <name> %command%");
+    println!("Use: {}  (--game <name> when the appid cannot identify the title)", games::LAUNCH_WRAPPER);
     println!("Or set your own in ~/.config/logi-wheel/games.conf, keyed by appid.");
     Ok(())
 }
