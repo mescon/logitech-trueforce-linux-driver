@@ -6,9 +6,12 @@ on:
   # commit purely to trigger it. This is that way.
   workflow_dispatch:
   push:
-    paths: ["userspace/logi-wheel/**", ".github/workflows/logi-wheel.yml"]
+    # tools/ is here for the committed-binaries checks below: the relay
+    # and both proxy DLLs live there with their sources, and a push that
+    # touches only tools/ used to trigger no freshness check at all.
+    paths: ["userspace/logi-wheel/**", "tools/**", ".github/workflows/logi-wheel.yml"]
   pull_request:
-    paths: ["userspace/logi-wheel/**", ".github/workflows/logi-wheel.yml"]
+    paths: ["userspace/logi-wheel/**", "tools/**", ".github/workflows/logi-wheel.yml"]
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -43,6 +46,11 @@ jobs:
         working-directory: userspace/logi-wheel
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The freshness check below walks each file's history. With the
+          # default depth-1 snapshot every path dates to the same single
+          # commit, so the check could never fire.
+          fetch-depth: 0
       - name: Install the MinGW linker
         # The windows-gnu target links with MinGW; without it every build
         # here fails at the link step rather than on anything we wrote.
@@ -61,3 +69,29 @@ jobs:
         # safe if something notices when it falls behind the code.
         working-directory: ${{ github.workspace }}
         run: tools/build-relay.sh --check
+
+  # The other two committed Windows binaries, with the relay's promise:
+  # tf-range-proxy.dll (the 90-degree fix and the G923 TrueForce carry)
+  # and dinput8-escape.dll (the SDK range answers and the texture merge's
+  # RPM relay) ship prebuilt from tools/, and a source edit without a
+  # rebuilt DLL must fail CI rather than ship stale behaviour.
+  #
+  # This compares commit ages, like build-relay.sh --check, rather than
+  # rebuilding with mingw and byte-comparing: PE byte reproducibility
+  # holds only on the toolchain that built the committed copy (the same
+  # gcc 16.1.0 from two distros differs in a third of the file, and
+  # Ubuntu's mingw 13 changes the size; measured 2026-08-14, recorded in
+  # the check script's header). The byte-level check exists as
+  # `tools/check-committed-dlls.sh --verify-bytes`, run on the machine
+  # that rebuilds a DLL, before committing it.
+  committed-dlls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The check walks each file's history; the default depth-1
+          # snapshot would date every path to the same commit and wave
+          # everything through.
+          fetch-depth: 0
+      - name: The committed proxy DLLs must not be older than their sources
+        run: tools/check-committed-dlls.sh --check

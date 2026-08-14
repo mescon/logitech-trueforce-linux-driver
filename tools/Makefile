@@ -14,7 +14,10 @@
 # install-tf-shim.sh --range-proxy, and the people who need it are running
 # Linux without a Windows cross compiler. If you change tf-range-proxy.c,
 # run make here and commit the rebuilt DLL with it, or the shipped binary
-# and the source it claims to be drift apart.
+# and the source it claims to be drift apart. CI compares commit ages
+# (check-committed-dlls.sh --check); before committing, run
+# check-committed-dlls.sh --verify-bytes to prove the DLL you built
+# really is this source.
 
 CC_WIN := x86_64-w64-mingw32-gcc
 CFLAGS_WIN := -O2 -Wall

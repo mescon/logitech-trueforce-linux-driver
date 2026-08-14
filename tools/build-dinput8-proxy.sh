@@ -7,7 +7,9 @@
 # without a Windows cross compiler. If you change
 # dinput8-escape-proxy.cpp, run this script and commit the rebuilt DLL
 # with it, or the shipped binary and the source it claims to be drift
-# apart.
+# apart. CI compares commit ages (check-committed-dlls.sh --check);
+# before committing, run check-committed-dlls.sh --verify-bytes to prove
+# the DLL you built really is this source.
 #
 # Requires: mingw-w64-gcc (Arch: pacman -S mingw-w64-gcc)
 cd "$(dirname "$0")"
