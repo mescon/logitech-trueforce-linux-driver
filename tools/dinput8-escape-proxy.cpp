@@ -467,11 +467,34 @@ typedef int (*set_torque_kf_fn)(long long handle, double torque);
 static set_torque_kf_fn g_set_torque_kf_real;
 static volatile LONGLONG g_kf_calls;
 
+// The SDK teardown trio for DLL_PROCESS_DETACH (see DllMain). Resolved
+// here, at first handle capture on a normal game thread, and never from
+// DllMain: GetModuleHandle/GetProcAddress under the loader lock is legal
+// for an already-loaded module but pointless risk when this thread can do
+// it for free. Both take the handle in RCX; if dllClose's real signature
+// takes nothing, the extra register is ignored.
+typedef int (*close_fn)(long long handle);
+static close_fn g_wheel_close_real, g_dll_close_real;
+static volatile LONG g_close_resolved;
+
+static void resolve_close_fns(void)
+{
+	if (g_close_resolved)
+		return;
+	HMODULE m = GetModuleHandleW(L"trueforce_sdk_x64.dll");
+	if (!m)
+		return;
+	g_wheel_close_real = (close_fn)GetProcAddress(m, "logiWheelClose");
+	g_dll_close_real = (close_fn)GetProcAddress(m, "dllClose");
+	InterlockedExchange(&g_close_resolved, 1);
+}
+
 static int set_torque_kf_wrapper(long long handle, double torque)
 {
 	// Transparent pass-through: capture the handle, forward unchanged.
 	InterlockedExchange64(&g_kf_handle, handle);
 	InterlockedIncrement64((LONGLONG *)&g_kf_calls);
+	resolve_close_fns();
 	return g_set_torque_kf_real ? g_set_torque_kf_real(handle, torque) : 0;
 }
 
@@ -656,6 +679,90 @@ static void run_haptic_diagnostic(void)
 		CloseHandle(th);
 }
 
+// ------------------------------------- gate hunting: what the game is told
+//
+// The question tonight's session answers: what gates AC EVO's own texture
+// calls? The game resolves the whole TF API and calls none of the texture
+// setters, so the refusal must happen in a capability or rate query - and
+// the answers the game RECEIVES are the evidence. These wrappers log the
+// return status and the out-values of the query getters. The whole family
+// has the audited shape `int f(index-or-handle, T *out)` with status in
+// EAX and 0x80000001 on a null out pointer (docs/SDK_ABI_NOTES.md); the
+// Bounds getter takes two out pointers (RCX, RDX, R8) like its
+// OperatingRange sibling. The wrapper forwards four register args
+// regardless, which is signature-safe for anything up to four
+// register-class parameters: extra registers are simply ignored by the
+// callee.
+typedef int (*gate_getter_fn)(long long a, void *b, void *c, void *d);
+
+#define GATE_GETTERS 5
+static const char *const g_gate_names[GATE_GETTERS] = {
+	"logiTrueForceGetTorqueTFRateBounds",
+	"logiTrueForceGetGainTF",
+	// The Supported family: resolve was logged before, results were not.
+	"logiTrueForceSupported",
+	"logiTrueForceAvailable",
+	"logiWheelSdkHasControl",
+};
+static gate_getter_fn g_gate_real[GATE_GETTERS];
+static volatile LONG g_gate_calls[GATE_GETTERS];
+
+// Deref out-pointers only when VirtualQuery says the memory is committed
+// and readable: for the single-out getters the R8 slot is caller garbage,
+// and a diagnostic must never fault the game to report on it.
+static bool readable8(const void *p)
+{
+	MEMORY_BASIC_INFORMATION mi;
+	if (!p || !VirtualQuery(p, &mi, sizeof(mi)))
+		return false;
+	if (mi.State != MEM_COMMIT)
+		return false;
+	DWORD prot = mi.Protect & 0xff;
+	return prot == PAGE_READONLY || prot == PAGE_READWRITE ||
+	       prot == PAGE_EXECUTE_READ || prot == PAGE_EXECUTE_READWRITE ||
+	       prot == PAGE_WRITECOPY || prot == PAGE_EXECUTE_WRITECOPY;
+}
+
+static void gate_log(int idx, long long a, void *b, void *c, int st)
+{
+	LONG n = InterlockedIncrement(&g_gate_calls[idx]);
+	// Queries are rare, but cap anyway: a game polling one in its render
+	// loop must not swamp the log.
+	if (n > 50 && (n % 1000) != 0)
+		return;
+	char o1[64] = "(unreadable)", o2[64] = "(unreadable)";
+	if (readable8(b)) {
+		long long i64;
+		double f64;
+		memcpy(&i64, b, 8);
+		memcpy(&f64, b, 8);
+		snprintf(o1, sizeof(o1), "i64=%lld f64=%.3f", i64, f64);
+	}
+	if (readable8(c)) {
+		long long i64;
+		double f64;
+		memcpy(&i64, c, 8);
+		memcpy(&f64, c, 8);
+		snprintf(o2, sizeof(o2), "i64=%lld f64=%.3f", i64, f64);
+	}
+	say("GATE #%ld %s(rcx=0x%llx) -> 0x%08x  out[rdx]{%s}  out[r8]{%s}",
+	    (long)n, g_gate_names[idx], (unsigned long long)a, (unsigned)st,
+	    o1, o2);
+}
+
+template <int N>
+static int gate_getter_wrapper(long long a, void *b, void *c, void *d)
+{
+	int st = g_gate_real[N](a, b, c, d);
+	gate_log(N, a, b, c, st);
+	return st;
+}
+
+static gate_getter_fn const g_gate_wrappers[GATE_GETTERS] = {
+	gate_getter_wrapper<0>, gate_getter_wrapper<1>, gate_getter_wrapper<2>,
+	gate_getter_wrapper<3>, gate_getter_wrapper<4>,
+};
+
 // -------------------------------------------- watching the SDK handshake
 //
 // The wheel is visible, the SDK opens the right interface, and then sends
@@ -696,6 +803,12 @@ static LONG g_gpa_calls;
 
 extern "C" {
 volatile LONGLONG g_tf_calls[TRACKED_CALLS];
+// The first three calls' raw argument registers (rcx, rdx, r8, r9) per
+// tracked export, captured by the thunks below. Raw register values, not
+// interpreted arguments: the signatures are only partly established, so
+// the capture stores what the ABI guarantees exists and the log prints it
+// as hex for offline interpretation. 3 slots x 4 quads per export.
+volatile LONGLONG g_tf_args[TRACKED_CALLS][3][4];
 void *g_tf_real[TRACKED_CALLS];
 void tf_thunk0(void);
 void tf_thunk1(void);
@@ -711,10 +824,27 @@ void tf_thunk10(void);
 void tf_thunk11(void);
 }
 
+// Besides counting, the thunk saves the first three calls' argument
+// registers. Only rax and r10 are clobbered, both volatile with no
+// parameter or return role in the MS x64 ABI, so this remains correct
+// whatever the target's real signature is (the count reload after the
+// lock inc is racy across threads in principle; the setters stream from
+// one SDK thread, and a lost capture slot costs a log line, not
+// correctness).
 #define TF_THUNK(n)                                                    \
 	".globl tf_thunk" #n "\n"                                      \
 	"tf_thunk" #n ":\n"                                            \
 	"  lock incq g_tf_calls+" #n "*8(%rip)\n"                      \
+	"  movq g_tf_calls+" #n "*8(%rip), %rax\n"                     \
+	"  cmpq $3, %rax\n"                                            \
+	"  ja 1f\n"                                                    \
+	"  shlq $5, %rax\n"                                            \
+	"  leaq g_tf_args+" #n "*96-32(%rip), %r10\n"                  \
+	"  movq %rcx, (%r10,%rax)\n"                                   \
+	"  movq %rdx, 8(%r10,%rax)\n"                                  \
+	"  movq %r8, 16(%r10,%rax)\n"                                  \
+	"  movq %r9, 24(%r10,%rax)\n"                                  \
+	"1:\n"                                                         \
 	"  jmp *g_tf_real+" #n "*8(%rip)\n"
 
 __asm__(".text\n" TF_THUNK(0) TF_THUNK(1) TF_THUNK(2) TF_THUNK(3) TF_THUNK(4)
@@ -810,6 +940,19 @@ static FARPROC WINAPI getprocaddress_hook(HMODULE mod, LPCSTR name)
 			return (FARPROC)(radians ? (void *)range_bounds_radians :
 						   (void *)range_bounds_degrees);
 		return (FARPROC)(radians ? (void *)range_radians : (void *)range_degrees);
+	}
+
+	// The gate-hunting getters: forwarded with status and out-values
+	// logged, because what the game is TOLD by these is the evidence for
+	// why it never calls the texture setters.
+	if (p && by_name && logi_module) {
+		for (int i = 0; i < GATE_GETTERS; i++) {
+			if (strcmp(name, g_gate_names[i]) != 0)
+				continue;
+			g_gate_real[i] = (gate_getter_fn)p;
+			say("    (logging %s results: gate hunting)", name);
+			return (FARPROC)g_gate_wrappers[i];
+		}
 	}
 
 	// Hand back a counting thunk for the calls worth watching. Only for a
@@ -1156,9 +1299,23 @@ public:
 			if (n == 200)
 				run_haptic_diagnostic();
 			if (n == 200 || (n % 5600) == 0) {
-				for (int i = 0; i < TRACKED_CALLS; i++)
-					say("    calls: %-32s %lld", g_tracked[i],
-					    (long long)g_tf_calls[i]);
+				for (int i = 0; i < TRACKED_CALLS; i++) {
+					long long c = g_tf_calls[i];
+
+					say("    calls: %-32s %lld", g_tracked[i], c);
+					// The first three calls' raw argument
+					// registers, captured by the thunk. If a
+					// setter ever fires, these are the
+					// arguments the game used; hex, since
+					// the signatures are not established.
+					for (int j = 0; j < 3 && j < c; j++)
+						say("      first-args[%d]: rcx=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx",
+						    j,
+						    (unsigned long long)g_tf_args[i][j][0],
+						    (unsigned long long)g_tf_args[i][j][1],
+						    (unsigned long long)g_tf_args[i][j][2],
+						    (unsigned long long)g_tf_args[i][j][3]);
+				}
 			}
 		} else if (loud && e) {
 			say("Escape #%ld  command=0x%08lx  in=%lu out=%lu", (long)n,
@@ -1375,7 +1532,6 @@ extern "C" __declspec(dllexport) HRESULT WINAPI DllUnregisterServer(void) { retu
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
 	(void)inst;
-	(void)reserved;
 	// Nothing here may touch the CRT beyond this, and nothing may open a
 	// file: DllMain runs under the loader lock, and an abort here takes
 	// the game with it before it draws a frame.
@@ -1386,6 +1542,48 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 		// Only memory reads and VirtualProtect: no CRT, no file, no
 		// loader call, so it is safe under the loader lock.
 		watch_sdk_handshake();
+	}
+	if (reason == DLL_PROCESS_DETACH) {
+		// Leave the SDK the way a clean Windows session does instead of
+		// the abort-capture way: force mode off, then close, on the SDK
+		// that is still loaded in this process (it cannot have been
+		// unloaded before us: the game loaded it after this DLL, and
+		// detach runs in reverse load order).
+		//
+		// Loader-lock adjudication, per call:
+		//   - logiWheelSetForceMode(handle, 0): disassembly-verified
+		//     simple (stores the mode byte, issues the device command);
+		//     no thread creation, no waits. Called on BOTH detach
+		//     flavours - it is the half that reaches the wheel.
+		//   - logiWheelClose / dllClose: internals unknown, and an SDK
+		//     with a live haptic thread plausibly JOINS it in close.
+		//     A join under the loader lock deadlocks at process
+		//     termination (reserved != NULL: the OS already killed
+		//     every other thread, possibly mid-lock), so on that
+		//     flavour they are skipped - process teardown reclaims the
+		//     process-local state anyway, and the on-wheel session end
+		//     is covered by SetForceMode(0) here plus logi-launch's
+		//     0x04+0x03 teardown pair after the game is gone. On a
+		//     dynamic unload (reserved == NULL) the SDK's threads are
+		//     alive to service a close, and skipping it would leak a
+		//     live session in a continuing process, so there they run.
+		//   - atexit() at first handle capture was considered and
+		//     rejected: this DLL links the CRT statically, so its
+		//     atexit table runs from THIS DLL's CRT teardown, inside
+		//     the same loader-locked detach - it buys no safety at all.
+		//
+		// No say() here: file I/O under the loader lock is banned by
+		// this file's own rule above.
+		long long h = InterlockedCompareExchange64(&g_kf_handle, 0, 0);
+
+		if (h && g_setforcemode_real)
+			g_setforcemode_real((void *)(ULONG_PTR)h, 0);
+		if (reserved == nullptr) {
+			if (h && g_wheel_close_real)
+				g_wheel_close_real(h);
+			if (g_dll_close_real)
+				g_dll_close_real(h);
+		}
 	}
 	return TRUE;
 }
