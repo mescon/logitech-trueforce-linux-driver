@@ -174,6 +174,8 @@ int logitf_session_ensure(struct logitf_device *dev)
 
 	dev->tf_initialized = true;
 	dev->tf_paused = false;
+	dev->tf_armed_idle = false;
+	dev->tf_idle_ticks = 0;
 	dev->tf_seq = (uint8_t)(TF_INIT_PACKET_COUNT + 1);
 	pthread_mutex_unlock(&dev->lock);
 	return LOGITF_OK;
@@ -184,10 +186,21 @@ int logitf_session_close(struct logitf_device *dev)
 	pthread_mutex_lock(&dev->lock);
 
 	if (dev->hidraw_fd >= 0) {
+		/*
+		 * Backstop for sessions that were initialized but never
+		 * streamed (logitf_stream_stop sends the pair for the
+		 * streamed case, and skips it here via tf_armed_idle):
+		 * close with the captured 0x04+0x03 teardown, never with
+		 * the abort-capture's bare fd close that leaves the engine
+		 * running until power cycle.
+		 */
+		if (dev->tf_initialized && !dev->tf_armed_idle)
+			(void)logitf_tf_send_stop_pair(dev);
 		close(dev->hidraw_fd);
 		dev->hidraw_fd = -1;
 	}
 	dev->tf_initialized = false;
+	dev->tf_armed_idle = false;
 
 	pthread_mutex_unlock(&dev->lock);
 	return LOGITF_OK;

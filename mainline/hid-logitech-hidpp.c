@@ -5624,6 +5624,7 @@ struct hidpp_dd_ff_data {
 	bool tf_init_queued;		/* init work queued/running; cleared for retry on failure */
 	bool tf_streaming;		/* between START and STOP */
 	bool tf_recentre_sent;		/* wind-down recentre packet already out */
+	bool tf_stop_sent;		/* wind-down STOP queued; awaiting the trailing arm */
 	u8 tf_seq;			/* TF stream sequence counter */
 	u8 tf_init_attempts;		/* hard init failures so far (cap: HIDPP_DD_TF_INIT_MAX_ATTEMPTS) */
 	u16 tf_window[HIDPP_DD_TF_WINDOW];	/* rolling window, offset binary */
@@ -6551,6 +6552,11 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 	 * alive while a TF stream is open so a dropped STOP can retry,
 	 * and while autocenter is set so the centring spring keeps
 	 * tracking the wheel.
+	 *
+	 * Known cost: nonzero autocenter streams keepalives forever, an
+	 * open session at zero force (whine-investigation.md holder #5).
+	 * A zero-force silence gate here is deliberately deferred to a
+	 * hardware-verified step post-0.35.0.
 	 */
 	if ((any_playing || ff->tf_streaming || READ_ONCE(ff->autocenter)) &&
 	    !atomic_read_acquire(&ff->stopping) &&
@@ -6937,22 +6943,45 @@ static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 								NULL);
 				ff->tf_recentre_sent = sent;
 			}
-			if (hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_STOP))
+			/*
+			 * Wind down with the captured teardown pair, not a
+			 * bare STOP: every clean Windows session ends with
+			 * one 0x04 (stop/clear) then one 0x03 (arm) ~2 ms
+			 * later, then host silence - the same pair that
+			 * closes init pass 1. The workqueue sends the two
+			 * back to back and the interrupt OUT endpoint's
+			 * 1 ms bInterval spaces them like the capture. The
+			 * stream is only marked down once BOTH queued, so a
+			 * drop of either half retries next tick
+			 * (tf_stop_sent keeps the STOP from repeating while
+			 * only the arm is owed).
+			 */
+			if (!ff->tf_stop_sent)
+				ff->tf_stop_sent =
+					hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_STOP);
+			if (ff->tf_stop_sent &&
+			    hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_START)) {
 				ff->tf_streaming = false;
+				ff->tf_stop_sent = false;
+			}
 			return sent;
 		}
 		return false;
 	}
 
-	if (!ff->tf_streaming) {
+	if (!ff->tf_streaming || ff->tf_stop_sent) {
 		/*
 		 * START must land before stream packets mean anything; if
 		 * it was dropped, skip this tick's samples and retry.
+		 * tf_stop_sent covers a texture restarting mid-wind-down:
+		 * the STOP half of the teardown pair already reached the
+		 * wheel, so the engine needs a fresh arm before samples.
 		 */
 		if (!hidpp_dd_tf_queue_ctrl(ff, HIDPP_DD_TF_CMD_START))
 			return false;
 		ff->tf_streaming = true;
 		ff->tf_recentre_sent = false;
+		ff->tf_stop_sent = false;
 	}
 
 	gain = READ_ONCE(ff->gain);

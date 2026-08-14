@@ -16,6 +16,7 @@
 #include <stdlib.h>
 
 #include <string.h>
+#include <unistd.h>
 
 #include <trueforce.h>
 #include "internal.h"
@@ -115,6 +116,157 @@ static int test_float_to_wire(void)
 	return 0;
 }
 
+/*
+ * The driving-packet shape: type 0x01, cur duplicated at 6-9, byte 10 =
+ * 4 new samples, byte 11 = 0x0d, 13 window slots each duplicated L/R.
+ */
+static int test_stream_packet_shape(void)
+{
+	uint16_t window[LOGITF_TF_WINDOW];
+	uint8_t pkt[64];
+	int i;
+
+	for (i = 0; i < LOGITF_TF_WINDOW; i++)
+		window[i] = (uint16_t)(0x8000 + i);
+	logitf_build_stream_packet(pkt, 0x42, 0x8123, window);
+
+	EXPECT_EQ("stream:id",      pkt[0],  0x01);
+	EXPECT_EQ("stream:type",    pkt[4],  0x01);
+	EXPECT_EQ("stream:seq",     pkt[5],  0x42);
+	EXPECT_EQ("stream:cur_lo",  pkt[6],  0x23);
+	EXPECT_EQ("stream:cur_hi",  pkt[7],  0x81);
+	EXPECT_EQ("stream:cur_lo2", pkt[8],  0x23);
+	EXPECT_EQ("stream:cur_hi2", pkt[9],  0x81);
+	EXPECT_EQ("stream:new",     pkt[10], 0x04);
+	EXPECT_EQ("stream:flag",    pkt[11], 0x0d);
+	for (i = 0; i < LOGITF_TF_WINDOW; i++) {
+		const uint8_t *p = pkt + 12 + i * 4;
+
+		EXPECT_EQ("stream:slot_lo",  p[0], (0x8000 + i) & 0xff);
+		EXPECT_EQ("stream:slot_hi",  p[1], (0x8000 + i) >> 8);
+		EXPECT_EQ("stream:slot_lo2", p[2], (0x8000 + i) & 0xff);
+		EXPECT_EQ("stream:slot_hi2", p[3], (0x8000 + i) >> 8);
+	}
+	return 0;
+}
+
+/*
+ * The idle keepalive must be the Windows menu shape (whine-investigation.md
+ * section 2): byte 10 = 0x00 (zero new samples), byte 11 = 0x00, and bytes
+ * 12..63 literal zeros - never byte10=4 with a repeated sample, and never
+ * 0x8000 centre values in the tail.
+ */
+static int test_idle_packet_shape(void)
+{
+	uint8_t pkt[64];
+	int i;
+
+	memset(pkt, 0xAA, sizeof(pkt));	/* prove every byte is written */
+	logitf_build_idle_packet(pkt, 0x3b, 0x8000);
+
+	EXPECT_EQ("idle:id",      pkt[0],  0x01);
+	EXPECT_EQ("idle:pad1",    pkt[1],  0x00);
+	EXPECT_EQ("idle:pad2",    pkt[2],  0x00);
+	EXPECT_EQ("idle:pad3",    pkt[3],  0x00);
+	EXPECT_EQ("idle:type",    pkt[4],  0x01);
+	EXPECT_EQ("idle:seq",     pkt[5],  0x3b);
+	EXPECT_EQ("idle:cur_lo",  pkt[6],  0x00);
+	EXPECT_EQ("idle:cur_hi",  pkt[7],  0x80);
+	EXPECT_EQ("idle:cur_lo2", pkt[8],  0x00);
+	EXPECT_EQ("idle:cur_hi2", pkt[9],  0x80);
+	EXPECT_EQ("idle:new",     pkt[10], 0x00);
+	EXPECT_EQ("idle:flag",    pkt[11], 0x00);
+	for (i = 12; i < 64; i++)
+		EXPECT_EQ("idle:zero_tail", pkt[i], 0x00);
+
+	/* A held non-zero force rides in cur; the tail stays zero. */
+	logitf_build_idle_packet(pkt, 0x3c, 0x8123);
+	EXPECT_EQ("idle:held_lo", pkt[6],  0x23);
+	EXPECT_EQ("idle:held_hi", pkt[7],  0x81);
+	for (i = 12; i < 64; i++)
+		EXPECT_EQ("idle:held_zero_tail", pkt[i], 0x00);
+	return 0;
+}
+
+/*
+ * The control packets must be byte-identical to init packets 67 (0x04)
+ * and 68 (0x03), the same pair Windows sends as session teardown, modulo
+ * the sequence byte the sender rewrites.
+ */
+static int test_ctrl_packets_match_captured_pair(void)
+{
+	uint8_t pkt[64];
+	uint8_t want[64];
+
+	logitf_build_ctrl_packet(pkt, 0x04, 0x00);
+	memcpy(want, tf_init_packets[TF_INIT_PACKET_COUNT - 2], 64);
+	want[TF_INIT_SEQ_OFFSET] = 0x00;
+	if (memcmp(pkt, want, 64) != 0) {
+		fprintf(stderr, "FAIL ctrl:stop differs from init packet 67\n");
+		return 1;
+	}
+
+	logitf_build_ctrl_packet(pkt, 0x03, 0x00);
+	memcpy(want, tf_init_packets[TF_INIT_PACKET_COUNT - 1], 64);
+	want[TF_INIT_SEQ_OFFSET] = 0x00;
+	if (memcmp(pkt, want, 64) != 0) {
+		fprintf(stderr, "FAIL ctrl:arm differs from init packet 68\n");
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * The teardown pair on the wire: exactly one 0x04 then one 0x03 with
+ * consecutive sequence bytes, matching the captured teardown (0x04 seq
+ * 0x3c at 126.7215 s, 0x03 seq 0x3d at 126.7234 s). A pipe stands in
+ * for the hidraw fd.
+ */
+static int test_stop_pair_ordering(void)
+{
+	struct logitf_device dev;
+	uint8_t buf[128];
+	size_t got = 0;
+	int fds[2];
+	int rc;
+
+	if (pipe(fds) != 0) {
+		fprintf(stderr, "FAIL pair: pipe() failed\n");
+		return 1;
+	}
+	memset(&dev, 0, sizeof(dev));
+	pthread_mutex_init(&dev.lock, NULL);
+	dev.hidraw_fd = fds[1];
+	dev.tf_seq = 0x3c;
+	dev.tf_initialized = true;
+
+	pthread_mutex_lock(&dev.lock);
+	rc = logitf_tf_send_stop_pair(&dev);
+	pthread_mutex_unlock(&dev.lock);
+	EXPECT_EQ("pair:rc", rc, LOGITF_OK);
+	EXPECT_EQ("pair:armed_idle", dev.tf_armed_idle, 1);
+	EXPECT_EQ("pair:seq_advanced", dev.tf_seq, 0x3e);
+
+	while (got < sizeof(buf)) {
+		ssize_t n = read(fds[0], buf + got, sizeof(buf) - got);
+
+		if (n <= 0) {
+			fprintf(stderr, "FAIL pair: short read (%zu bytes)\n", got);
+			return 1;
+		}
+		got += (size_t)n;
+	}
+	EXPECT_EQ("pair:first_type",  buf[4],      0x04);
+	EXPECT_EQ("pair:first_seq",   buf[5],      0x3c);
+	EXPECT_EQ("pair:second_type", buf[64 + 4], 0x03);
+	EXPECT_EQ("pair:second_seq",  buf[64 + 5], 0x3d);
+
+	close(fds[0]);
+	close(fds[1]);
+	pthread_mutex_destroy(&dev.lock);
+	return 0;
+}
+
 static int test_wire_monotonic(void)
 {
 	/*
@@ -150,6 +302,10 @@ int main(void)
 		{ "float_to_wire",    test_float_to_wire },
 		{ "wire_monotonic",   test_wire_monotonic },
 		{ "init_range_push",  test_init_carries_exactly_one_range_push },
+		{ "stream_packet_shape", test_stream_packet_shape },
+		{ "idle_packet_shape",   test_idle_packet_shape },
+		{ "ctrl_packets_match_captured_pair", test_ctrl_packets_match_captured_pair },
+		{ "stop_pair_ordering",  test_stop_pair_ordering },
 	};
 	size_t i;
 

@@ -30,6 +30,8 @@ mod ffi {
         pub fn logiTrueForceAvailable(index: c_int) -> bool;
         pub fn logiTrueForceSetTorqueTFfloat(index: c_int, samples: *const f32, count: c_int) -> c_int;
         pub fn logiTrueForceClearTF(index: c_int) -> c_int;
+        pub fn logiTrueForcePause(index: c_int) -> c_int;
+        pub fn logiTrueForceResume(index: c_int) -> c_int;
         pub fn logiWheelClose(index: c_int) -> c_int;
     }
 }
@@ -112,6 +114,24 @@ impl TfStream {
             return Err(Error::Stream("logiTrueForceSetTorqueTFfloat".into(), rc));
         }
         Ok(())
+    }
+
+    /// Put the session in standby: the library sends the captured 0x04+0x03
+    /// teardown pair and goes silent, leaving the engine flushed and armed,
+    /// which is the state Windows leaves a wheel in between sessions
+    /// (whine-investigation.md). Used when the game sits in menus: force
+    /// output is zero but telemetry still flows, so the stream must not be
+    /// torn down entirely.
+    pub fn standby(&mut self) {
+        // SAFETY: index was validated in open(); Pause is idempotent.
+        unsafe { ffi::logiTrueForcePause(self.index) };
+    }
+
+    /// Leave standby. The pair's trailing 0x03 left the engine armed, so no
+    /// re-init happens: the next pushed samples resume the stream directly.
+    pub fn resume(&mut self) {
+        // SAFETY: index was validated in open(); Resume is idempotent.
+        unsafe { ffi::logiTrueForceResume(self.index) };
     }
 }
 

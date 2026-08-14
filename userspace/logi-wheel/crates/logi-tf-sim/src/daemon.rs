@@ -27,6 +27,12 @@ use crate::{beamng, codemasters, f1, g923, pcars, relay, wrc};
 
 /// Stop the stream after this much telemetry silence (spec safety rail).
 pub const SILENCE_TIMEOUT_MS: u64 = 500;
+/// Go to standby after this much zero-force output while telemetry still
+/// flows (game menus). Distinct from [`SILENCE_TIMEOUT_MS`], which watches
+/// packet ARRIVAL: a game in its menus keeps sending telemetry, so that
+/// watchdog never fires, and holding the stream open at zero force is
+/// exactly what whines (whine-investigation.md holder #3).
+pub const ZERO_FORCE_STANDBY_MS: u64 = 500;
 /// Poll timeout; bounds both watchdog latency and shutdown latency.
 const POLL_TIMEOUT_MS: i32 = 50;
 /// Cap on how much audio one iteration may generate, in milliseconds: a
@@ -130,6 +136,80 @@ impl WheelStream {
                 s.push(samples).map_err(|e| Error::Io("G923 TrueForce stream write".into(), e))
             }
         }
+    }
+
+    /// Menu standby: the DD path has libtrueforce send the captured
+    /// 0x04+0x03 teardown pair and go silent (engine flushed, armed,
+    /// unfed - the state Windows leaves the wheel in). The G923 path has
+    /// no TF engine to disarm: the grace period already delivered zero
+    /// force, and simply not writing holds it there.
+    pub(crate) fn standby(&mut self) {
+        if let WheelStream::Dd(s) = self {
+            s.standby();
+        }
+    }
+
+    /// Leave standby; the DD engine stayed armed, so the next push
+    /// resumes the stream without re-init.
+    pub(crate) fn resume(&mut self) {
+        if let WheelStream::Dd(s) = self {
+            s.resume();
+        }
+    }
+}
+
+/// What [`SilenceGate::observe`] wants done about this block of output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GateAction {
+    /// Nothing changes; push or stay silent per [`SilenceGate::in_standby`].
+    Stay,
+    /// The grace period just elapsed: put the stream in standby.
+    EnterStandby,
+    /// Force returned while in standby: resume the stream, then push.
+    Resume,
+}
+
+/// Content-based standby detector for game menus.
+///
+/// The effects engine deliberately snaps silenced effects to exact zero
+/// (`effects.rs`, `SMOOTH_SNAP`), so "the mixer produced only zeros" is a
+/// reliable one-comparison signal that no force is being commanded. After
+/// [`ZERO_FORCE_STANDBY_MS`] of that the stream goes to standby even though
+/// telemetry still flows; the first non-zero block resumes it. Extracted
+/// from the loop so the transition arithmetic is testable against a
+/// simulated clock, like [`plan_generation`].
+#[derive(Debug, Default)]
+pub(crate) struct SilenceGate {
+    /// Milliseconds of consecutive all-zero output so far.
+    zero_ms: u64,
+    standby: bool,
+}
+
+impl SilenceGate {
+    pub(crate) fn in_standby(&self) -> bool {
+        self.standby
+    }
+
+    /// Account one rendered block: `silent` is "every sample was exactly
+    /// zero", `audio_ms` how much audio time the block covers.
+    pub(crate) fn observe(&mut self, silent: bool, audio_ms: u64) -> GateAction {
+        if !silent {
+            self.zero_ms = 0;
+            if self.standby {
+                self.standby = false;
+                return GateAction::Resume;
+            }
+            return GateAction::Stay;
+        }
+        if self.standby {
+            return GateAction::Stay;
+        }
+        self.zero_ms += audio_ms;
+        if self.zero_ms >= ZERO_FORCE_STANDBY_MS {
+            self.standby = true;
+            return GateAction::EnterStandby;
+        }
+        GateAction::Stay
     }
 }
 
@@ -244,6 +324,9 @@ struct Active {
     /// G923's LED classdevs) was found at stream start; `None` otherwise.
     /// Stopped (blanked) with the stream.
     leds: Option<RevLeds>,
+    /// Menu standby: zero-force output past the grace period parks the
+    /// stream even while telemetry keeps arriving.
+    gate: SilenceGate,
 }
 
 fn bind(port: u16) -> Result<UdpSocket> {
@@ -410,6 +493,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                                 last_gen: now,
                                 samples: Vec::with_capacity(MAX_GEN_MS as usize * crate::synth::SAMPLES_PER_MS),
                                 leds,
+                                gate: SilenceGate::default(),
                             });
                         }
                         Err(e) => {
@@ -461,6 +545,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                             last_gen: now,
                             samples: Vec::with_capacity(MAX_GEN_MS as usize * crate::synth::SAMPLES_PER_MS),
                             leds: None,
+                            gate: SilenceGate::default(),
                         });
                     }
                     Err(e) => {
@@ -492,8 +577,31 @@ pub fn run(cfg: &Config) -> Result<()> {
                     // apply here: an effect's reading of the sample is the
                     // effect's business.
                     a.mixer.render(&a.tel, intensity, plan.samples, &mut a.samples);
-                    if let Err(e) = a.stream.push(&a.samples) {
-                        stop_reason = Some(format!("stream push failed: {e}"));
+                    // Menus: telemetry keeps flowing while the mixer emits
+                    // exact zeros. Past the grace period the stream parks
+                    // (teardown pair + silence) instead of holding an open
+                    // session at zero force, and pushes stop until force
+                    // returns. Resume happens in the same iteration force
+                    // reappears, so no samples are lost.
+                    let silent = a.samples.iter().all(|&s| s == 0.0);
+                    match a.gate.observe(silent, plan.audio_ms) {
+                        GateAction::EnterStandby => {
+                            a.stream.standby();
+                            eprintln!(
+                                "logi-tf-sim: standby ({}): zero force for {ZERO_FORCE_STANDBY_MS} ms, telemetry still flowing",
+                                a.game
+                            );
+                        }
+                        GateAction::Resume => {
+                            a.stream.resume();
+                            eprintln!("logi-tf-sim: resume ({}): force returned", a.game);
+                        }
+                        GateAction::Stay => {}
+                    }
+                    if !a.gate.in_standby() {
+                        if let Err(e) = a.stream.push(&a.samples) {
+                            stop_reason = Some(format!("stream push failed: {e}"));
+                        }
                     }
                 }
                 // The rev display rides the same telemetry: RevLeds
@@ -601,5 +709,70 @@ mod generation_tests {
     #[test]
     fn nothing_is_generated_for_less_than_a_millisecond() {
         assert_eq!(plan_generation(0), None);
+    }
+}
+
+#[cfg(test)]
+mod silence_gate_tests {
+    use super::{GateAction, SilenceGate, ZERO_FORCE_STANDBY_MS};
+
+    /// Menus at a 50 ms iteration period: zeros accumulate to exactly the
+    /// grace period, then one EnterStandby, then Stay forever after.
+    #[test]
+    fn standby_after_the_grace_period_and_not_before() {
+        let mut gate = SilenceGate::default();
+        let block_ms = 50;
+        let blocks_to_grace = ZERO_FORCE_STANDBY_MS / block_ms;
+
+        for i in 1..blocks_to_grace {
+            assert_eq!(gate.observe(true, block_ms), GateAction::Stay, "block {i}");
+            assert!(!gate.in_standby(), "still inside the grace period at block {i}");
+        }
+        assert_eq!(gate.observe(true, block_ms), GateAction::EnterStandby);
+        assert!(gate.in_standby());
+        for _ in 0..100 {
+            assert_eq!(gate.observe(true, block_ms), GateAction::Stay, "standby is stable");
+            assert!(gate.in_standby());
+        }
+    }
+
+    /// A single non-zero block anywhere inside the grace period resets it:
+    /// intermittent force (kerb taps in a slow corner) never parks the
+    /// stream.
+    #[test]
+    fn any_force_resets_the_grace_period() {
+        let mut gate = SilenceGate::default();
+
+        for _ in 0..ZERO_FORCE_STANDBY_MS - 1 {
+            assert_eq!(gate.observe(true, 1), GateAction::Stay);
+        }
+        assert_eq!(gate.observe(false, 1), GateAction::Stay, "force arrives, no transition");
+        for _ in 0..ZERO_FORCE_STANDBY_MS - 1 {
+            assert_eq!(gate.observe(true, 1), GateAction::Stay, "counter restarted from zero");
+        }
+        assert_eq!(gate.observe(true, 1), GateAction::EnterStandby);
+    }
+
+    /// Force returning while parked resumes exactly once, and the same
+    /// iteration's samples are pushable (in_standby is already false).
+    #[test]
+    fn force_returning_resumes_once() {
+        let mut gate = SilenceGate::default();
+
+        assert_eq!(gate.observe(true, ZERO_FORCE_STANDBY_MS), GateAction::EnterStandby);
+        assert_eq!(gate.observe(false, 50), GateAction::Resume);
+        assert!(!gate.in_standby(), "the resuming block itself must be pushed");
+        assert_eq!(gate.observe(false, 50), GateAction::Stay, "no second resume");
+    }
+
+    /// The park-resume cycle repeats: menus, race, menus again.
+    #[test]
+    fn the_cycle_repeats() {
+        let mut gate = SilenceGate::default();
+
+        for _ in 0..3 {
+            assert_eq!(gate.observe(true, ZERO_FORCE_STANDBY_MS), GateAction::EnterStandby);
+            assert_eq!(gate.observe(false, 10), GateAction::Resume);
+        }
     }
 }

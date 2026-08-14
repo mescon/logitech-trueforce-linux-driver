@@ -16,6 +16,7 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <time.h>
 
 /* ---- Module lifecycle ---- */
 
@@ -673,7 +674,29 @@ int logiTrueForcePause(int index)
 
 	if (rc)
 		return rc;
+	if (dev->tf_paused)
+		return LOGITF_OK;
+	/*
+	 * Going silent with the engine armed is the abort-capture state
+	 * (whine-investigation.md holder #2): the firmware treats the gap
+	 * as host-idle and the started engine keeps whining. Pause the way
+	 * a Windows session ends instead: 0x04+0x03, then silence. Resume
+	 * needs no re-arm - the pair's trailing 0x03 left the engine armed,
+	 * and the stream thread clears tf_armed_idle on its next packet.
+	 *
+	 * tf_paused is set first, then one tick's grace, so an in-flight
+	 * stream_tick lands before the pair rather than after it.
+	 */
 	dev->tf_paused = true;
+	{
+		struct timespec ts = { 0, 2000000L };
+
+		nanosleep(&ts, NULL);
+	}
+	pthread_mutex_lock(&dev->lock);
+	if (dev->tf_initialized && !dev->tf_armed_idle)
+		(void)logitf_tf_send_stop_pair(dev);
+	pthread_mutex_unlock(&dev->lock);
 	return LOGITF_OK;
 }
 

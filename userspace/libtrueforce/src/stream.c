@@ -24,11 +24,18 @@
  * next packet as well. We reproduce this exactly so the wheel
  * firmware sees byte-for-byte the same stream as G HUB.
  *
- * If userspace can't keep up, the thread repeats the previous
- * window (Windows does the same under input starvation) and the
- * wheel gradually unwinds. If userspace overruns the ring, push
- * blocks on ring_space (or returns EAGAIN in non-blocking callers
- * - a future 22.x item).
+ * If userspace can't keep up, the thread emits the silent keepalive
+ * Windows sends in game menus (byte 10 = 0 "zero new samples",
+ * byte 11 = 0, zeroed tail, cur = the current commanded force): the
+ * wheel is told there is nothing to play instead of being handed the
+ * last sample again as fresh audio (whine-investigation.md, H2).
+ * After LOGITF_TF_IDLE_GRACE_TICKS of that at centre force, the
+ * thread sends the captured session-teardown pair (0x04 stop/clear,
+ * then 0x03 arm ~2 ms later) and goes fully silent, exactly the way
+ * every clean Windows session ends; the next pushed sample resumes
+ * the stream without re-init, the engine having stayed armed. If
+ * userspace overruns the ring, push blocks on ring_space (or returns
+ * EAGAIN in non-blocking callers - a future 22.x item).
  *
  * Coexistence with the kernel driver on interface 2: our in-tree
  * hid-logitech-dd fork also writes to interface 2's ep 0x03 OUT
@@ -142,9 +149,14 @@ int logitf_stream_clear(struct logitf_device *dev)
 
 /* ---------- packet emission ---------- */
 
-static void build_packet(uint8_t *pkt, uint8_t seq,
-			 uint16_t current,
-			 const uint16_t window[LOGITF_TF_WINDOW])
+/*
+ * The three wire shapes below are non-static so tests/unit.c can pin
+ * them byte-for-byte against the captures without a wheel attached.
+ */
+
+void logitf_build_stream_packet(uint8_t *pkt, uint8_t seq,
+				uint16_t current,
+				const uint16_t window[LOGITF_TF_WINDOW])
 {
 	memset(pkt, 0, 64);
 	pkt[0] = 0x01;           /* HID report ID */
@@ -169,11 +181,80 @@ static void build_packet(uint8_t *pkt, uint8_t seq,
 	}
 }
 
+/*
+ * The silent keepalive Windows streams through game menus: type 0x01,
+ * cur duplicated at 6-9, byte 10 = 0x00 (zero new samples), byte 11 =
+ * 0x00, and bytes 12..63 literal zeros - NOT centre values, and NOT a
+ * repeat of the last window (whine-investigation.md section 2; 56287 of
+ * the 119028 packets in the RS50+ACC capture have exactly this shape).
+ */
+void logitf_build_idle_packet(uint8_t *pkt, uint8_t seq, uint16_t current)
+{
+	memset(pkt, 0, 64);
+	pkt[0] = 0x01;           /* HID report ID */
+	pkt[4] = 0x01;           /* type: sample */
+	pkt[5] = seq;
+	pkt[6] = current & 0xff;
+	pkt[7] = current >> 8;
+	pkt[8] = current & 0xff;
+	pkt[9] = current >> 8;
+	/* bytes 10..63 stay zero: no new samples, nothing to play */
+}
+
+/* Control packet (0x03 arm / 0x04 stop-clear): type at 4, seq at 5. */
+void logitf_build_ctrl_packet(uint8_t *pkt, uint8_t type, uint8_t seq)
+{
+	memset(pkt, 0, 64);
+	pkt[0] = 0x01;
+	pkt[4] = type;
+	pkt[5] = seq;
+}
+
+static void stream_microsleep(unsigned us)
+{
+	struct timespec ts = { 0, (long)us * 1000 };
+
+	nanosleep(&ts, NULL);
+}
+
+/*
+ * Send the captured session-teardown pair: one 0x04 (stop/clear) then
+ * one 0x03 (arm) ~2 ms later - the exact bytes every clean Windows
+ * session ends with, and the same pair that closes init pass 1
+ * (packets 67+68). Leaves the engine flushed and armed; the host
+ * silence that follows is what the firmware reads as end of session.
+ *
+ * Caller must hold dev->lock and must guarantee the stream thread is
+ * not concurrently writing (it either IS the stream thread, or the
+ * thread has been joined, or tf_paused has been set and drained).
+ */
+int logitf_tf_send_stop_pair(struct logitf_device *dev)
+{
+	uint8_t pkt[64];
+	ssize_t wr;
+
+	if (dev->hidraw_fd < 0)
+		return LOGITF_ERR_IO;
+
+	logitf_build_ctrl_packet(pkt, 0x04, dev->tf_seq++);
+	wr = write(dev->hidraw_fd, pkt, sizeof(pkt));
+	if (wr != (ssize_t)sizeof(pkt))
+		return LOGITF_ERR_IO;
+	stream_microsleep(2000);	/* captured pair spacing: ~2 ms */
+	logitf_build_ctrl_packet(pkt, 0x03, dev->tf_seq++);
+	wr = write(dev->hidraw_fd, pkt, sizeof(pkt));
+	if (wr != (ssize_t)sizeof(pkt))
+		return LOGITF_ERR_IO;
+	dev->tf_armed_idle = true;
+	return LOGITF_OK;
+}
+
 static int stream_tick(struct logitf_device *dev)
 {
 	uint16_t new_samples[LOGITF_TF_NEW];
 	int n = 0;
 	uint8_t pkt[64];
+	ssize_t wr;
 
 	/* Drain up to LOGITF_TF_NEW samples from the ring (non-blocking). */
 	pthread_mutex_lock(&dev->ring_lock);
@@ -185,31 +266,84 @@ static int stream_tick(struct logitf_device *dev)
 		pthread_cond_broadcast(&dev->ring_space);
 	pthread_mutex_unlock(&dev->ring_lock);
 
-	/* Shift the window left by LOGITF_TF_NEW, append new samples at the
-	 * tail. If we got fewer than LOGITF_TF_NEW samples (starvation), the
-	 * unfilled slots repeat the last known sample - same effect as the
-	 * Windows driver under input underrun.
-	 */
-	int shift = LOGITF_TF_NEW;
-	memmove(&dev->tf_window[0],
-		&dev->tf_window[shift],
-		(LOGITF_TF_WINDOW - shift) * sizeof(uint16_t));
-	uint16_t last = dev->tf_window[LOGITF_TF_WINDOW - shift - 1];
+	if (n > 0) {
+		/*
+		 * Shift the window left by LOGITF_TF_NEW, append new samples
+		 * at the tail. If we got a partial batch, the unfilled slots
+		 * repeat the last known sample.
+		 */
+		int shift = LOGITF_TF_NEW;
 
-	for (int i = 0; i < shift; i++) {
-		uint16_t v = (i < n) ? new_samples[i] : last;
+		memmove(&dev->tf_window[0],
+			&dev->tf_window[shift],
+			(LOGITF_TF_WINDOW - shift) * sizeof(uint16_t));
+		uint16_t last = dev->tf_window[LOGITF_TF_WINDOW - shift - 1];
 
-		dev->tf_window[LOGITF_TF_WINDOW - shift + i] = v;
-		last = v;
+		for (int i = 0; i < shift; i++) {
+			uint16_t v = (i < n) ? new_samples[i] : last;
+
+			dev->tf_window[LOGITF_TF_WINDOW - shift + i] = v;
+			last = v;
+		}
+		dev->tf_last_current = dev->tf_window[LOGITF_TF_WINDOW - 1];
+	} else {
+		/*
+		 * Starved tick: flush the window toward centre so pre-idle
+		 * audio does not replay when the stream resumes. The wire
+		 * carries the idle packet's zeroed tail either way;
+		 * tf_last_current (the held force) is deliberately NOT
+		 * decayed - a producer that quit mid-waveform keeps its
+		 * commanded force held in cur, it just stops being replayed
+		 * as fresh audio.
+		 */
+		memmove(&dev->tf_window[0],
+			&dev->tf_window[LOGITF_TF_NEW],
+			(LOGITF_TF_WINDOW - LOGITF_TF_NEW) * sizeof(uint16_t));
+		for (int i = 0; i < LOGITF_TF_NEW; i++)
+			dev->tf_window[LOGITF_TF_WINDOW - LOGITF_TF_NEW + i] = 0x8000;
 	}
-	dev->tf_last_current = dev->tf_window[LOGITF_TF_WINDOW - 1];
 
 	if (dev->tf_paused)
 		return 0;
 
-	build_packet(pkt, dev->tf_seq++, dev->tf_last_current, dev->tf_window);
+	if (n == 0) {
+		if (dev->tf_armed_idle)
+			return 0;	/* post-pair standby: total silence */
 
-	ssize_t wr = write(dev->hidraw_fd, pkt, sizeof(pkt));
+		/*
+		 * Silence gate (whine-investigation.md H1): a session held
+		 * at zero force past the grace period is torn down the way
+		 * Windows tears one down - 0x04 + 0x03, then nothing. The
+		 * engine stays armed, so the next push resumes the stream
+		 * with no re-init. Gated on centre force: a held non-zero
+		 * cur must keep its keepalive cadence, because the firmware
+		 * unwinds held force on host silence (issue #16) and the
+		 * unwind of zero is the only unwind that costs nothing.
+		 */
+		if (dev->tf_last_current == 0x8000 &&
+		    ++dev->tf_idle_ticks >= LOGITF_TF_IDLE_GRACE_TICKS) {
+			int rc;
+
+			dev->tf_idle_ticks = 0;
+			pthread_mutex_lock(&dev->lock);
+			rc = logitf_tf_send_stop_pair(dev);
+			pthread_mutex_unlock(&dev->lock);
+			return rc == LOGITF_OK ? 0 : -EIO;
+		}
+		if (dev->tf_last_current != 0x8000)
+			dev->tf_idle_ticks = 0;
+
+		logitf_build_idle_packet(pkt, dev->tf_seq++,
+					 dev->tf_last_current);
+	} else {
+		dev->tf_idle_ticks = 0;
+		dev->tf_armed_idle = false;	/* resuming; pair's 0x03 armed us */
+		logitf_build_stream_packet(pkt, dev->tf_seq++,
+					   dev->tf_last_current,
+					   dev->tf_window);
+	}
+
+	wr = write(dev->hidraw_fd, pkt, sizeof(pkt));
 
 	if (wr < 0)
 		return -errno;
@@ -348,6 +482,7 @@ int logitf_stream_start(struct logitf_device *dev)
 	for (int i = 0; i < LOGITF_TF_WINDOW; i++)
 		dev->tf_window[i] = 0x8000;
 	dev->tf_last_current = 0x8000;
+	dev->tf_idle_ticks = 0;
 
 	/*
 	 * Sequence counter is set by session_ensure to
@@ -435,6 +570,17 @@ int logitf_stream_stop(struct logitf_device *dev)
 	}
 	dev->stream_running = false;
 	dev->shutting_down = false;
+
+	/*
+	 * The thread is joined, so nobody else is writing: end the session
+	 * the way every clean Windows session ends, 0x04 + 0x03 + silence,
+	 * instead of shipping the abort-capture behaviour (stream ends
+	 * mid-flight, engine left running until power cycle) as our normal
+	 * exit. Skipped if the pair already went out (idle standby or an
+	 * earlier pause); best-effort on a dying fd.
+	 */
+	if (dev->tf_initialized && !dev->tf_armed_idle)
+		(void)logitf_tf_send_stop_pair(dev);
 	pthread_mutex_unlock(&dev->lock);
 	return LOGITF_OK;
 }

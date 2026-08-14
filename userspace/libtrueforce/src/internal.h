@@ -61,6 +61,16 @@
  */
 #define LOGITF_TF_PKT_HZ  1000
 
+/*
+ * Silence gate: consecutive ring-starved ticks at centre force before the
+ * stream thread sends the 0x04+0x03 teardown pair and goes silent
+ * (whine-investigation.md H1: a session held open at zero force is what
+ * whines, and Windows' answer is to not hold one). 500 ms sits inside the
+ * report's suggested 250 ms..1 s band: long enough that a starved-but-live
+ * producer never hits it, short enough that menu idling goes quiet fast.
+ */
+#define LOGITF_TF_IDLE_GRACE_TICKS  (LOGITF_TF_PKT_HZ / 2)
+
 struct logitf_device {
 	bool in_use;
 
@@ -95,6 +105,15 @@ struct logitf_device {
 	/* Session state */
 	bool tf_initialized;       /* Init sequence sent since open */
 	bool tf_paused;
+	/*
+	 * The 0x04+0x03 teardown pair has been sent and the host has been
+	 * silent since: engine flushed and armed but unfed (the state every
+	 * clean Windows session leaves the wheel in). Cleared when a stream
+	 * packet resumes and by session init. Written under `lock`; read
+	 * lock-free by the stream thread (same discipline as tf_paused).
+	 */
+	bool tf_armed_idle;
+	unsigned tf_idle_ticks;    /* consecutive starved ticks at centre (stream thread only) */
 	uint8_t tf_seq;            /* next outgoing packet sequence byte */
 
 	/* Streaming state (managed by stream.c) */
@@ -154,6 +173,13 @@ int  logitf_stream_push_s16(struct logitf_device *dev, const int16_t *samples, i
 int  logitf_stream_clear(struct logitf_device *dev);
 int  logitf_stream_feedback_read(struct logitf_device *dev,
 				 struct logitf_stream_feedback *fb);
+/* Wire-shape builders, non-static so tests/unit.c can pin them. */
+void logitf_build_stream_packet(uint8_t *pkt, uint8_t seq, uint16_t current,
+				const uint16_t window[LOGITF_TF_WINDOW]);
+void logitf_build_idle_packet(uint8_t *pkt, uint8_t seq, uint16_t current);
+void logitf_build_ctrl_packet(uint8_t *pkt, uint8_t type, uint8_t seq);
+/* 0x04 then 0x03, ~2 ms apart; caller holds dev->lock, no concurrent writer. */
+int  logitf_tf_send_stop_pair(struct logitf_device *dev);
 
 /* kf.c */
 int    logitf_evdev_ensure_open(struct logitf_device *dev);
