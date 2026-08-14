@@ -244,9 +244,12 @@ own (see [CREDITS.md](CREDITS.md)).
 **PlayStation edition** (`046d:c266`/`c267`) is fully supported and verified on
 hardware:
 
-- **Force feedback** in games. No launch options are needed: just turn Steam
-  Input off. Do not set `PROTON_ENABLE_HIDRAW` for this wheel, it is meant for
-  the direct-drive wheels and it disables the G923's force feedback.
+- **Force feedback** in games. Launch options `logi-launch %command%` work
+  here too: the wrapper detects the classic wheel and applies its plan (raw
+  HID stays off, the telemetry engine note comes on where the game supports
+  it). Doing it by hand instead: just turn Steam Input off, and never set
+  `PROTON_ENABLE_HIDRAW` for this wheel, it is meant for the direct-drive
+  wheels and it disables the G923's force feedback.
 - **TrueForce** engine haptics through `logi-tf-sim`, driven by game telemetry.
   Logitech's own SDK cannot deliver TrueForce here (it hands the haptics to
   G HUB, which does not exist on Linux), so this driver streams them itself.
