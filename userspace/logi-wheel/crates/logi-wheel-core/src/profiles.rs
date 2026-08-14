@@ -327,6 +327,32 @@ mod tests {
     }
 
     #[test]
+    fn saving_an_existing_name_again_overwrites_it_in_place() {
+        // The GUI's per-profile Save button (issue #61) calls `save_in`
+        // with a name that already has a file: after tweaking settings and
+        // saving again under the same name, the profile must reflect the
+        // new snapshot, not the old one, and the store must still hold
+        // exactly one entry for that name (no dupes, nothing appended).
+        let dir = tempdir();
+        save_in(&dir, "race", &wheel()).unwrap();
+        assert_eq!(list_in(&dir), vec!["race".to_string()]);
+
+        save_in(&dir, "race", &other_wheel()).unwrap();
+        assert_eq!(list_in(&dir), vec!["race".to_string()], "still one entry, not appended");
+
+        let b = wheel();
+        let errors = apply_in(&dir, "race", &b).unwrap();
+        assert_eq!(errors, Vec::new(), "clean apply: {errors:?}");
+        for attr in ["wheel_strength", "wheel_range", "wheel_range_restore"] {
+            assert_eq!(
+                b.read(attr).unwrap(),
+                other_wheel().read(attr).unwrap(),
+                "{attr}: the second save should have won"
+            );
+        }
+    }
+
+    #[test]
     fn saved_file_has_the_header_and_raw_values() {
         let dir = tempdir();
         save_in(&dir, "race", &wheel()).unwrap();

@@ -92,6 +92,17 @@ export component ComputerProfiles inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             Button {
+                                text: "Save";
+                                // Overwrites this profile with the wheel's
+                                // current settings under its existing name
+                                // (issue #61): the "tweak, then update the
+                                // profile" loop, with no retyping needed.
+                                clicked => { root.save-profile(name); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
                                 text: "Delete";
                                 clicked => { root.delete-profile(name); }
                             }
