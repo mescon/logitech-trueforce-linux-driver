@@ -8908,6 +8908,7 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	struct hid_device *input_hdev;
 	struct hid_input *hidinput;
 	struct input_dev *input;
+	bool ff_hdev_bound;
 	int ret;
 	int total_wait_ms;
 
@@ -9097,7 +9098,8 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	 * so that is fine.
 	 */
 	device_lock(&ff_hdev->dev);
-	ret = (ff_hdev->driver == &hidpp_driver) ? hid_hw_open(ff_hdev) : -ENODEV;
+	ff_hdev_bound = ff_hdev->driver == &hidpp_driver;
+	ret = ff_hdev_bound ? hid_hw_open(ff_hdev) : -ENODEV;
 	if (!ret) {
 		ff->ff_hdev_open = true;
 
@@ -9111,7 +9113,6 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	}
 	device_unlock(&ff_hdev->dev);
 	if (ret) {
-		dd_err(hid, "Cannot open FFB interface (error %d) - FFB disabled\n", ret);
 		/*
 		 * Detach before destroying. input_ff_destroy() does
 		 * kfree(ff->private), and ff->private is our own
@@ -9129,6 +9130,32 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 		 */
 		input->ff->private = NULL;
 		input_ff_destroy(input);
+		/*
+		 * "Present but not yet bound" is the startup race, not a
+		 * failure: usb_get_intfdata() returned interface 2's
+		 * hid_device before our own probe of it had finished (or
+		 * udev is still shuffling bindings). That used to disable
+		 * FFB permanently; fold it into the same bounded retry the
+		 * intfdata/input checks above use. A rebind to a different
+		 * driver also lands here and simply exhausts the cap.
+		 * Everything torn down above is rebuilt from scratch on the
+		 * next attempt (ffbit bits, input_ff_create, the stores).
+		 */
+		if (!ff_hdev_bound &&
+		    ff->init_retries++ < HIDPP_DD_FF_MAX_INIT_RETRIES) {
+			dd_dbg(hid, "FFB interface present but not yet bound - retrying\n");
+			queue_delayed_work(ff->wq, &ff->init_work,
+					   msecs_to_jiffies(HIDPP_DD_FF_INIT_RETRY_MS));
+			return;
+		}
+		if (!ff_hdev_bound) {
+			total_wait_ms = HIDPP_DD_FF_INIT_DELAY_MS +
+					(HIDPP_DD_FF_MAX_INIT_RETRIES * HIDPP_DD_FF_INIT_RETRY_MS);
+			dd_err(hid, "Force feedback unavailable - FFB interface never bound to this driver after %dms\n",
+				total_wait_ms);
+		} else {
+			dd_err(hid, "Cannot open FFB interface (error %d) - FFB disabled\n", ret);
+		}
 		return;
 	}
 
