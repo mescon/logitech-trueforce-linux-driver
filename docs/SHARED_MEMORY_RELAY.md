@@ -224,6 +224,38 @@ The dump contains vehicle telemetry for the session that was running. It
 carries no account details, no keys and no personal data, but it does reflect
 what you were driving at that moment.
 
+## The relay datagram is a generic RPM contract
+
+Everything above describes the producers this project ships, but the port
+is a contract, not a private channel: **any** telemetry producer that emits
+the LTFR datagram to `127.0.0.1:20780` plugs into the same consumers. That
+includes `logi-rpm-bridge`, which forwards `rpm max_rpm` into the driver's
+`wheel_texture_rpm` sysfs attribute and therefore feeds the native
+TrueForce texture merge - so a homegrown bridge for an unlisted sim gets
+the on-wheel engine texture for its title as soon as the game's recipe
+grants `texture=merge` (the registry in
+`userspace/logi-wheel/crates/logi-wheel-core/src/games.rs`; today only
+AC EVO, because grants ride hardware evidence).
+
+The wire format, LTFR version 2 (28 bytes, little-endian, fixed size; the
+authoritative copy lives in `logi-wheel-core`'s `relay.rs`):
+
+| offset | field    | type   | notes |
+|---|---|---|---|
+| 0  | magic    | 4 bytes | `LTFR` |
+| 4  | version  | u8      | 2 |
+| 5  | flags    | u8      | bit 0 = airborne; other bits reserved, send 0 |
+| 6  | game id  | 8 bytes | ASCII, NUL-padded (`ac-evo`, `acc`, ...) |
+| 14 | rpm      | f32 LE  | engine speed, rpm |
+| 18 | max_rpm  | f32 LE  | engine redline, rpm |
+| 22 | throttle | f32 LE  | 0.0-1.0; 0 = the sender cannot tell |
+| 26 | gear     | i16 LE  | -1 reverse, 0 neutral, 1..N; 0 also = unknown |
+
+Send at roughly 60 Hz; consumers rate-limit on their side, and
+`logi-rpm-bridge` drops packets whose rpm is not in `[0, 30000)`. Fields a
+producer cannot supply are zero, which the format defines as "the sender
+cannot tell".
+
 ## Troubleshooting
 
 **"not readable yet"** repeated: the relay is running but the game is not

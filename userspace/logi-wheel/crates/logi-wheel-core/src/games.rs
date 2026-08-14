@@ -979,6 +979,12 @@ impl LaunchPlan {
             // granted exactly as widely as hidraw: withheld on an ambiguous
             // rig for the same reason, and gated per title because the
             // escape proxy's RPM relay is only validated for AC EVO.
+            // The RPM side is a generic contract, not an AC EVO special:
+            // any producer emitting the LTFR v2 datagram on
+            // 127.0.0.1:20780 feeds logi-rpm-bridge and therefore the
+            // merge (docs/SHARED_MEMORY_RELAY.md, "The relay datagram is
+            // a generic RPM contract"), so widening this gate to another
+            // title needs only a validated producer for it.
             if plan.hidraw == Some(true)
                 && game.simulated_tf.live_id() == Some("ac-evo")
             {
