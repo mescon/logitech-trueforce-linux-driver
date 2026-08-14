@@ -490,8 +490,12 @@ override what it decides, write a line in
 ```
 
 The appid is the number in the game's Steam store URL, and the same number
-as its folder under `steamapps/compatdata`. Your line wins over the built-in
-answer.
+as its folder under `steamapps/compatdata`. Your line wins for the keys it
+states; a key it leaves out keeps the built-in answer's value, so a line
+written for an older release does not quietly turn off pieces added since
+(an old `hidraw=1` line, for example, keeps the kernel texture merge the
+built-in plan asks for). To force something off, state it: `texture=none`,
+`tfsim=0`.
 
 | setting | values | meaning |
 |---|---|---|
@@ -499,6 +503,7 @@ answer.
 | `ffb` | `proxy` | launch through `logi-ffb`, for games that drive force feedback the DirectInput way |
 | `relay` | `acc`, `ac-evo`, `assetto`, `iracing`, `raceroom`, `rf2`, `lmu`, `none` | which decoder the in-prefix telemetry relay should use |
 | `tfsim` | `1`, `0` | run `logi-tf-sim`. Set `0` for a game whose own TrueForce already reaches your wheel |
+| `texture` | `merge`, `none` | mix the driver's engine-note texture into the game's own TrueForce on the wheel. `merge` makes `logi-launch` stage the dinput8 escape proxy into the game's directory, start `logi-rpm-bridge` and switch `wheel_tf_merge` on, undoing all of it when the game exits. Only does anything for a direct-drive wheel in an SDK title with the TrueForce files installed |
 
 A line that works for you is also exactly the report needed to add the game
 properly, so please open an issue with it.

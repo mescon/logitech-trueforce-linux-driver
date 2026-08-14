@@ -153,17 +153,24 @@ fi
 #   3058630  hidraw=1 relay=ac-evo tfsim=1
 #   1234567  ffb=proxy tfsim=0
 #
-# The file wins over the built-in answer, so it doubles as a way to
-# override a recipe that is wrong for someone's setup without waiting for a
-# release. Getting a working line into that file is also exactly the report
-# needed to add the game properly.
+# A line wins for the keys it STATES; a key it does not state keeps the
+# built-in plan's value. Per key rather than wholesale, because these lines
+# outlive releases: an old `3058630 hidraw=1`, written before the kernel
+# texture merge existed, must not silently turn `texture=merge` off for
+# every release after it. To force a key off, state it (`texture=none`,
+# `tfsim=0`). Getting a working line into that file is also exactly the
+# report needed to add the game properly.
 user_conf="${XDG_CONFIG_HOME:-$HOME/.config}/logi-wheel/games.conf"
 this_app="${SteamAppId:-${SteamGameId:-0}}"
 if [ -r "$user_conf" ]; then
 	user_line=$(sed -n "s/^[[:space:]]*$this_app[[:space:]]\+//p" "$user_conf" | head -1)
 	if [ -n "$user_line" ]; then
 		say "using your games.conf entry for appid $this_app"
-		plan=$(printf '%s\n' "$plan" | grep -E '^(wheel|game)=' ; printf '%s\n' $user_line)
+		# plan_get below takes the FIRST match for a key, so the user's
+		# tokens go in front of the computed plan: a stated key shadows
+		# the built-in value, an unstated one falls through to it.
+		# shellcheck disable=SC2086
+		plan=$(printf '%s\n' $user_line; printf '%s\n' "$plan")
 	fi
 fi
 plan_get() { printf '%s\n' "$plan" | sed -n "s/^$1=//p" | head -1; }
