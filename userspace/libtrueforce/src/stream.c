@@ -657,8 +657,6 @@ int logitf_stream_stop(struct logitf_device *dev)
 		close(stopfd);
 		dev->stream_stopfd = -1;
 	}
-	dev->stream_running = false;
-	dev->shutting_down = false;
 
 	/*
 	 * The thread is joined, so nobody else is writing: end the session
@@ -670,6 +668,21 @@ int logitf_stream_stop(struct logitf_device *dev)
 	 */
 	if (dev->tf_initialized && !dev->tf_armed_idle)
 		(void)logitf_tf_send_stop_pair(dev);
+
+	/*
+	 * stream_running/shutting_down are cleared only now, after the pair
+	 * has gone out, not before calling send_stop_pair. That function
+	 * drops dev->lock for the ~2 ms gap between the 0x04 and the 0x03
+	 * (see its own comment); if we'd already marked the stream
+	 * not-running, a concurrent logitf_stream_start() could see
+	 * "not running" during that gap, spawn a fresh tick thread, and
+	 * write a packet between our 0x04 and 0x03, racing tf_seq and
+	 * splitting the pair. Leaving stream_running true until the pair
+	 * (and the lock reacquisition after it) is done makes stream_start's
+	 * running-check a no-op for the whole gap, closing that window.
+	 */
+	dev->stream_running = false;
+	dev->shutting_down = false;
 	pthread_mutex_unlock(&dev->lock);
 	return LOGITF_OK;
 }

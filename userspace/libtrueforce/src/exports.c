@@ -706,8 +706,18 @@ int logiTrueForcePause(int index)
 	 * the pair instead of before it. logitf_tf_send_stop_pair's own
 	 * armed-idle guard makes the request a no-op if the gate already
 	 * won the race.
+	 *
+	 * Request unconditionally on tf_initialized - don't pre-check
+	 * !tf_armed_idle here too. tf_armed_idle is stream-thread-owned and
+	 * can flip true-to-false (a resume packet in flight) in the same
+	 * tick we read it, so a pre-check here can race that clear, see
+	 * "still armed", and skip the request entirely: the session then
+	 * goes silent with the engine armed, the abort-capture state this
+	 * whole pair exists to avoid. Letting send_stop_pair's own guard
+	 * (checked under the lock, right before it writes) make the call is
+	 * race-free; ours here was not.
 	 */
-	if (dev->tf_initialized && !dev->tf_armed_idle) {
+	if (dev->tf_initialized) {
 		dev->tf_teardown_pending = true;
 		clock_gettime(CLOCK_REALTIME, &deadline);
 		deadline.tv_nsec += TF_PAUSE_TEARDOWN_TIMEOUT_NS;
