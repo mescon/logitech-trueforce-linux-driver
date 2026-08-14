@@ -61,6 +61,17 @@ def push_range_pkt(deg, seq=0):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--stop":
+        # Send only a type-0x04 STOP: shuts down an orphaned stream engine
+        # left running by a hard-killed SDK session (the game never calls
+        # Close/SetForceMode(0), so nothing else ever stops it).
+        dev = find_iface2()
+        fd = os.open(dev, os.O_RDWR)
+        os.write(fd, pkt(0x04))
+        os.close(fd)
+        print(f"sent STOP on {dev}")
+        return
+
     if len(sys.argv) > 1 and sys.argv[1] == "--push-range":
         deg = float(sys.argv[2])
         dev = find_iface2()
