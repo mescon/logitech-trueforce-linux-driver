@@ -10,7 +10,10 @@ const PCT: Kind = Kind::Percent;
 pub const REGISTRY: &[SettingSpec] = &[
     // --- Force feedback ---
     // Global strength first, then the filter pair, then the two damping
-    // controls together, then the TrueForce pair, then the sign fix last.
+    // controls together, then the TrueForce pair, then the native texture-
+    // merge tuning group (intensity, cylinders, its rpm-feed diagnostic,
+    // and the merge state itself, last since it is not user-editable), then
+    // the sign fix last.
     SettingSpec { attr: "wheel_strength", label: "FFB strength", help: "Overall strength of every force. Turn it down if the wheel feels too heavy or the strongest effects clip and flatten out (0-100%).", category: Ffb, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_ffb_filter", label: "FFB filter", help: "Smooths the force signal so notchy or noisy feedback feels cleaner. Higher is smoother but blurs fine detail; lower keeps the road sharp (1-15).", category: Ffb, kind: Kind::IntRange { min: 1, max: 15, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_ffb_filter_auto", label: "Auto FFB filter", help: "Lets the wheel pick the smoothing amount for you instead of holding the fixed level you set. Turn off if you want full manual control.", category: Ffb, kind: Kind::Toggle { off: "manual", on: "auto" }, access: ReadWrite, mode_req: Any },
@@ -18,6 +21,24 @@ pub const REGISTRY: &[SettingSpec] = &[
     SettingSpec { attr: "wheel_spring_damping", label: "Spring damping", help: "Tames the self-centring spring so it settles instead of oscillating or shaking, which matters most on a strong direct-drive wheel (0-100%).", category: Ffb, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_trueforce", label: "TrueForce intensity", help: "How strong the fine engine and road-surface vibration feels on top of the main forces. Raise for more texture, lower to quiet it (0-100%).", category: Ffb, kind: PCT, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_texture_route", label: "Texture routing", help: "Whether rumble and surface texture play through the TrueForce vibration path (tf) or are pushed into the steering force itself (kf).", category: Ffb, kind: Kind::Enum(&["kf", "tf"]), access: ReadWrite, mode_req: Any },
+    // Native texture-merge tuning: the interceptor on interface 2 that
+    // splices synthesized engine texture into an SDK game's TrueForce
+    // stream (see `docs/SYSFS_API.md`'s `wheel_tf_merge` section). Intensity
+    // and cylinders are the two knobs a driver worth tuning; the rpm feed is
+    // a diagnostic, and the merge state is informational only, so it closes
+    // the group rather than opening it.
+    SettingSpec { attr: "wheel_texture_intensity", label: "Texture intensity", help: "How strong the synthesized engine texture feels, as a percent of the amplitude fitted to Logitech's own capture. 100 = matched to G HUB; lower to quiet it, raise past 100 to exaggerate it (0-200%).", category: Ffb, kind: Kind::IntRange { min: 0, max: 200, step: 1, unit: "%" }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_texture_cylinders", label: "Engine cylinders (texture pitch)", help: "Cylinder count for the firing-frequency model the texture is built from (f0 = rpm/60 * cylinders/2). Match your car's engine for the right pitch (1-16, 8 is the default V8/flat-8 pitch).", category: Ffb, kind: Kind::IntRange { min: 1, max: 16, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
+    // Read-only in this app even though the sysfs attr itself is RW:
+    // logi-rpm-bridge is the normal writer, and this row exists so the
+    // status line can double as the feed's own diagnostic, not so the app
+    // can drive it by hand.
+    SettingSpec { attr: "wheel_texture_rpm", label: "Texture RPM feed", help: "Live engine RPM the texture is synthesized from, normally fed by a telemetry bridge at around 60 Hz. Shows the last rpm while it is fresh, or that no telemetry is arriving.", category: Ffb, kind: Kind::RpmFeed, access: ReadOnly, mode_req: Any },
+    // Not a toggle: logi-launch switches this per game, so exposing it as
+    // an editable control here would race whatever it just set. Shown as
+    // plain state text instead, the same read-only idiom `wheel_accessory_mode`
+    // uses elsewhere on this page.
+    SettingSpec { attr: "wheel_tf_merge", label: "Texture merge", help: "Whether the native engine texture is currently being spliced into this game's TrueForce stream. Turned on and off automatically per game by logi-launch; not editable here.", category: Ffb, kind: Kind::Toggle { off: "off", on: "on" }, access: ReadOnly, mode_req: Any },
     SettingSpec { attr: "wheel_ffb_constant_sign", label: "Invert constant force", help: "Flips the direction of steady forces if the wheel pulls the wrong way in a game. Try this when the force feedback feels backwards.", category: Ffb, kind: Kind::Toggle { off: "normal", on: "inverted" }, access: ReadWrite, mode_req: Any },
     // --- Steering ---
     // Range and its auto-recovery toggle first, then the shaping pair
@@ -143,6 +164,7 @@ pub(crate) fn sample_raw(s: &SettingSpec) -> String {
         Kind::SlotText { slots, .. } => {
             (1..=slots).map(|i| format!("{i}: NAME{i}")).collect::<Vec<_>>().join("\n")
         }
+        Kind::RpmFeed => "6500 14000 12".into(),
     }
 }
 
@@ -212,6 +234,10 @@ mod tests {
                 "wheel_spring_damping",
                 "wheel_trueforce",
                 "wheel_texture_route",
+                "wheel_texture_intensity",
+                "wheel_texture_cylinders",
+                "wheel_texture_rpm",
+                "wheel_tf_merge",
                 "wheel_ffb_constant_sign",
             ]
         );
@@ -259,6 +285,77 @@ mod tests {
         let s = REGISTRY.iter().find(|s| s.attr == "wheel_brake_force").unwrap();
         assert!(matches!(s.mode_req, super::super::setting::ModeReq::OnboardOnly));
         let _ = Category::Pedals;
+    }
+
+    #[test]
+    fn texture_intensity_clamps_to_0_200() {
+        let s = REGISTRY.iter().find(|s| s.attr == "wheel_texture_intensity").unwrap();
+        assert!(matches!(s.kind, Kind::IntRange { min: 0, max: 200, .. }));
+        assert!(s.kind.parse("-1").is_err());
+        assert!(s.kind.parse("201").is_err());
+        assert_eq!(s.kind.parse("0").unwrap(), crate::Value::Int(0));
+        assert_eq!(s.kind.parse("100").unwrap(), crate::Value::Int(100));
+        assert_eq!(s.kind.parse("200").unwrap(), crate::Value::Int(200));
+        assert_eq!(s.access, Access::ReadWrite);
+    }
+
+    #[test]
+    fn texture_cylinders_clamps_to_1_16() {
+        let s = REGISTRY.iter().find(|s| s.attr == "wheel_texture_cylinders").unwrap();
+        assert!(matches!(s.kind, Kind::IntRange { min: 1, max: 16, .. }));
+        assert!(s.kind.parse("0").is_err());
+        assert!(s.kind.parse("17").is_err());
+        assert_eq!(s.kind.parse("1").unwrap(), crate::Value::Int(1));
+        assert_eq!(s.kind.parse("8").unwrap(), crate::Value::Int(8));
+        assert_eq!(s.kind.parse("16").unwrap(), crate::Value::Int(16));
+        assert_eq!(s.access, Access::ReadWrite);
+    }
+
+    /// `wheel_texture_rpm` and `wheel_tf_merge` are genuinely RW on the wire
+    /// (see `docs/SYSFS_API.md`), but this app never writes either: the rpm
+    /// feed is logi-rpm-bridge's job and the merge switch is logi-launch's,
+    /// so both are modeled `ReadOnly` here to keep this app from racing
+    /// them. `Device::write` enforces the same rule at the sysfs boundary.
+    #[test]
+    fn texture_rpm_and_merge_state_are_read_only_in_this_app() {
+        for attr in ["wheel_texture_rpm", "wheel_tf_merge"] {
+            let s = REGISTRY.iter().find(|s| s.attr == attr).unwrap();
+            assert_eq!(s.access, Access::ReadOnly, "{attr}");
+        }
+    }
+
+    /// The rpm feed's live-vs-stale display, exercised through the actual
+    /// registry entry rather than a bare `Kind::RpmFeed` (belt-and-braces
+    /// against the registry drifting to a different `Kind` later).
+    #[test]
+    fn texture_rpm_feed_parses_and_shows_freshness() {
+        let s = REGISTRY.iter().find(|s| s.attr == "wheel_texture_rpm").unwrap();
+        let fresh = s.kind.parse("6500 14000 12").unwrap();
+        assert_eq!(fresh, crate::Value::RpmFeed { rpm: 6500, max_rpm: 14000, age_ms: 12 });
+        assert_eq!(s.kind.display(&fresh), "6500 rpm");
+        let stale = s.kind.parse("6500 14000 5000").unwrap();
+        assert_eq!(s.kind.display(&stale), "no telemetry");
+    }
+
+    /// The four texture-tuning attrs only ever appear on a direct-drive
+    /// wheel's registry: a G923 (`CLASSIC_REGISTRY`) has no `wheel_`-prefixed
+    /// attrs at all (`device::a_g923_device_has_no_dd_settings_available`
+    /// covers that generally), so naming them here documents the intent
+    /// directly rather than relying on the prefix check alone.
+    #[test]
+    fn texture_group_is_absent_from_the_classic_registry() {
+        for attr in [
+            "wheel_texture_intensity",
+            "wheel_texture_cylinders",
+            "wheel_texture_rpm",
+            "wheel_tf_merge",
+        ] {
+            assert!(REGISTRY.iter().any(|s| s.attr == attr), "{attr} missing from REGISTRY");
+            assert!(
+                !CLASSIC_REGISTRY.iter().any(|s| s.attr == attr),
+                "{attr} leaked into CLASSIC_REGISTRY"
+            );
+        }
     }
 }
 

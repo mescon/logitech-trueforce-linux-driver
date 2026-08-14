@@ -138,6 +138,8 @@ pub fn attr_group(attr: &str) -> &'static str {
         "wheel_strength" | "wheel_ffb_filter" | "wheel_ffb_filter_auto" => "STRENGTH",
         "wheel_damping" | "wheel_spring_damping" => "FEEL",
         "wheel_trueforce" | "wheel_texture_route" => "TRUEFORCE",
+        "wheel_texture_intensity" | "wheel_texture_cylinders" | "wheel_texture_rpm"
+        | "wheel_tf_merge" => "TRUEFORCE TEXTURE",
         "wheel_ffb_constant_sign" => "ADVANCED",
         "wheel_range" | "wheel_range_restore" => "ROTATION",
         "wheel_sensitivity" | "wheel_response_curve" | "wheel_calibrate_here" => "RESPONSE",
@@ -226,6 +228,10 @@ fn kind_tag(attr: &str, kind: &Kind) -> i32 {
         Kind::RgbStrip { .. } => KIND_RGB,
         Kind::SlotText { .. } => KIND_SLOTTEXT,
         Kind::Pair { .. } => KIND_PAIR,
+        // Never actually reached: every `Kind::RpmFeed` row in the registry
+        // is `Access::ReadOnly`, so the `is_read_only` check above already
+        // returned `KIND_READONLY`. Kept so this match stays exhaustive.
+        Kind::RpmFeed => KIND_READONLY,
     }
 }
 
@@ -1390,6 +1396,102 @@ mod tests {
         assert_eq!(sr.display, "base: U1 65.04.B0039\nmotor: SC 02.01.B0042");
     }
 
+    /// The two tunable texture rows: plain `ValueSlider`s (`KIND_INT_RANGE`)
+    /// over the driver's own clamps, same as every other IntRange row (no
+    /// bespoke widget needed).
+    #[test]
+    fn texture_intensity_and_cylinders_rows_are_plain_int_range_sliders() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_texture_intensity", "150");
+        fs.set("wheel_texture_cylinders", "6");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let rows = vm.rows_for(Category::Ffb);
+
+        let intensity = to_setting_row(rows.iter().find(|r| r.attr == "wheel_texture_intensity").unwrap());
+        assert_eq!(intensity.kind, KIND_INT_RANGE);
+        assert_eq!(intensity.int_value, 150);
+        assert_eq!(intensity.min, 0);
+        assert_eq!(intensity.max, 200);
+        assert_eq!(intensity.unit, "%");
+        assert_eq!(intensity.group, "TRUEFORCE TEXTURE");
+
+        let cylinders = to_setting_row(rows.iter().find(|r| r.attr == "wheel_texture_cylinders").unwrap());
+        assert_eq!(cylinders.kind, KIND_INT_RANGE);
+        assert_eq!(cylinders.int_value, 6);
+        assert_eq!(cylinders.min, 1);
+        assert_eq!(cylinders.max, 16);
+        assert_eq!(cylinders.group, "TRUEFORCE TEXTURE");
+    }
+
+    /// The rpm feed is read-only in this app (logi-rpm-bridge writes it, not
+    /// the GUI) and its status line shows the live number while fresh.
+    #[test]
+    fn texture_rpm_row_is_readonly_and_shows_the_live_rpm_while_fresh() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_texture_rpm", "6500 14000 12");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm.rows_for(Category::Ffb).into_iter().find(|r| r.attr == "wheel_texture_rpm").unwrap();
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.kind, KIND_READONLY);
+        assert_eq!(sr.display, "6500 rpm");
+    }
+
+    /// Once the feed goes stale (past the 1 s freshness window) the status
+    /// line says so instead of showing a frozen number.
+    #[test]
+    fn texture_rpm_row_shows_no_telemetry_once_stale() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_texture_rpm", "6500 14000 5000");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm.rows_for(Category::Ffb).into_iter().find(|r| r.attr == "wheel_texture_rpm").unwrap();
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.kind, KIND_READONLY);
+        assert_eq!(sr.display, "no telemetry");
+    }
+
+    /// `wheel_tf_merge` is never a toggle in this app: logi-launch owns it
+    /// per game, so it renders through the same read-only state-text idiom
+    /// `wheel_accessory_mode`/`wheel_serial` use, not a Switch a user could
+    /// fight with the game over.
+    #[test]
+    fn texture_merge_row_is_readonly_state_text_not_a_switch() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_tf_merge", "1");
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let row = vm.rows_for(Category::Ffb).into_iter().find(|r| r.attr == "wheel_tf_merge").unwrap();
+        let sr = to_setting_row(&row);
+        assert_eq!(sr.kind, KIND_READONLY);
+        assert_eq!(sr.display, "on");
+    }
+
+    /// An older driver without this feature simply has none of the four
+    /// sysfs files: every row in the group must come back `available:
+    /// false` (the same degrade every other newer-than-some-drivers attr
+    /// gets, e.g. `wheel_calibrate_here`), not a panic or a phantom value.
+    #[test]
+    fn texture_group_rows_are_unavailable_on_an_old_driver() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        // Note: none of the four wheel_texture_*/wheel_tf_merge attrs set.
+        let vm = crate::viewmodel::ViewModel::with_io(fs);
+        let rows = vm.rows_for(Category::Ffb);
+        for attr in [
+            "wheel_texture_intensity",
+            "wheel_texture_cylinders",
+            "wheel_texture_rpm",
+            "wheel_tf_merge",
+        ] {
+            let row = rows.iter().find(|r| r.attr == attr).unwrap_or_else(|| panic!("no row for {attr}"));
+            assert!(!row.available, "{attr} should be unavailable without its sysfs file");
+            let sr = to_setting_row(row);
+            assert!(!sr.available, "{attr} setting row should carry available: false");
+        }
+    }
+
     #[test]
     fn merge_info_firmware_keeps_a_dd_wheels_multiline_value() {
         // Regression test: `Response::Info` used to always overwrite the
@@ -2372,6 +2474,10 @@ mod tests {
         assert_eq!(attr_group("wheel_strength"), "STRENGTH");
         assert_eq!(attr_group("wheel_damping"), "FEEL");
         assert_eq!(attr_group("wheel_trueforce"), "TRUEFORCE");
+        assert_eq!(attr_group("wheel_texture_intensity"), "TRUEFORCE TEXTURE");
+        assert_eq!(attr_group("wheel_texture_cylinders"), "TRUEFORCE TEXTURE");
+        assert_eq!(attr_group("wheel_texture_rpm"), "TRUEFORCE TEXTURE");
+        assert_eq!(attr_group("wheel_tf_merge"), "TRUEFORCE TEXTURE");
         assert_eq!(attr_group("wheel_ffb_constant_sign"), "ADVANCED");
         assert_eq!(attr_group("wheel_range"), "ROTATION");
         assert_eq!(attr_group("wheel_response_curve"), "RESPONSE");
@@ -2429,7 +2535,10 @@ mod tests {
         let rows = vm.rows_for(Category::Ffb);
         let items = setting_rows(&rows);
         let groups: Vec<String> = row_groups(&items).iter().map(|s| s.to_string()).collect();
-        assert_eq!(groups, vec!["STRENGTH", "FEEL", "TRUEFORCE", "ADVANCED"]);
+        assert_eq!(
+            groups,
+            vec!["STRENGTH", "FEEL", "TRUEFORCE", "TRUEFORCE TEXTURE", "ADVANCED"]
+        );
     }
 
     #[test]

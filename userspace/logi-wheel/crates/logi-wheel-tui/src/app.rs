@@ -143,6 +143,7 @@ fn kind_detail(kind: &Kind) -> String {
         }
         Kind::Curve => "Response curve; Enter opens the curve editor".to_string(),
         Kind::Action => "Action; Enter runs it".to_string(),
+        Kind::RpmFeed => "Read-only rpm feed; \"<rpm> <max_rpm> <age_ms>\"".to_string(),
     }
 }
 

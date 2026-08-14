@@ -53,6 +53,12 @@ pub enum Value {
     /// Rename one slot. The attribute reads back as the whole list but writes
     /// one slot at a time, so reads yield `SlotNames` and writes take this.
     SlotName { slot: u8, name: String },
+    /// `wheel_texture_rpm`'s "<rpm> <max_rpm> <age_ms>" diagnostic line.
+    /// `age_ms` is how long ago the value was last written (by
+    /// logi-rpm-bridge, normally), and is what a frontend's status line
+    /// uses to decide between showing the live rpm and "no telemetry" (see
+    /// `Kind::RpmFeed`'s `display`).
+    RpmFeed { rpm: u32, max_rpm: u32, age_ms: u32 },
 }
 
 #[cfg(test)]

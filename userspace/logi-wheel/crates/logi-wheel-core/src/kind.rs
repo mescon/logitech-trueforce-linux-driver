@@ -32,6 +32,13 @@ pub enum Kind {
     /// slot at a time as `N:name` (the onboard profile names). Reads yield
     /// `Value::SlotNames`, writes take `Value::SlotName`.
     SlotText { slots: u8, max_len: usize },
+    /// A read-only "<rpm> <max_rpm> <age_ms>" diagnostic line
+    /// (`wheel_texture_rpm`): parses into [`Value::RpmFeed`]. `display`
+    /// shows the live rpm while the reading is fresh and "no telemetry"
+    /// once it has gone stale, using a 1 s window - a UI freshness check,
+    /// distinct from the driver's own 200 ms texture-merge staleness gate
+    /// (see `docs/SYSFS_API.md`'s `wheel_tf_merge` section).
+    RpmFeed,
 }
 
 impl Kind {
@@ -149,6 +156,19 @@ impl Kind {
                 }
                 Ok(Value::SlotNames(names))
             }
+            Kind::RpmFeed => {
+                let mut it = raw.split_whitespace();
+                let field = |it: &mut std::str::SplitWhitespace| -> Result<u32, Error> {
+                    it.next()
+                        .ok_or_else(|| Error::Parse(raw.into()))?
+                        .parse()
+                        .map_err(|_| Error::Parse(raw.into()))
+                };
+                let rpm = field(&mut it)?;
+                let max_rpm = field(&mut it)?;
+                let age_ms = field(&mut it)?;
+                Ok(Value::RpmFeed { rpm, max_rpm, age_ms })
+            }
         }
     }
 
@@ -189,6 +209,9 @@ impl Kind {
             (Kind::Action, Value::Trigger) => "1".into(),
             // Writes rename a single slot; the whole list is not writable.
             (Kind::SlotText { .. }, Value::SlotName { slot, name }) => format!("{slot}:{name}"),
+            (Kind::RpmFeed, Value::RpmFeed { rpm, max_rpm, age_ms }) => {
+                format!("{rpm} {max_rpm} {age_ms}")
+            }
             _ => return Err(Error::Invalid),
         })
     }
@@ -250,6 +273,12 @@ impl Kind {
                 .collect::<Vec<_>>()
                 .join("  "),
             (Kind::SlotText { .. }, Value::SlotName { slot, name }) => format!("{slot}: {name}"),
+            // Fresh under 1 s: show the live number. Stale (or never fed):
+            // say so plainly rather than showing a frozen/zero rpm that
+            // reads as real data.
+            (Kind::RpmFeed, Value::RpmFeed { rpm, age_ms, .. }) => {
+                if *age_ms < 1000 { format!("{rpm} rpm") } else { "no telemetry".into() }
+            }
             _ => "?".into(),
         }
     }
@@ -422,6 +451,53 @@ mod tests {
         let k = Kind::Pair { max: 99 };
         assert_eq!(k.display(&Value::Pair(0, 0)), "none");
         assert_eq!(k.display(&Value::Pair(8, 5)), "8% / 5%");
+    }
+
+    #[test]
+    fn rpm_feed_parse_format_roundtrip() {
+        let k = Kind::RpmFeed;
+        assert_eq!(
+            k.parse("6500 14000 12").unwrap(),
+            Value::RpmFeed { rpm: 6500, max_rpm: 14000, age_ms: 12 }
+        );
+        let v = Value::RpmFeed { rpm: 6500, max_rpm: 14000, age_ms: 12 };
+        assert_eq!(k.format(&v).unwrap(), "6500 14000 12");
+        assert!(k.validate(&v).is_ok());
+    }
+
+    #[test]
+    fn rpm_feed_rejects_malformed_input() {
+        let k = Kind::RpmFeed;
+        assert!(matches!(k.parse(""), Err(Error::Parse(_))));
+        assert!(matches!(k.parse("6500"), Err(Error::Parse(_))));
+        assert!(matches!(k.parse("6500 14000"), Err(Error::Parse(_))));
+        assert!(matches!(k.parse("a 14000 12"), Err(Error::Parse(_))));
+    }
+
+    /// The 1 s freshness window that decides between a live number and "no
+    /// telemetry": strictly under 1000 ms is fresh, 1000 ms and up is stale.
+    /// Deliberately its own threshold, not the driver's 200 ms merge-gating
+    /// window (`wheel_tf_merge` can go quiet on stale data well before this
+    /// status line does).
+    #[test]
+    fn rpm_feed_display_switches_on_the_one_second_staleness_window() {
+        let k = Kind::RpmFeed;
+        assert_eq!(
+            k.display(&Value::RpmFeed { rpm: 6500, max_rpm: 14000, age_ms: 0 }),
+            "6500 rpm"
+        );
+        assert_eq!(
+            k.display(&Value::RpmFeed { rpm: 6500, max_rpm: 14000, age_ms: 999 }),
+            "6500 rpm"
+        );
+        assert_eq!(
+            k.display(&Value::RpmFeed { rpm: 6500, max_rpm: 14000, age_ms: 1000 }),
+            "no telemetry"
+        );
+        assert_eq!(
+            k.display(&Value::RpmFeed { rpm: 0, max_rpm: 0, age_ms: 60_000 }),
+            "no telemetry"
+        );
     }
 }
 
