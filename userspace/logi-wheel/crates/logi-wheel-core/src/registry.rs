@@ -28,7 +28,7 @@ pub const REGISTRY: &[SettingSpec] = &[
     // a diagnostic, and the merge state is informational only, so it closes
     // the group rather than opening it.
     SettingSpec { attr: "wheel_texture_intensity", label: "Texture intensity", help: "How strong the synthesized engine texture feels, as a percent of the amplitude fitted to Logitech's own capture. 100 = matched to G HUB; lower to quiet it, raise past 100 to exaggerate it (0-200%).", category: Ffb, kind: Kind::IntRange { min: 0, max: 200, step: 1, unit: "%" }, access: ReadWrite, mode_req: Any },
-    SettingSpec { attr: "wheel_texture_cylinders", label: "Engine cylinders (texture pitch)", help: "Cylinder count for the firing-frequency model the texture is built from (f0 = rpm/60 * cylinders/2). Match your car's engine for the right pitch (1-16, 8 is the default V8/flat-8 pitch).", category: Ffb, kind: Kind::IntRange { min: 1, max: 16, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_texture_cylinders", label: "Engine cylinders (texture pitch)", help: "Cylinder count for the firing-frequency model the texture is built from (f0 = rpm/60 * cylinders/2). A feel knob more than an engine spec: 4 is the default (seat-tested; higher counts push most of the rev range above what a direct-drive rim can express), raise it for a finer, busier buzz (1-16).", category: Ffb, kind: Kind::IntRange { min: 1, max: 16, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
     // Read-only in this app even though the sysfs attr itself is RW:
     // logi-rpm-bridge is the normal writer, and this row exists so the
     // status line can double as the feed's own diagnostic, not so the app

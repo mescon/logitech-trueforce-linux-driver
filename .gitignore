@@ -22,6 +22,9 @@
 *.a
 *.asn1.[ch]
 *.bin
+# The TF re-arm init blob logi-launch replays (generated from
+# libtrueforce's tf_init_data.h; see the send_tf_rearm comment there).
+!/tools/tf-init.bin
 *.bz2
 *.c.[012]*.*
 *.cover

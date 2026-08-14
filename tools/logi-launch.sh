@@ -526,6 +526,69 @@ print("[logi-launch] sent TrueForce teardown pair to %s" % node)
 PYEOF
 }
 
+# Experimental (LOGI_TF_REARM=1): reset-and-rearm the wheel's TrueForce
+# engine before the game starts. A session that died without its teardown
+# reaching the wheel (hard-killed game, crash) leaves the next SDK session
+# opening successfully but never streaming; today only a power cycle
+# recovers it. This replays what a clean boot gives the wheel: the
+# captured 0x04+0x03 teardown pair, then G HUB's 68-packet init twice
+# (tools/tf-init.bin, generated from libtrueforce's tf_init_data.h).
+# Off by default until a hardware A/B proves it replaces the power cycle;
+# harmless bytes either way - a healthy wheel gets the same init dupes a
+# real session start sends.
+send_tf_rearm() {
+	rearm_blob=""
+	for c in /usr/share/logitech-trueforce/tf-init.bin \
+		 "$(dirname "$0")/tf-init.bin"; do
+		[ -r "$c" ] && rearm_blob="$c" && break
+	done
+	if [ -z "$rearm_blob" ] || ! command -v python3 >/dev/null 2>&1; then
+		say "TF re-arm requested but tf-init.bin or python3 missing; skipped"
+		return 0
+	fi
+	REARM_BLOB="$rearm_blob" python3 - >>"$LOG" 2>&1 <<'PYEOF'
+import glob, os, time
+
+def find_tf_hidraw():
+    for h in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
+        dev = os.path.join(h, "device")
+        try:
+            hid_id = ""
+            for line in open(os.path.join(dev, "uevent")):
+                if line.startswith("HID_ID="):
+                    hid_id = line.strip().split("=", 1)[1]
+            up = hid_id.upper()
+            if "046D" not in up or not any(p in up for p in ("C276", "C272", "C268")):
+                continue
+            iface = os.path.realpath(os.path.join(dev, ".."))
+            if int(open(os.path.join(iface, "bInterfaceNumber")).read().strip(), 16) == 2:
+                return "/dev/" + os.path.basename(h)
+        except (OSError, ValueError):
+            continue
+    return None
+
+node = find_tf_hidraw()
+if not node:
+    print("[logi-launch] TF re-arm: no interface-2 hidraw node; skipped")
+    raise SystemExit(0)
+blob = open(os.environ["REARM_BLOB"], "rb").read()
+pkts = [blob[i:i+64] for i in range(0, len(blob), 64)]
+fd = os.open(node, os.O_WRONLY)
+stop = bytearray(64); stop[0] = 0x01; stop[4] = 0x04
+arm = bytearray(64); arm[0] = 0x01; arm[4] = 0x03; arm[5] = 0x01
+os.write(fd, bytes(stop)); time.sleep(0.002); os.write(fd, bytes(arm))
+time.sleep(0.002)
+for _ in range(2):
+    for p in pkts:
+        os.write(fd, p)
+os.close(fd)
+print("[logi-launch] TF re-arm: teardown pair + %dx2 init packets to %s" % (len(pkts), node))
+PYEOF
+}
+if [ "${LOGI_TF_REARM:-0}" = "1" ] && [ -n "$hidraw_granted" ]; then
+	send_tf_rearm
+fi
+
 # With the texture merge armed or raw HID granted there is teardown to do
 # after the game exits, so the game runs as a child rather than by exec:
 # the bridge dies with the session, the merge switches off so a later
