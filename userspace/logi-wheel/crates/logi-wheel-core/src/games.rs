@@ -804,12 +804,17 @@ turn Steam Input off.",
         confidence: Confidence::Documented,
     },
     GameCompat {
+        // Community-sourced, not first-party tested: ProtonDB rates FH5
+        // Platinum and it has been Steam Deck Verified since 2022, online
+        // play included, which contradicts the old "not reliably on Linux
+        // (anti-cheat)" row. Plan-safe either way: the recipe is a
+        // plain-FFB no-op (no hidraw, no shim, no relay).
         name: "Forza Horizon 5",
-        linux: Linux::Unsupported,
+        linux: Linux::Proton,
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::No,
-        setup: "Not reliably on Linux (anti-cheat).",
+        setup: "Plain force feedback.",
         confidence: Confidence::Documented,
     },
     GameCompat {

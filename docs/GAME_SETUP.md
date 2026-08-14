@@ -64,7 +64,7 @@ instead of wrapping it.
 | EA Sports F1 (F1 22-25) * | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
 | EA Sports WRC | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
 | Euro Truck Simulator 2 * | Native Linux | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
-| Forza Horizon 5 | Not on Linux | Not on Linux | - | - |
+| Forza Horizon 5 | Proton | Native FFB | Nothing to do | Nothing to do |
 | Forza Motorsport (2023) | Not on Linux | Not on Linux | - | - |
 | Gran Turismo 7 | Not on Linux | Not on Linux | - | - |
 | GRID (2019) | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
@@ -116,6 +116,7 @@ app's Setup page afterwards.
 | EA Sports F1 (F1 22-25) | supported today |
 | EA Sports WRC | supported today |
 | Euro Truck Simulator 2 | supported today |
+| Forza Horizon 5 | no usable telemetry |
 | GRID (2019) | supported today |
 | GRID Legends | supported today |
 | iRacing | supported today |
