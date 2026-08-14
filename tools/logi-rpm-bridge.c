@@ -61,20 +61,36 @@ static const char *find_rev_sysfs(const char *rpm_path, char *buf, size_t n)
 	return buf;
 }
 
-/* G HUB's dash mapping: dark below first_led, level 1 exactly there,
- * all 10 at the limiter. first_led must sit sanely inside the range or
- * the packet's LED data is treated as absent (-1 = leave LEDs alone). */
-static int rev_level(float rpm, float first_led, float max_rpm)
+/* Two mappings, chosen by LOGI_REV_MODE:
+ *
+ * "bar" (default): a full-range rev bar - LED 1 as soon as the engine
+ * turns, all 10 at the limiter. Needs only rpm+max_rpm, so it also works
+ * for legacy 28-byte senders that don't carry the first-light field.
+ *
+ * "shift": G HUB's dash mapping - dark below the car's own
+ * first-shift-light rpm, level 1 exactly there, all 10 at the limiter.
+ * Needs the 32-byte datagram; without a sane triple the packet's LED
+ * data is treated as absent (-1 = leave LEDs alone). */
+static int rev_level(float rpm, float first_led, float max_rpm, int shift_mode)
 {
-	float span;
+	float base, span;
 	int level;
 
-	if (!(first_led > 0.0f) || !(max_rpm > first_led))
-		return -1;
-	if (rpm < first_led)
+	if (shift_mode) {
+		if (!(first_led > 0.0f) || !(max_rpm > first_led))
+			return -1;
+		base = first_led;
+	} else {
+		if (!(max_rpm > 0.0f))
+			return -1;
+		base = 0.0f;
+	}
+	/* Engine off is dark in both modes; in shift mode the band opens AT
+	 * first_led (level 1 exactly there, per the G HUB captures). */
+	if (rpm <= 0.0f || rpm < base)
 		return 0;
-	span = max_rpm - first_led;
-	level = 1 + (int)(9.0f * (rpm - first_led) / span);
+	span = max_rpm - base;
+	level = 1 + (int)(9.0f * (rpm - base) / span);
 	if (level > 10)
 		level = 10;
 	return level;
@@ -108,6 +124,10 @@ int main(void)
 	struct timespec last = { 0 };
 	time_t last_warn = 0, last_rev_warn = 0;
 	int last_level = -1;	/* what the strip currently shows */
+	const char *mode = getenv("LOGI_REV_MODE");
+	int shift_mode = mode && !strcmp(mode, "shift");
+	const char *port_env = getenv("LOGI_RPM_PORT");
+	int port = port_env && atoi(port_env) > 0 ? atoi(port_env) : 20780;
 	int fd;
 
 	if (!path) {
@@ -119,7 +139,7 @@ int main(void)
 	if (fd < 0) { perror("socket"); return 1; }
 	addr.sin_family = AF_INET;
 	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	addr.sin_port = htons(20780);
+	addr.sin_port = htons((unsigned short)port);
 	{
 		int one = 1;
 		setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
@@ -132,7 +152,7 @@ int main(void)
 		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	}
 	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-		perror("bind 20780"); return 1;
+		perror("bind relay port"); return 1;
 	}
 	{
 		/* sigaction without SA_RESTART: plain signal() on Linux/glibc
@@ -177,7 +197,8 @@ int main(void)
 		else if (max_rpm >= 30000.0f)
 			max_rpm = 29999.0f;
 		if (rev_path) {
-			int level = rev_level(rpm, first_led, max_rpm);
+			int level = rev_level(rpm, first_led, max_rpm,
+					      shift_mode);
 
 			if (level >= 0 && level != last_level) {
 				char lv[4];
