@@ -144,6 +144,35 @@ static void test_range_push_decode(void)
 	      hidpp_dd_texmerge_decode_push_deg(tiny));
 }
 
+static void test_fixture_range_pushes(void)
+{
+	/* The committed capture fixtures (fixtures/README.md): the three real
+	 * type-0x0e frames from the 2026-08-13/14 validation session, decoded
+	 * through the same helper the driver runs on live pushes. Run from
+	 * the tests/texture-merge directory (as `make run` does). */
+	static const struct { const char *file; unsigned want; } fx[] = {
+		{ "fixtures/range_push_2700_pass1.bin", 2700 },
+		{ "fixtures/range_push_90.bin", 90 },
+		{ "fixtures/range_push_2700_pass2.bin", 2700 },
+	};
+	for (unsigned i = 0; i < sizeof(fx) / sizeof(fx[0]); i++) {
+		u8 frame[64];
+		FILE *f = fopen(fx[i].file, "rb");
+
+		CHECK(f != NULL, "missing fixture %s", fx[i].file);
+		if (!f)
+			continue;
+		CHECK(fread(frame, 1, sizeof(frame), f) == sizeof(frame),
+		      "%s is not 64 bytes", fx[i].file);
+		fclose(f);
+		CHECK(frame[0] == 0x01 && frame[4] == 0x0e,
+		      "%s is not a type-0x0e frame", fx[i].file);
+		CHECK(hidpp_dd_texmerge_decode_push_deg(frame) == fx[i].want,
+		      "%s decodes to %u, want %u", fx[i].file,
+		      hidpp_dd_texmerge_decode_push_deg(frame), fx[i].want);
+	}
+}
+
 static void mk_stream_pkt(u8 *pkt, u16 cur, u8 seq)
 {
 	memset(pkt, 0, 64);
@@ -274,6 +303,7 @@ int main(void)
 	test_oscillator_phase_continuity();
 	test_intensity_scales();
 	test_range_push_decode();
+	test_fixture_range_pushes();
 	test_eligibility();
 	test_splice_preserves_base();
 	test_splice_gates();
