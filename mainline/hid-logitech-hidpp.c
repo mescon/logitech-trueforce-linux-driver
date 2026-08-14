@@ -16728,7 +16728,13 @@ static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 
 	spin_lock_init(&shim->lock);
 	shim->tm.intensity = 100;
-	shim->tm.cylinders = 8;
+	/* 4 puts the fundamental at rpm/30 Hz. The Windows capture's 400 Hz @
+	 * 6000 rpm implies 8 for the captured car, but on the wheel 8 lands
+	 * most of the rev range above the feelable band (excursion falls as
+	 * 1/f^2 on a direct drive) and the seat verdict was unambiguous:
+	 * 4 "much more plausible and real" (hw session 2026-08-14). It is a
+	 * feel knob, not an engine spec; per-car tuning stays in sysfs. */
+	shim->tm.cylinders = 4;
 	shim->tm.enabled = false;
 	shim->ff = ff;
 
