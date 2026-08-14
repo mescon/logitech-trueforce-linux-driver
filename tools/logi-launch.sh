@@ -208,6 +208,10 @@ if [ -n "$prefix_root" ]; then
 	done
 fi
 
+# Nonzero when the plan granted the game raw HID access (an SDK title):
+# those sessions can leave the wheel's TrueForce engine started, so they
+# get the teardown pair on exit (see send_teardown_pair below).
+hidraw_granted=""
 case "$want_hidraw" in
 "") ;;
 0)
@@ -217,6 +221,7 @@ case "$want_hidraw" in
 *)
 	if [ "$have_tf_files" = "1" ] || [ -z "$prefix_root" ]; then
 		export PROTON_ENABLE_HIDRAW="$want_hidraw"
+		hidraw_granted=1
 		say "set PROTON_ENABLE_HIDRAW=$want_hidraw"
 	else
 		say "NOT setting PROTON_ENABLE_HIDRAW: this game wants it, but"
@@ -451,21 +456,102 @@ if [ "$want_ffb" = "proxy" ] && command -v logi-ffb >/dev/null 2>&1; then
 	set -- logi-ffb "$@"
 fi
 
-# With the texture merge armed there is teardown to do after the game
-# exits, so the game runs as a child rather than by exec: the bridge dies
-# with the session, and the merge switches off so a later non-SDK session
-# does not inherit a texture with no RPM behind it. Everything else keeps
-# the historical exec, which leaves no wrapper process behind.
-if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ]; then
-	texture_merge_off() {
+# The captured 0x04+0x03 teardown pair, sent to the wheel's interface-2
+# hidraw node once the game is gone. An SDK title that exits (or is
+# killed) mid-stream leaves the wheel's TrueForce engine started and fed
+# by nobody - the abort-capture state that whines until power cycle -
+# while every clean Windows session ends with exactly this pair, then
+# silence. python3 rather than shell printf, deliberately: the packets
+# are raw 64-byte binaries full of NUL bytes with a 2 ms gap between
+# them, and the interface-2 lookup is a sysfs walk (the same one
+# logi-tf-init.py's find_tf_hidraw does, keyed on bInterfaceNumber so it
+# survives hidraw renumbering). All of that is exact and readable in
+# python; as printf escapes it needs a NUL-safe printf, a fractional
+# sleep, and a realpath chain that differ across shells. logi-tf-init.py
+# already makes python3 part of this tool set.
+send_teardown_pair() {
+	if ! command -v python3 >/dev/null 2>&1; then
+		say "python3 not found; cannot send the wheel teardown pair"
+		return 0
+	fi
+	python3 - >>"$LOG" 2>&1 <<'PYEOF'
+import glob, os, time
+
+def find_tf_hidraw():
+    for h in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
+        dev = os.path.join(h, "device")
+        try:
+            hid_id = ""
+            for line in open(os.path.join(dev, "uevent")):
+                if line.startswith("HID_ID="):
+                    hid_id = line.strip().split("=", 1)[1]
+            up = hid_id.upper()
+            if "046D" not in up or not any(p in up for p in ("C276", "C272", "C268")):
+                continue
+            iface = os.path.realpath(os.path.join(dev, ".."))
+            bnum = open(os.path.join(iface, "bInterfaceNumber")).read().strip()
+            if int(bnum, 16) == 2:
+                return "/dev/" + os.path.basename(h)
+        except (OSError, ValueError):
+            continue
+    return None
+
+node = find_tf_hidraw()
+if not node:
+    print("[logi-launch] no direct-drive interface-2 hidraw; teardown pair skipped")
+    raise SystemExit(0)
+try:
+    fd = os.open(node, os.O_WRONLY)
+except OSError as e:
+    print("[logi-launch] cannot open %s (%s); teardown pair skipped" % (node, e))
+    raise SystemExit(0)
+# 0x04 stop/clear, then 0x03 arm, ~2 ms apart like the captures. The
+# sequence byte (byte 5) is left 0: control packets are accepted with
+# any sequence, and the SDK's own counter is unknowable from out here.
+for cmd in (0x04, 0x03):
+    pkt = bytearray(64)
+    pkt[0] = 0x01
+    pkt[4] = cmd
+    os.write(fd, bytes(pkt))
+    time.sleep(0.002)
+os.close(fd)
+print("[logi-launch] sent TrueForce teardown pair to %s" % node)
+PYEOF
+}
+
+# With the texture merge armed or raw HID granted there is teardown to do
+# after the game exits, so the game runs as a child rather than by exec:
+# the bridge dies with the session, the merge switches off so a later
+# non-SDK session does not inherit a texture with no RPM behind it, and
+# the wheel gets the teardown pair an SDK title never sends under Proton.
+# Everything else keeps the historical exec, which leaves no wrapper
+# process behind.
+if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ] || [ -n "$hidraw_granted" ]; then
+	session_cleanup() {
 		[ -n "$rpm_bridge_pid" ] && kill "$rpm_bridge_pid" 2>/dev/null
-		for d in /sys/bus/hid/devices/*046D:C2*/wheel_tf_merge; do
-			[ -w "$d" ] && echo 0 > "$d"
-		done
-		say "texture merge disabled"
+		if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ]; then
+			for d in /sys/bus/hid/devices/*046D:C2*/wheel_tf_merge; do
+				[ -w "$d" ] && echo 0 > "$d"
+			done
+			say "texture merge disabled"
+		fi
+		send_teardown_pair
 	}
-	trap texture_merge_off EXIT
-	"$@"
+	trap session_cleanup EXIT
+	# Signal hardening: a bare "$@" would make SIGTERM/SIGINT hit only
+	# this wrapper while the game keeps running (bash defers signals
+	# until a foreground child exits). Run the game in the background,
+	# forward TERM/INT to it, and wait. The second wait matters: a
+	# trapped signal interrupts the first wait before the game has
+	# actually exited, and bash then reports the game's real status
+	# from the re-wait (statuses of reaped background jobs are
+	# remembered). The EXIT trap above still runs at exit, after
+	# cleanup here, composing with this.
+	"$@" &
+	game_pid=$!
+	trap 'kill -TERM "$game_pid" 2>/dev/null' TERM INT
+	wait "$game_pid"
+	wait "$game_pid"
 	exit $?
 fi
 
