@@ -62,14 +62,17 @@ def push_range_pkt(deg, seq=0):
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--stop":
-        # Send only a type-0x04 STOP: shuts down an orphaned stream engine
-        # left running by a hard-killed SDK session (the game never calls
-        # Close/SetForceMode(0), so nothing else ever stops it).
+        # Send the 0x04 stop/clear + 0x03 arm pair: Windows' byte-exact
+        # session teardown (both game captures end with exactly this pair,
+        # 2 ms apart, then silence; it is also init packets 67+68). Shuts
+        # down an orphaned stream engine left by a hard-killed SDK session.
         dev = find_iface2()
         fd = os.open(dev, os.O_RDWR)
         os.write(fd, pkt(0x04))
+        time.sleep(0.002)
+        os.write(fd, pkt(0x03, seq=1))
         os.close(fd)
-        print(f"sent STOP on {dev}")
+        print(f"sent teardown pair (04+03) on {dev}")
         return
 
     if len(sys.argv) > 1 and sys.argv[1] == "--push-range":
