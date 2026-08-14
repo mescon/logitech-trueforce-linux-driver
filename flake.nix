@@ -83,6 +83,18 @@
                         $out/share/logitech-trueforce/tf-range-proxy.dll
                 install -Dm644 tools/logi-tf-relay.exe \
                         $out/share/logitech-trueforce/logi-tf-relay.exe
+                # The dinput8 escape proxy logi-launch stages into an SDK
+                # game's own directory: it answers the SDK's range getters
+                # and relays the game's RPM telemetry for the kernel
+                # texture merge. Prebuilt here too, and deliberately NOT
+                # cross-built via pkgsCross.mingwW64: that would hand
+                # every build of this package a mingw toolchain to
+                # produce a binary that is not the hardware-validated
+                # artifact the other channels ship. CI keeps the
+                # committed DLL in step with its source
+                # (tools/check-committed-dlls.sh).
+                install -Dm644 tools/dinput8-escape.dll \
+                        $out/share/logitech-trueforce/dinput8-escape.dll
                 # Built from this workspace as a cdylib, so it is already in
                 # $out/lib; the games load it by path from share/. Symlinked
                 # rather than copied to avoid duplicating.
@@ -91,6 +103,23 @@
                 # The TrueForce shim installer, under the name the app looks
                 # for first (logi_wheel_core::helpers::INSTALLER_BINS).
                 install -Dm755 tools/install-tf-shim.sh $out/bin/logi-shim
+                # The RPM feed for the kernel texture merge; logi-launch
+                # starts and stops it around a game session. Built the
+                # same way packaging/debian/rules builds it.
+                cc -O2 -Wall -o $out/bin/logi-rpm-bridge tools/logi-rpm-bridge.c
+                # The Steam launch-options wrapper. The whole feature is
+                # that a user types `logi-launch %command%` and nothing
+                # else, so it must be on PATH beside the helpers it
+                # starts. It looks for the dinput8 proxy under /usr/share,
+                # which does not exist on NixOS; point it at this
+                # package's share directory.
+                install -Dm755 tools/logi-launch.sh $out/bin/logi-launch
+                substituteInPlace $out/bin/logi-launch \
+                  --replace-fail "/usr/share/logitech-trueforce/dinput8-escape.dll" \
+                                 "$out/share/logitech-trueforce/dinput8-escape.dll"
+                # Rebinds a wheel that another driver claimed, which the
+                # settings apps' diagnostics offer as the fix.
+                install -Dm755 tools/rebind-wheel.sh $out/bin/logi-rebind-wheel
                 '';
 
           postFixup = ''
@@ -104,6 +133,24 @@
                 pkgs.gnused
                 pkgs.gnugrep
                 pkgs.gawk
+              ]}
+
+            # logi-launch shells out too, and additionally starts the
+            # sibling binaries from this package (logi-wheel, logi-tf-sim,
+            # logi-ffb, logi-rpm-bridge), so its own bin directory leads
+            # the wrapped PATH. python3 sends the wheel's TrueForce
+            # teardown pair after an SDK session; setsid detaches the
+            # daemon; pgrep and cmp are the script's own checks.
+            patchShebangs $out/bin/logi-launch $out/bin/logi-rebind-wheel
+            wrapProgram $out/bin/logi-launch \
+              --prefix PATH : $out/bin:${pkgs.lib.makeBinPath [
+                pkgs.coreutils
+                pkgs.diffutils
+                pkgs.gnused
+                pkgs.gnugrep
+                pkgs.procps
+                pkgs.python3
+                pkgs.util-linux
               ]}
 
             wrapProgram $out/bin/logi-wheel-gui \
