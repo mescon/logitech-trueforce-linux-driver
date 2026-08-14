@@ -275,9 +275,16 @@ impl Kind {
             (Kind::SlotText { .. }, Value::SlotName { slot, name }) => format!("{slot}: {name}"),
             // Fresh under 1 s: show the live number. Stale (or never fed):
             // say so plainly rather than showing a frozen/zero rpm that
-            // reads as real data.
-            (Kind::RpmFeed, Value::RpmFeed { rpm, age_ms, .. }) => {
-                if *age_ms < 1000 { format!("{rpm} rpm") } else { "no telemetry".into() }
+            // reads as real data. The driver's NULL-shim readback is "0 0 0"
+            // (rpm, max_rpm, age_ms) when the texture interceptor is absent.
+            (Kind::RpmFeed, Value::RpmFeed { rpm, max_rpm, age_ms }) => {
+                if rpm == &0 && max_rpm == &0 && age_ms == &0 {
+                    "no telemetry".into()
+                } else if *age_ms < 1000 {
+                    format!("{rpm} rpm")
+                } else {
+                    "no telemetry".into()
+                }
             }
             _ => "?".into(),
         }
@@ -497,6 +504,25 @@ mod tests {
         assert_eq!(
             k.display(&Value::RpmFeed { rpm: 0, max_rpm: 0, age_ms: 60_000 }),
             "no telemetry"
+        );
+    }
+
+    /// The driver's NULL-shim readback is "0 0 0" when the texture
+    /// interceptor is absent, which must render as "no telemetry", not
+    /// "0 rpm" (which would be indistinguishable from a genuine live
+    /// engine-off feed).
+    #[test]
+    fn rpm_feed_treats_driver_null_shim_readback_as_no_telemetry() {
+        let k = Kind::RpmFeed;
+        // The NULL-shim readback: should show "no telemetry"
+        assert_eq!(
+            k.display(&Value::RpmFeed { rpm: 0, max_rpm: 0, age_ms: 0 }),
+            "no telemetry"
+        );
+        // A genuine fresh engine-off feed: should show "0 rpm"
+        assert_eq!(
+            k.display(&Value::RpmFeed { rpm: 0, max_rpm: 12000, age_ms: 5 }),
+            "0 rpm"
         );
     }
 }
