@@ -857,6 +857,7 @@ export component App inherits Window {
                     status: root.onboard-status;
                     status-error: root.onboard-status-error;
                     computer-profiles: root.computer-profiles;
+                    cancel() => { root.onboard-flow-open = false; }
                     pick-slot(n) => { root.onboard-pick-slot(n); }
                     edit-slider(attr, v) => { root.onboard-edit-slider(attr, v); }
                     edit-switch(attr, v) => { root.onboard-edit-switch(attr, v); }

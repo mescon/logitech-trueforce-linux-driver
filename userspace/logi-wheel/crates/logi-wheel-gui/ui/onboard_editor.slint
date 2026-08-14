@@ -28,6 +28,10 @@ export component OnboardSlotEditor inherits Rectangle {
     // second copy of it from Rust.
     in property <[string]> computer-profiles: [];
 
+    // Leave the flow from the picker state, before any slot was picked.
+    // Nothing was activated on the wheel yet, so this is pure UI state
+    // and needs no Rust round-trip (unlike exit(), which restores slots).
+    callback cancel();
     callback pick-slot(int);
     callback edit-slider(string, int);
     callback edit-switch(string, bool);
@@ -66,6 +70,14 @@ export component OnboardSlotEditor inherits Rectangle {
             for n in [1, 2, 3, 4, 5]: Button {
                 text: "Slot " + n;
                 clicked => { root.pick-slot(n); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: "Back to profiles";
+                clicked => { root.cancel(); }
             }
         }
         if root.status != "": Text {
