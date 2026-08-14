@@ -14553,6 +14553,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->tf_init_queued = false;
 	ff->tf_streaming = false;
 	ff->tf_recentre_sent = false;
+	ff->tf_stop_sent = false;
 	ff->tf_init_attempts = 0;
 	mutex_init(&ff->rev_lock);
 	memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW); /* offset-binary centre */

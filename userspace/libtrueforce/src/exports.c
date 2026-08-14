@@ -667,15 +667,29 @@ int    logiTrueForceGetHapticThreadStatus(int index) { (void)index; return 0; }
 
 /* ---- Pause / resume ---- */
 
+/* Pause's wait for the stream thread to service a teardown request:
+ * comfortably more than one tick (1 ms), short enough not to be felt
+ * by a caller. Purely defensive - tf_initialized true means the
+ * stream thread is running (session_ensure and stream_start are
+ * always paired), so the normal case is serviced within one tick. */
+#define TF_PAUSE_TEARDOWN_TIMEOUT_NS  (50L * 1000 * 1000)
+
 int logiTrueForcePause(int index)
 {
 	struct logitf_device *dev;
 	int rc = logitf_find_by_index(index, &dev);
+	struct timespec deadline;
 
 	if (rc)
 		return rc;
-	if (dev->tf_paused)
+
+	pthread_mutex_lock(&dev->lock);
+	if (dev->tf_paused) {
+		pthread_mutex_unlock(&dev->lock);
 		return LOGITF_OK;
+	}
+	dev->tf_paused = true;
+
 	/*
 	 * Going silent with the engine armed is the abort-capture state
 	 * (whine-investigation.md holder #2): the firmware treats the gap
@@ -684,18 +698,31 @@ int logiTrueForcePause(int index)
 	 * needs no re-arm - the pair's trailing 0x03 left the engine armed,
 	 * and the stream thread clears tf_armed_idle on its next packet.
 	 *
-	 * tf_paused is set first, then one tick's grace, so an in-flight
-	 * stream_tick lands before the pair rather than after it.
+	 * The stream thread is the single emitter of that pair (it may
+	 * also be about to send it on its own account, from the
+	 * starvation gate): request it here instead of writing the bytes
+	 * ourselves, which is what used to let a concurrent gate trip
+	 * double the pair, or let an in-flight stream packet land after
+	 * the pair instead of before it. logitf_tf_send_stop_pair's own
+	 * armed-idle guard makes the request a no-op if the gate already
+	 * won the race.
 	 */
-	dev->tf_paused = true;
-	{
-		struct timespec ts = { 0, 2000000L };
-
-		nanosleep(&ts, NULL);
+	if (dev->tf_initialized && !dev->tf_armed_idle) {
+		dev->tf_teardown_pending = true;
+		clock_gettime(CLOCK_REALTIME, &deadline);
+		deadline.tv_nsec += TF_PAUSE_TEARDOWN_TIMEOUT_NS;
+		if (deadline.tv_nsec >= 1000000000L) {
+			deadline.tv_nsec -= 1000000000L;
+			deadline.tv_sec += 1;
+		}
+		while (dev->tf_teardown_pending &&
+		       pthread_cond_timedwait(&dev->tf_teardown_done,
+					      &dev->lock, &deadline) == 0)
+			;
+		/* Don't leave a stale request for a future stream thread to
+		 * trip on if the wait above timed out. */
+		dev->tf_teardown_pending = false;
 	}
-	pthread_mutex_lock(&dev->lock);
-	if (dev->tf_initialized && !dev->tf_armed_idle)
-		(void)logitf_tf_send_stop_pair(dev);
 	pthread_mutex_unlock(&dev->lock);
 	return LOGITF_OK;
 }
@@ -707,7 +734,9 @@ int logiTrueForceResume(int index)
 
 	if (rc)
 		return rc;
+	pthread_mutex_lock(&dev->lock);
 	dev->tf_paused = false;
+	pthread_mutex_unlock(&dev->lock);
 	return LOGITF_OK;
 }
 
@@ -719,7 +748,9 @@ int logiTrueForceIsPaused(int index, bool *out)
 		return LOGITF_ERR_INVALID_ARG;
 	if (logitf_find_by_index(index, &dev))
 		return LOGITF_ERR_NOT_FOUND;
+	pthread_mutex_lock(&dev->lock);
 	*out = dev->tf_paused;
+	pthread_mutex_unlock(&dev->lock);
 	return LOGITF_OK;
 }
 

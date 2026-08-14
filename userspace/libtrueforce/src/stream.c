@@ -28,14 +28,20 @@
  * Windows sends in game menus (byte 10 = 0 "zero new samples",
  * byte 11 = 0, zeroed tail, cur = the current commanded force): the
  * wheel is told there is nothing to play instead of being handed the
- * last sample again as fresh audio (whine-investigation.md, H2).
- * After LOGITF_TF_IDLE_GRACE_TICKS of that at centre force, the
- * thread sends the captured session-teardown pair (0x04 stop/clear,
- * then 0x03 arm ~2 ms later) and goes fully silent, exactly the way
- * every clean Windows session ends; the next pushed sample resumes
- * the stream without re-init, the engine having stayed armed. If
- * userspace overruns the ring, push blocks on ring_space (or returns
- * EAGAIN in non-blocking callers - a future 22.x item).
+ * last sample again as fresh audio (whine-investigation.md, H2). A
+ * drained block whose samples are all exactly centre (0x8000, i.e.
+ * actively pushed silence rather than an empty ring) gets the same
+ * keepalive treatment, so a producer that pushes "nothing to play"
+ * explicitly matches the Windows wire too. During real starvation the
+ * held force also steps toward centre each tick (LOGITF_TF_STARVE_DECAY_STEP)
+ * rather than freezing, so a producer that died mid-waveform cannot
+ * command a stale force forever. After LOGITF_TF_IDLE_GRACE_TICKS of
+ * centre force, the thread sends the captured session-teardown pair
+ * (0x04 stop/clear, then 0x03 arm ~2 ms later) and goes fully silent,
+ * exactly the way every clean Windows session ends; the next pushed
+ * sample resumes the stream without re-init, the engine having stayed
+ * armed. If userspace overruns the ring, push blocks on ring_space (or
+ * returns EAGAIN in non-blocking callers - a future 22.x item).
  *
  * Coexistence with the kernel driver on interface 2: our in-tree
  * hid-logitech-dd fork also writes to interface 2's ep 0x03 OUT
@@ -227,12 +233,19 @@ static void stream_microsleep(unsigned us)
  * Caller must hold dev->lock and must guarantee the stream thread is
  * not concurrently writing (it either IS the stream thread, or the
  * thread has been joined, or tf_paused has been set and drained).
+ *
+ * Idempotency guard: if tf_armed_idle is already set the pair has
+ * already gone out and we return immediately. This is what keeps
+ * logiTrueForcePause() racing the starvation gate from doubling the
+ * pair on the wire - both paths funnel through this one check.
  */
 int logitf_tf_send_stop_pair(struct logitf_device *dev)
 {
 	uint8_t pkt[64];
 	ssize_t wr;
 
+	if (dev->tf_armed_idle)
+		return LOGITF_OK;
 	if (dev->hidraw_fd < 0)
 		return LOGITF_ERR_IO;
 
@@ -240,7 +253,21 @@ int logitf_tf_send_stop_pair(struct logitf_device *dev)
 	wr = write(dev->hidraw_fd, pkt, sizeof(pkt));
 	if (wr != (ssize_t)sizeof(pkt))
 		return LOGITF_ERR_IO;
+
+	/*
+	 * Release dev->lock for the inter-packet sleep. Single-emitter
+	 * ordering (see the struct comment on tf_teardown_pending) means
+	 * the only caller ever inside this function while a session is
+	 * live is the stream thread itself, and it cannot call itself
+	 * concurrently; every other caller has already joined that thread.
+	 * So nothing else touches tf_seq or hidraw_fd during the sleep,
+	 * and holding the lock across it would only block unrelated
+	 * readers (GetDamping, IsPaused, ...) for 2 ms for no reason.
+	 */
+	pthread_mutex_unlock(&dev->lock);
 	stream_microsleep(2000);	/* captured pair spacing: ~2 ms */
+	pthread_mutex_lock(&dev->lock);
+
 	logitf_build_ctrl_packet(pkt, 0x03, dev->tf_seq++);
 	wr = write(dev->hidraw_fd, pkt, sizeof(pkt));
 	if (wr != (ssize_t)sizeof(pkt))
@@ -249,12 +276,69 @@ int logitf_tf_send_stop_pair(struct logitf_device *dev)
 	return LOGITF_OK;
 }
 
-static int stream_tick(struct logitf_device *dev)
+/* True if a drained block is all exactly centre: actively pushed
+ * silence, which must read on the wire the same as an empty ring
+ * (F5: logi-tf-sim's pre-gate menu output is exact zeros pushed at
+ * the full rate, not an absence of pushes). */
+static bool block_is_silent(const uint16_t *samples, int n)
+{
+	int i;
+
+	for (i = 0; i < n; i++)
+		if (samples[i] != 0x8000)
+			return false;
+	return true;
+}
+
+/*
+ * Step the held force one tick toward centre. Fixed-size step
+ * (LOGITF_TF_STARVE_DECAY_STEP), not proportional to distance, so a
+ * full-scale offset is guaranteed to reach exactly 0x8000 within
+ * LOGITF_TF_STARVE_DECAY_TICKS ticks; smaller offsets arrive sooner
+ * and then this is a no-op.
+ */
+static uint16_t decay_towards_centre(uint16_t current)
+{
+	int32_t distance = (int32_t)current - 0x8000;
+
+	if (distance > 0) {
+		distance -= LOGITF_TF_STARVE_DECAY_STEP;
+		if (distance < 0)
+			distance = 0;
+	} else if (distance < 0) {
+		distance += LOGITF_TF_STARVE_DECAY_STEP;
+		if (distance > 0)
+			distance = 0;
+	}
+	return (uint16_t)(0x8000 + distance);
+}
+
+int logitf_stream_tick(struct logitf_device *dev)
 {
 	uint16_t new_samples[LOGITF_TF_NEW];
 	int n = 0;
 	uint8_t pkt[64];
 	ssize_t wr;
+	bool paused, armed_idle, idle_shape;
+
+	/*
+	 * Single-emitter ordering (F2): if Pause is waiting on a teardown,
+	 * do that and nothing else this tick. logitf_tf_send_stop_pair's
+	 * own tf_armed_idle guard makes this a no-op if the starvation
+	 * gate below already fired first.
+	 */
+	pthread_mutex_lock(&dev->lock);
+	if (dev->tf_teardown_pending) {
+		int rc = logitf_tf_send_stop_pair(dev);
+
+		dev->tf_teardown_pending = false;
+		pthread_cond_broadcast(&dev->tf_teardown_done);
+		pthread_mutex_unlock(&dev->lock);
+		return rc == LOGITF_OK ? 0 : -EIO;
+	}
+	paused = dev->tf_paused;
+	armed_idle = dev->tf_armed_idle;
+	pthread_mutex_unlock(&dev->lock);
 
 	/* Drain up to LOGITF_TF_NEW samples from the ring (non-blocking). */
 	pthread_mutex_lock(&dev->ring_lock);
@@ -289,25 +373,27 @@ static int stream_tick(struct logitf_device *dev)
 	} else {
 		/*
 		 * Starved tick: flush the window toward centre so pre-idle
-		 * audio does not replay when the stream resumes. The wire
-		 * carries the idle packet's zeroed tail either way;
-		 * tf_last_current (the held force) is deliberately NOT
-		 * decayed - a producer that quit mid-waveform keeps its
-		 * commanded force held in cur, it just stops being replayed
-		 * as fresh audio.
+		 * audio does not replay when the stream resumes, and step
+		 * the held force toward centre too (LOGITF_TF_STARVE_DECAY_STEP,
+		 * see internal.h) instead of freezing it - bounded so a
+		 * producer that quit mid-waveform cannot command a stale
+		 * force forever, and so the silence gate below can fire.
 		 */
 		memmove(&dev->tf_window[0],
 			&dev->tf_window[LOGITF_TF_NEW],
 			(LOGITF_TF_WINDOW - LOGITF_TF_NEW) * sizeof(uint16_t));
 		for (int i = 0; i < LOGITF_TF_NEW; i++)
 			dev->tf_window[LOGITF_TF_WINDOW - LOGITF_TF_NEW + i] = 0x8000;
+		dev->tf_last_current = decay_towards_centre(dev->tf_last_current);
 	}
 
-	if (dev->tf_paused)
+	if (paused)
 		return 0;
 
-	if (n == 0) {
-		if (dev->tf_armed_idle)
+	idle_shape = (n == 0) || block_is_silent(new_samples, n);
+
+	if (idle_shape) {
+		if (armed_idle)
 			return 0;	/* post-pair standby: total silence */
 
 		/*
@@ -337,7 +423,9 @@ static int stream_tick(struct logitf_device *dev)
 					 dev->tf_last_current);
 	} else {
 		dev->tf_idle_ticks = 0;
+		pthread_mutex_lock(&dev->lock);
 		dev->tf_armed_idle = false;	/* resuming; pair's 0x03 armed us */
+		pthread_mutex_unlock(&dev->lock);
 		logitf_build_stream_packet(pkt, dev->tf_seq++,
 					   dev->tf_last_current,
 					   dev->tf_window);
@@ -456,7 +544,7 @@ static void *stream_thread_fn(void *arg)
 			 * would burst-write to the wheel and cause jitter.
 			 */
 			(void)expiries;
-			stream_tick(dev);
+			logitf_stream_tick(dev);
 		}
 	}
 	return NULL;
@@ -483,6 +571,7 @@ int logitf_stream_start(struct logitf_device *dev)
 		dev->tf_window[i] = 0x8000;
 	dev->tf_last_current = 0x8000;
 	dev->tf_idle_ticks = 0;
+	dev->tf_teardown_pending = false;	/* no thread was around to service one */
 
 	/*
 	 * Sequence counter is set by session_ensure to

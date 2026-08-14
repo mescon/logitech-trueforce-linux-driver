@@ -322,6 +322,7 @@ int logitf_discover(void)
 		dev->status_stopfd = -1;
 		dev->kf_effect_id = -1;
 		pthread_mutex_init(&dev->lock, NULL);
+		pthread_cond_init(&dev->tf_teardown_done, NULL);
 		pthread_mutex_init(&dev->ring_lock, NULL);
 		pthread_cond_init(&dev->ring_space, NULL);
 		pthread_cond_init(&dev->ring_data, NULL);

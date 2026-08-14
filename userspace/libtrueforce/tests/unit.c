@@ -267,6 +267,143 @@ static int test_stop_pair_ordering(void)
 	return 0;
 }
 
+/*
+ * F1: a starved stream must not hold a stale non-zero force forever.
+ * Drive logitf_stream_tick with an empty ring from a clearly non-zero
+ * held force; it must reach centre (0x8000) within
+ * LOGITF_TF_STARVE_DECAY_TICKS ticks, and once there the silence gate
+ * must go on to fire the teardown pair - proving starvation both
+ * bounds the held force and lets the gate do its job (whine-
+ * investigation.md F1: the old code held cur forever, which pinned
+ * the gate shut since it requires cur==0x8000 exactly).
+ */
+static int test_starvation_decays_and_gate_fires(void)
+{
+	struct logitf_device dev;
+	int fds[2];
+	unsigned tick;
+	unsigned decay_tick = 0;
+	bool reached_centre = false;
+	unsigned max_ticks = (unsigned)LOGITF_TF_STARVE_DECAY_TICKS +
+			     (unsigned)LOGITF_TF_IDLE_GRACE_TICKS + 5;
+
+	if (pipe(fds) != 0) {
+		fprintf(stderr, "FAIL decay: pipe() failed\n");
+		return 1;
+	}
+	memset(&dev, 0, sizeof(dev));
+	pthread_mutex_init(&dev.lock, NULL);
+	pthread_cond_init(&dev.tf_teardown_done, NULL);
+	pthread_mutex_init(&dev.ring_lock, NULL);
+	pthread_cond_init(&dev.ring_space, NULL);
+	pthread_cond_init(&dev.ring_data, NULL);
+	dev.hidraw_fd = fds[1];
+	dev.tf_initialized = true;
+	dev.tf_seq = 1;
+	dev.tf_last_current = (uint16_t)(0x8000 + 16000); /* a stale non-zero force */
+	for (int i = 0; i < LOGITF_TF_WINDOW; i++)
+		dev.tf_window[i] = dev.tf_last_current;
+
+	for (tick = 1; tick <= max_ticks; tick++) {
+		logitf_stream_tick(&dev);
+		if (!reached_centre && dev.tf_last_current == 0x8000) {
+			reached_centre = true;
+			decay_tick = tick;
+		}
+		if (dev.tf_armed_idle)
+			break;
+	}
+
+	if (!reached_centre) {
+		fprintf(stderr, "FAIL decay: cur never reached 0x8000\n");
+		return 1;
+	}
+	if (decay_tick > (unsigned)LOGITF_TF_STARVE_DECAY_TICKS) {
+		fprintf(stderr, "FAIL decay: took %u ticks, bound is %u\n",
+			decay_tick, (unsigned)LOGITF_TF_STARVE_DECAY_TICKS);
+		return 1;
+	}
+	EXPECT_EQ("decay:gate_fired", dev.tf_armed_idle, 1);
+
+	close(fds[0]);
+	close(fds[1]);
+	pthread_mutex_destroy(&dev.lock);
+	pthread_cond_destroy(&dev.tf_teardown_done);
+	pthread_mutex_destroy(&dev.ring_lock);
+	pthread_cond_destroy(&dev.ring_space);
+	pthread_cond_destroy(&dev.ring_data);
+	return 0;
+}
+
+/*
+ * F5: a drained block whose samples are all exactly centre (offset-
+ * binary 0x8000, i.e. logitf_s16_to_wire(0)) is actively pushed
+ * silence, not an empty ring - but it must still produce the idle
+ * keepalive shape (byte10=0, byte11=0, zeroed tail) and count toward
+ * the silence gate exactly like true starvation, so a producer that
+ * explicitly pushes "nothing to play" (logi-tf-sim's pre-gate menu
+ * output) matches the Windows wire and both idle gates agree.
+ */
+static int test_all_zero_block_is_starved_shape(void)
+{
+	struct logitf_device dev;
+	int fds[2];
+	int16_t zeros[LOGITF_TF_NEW] = { 0, 0, 0, 0 };
+	uint8_t pkt[64];
+	ssize_t n;
+	int i;
+
+	if (pipe(fds) != 0) {
+		fprintf(stderr, "FAIL allzero: pipe() failed\n");
+		return 1;
+	}
+	memset(&dev, 0, sizeof(dev));
+	pthread_mutex_init(&dev.lock, NULL);
+	pthread_cond_init(&dev.tf_teardown_done, NULL);
+	pthread_mutex_init(&dev.ring_lock, NULL);
+	pthread_cond_init(&dev.ring_space, NULL);
+	pthread_cond_init(&dev.ring_data, NULL);
+	dev.hidraw_fd = fds[1];
+	dev.tf_initialized = true;
+	dev.tf_seq = 1;
+	dev.stream_running = true;	/* logitf_stream_push_s16 requires this */
+	for (i = 0; i < LOGITF_TF_WINDOW; i++)
+		dev.tf_window[i] = 0x8000;
+	dev.tf_last_current = 0x8000;
+
+	/* logitf_s16_to_wire(0) == 0x8000: an s16 zero block on the wire. */
+	if (logitf_stream_push_s16(&dev, zeros, LOGITF_TF_NEW) != LOGITF_OK) {
+		fprintf(stderr, "FAIL allzero: push failed\n");
+		return 1;
+	}
+
+	logitf_stream_tick(&dev);
+
+	n = read(fds[0], pkt, sizeof(pkt));
+	if (n != (ssize_t)sizeof(pkt)) {
+		fprintf(stderr, "FAIL allzero: short read (%zd bytes)\n", n);
+		return 1;
+	}
+	/* Idle shape (logitf_build_idle_packet), not the driving shape
+	 * (byte10=4, byte11=0x0d) a non-silent block would get. */
+	EXPECT_EQ("allzero:new",  pkt[10], 0x00);
+	EXPECT_EQ("allzero:flag", pkt[11], 0x00);
+	for (i = 12; i < 64; i++)
+		EXPECT_EQ("allzero:zero_tail", pkt[i], 0x00);
+	/* Gate counting: this tick must count toward the silence gate the
+	 * same as an empty-ring starved tick would. */
+	EXPECT_EQ("allzero:idle_ticks_counted", dev.tf_idle_ticks, 1);
+
+	close(fds[0]);
+	close(fds[1]);
+	pthread_mutex_destroy(&dev.lock);
+	pthread_cond_destroy(&dev.tf_teardown_done);
+	pthread_mutex_destroy(&dev.ring_lock);
+	pthread_cond_destroy(&dev.ring_space);
+	pthread_cond_destroy(&dev.ring_data);
+	return 0;
+}
+
 static int test_wire_monotonic(void)
 {
 	/*
@@ -306,6 +443,8 @@ int main(void)
 		{ "idle_packet_shape",   test_idle_packet_shape },
 		{ "ctrl_packets_match_captured_pair", test_ctrl_packets_match_captured_pair },
 		{ "stop_pair_ordering",  test_stop_pair_ordering },
+		{ "starvation_decays_and_gate_fires", test_starvation_decays_and_gate_fires },
+		{ "all_zero_block_is_starved_shape", test_all_zero_block_is_starved_shape },
 	};
 	size_t i;
 

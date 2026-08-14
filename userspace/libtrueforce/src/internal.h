@@ -71,6 +71,23 @@
  */
 #define LOGITF_TF_IDLE_GRACE_TICKS  (LOGITF_TF_PKT_HZ / 2)
 
+/*
+ * Starvation decay: while the ring is empty, the held force (cur) does
+ * NOT freeze forever - it steps toward centre so (a) a producer that
+ * died mid-waveform cannot command a DC torque indefinitely, and (b)
+ * the silence gate above, which requires cur==0x8000 exactly, can
+ * eventually fire at all. Linear (a fixed per-tick step) rather than
+ * exponential, so the worst case (a full-scale offset, 0 or 0xFFFF) is
+ * bounded by a fixed tick count instead of an asymptote that only
+ * approaches zero; deriving the step from that bound means decay needs
+ * no extra per-session state beyond the held value itself. 40 ticks =
+ * 40 ms sits at the top of the reviewed 20-50 ms band; smaller offsets
+ * reach centre sooner.
+ */
+#define LOGITF_TF_STARVE_DECAY_TICKS  40
+#define LOGITF_TF_STARVE_DECAY_STEP \
+	((0x8000 + LOGITF_TF_STARVE_DECAY_TICKS - 1) / LOGITF_TF_STARVE_DECAY_TICKS)
+
 struct logitf_device {
 	bool in_use;
 
@@ -104,15 +121,30 @@ struct logitf_device {
 
 	/* Session state */
 	bool tf_initialized;       /* Init sequence sent since open */
-	bool tf_paused;
 	/*
-	 * The 0x04+0x03 teardown pair has been sent and the host has been
-	 * silent since: engine flushed and armed but unfed (the state every
-	 * clean Windows session leaves the wheel in). Cleared when a stream
-	 * packet resumes and by session init. Written under `lock`; read
-	 * lock-free by the stream thread (same discipline as tf_paused).
+	 * tf_paused, tf_armed_idle and tf_teardown_pending are read AND
+	 * written exclusively under `lock`, including by the stream
+	 * thread's per-tick hot path: a mutex lock/unlock at 1 kHz is
+	 * cheap and almost always uncontended, and nothing else in this
+	 * codebase uses C11 _Atomic, so plain bool-under-lock is the
+	 * consistent choice rather than a one-off atomic type here.
+	 *
+	 * tf_armed_idle: the 0x04+0x03 teardown pair has been sent and the
+	 * host has been silent since: engine flushed and armed but unfed
+	 * (the state every clean Windows session leaves the wheel in).
+	 * Cleared when a stream packet resumes and by session init.
+	 *
+	 * tf_teardown_pending / tf_teardown_done implement single-emitter
+	 * ordering for the pair: logiTrueForcePause() sets the flag and
+	 * waits on the condvar (with a timeout) instead of writing the
+	 * pair itself; the stream thread is the only caller that ever
+	 * reaches logitf_tf_send_stop_pair while a session is live (every
+	 * other caller has already joined that thread first), so the pair
+	 * can never be split or doubled across two writers. See stream.c.
 	 */
+	bool tf_paused;
 	bool tf_armed_idle;
+	bool tf_teardown_pending;
 	unsigned tf_idle_ticks;    /* consecutive starved ticks at centre (stream thread only) */
 	uint8_t tf_seq;            /* next outgoing packet sequence byte */
 
@@ -149,6 +181,7 @@ struct logitf_device {
 	unsigned ring_tail;                    /* consumer index (mod RING) */
 
 	pthread_mutex_t lock;      /* Protects mutable non-ring state */
+	pthread_cond_t  tf_teardown_done; /* paired with `lock`; see tf_teardown_pending above */
 };
 
 struct logitf_device *logitf_table(void);
@@ -178,8 +211,22 @@ void logitf_build_stream_packet(uint8_t *pkt, uint8_t seq, uint16_t current,
 				const uint16_t window[LOGITF_TF_WINDOW]);
 void logitf_build_idle_packet(uint8_t *pkt, uint8_t seq, uint16_t current);
 void logitf_build_ctrl_packet(uint8_t *pkt, uint8_t type, uint8_t seq);
-/* 0x04 then 0x03, ~2 ms apart; caller holds dev->lock, no concurrent writer. */
+/*
+ * 0x04 then 0x03, ~2 ms apart. Caller holds dev->lock on entry; the
+ * function releases it for the inter-packet sleep and re-takes it
+ * before returning, so it is always safe to unlock right after this
+ * call the same way as before. No-ops (returns LOGITF_OK immediately)
+ * if tf_armed_idle is already set. Only ever called by the stream
+ * thread while a session is live, or by a caller that has already
+ * joined it (see tf_teardown_pending in internal.h's struct comment).
+ */
 int  logitf_tf_send_stop_pair(struct logitf_device *dev);
+/*
+ * One streaming tick: drain the ring, update the rolling window, emit
+ * a packet. Non-static so tests/unit.c can drive it directly against
+ * a pipe standing in for hidraw, without a real timerfd/thread.
+ */
+int  logitf_stream_tick(struct logitf_device *dev);
 
 /* kf.c */
 int    logitf_evdev_ensure_open(struct logitf_device *dev);
