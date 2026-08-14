@@ -193,6 +193,7 @@ install -d %{buildroot}%{_usrsrc}/%{module}-%{modver}
 # G923 (c266/c267); the Kbuild links it into the same hid-logitech-dd.ko.
 install -m 0644 mainline/hid-logitech-hidpp.c mainline/dd-lg4ff.c \
     mainline/dd-lg4ff.h mainline/hid-ids.h \
+    mainline/hidpp_dd_texture_merge.h \
     mainline/hidpp_dd_tf_init.h mainline/Kbuild mainline/Makefile \
     %{buildroot}%{_usrsrc}/%{module}-%{modver}/
 sed 's/@PKGVER@/%{modver}/' packaging/aur/logitech-trueforce-dkms/dkms.conf \

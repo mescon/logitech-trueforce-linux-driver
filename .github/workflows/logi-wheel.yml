@@ -95,3 +95,8 @@ jobs:
           fetch-depth: 0
       - name: The committed proxy DLLs must not be older than their sources
         run: tools/check-committed-dlls.sh --check
+      - name: The DKMS packaging manifests must stage every included header
+        # A header added to mainline/ without a manifest update ships a
+        # source tree that fails at install time on the user's machine,
+        # invisible to CI (issue #64).
+        run: tools/check-packaging-sources.sh

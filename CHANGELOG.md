@@ -5,6 +5,18 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.35.1 - 2026-08-14
+
+**0.35.0's DKMS packages could not build (#64).** The Debian, AUR and OBS
+recipes stage the module source with explicit file lists, and none of them
+listed `hidpp_dd_texture_merge.h`, so every DKMS build failed at install
+time on the missing header while CI stayed green (the DKMS compile happens
+on the user's machine). All three manifests now stage it, and a new CI
+check asserts that every header the module sources include appears in
+every explicit manifest, so this class of breakage cannot ship again.
+The Fedora akmod was unaffected (it copies the whole source directory).
+
+
 ## 0.35.0 - 2026-08-14
 
 **Native TrueForce works, end to end, and Assetto Corsa EVO gets the

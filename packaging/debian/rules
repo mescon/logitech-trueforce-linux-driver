@@ -49,6 +49,7 @@ override_dh_install:
 	install -d $(SRC)
 	install -m 0644 mainline/hid-logitech-hidpp.c mainline/dd-lg4ff.c \
 		mainline/dd-lg4ff.h mainline/hid-ids.h \
+		mainline/hidpp_dd_texture_merge.h \
 		mainline/hidpp_dd_tf_init.h mainline/Kbuild mainline/Makefile $(SRC)/
 	# Build-time identifier the loaded module reports back (Kbuild reads it).
 	echo "v$(VER)" > $(SRC)/.git_hash
