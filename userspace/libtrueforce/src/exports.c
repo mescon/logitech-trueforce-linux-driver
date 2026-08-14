@@ -684,7 +684,22 @@ int logiTrueForcePause(int index)
 		return rc;
 
 	pthread_mutex_lock(&dev->lock);
-	if (dev->tf_paused) {
+	if (dev->tf_paused &&
+	    (!dev->tf_initialized || dev->tf_armed_idle)) {
+		/*
+		 * Already paused AND the teardown pair is either moot (no
+		 * session) or already on the wire: nothing to redo. The old
+		 * early-return keyed on tf_paused alone, which made a
+		 * timed-out Pause unretryable: the timeout path below clears
+		 * tf_teardown_pending, so a first Pause whose wait expired
+		 * left the session silent with the engine armed and every
+		 * later Pause a no-op. A repeat Pause now falls through and
+		 * re-requests the pair whenever it never went out
+		 * (tf_armed_idle false). Reading tf_armed_idle here is safe
+		 * in a way the pre-pause read (see below) is not: the stream
+		 * thread only clears it when emitting a resume packet, which
+		 * it cannot do while tf_paused is set.
+		 */
 		pthread_mutex_unlock(&dev->lock);
 		return LOGITF_OK;
 	}
