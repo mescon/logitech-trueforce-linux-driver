@@ -669,6 +669,36 @@ do_helpers() {
 	return 0
 }
 
+# Install the launch-time tool chain from this checkout: the logi-launch
+# wrapper, the RPM bridge it starts, and the prebuilt Windows artifacts it
+# stages into game folders and prefixes. Every distro package ships these;
+# the from-source path did not, so a checkout install had a current driver
+# and a launcher with nothing to stage (#60).
+do_tools() {
+	install -Dm 0755 "$REPO_ROOT/tools/logi-launch.sh" /usr/bin/logi-launch
+	echo "  installed /usr/bin/logi-launch"
+	if command -v cc >/dev/null 2>&1; then
+		if cc -O2 -Wall -o /tmp/logi-rpm-bridge.$$ \
+		   "$REPO_ROOT/tools/logi-rpm-bridge.c" 2>/dev/null; then
+			install -Dm 0755 /tmp/logi-rpm-bridge.$$ /usr/bin/logi-rpm-bridge
+			rm -f /tmp/logi-rpm-bridge.$$
+			echo "  installed /usr/bin/logi-rpm-bridge"
+		else
+			echo "  logi-rpm-bridge build failed; the texture merge will have no RPM feed" >&2
+		fi
+	else
+		echo "  no C compiler; skipped logi-rpm-bridge (the texture merge needs it)" >&2
+	fi
+	local f
+	for f in dinput8-escape.dll tf-range-proxy.dll logi-tf-relay.exe tf-init.bin; do
+		if [ -f "$REPO_ROOT/tools/$f" ]; then
+			install -Dm 0644 "$REPO_ROOT/tools/$f" \
+				"/usr/share/logitech-trueforce/$f"
+			echo "  installed /usr/share/logitech-trueforce/$f"
+		fi
+	done
+}
+
 # Build and install the settings apps from this checkout.
 #
 # The from-source path installed the driver, the udev rules and the shell
@@ -769,10 +799,10 @@ setup() {
 		exit 1
 	fi
 
-	say "[1/7] Kernel module (DKMS) + udev rule"
+	say "[1/8] Kernel module (DKMS) + udev rule"
 	"$REPO_ROOT/tools/dkms-update.sh" || exit 1
 
-	say "[2/7] Migrating off any old full-fork install"
+	say "[2/8] Migrating off any old full-fork install"
 	# The old build shipped its module as hid-logitech-hidpp - the SAME
 	# name as the in-tree driver - so DKMS DISPLACED the genuine in-tree
 	# module (backing it up under .../original_module/) and the installer
@@ -826,7 +856,7 @@ setup() {
 		echo "  nothing to migrate (clean install)"
 	fi
 
-	say "[3/7] Loading the module"
+	say "[3/8] Loading the module"
 	modprobe -r hid-logitech-dd 2>/dev/null || true
 	if modprobe hid-logitech-dd; then
 		echo "  loaded"
@@ -836,10 +866,13 @@ setup() {
 	# claim the wheel if it is currently sitting on hid-generic
 	"$REPO_ROOT/tools/rebind-wheel.sh" >/dev/null 2>&1 || true
 
-	say "[4/7] Settings apps"
+	say "[4/8] Launch tools (logi-launch + helpers)"
+	do_tools || true
+
+	say "[5/8] Settings apps"
 	do_apps || true
 
-	say "[5/7] TrueForce shim (Steam prefixes)"
+	say "[6/8] TrueForce shim (Steam prefixes)"
 	if ls "$(resolved_sdk_dir)"/Logi/Trueforce/*/trueforce_sdk_x64.dll >/dev/null 2>&1; then
 		do_shim || true
 	else
@@ -847,10 +880,10 @@ setup() {
 		echo "  see the wiki's Force-feedback-in-games page for TrueForce)"
 	fi
 
-	say "[6/7] Telemetry helpers (relay + truck-sim plugin)"
+	say "[7/8] Telemetry helpers (relay + truck-sim plugin)"
 	do_helpers || true
 
-	say "[7/7] Doctor"
+	say "[8/8] Doctor"
 	# diagnosis runs best as the real user (permission checks)
 	if [ -n "${SUDO_USER:-}" ]; then
 		runuser -u "$SUDO_USER" -- "$(readlink -f "$0")" doctor || true
@@ -860,21 +893,15 @@ setup() {
 
 	echo
 	say "Remaining manual steps (per game, in Steam):"
-	# Advice that depends on the wheel must not be printed as though it
-	# does not. Told to every reader, "set PROTON_ENABLE_HIDRAW=1" removes
-	# force feedback for G923 owners and for anyone playing a DirectInput
-	# sim, which is the opposite of what they came here for (#54).
-	if wheel_has_sdk_trueforce; then
-		echo "  1. Properties > Launch Options:  PROTON_ENABLE_HIDRAW=1 %command%"
-		echo "     (only for sims with built-in TrueForce: ACC, Assetto Corsa EVO.)"
-		echo "     For DirectInput sims such as Le Mans Ultimate and rFactor 2 use"
-		echo "     'logi-ffb %command%' instead, and leave PROTON_ENABLE_HIDRAW unset:"
-		echo "     setting it there stops force feedback reaching the game."
-	else
-		echo "  1. Leave PROTON_ENABLE_HIDRAW unset. This wheel has no SDK TrueForce,"
-		echo "     and setting it stops force feedback reaching the game."
-		echo "     For DirectInput sims use 'logi-ffb %command%'."
-	fi
+	# One launch option for every game and wheel: the wrapper resolves the
+	# per-game plan itself (raw HID only where this wheel wants it, the
+	# logi-ffb proxy for DirectInput sims, telemetry helpers where needed).
+	# The old advice printed hand-set variables here, and told to the wrong
+	# owner they remove force feedback (#54); the wrapper cannot make that
+	# mistake because it asks the wheel.
+	echo "  1. Properties > Launch Options:  logi-launch %command%"
+	echo "     (same line for every game; it works the recipe out per game"
+	echo "     and per wheel. Hand-tuning instead: docs/GAME_SETUP.md.)"
 	echo "  2. Properties > Controller:     Disable Steam Input"
 	echo "  (per-game recipes: docs/GAME_SETUP.md, or the app's Setup page)"
 }

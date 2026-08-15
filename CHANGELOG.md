@@ -5,6 +5,31 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.35.2 - 2026-08-15
+
+**The from-source install now ships the whole launch chain, and stale
+in-prefix relays refresh themselves.** Two field reports within a day of
+0.35.1 (#59, #60) traced to the same class: runtime pieces the packages
+ship that other paths did not.
+
+- `tools/setup.sh` now installs `logi-launch`, builds and installs
+  `logi-rpm-bridge`, and stages the prebuilt Windows artifacts
+  (`dinput8-escape.dll`, `tf-range-proxy.dll`, `logi-tf-relay.exe`,
+  `tf-init.bin`) exactly as every distro package does; a checkout install
+  previously ended up with a current driver and a launcher with nothing
+  to stage (#60).
+- The Debian package now ships `logi-launch` and `tf-init.bin`; it was
+  the one channel that referenced the launcher without installing it.
+- `logi-launch` now stages and refreshes `logi-tf-relay.exe` in the
+  game's prefix from the packaged master copy, the same cmp-based
+  refresh the dinput8 proxy already gets. A prefix's relay was a
+  snapshot from whenever it was installed, and a stale one fails in
+  ways that look like telemetry problems (#59).
+- Its helper log line also no longer prints the helper arguments twice.
+- Setup's closing advice is one line for every game and wheel:
+  `logi-launch %command%`.
+
+
 ## 0.35.1 - 2026-08-14
 
 **0.35.0's DKMS packages could not build (#64).** The Debian, AUR and OBS

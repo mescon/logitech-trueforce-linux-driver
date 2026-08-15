@@ -335,13 +335,32 @@ if [ -z "$HELPER_EXE" ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; then
 		# still start something, and a line claiming nothing was needed
 		# would be contradicted moments later.
 		say "no in-prefix relay needed for this game"
-	elif [ ! -f "$prefix_root/pfx/drive_c/logi-tf-relay.exe" ]; then
-		say "this game needs logi-tf-relay in its prefix and it is not there."
-		say "Install it from the app's Setup page (Install relay), then start the game again."
-		game=""
 	else
-		HELPER_EXE='c:\logi-tf-relay.exe'
-		HELPER_ARGS="--game $game"
+		# Stage or refresh the relay from the packaged master copy. The
+		# prefix copy is a snapshot from whenever it was installed, and a
+		# stale one fails in ways that look like telemetry problems: an
+		# old build exits instead of waiting for the game, or does not
+		# know the game id at all (#59). cmp, not a timestamp, same
+		# reason as the dinput8 proxy above.
+		relay_src="/usr/share/logitech-trueforce/logi-tf-relay.exe"
+		[ -r "$relay_src" ] || relay_src="$(dirname "$0")/logi-tf-relay.exe"
+		relay_dst="$prefix_root/pfx/drive_c/logi-tf-relay.exe"
+		if [ -r "$relay_src" ] && \
+		   ! cmp -s "$relay_src" "$relay_dst" 2>/dev/null; then
+			if cp -f "$relay_src" "$relay_dst" 2>/dev/null; then
+				say "staged logi-tf-relay into the prefix"
+			else
+				say "could not copy logi-tf-relay into the prefix"
+			fi
+		fi
+		if [ ! -f "$relay_dst" ]; then
+			say "this game needs logi-tf-relay in its prefix and it is not there."
+			say "Install it from the app's Setup page (Install relay), then start the game again."
+			game=""
+		else
+			HELPER_EXE='c:\logi-tf-relay.exe'
+			HELPER_ARGS="--game $game"
+		fi
 	fi
 fi
 
@@ -442,7 +461,7 @@ if [ ${#helper_exes[@]} -gt 0 ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; 
 		exe="${helper_exes[$i]}"
 		args="${helper_argv[$i]}"
 		(
-			say "starting ${args:+$exe $args}${args:-$exe} in $prefix_root/pfx"
+			say "starting $exe${args:+ $args} in $prefix_root/pfx"
 			WINEPREFIX="$prefix_root/pfx" WINEDEBUG="${WINEDEBUG:--all}" \
 				"$wine_bin" "$exe" $args >>"$LOG" 2>&1
 			# Named, because "helper exited" says nothing about which one

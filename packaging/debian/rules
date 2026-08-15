@@ -74,6 +74,15 @@ override_dh_install:
 	# stops it around a game session.
 	install -D -m 0755 tools/logi-rpm-bridge \
 		$(TUI)/usr/bin/logi-rpm-bridge
+	# The one launch option every game uses: works out the per-game plan
+	# and runs the whole recipe. Every other channel already shipped it;
+	# the deb comments referenced it without installing it (issue #60's
+	# class of missing-runtime reports).
+	install -D -m 0755 tools/logi-launch.sh \
+		$(TUI)/usr/bin/logi-launch
+	# The TrueForce re-arm blob logi-launch replays under LOGI_TF_REARM=1.
+	install -D -m 0644 tools/tf-init.bin \
+		$(TUI)/usr/share/logitech-trueforce/tf-init.bin
 	# The truck sims load this from inside the game rather than from a
 	# Proton prefix, so it ships beside the proxy rather than in bin.
 	install -D -m 0644 userspace/logi-wheel/target/release/liblogi_tf_scs.so \
