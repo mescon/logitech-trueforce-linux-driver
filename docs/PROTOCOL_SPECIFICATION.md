@@ -2043,6 +2043,23 @@ The wheel reports **10 layouts, A to J**. Layout J (index 9) exposes four
 text fields with capacities 19 / 10 / 19 / 10. Static and repeated writes
 are both hardware-confirmed.
 
+**fn1 is self-describing** (@WnDTech's tester, RS50 hardware, 2026-08-15):
+requesting the descriptor for layout index 9 answers
+
+```
+12 FF 12 1A  09 0A 13 0A 13 0A 00 ...
+```
+
+payload `[layout index][capacity bytes]`: `0x0A`/`0x13` are the literal
+field widths 10 and 19, so a client can build frames from the descriptor
+instead of hardcoding per-layout widths. One open question from that
+readback: it carries **five** capacity entries (10/19/10/19/10) against
+the four documented text fields, an unidentified fifth element. The fn3
+frame byte order (layout byte first, field order, space padding) remains
+unvalidated on hardware. Feature-index note from the same run: 0x8130
+resolved at index 0x12 only after one collision retry, so resolve it
+dynamically, never assume the index.
+
 **It is a typed renderer, not a framebuffer.** The firmware holds a 128x64
 monochrome buffer, but no `0x8130` command accepts framebuffer bytes,
 coordinates, pixels or partial regions. Each layout exposes bounded text
@@ -2053,7 +2070,7 @@ host -> typed Layout A-J data -> firmware renderer -> framebuffer -> OLED
 ```
 
 So a driver-side interface for this would be a small set of typed fields per
-layout, not a bitmap surface. That rules out the character-device shape a
+layout, not a bitmap surface. That rules out the character-device interface a
 framebuffer would have implied.
 
 **Transport: interface 1, endpoint 0, HID SET_REPORT.** Deliberately not
