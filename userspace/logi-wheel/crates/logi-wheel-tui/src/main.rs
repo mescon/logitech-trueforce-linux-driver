@@ -405,42 +405,14 @@ fn launch_plan(
     // wrapper's recipe and the GUI's description of it cannot disagree.
     // They did before: only this printer knew which wheel was attached.
     let mut plan = games::LaunchPlan::for_game(game, caps, ambiguous);
-    plan.hidraw_scope = hidraw_scope_for(&wheels, caps);
+    // The scope derivation lives in the core beside the plan itself
+    // (`games::hidraw_scope_for`), so this printer, the GUI's Setup page
+    // and the TUI's game cards all name the same wheel the same way.
+    plan.hidraw_scope = games::hidraw_scope_for(&wheels, caps);
     for line in plan.lines() {
         println!("{line}");
     }
     Ok(())
-}
-
-/// The `PROTON_ENABLE_HIDRAW` value naming the attached wheel, or `None`
-/// when no wheel of `caps`' kind can be named.
-///
-/// Name the wheel rather than saying "1", which Proton reads as "every HID
-/// device on this machine" (issue #60). With several wheels attached, scope
-/// to the one whose recipe this is.
-/// Only a real wheel's id: logi-ffb's virtual wheel is a HID device too,
-/// and while the proxy is running discovery can return it. Scoping the
-/// variable to that would point Proton at a device the game's TrueForce
-/// cannot reach, and the failure would be silent.
-/// The id test is part of choosing the wheel, not a check applied after
-/// choosing one. Applied afterwards, a first candidate that fails it (the
-/// logi-ffb virtual wheel while the proxy runs, or any device whose
-/// directory name is not in BUS:VID:PID.SEQ shape) yielded None for the
-/// whole chain, and the wrapper fell back to the bare `1` this exists to
-/// avoid. Keep looking instead.
-fn hidraw_scope_for<S: logi_wheel_core::sysfs::SysfsIo>(
-    wheels: &[logi_wheel_core::Device<S>],
-    caps: logi_wheel_core::games::WheelCaps,
-) -> Option<String> {
-    wheels
-        .iter()
-        .filter(|d| d.wheel_caps().sdk_trueforce == caps.sdk_trueforce)
-        .filter_map(|d| d.product_id())
-        .find(|pid| {
-            logi_wheel_core::device::DD_PIDS.contains(pid)
-                || logi_wheel_core::device::G923_PIDS.contains(pid)
-        })
-        .map(|pid| format!("0x046D/0x{pid:04X}"))
 }
 
 /// Every title the registry knows, with the name to pass to `--game` and
@@ -457,7 +429,7 @@ fn launch_plan_list() -> Result<(), Box<dyn std::error::Error>> {
     let wheels = Device::discover_all();
     let caps =
         wheels.first().map(|d| d.wheel_caps()).unwrap_or_else(games::WheelCaps::assumed);
-    let scope = hidraw_scope_for(&wheels, caps);
+    let scope = games::hidraw_scope_for(&wheels, caps);
     println!("# for a {} wheel", if caps.sdk_trueforce { "direct-drive" } else { "classic" });
     println!("{:<28} {:<9} {:<34} settings", "--game", "appid", "title");
     for g in games::GAMES {

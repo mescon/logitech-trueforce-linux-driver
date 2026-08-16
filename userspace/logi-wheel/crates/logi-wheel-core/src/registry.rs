@@ -33,7 +33,7 @@ pub const REGISTRY: &[SettingSpec] = &[
     // logi-rpm-bridge is the normal writer, and this row exists so the
     // status line can double as the feed's own diagnostic, not so the app
     // can drive it by hand.
-    SettingSpec { attr: "wheel_texture_rpm", label: "Texture RPM feed", help: "Live engine RPM the texture is synthesized from, normally fed by a telemetry bridge at around 60 Hz. Shows the last rpm while it is fresh, or that no telemetry is arriving.", category: Ffb, kind: Kind::RpmFeed, access: ReadOnly, mode_req: Any },
+    SettingSpec { attr: "wheel_texture_rpm", label: "Texture RPM feed", help: "Live engine RPM the texture is synthesized from, normally fed by logi-rpm-bridge at around 60 Hz (logi-launch starts it per game). Shows the last rpm while it is fresh, or that no telemetry is arriving.", category: Ffb, kind: Kind::RpmFeed, access: ReadOnly, mode_req: Any },
     // Not a toggle: logi-launch switches this per game, so exposing it as
     // an editable control here would race whatever it just set. Shown as
     // plain state text instead, the same read-only idiom `wheel_accessory_mode`
@@ -55,7 +55,7 @@ pub const REGISTRY: &[SettingSpec] = &[
     // DesktopOnly pre-check would falsely reject onboard-mode writes.
     SettingSpec { attr: "wheel_response_curve", label: "Response curve", help: "Shapes the whole steering response by hand, so you can soften or sharpen the feel at any point of the turn. Use 'reset' to go back to the built-in feel.", category: Steering, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_calibrate_here", label: "Calibrate centre here", help: "Sets the wheel's current physical position as dead centre. Hold the wheel straight, then run this if the centre point has drifted.", category: Steering, kind: Kind::Action, access: Action, mode_req: Any },
-    SettingSpec { attr: "wheel_rev_level", label: "Rev lights", help: "Lights up this many of the 10 rev LEDs by hand (0-10), using the active colour set. Mainly for testing; a telemetry bridge can drive it with live engine RPM instead.", category: Steering, kind: Kind::IntRange { min: 0, max: 10, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_rev_level", label: "Rev lights", help: "Lights up this many of the 10 rev LEDs by hand (0-10), using the active colour set. Mainly for testing; in play, logi-rpm-bridge drives it with live engine RPM. Two mappings: by default the bar fills across the whole rev range, and LOGI_REV_MODE=shift keeps it dark until the car's first shift light, like the dashboard.", category: Steering, kind: Kind::IntRange { min: 0, max: 10, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
     // --- Pedals ---
     // Each pedal has three generators that all write the one 0x80A4 curve the
     // pedal MCU applies to its axis (hardware-verified 2026-07-16). Last write

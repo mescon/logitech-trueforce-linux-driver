@@ -406,12 +406,13 @@ impl GameCompat {
             // deliver it.
             "Leave PROTON_ENABLE_HIDRAW unset: on this wheel it costs you \
              force feedback. For haptics, turn this game on under Simulated \
-             TrueForce and run logi-tf-relay in its prefix (see \
-             docs/SHARED_MEMORY_RELAY.md); that route is confirmed working \
-             on a G923. Installing the shim WITH --proxy carries the game's \
-             own TrueForce to the wheel instead, the same proxy that ships \
-             the 90-degree rotation fix; the apps do not install it yet, so \
-             use tools/install-tf-shim.sh --proxy. Steam Input off."
+             TrueForce; logi-launch puts the telemetry relay in the game's \
+             prefix and starts the daemon for you, and that route is \
+             confirmed working on a G923. Installing the shim WITH --proxy \
+             carries the game's own TrueForce to the wheel instead, the same \
+             proxy that ships the 90-degree rotation fix; the apps do not \
+             install it yet, so use tools/install-tf-shim.sh --proxy. Steam \
+             Input off."
         } else {
             self.setup
         }
@@ -571,9 +572,10 @@ pub const GAMES: &[GameCompat] = &[
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("assetto"),
-        setup: "Plain force feedback; no shim; turn Steam Input off. \
-Simulated TrueForce needs logi-tf-relay in the prefix (see \
-docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
+        setup: "Plain force feedback; no shim; turn Steam Input off. For \
+simulated TrueForce, launch options `logi-launch %command%` (it puts the \
+telemetry relay in the game's prefix and starts the daemon for you); \
+nothing to switch on in the game.",
         // Documented: the decoder reads only the head of Kunos' physics
         // block, which has not moved since AC 1.0, and checks the static
         // block's layout in-band before trusting the redline. Those exact
@@ -590,7 +592,7 @@ docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("ams2-pcars2"),
-        setup: "Enable UDP telemetry (Project CARS 2 format) to 127.0.0.1; run logi-tf-sim; Steam Input off.",
+        setup: "Enable UDP telemetry (Project CARS 2 format) to 127.0.0.1; launch options `logi-launch %command%` (it starts logi-tf-sim for you); Steam Input off.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -599,7 +601,7 @@ docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("ams2-pcars2"),
-        setup: "Enable UDP telemetry (Project CARS 2 format); run logi-tf-sim.",
+        setup: "Enable UDP telemetry (Project CARS 2 format); launch options `logi-launch %command%` (it starts logi-tf-sim for you).",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -608,7 +610,7 @@ docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
         ffb: Ffb::DirectInput,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("rf2"),
-        setup: "Launch options `logi-launch %command%` (it keeps raw HID off and runs the logi-ffb helper for you); Steam Input off. Simulated TrueForce needs the community rF2SharedMemoryMapPlugin plus logi-tf-relay in the prefix (see docs/SHARED_MEMORY_RELAY.md).",
+        setup: "Launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off. Simulated TrueForce also needs the community rF2SharedMemoryMapPlugin installed in the game.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -617,7 +619,7 @@ docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
         ffb: Ffb::DirectInput,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("lmu"),
-        setup: "Launch options `logi-launch %command%` (it keeps raw HID off and runs the logi-ffb helper for you); Steam Input off. Simulated TrueForce needs the community rF2SharedMemoryMapPlugin plus logi-tf-relay in the prefix (see docs/SHARED_MEMORY_RELAY.md).",
+        setup: "Launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off. Simulated TrueForce also needs the community rF2SharedMemoryMapPlugin installed in the game.",
         confidence: Confidence::Verified,
     },
     GameCompat {
@@ -632,7 +634,7 @@ docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
         // therefore stays DirectInput on purpose.
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("iracing"),
-        setup: "Now Linux-playable; launch options `logi-launch %command%` (it keeps raw HID off and runs the logi-ffb helper for you); Steam Input off. Simulated TrueForce needs logi-tf-relay in the prefix (see docs/SHARED_MEMORY_RELAY.md).",
+        setup: "Now Linux-playable; launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off.",
         // Expected: the decoder reads iRacing's own self-describing variable
         // table rather than guessed offsets, and is tested against the
         // documented layout, but nobody has yet confirmed the game even
@@ -646,7 +648,7 @@ docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
         ffb: Ffb::DirectInput,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("raceroom"),
-        setup: "Launch options `logi-launch %command%` (it keeps raw HID off and runs the logi-ffb helper for you); Steam Input off. Simulated TrueForce needs logi-tf-relay in the prefix (see docs/SHARED_MEMORY_RELAY.md); nothing to switch on in the game.",
+        setup: "Launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off. Nothing to switch on in the game.",
         // Expected: the decoder is written against KW Studios' own published
         // `r3e.h`, whose major version it checks in-band before reading, but
         // nobody has yet confirmed the game publishes `$R3E` under Proton.
@@ -674,7 +676,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("dirt-rally-2"),
-        setup: "Enable in-game UDP telemetry (Codemasters, port 20777); run logi-tf-sim; Steam Input off.",
+        setup: "Enable in-game UDP telemetry (Codemasters, port 20777); launch options `logi-launch %command%` (it starts logi-tf-sim for you); Steam Input off.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -683,7 +685,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("codemasters"),
-        setup: "Enable UDP telemetry (Codemasters format); run logi-tf-sim.",
+        setup: "Enable UDP telemetry (Codemasters format); launch options `logi-launch %command%` (it starts logi-tf-sim for you).",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -692,7 +694,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("ea-wrc"),
-        setup: "Add the logi-tf-sim WRC packet to config.json (UDP to 127.0.0.1:20777); run logi-tf-sim.",
+        setup: "Add the logi-tf-sim WRC packet to config.json (UDP to 127.0.0.1:20777); launch options `logi-launch %command%` (it starts logi-tf-sim for you).",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -701,7 +703,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("f1"),
-        setup: "Enable in-game UDP telemetry (F1 format, port 20777); run logi-tf-sim.",
+        setup: "Enable in-game UDP telemetry (F1 format, port 20777); launch options `logi-launch %command%` (it starts logi-tf-sim for you).",
         confidence: Confidence::Expected,
     },
     GameCompat {
@@ -779,9 +781,10 @@ simulated TrueForce, install the logi-tf-scs plugin (see docs/SCS_PLUGIN.md).",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("codemasters"),
-        setup: "Enable UDP telemetry (Codemasters format); run logi-tf-sim. \
-Steam Input off. Whether its TrueForce reaches the wheel through Logitech's \
-SDK is unconfirmed, so nothing here installs one; reports welcome.",
+        setup: "Enable UDP telemetry (Codemasters format); launch options \
+`logi-launch %command%` (it starts logi-tf-sim for you); Steam Input off. \
+Whether its TrueForce reaches the wheel through Logitech's SDK is \
+unconfirmed, so nothing here installs one; reports welcome.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -790,8 +793,9 @@ SDK is unconfirmed, so nothing here installs one; reports welcome.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("codemasters"),
-        setup: "Enable UDP telemetry (Codemasters format); run logi-tf-sim; \
-turn Steam Input off.",
+        setup: "Enable UDP telemetry (Codemasters format); launch options \
+`logi-launch %command%` (it starts logi-tf-sim for you); turn Steam Input \
+off.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -1068,7 +1072,9 @@ impl LaunchPlan {
         }
         if self.texture_merge {
             parts.push(
-                "merges the engine-note texture into the game's own TrueForce on the wheel".into(),
+                "merges the engine-note texture into the game's own TrueForce on the wheel \
+                 and drives the rev lights from the game's telemetry"
+                    .into(),
             );
         }
         if self.ffb_proxy {
@@ -1093,6 +1099,43 @@ impl LaunchPlan {
         }
         text
     }
+}
+
+/// The `PROTON_ENABLE_HIDRAW` value naming the attached wheel, or `None`
+/// when no wheel of `caps`' kind can be named.
+///
+/// Name the wheel rather than saying "1", which Proton reads as "every HID
+/// device on this machine" (issue #60). With several wheels attached, scope
+/// to the one whose recipe this is.
+///
+/// Only a real wheel's id: logi-ffb's virtual wheel is a HID device too,
+/// and while the proxy is running discovery can return it. Scoping the
+/// variable to that would point Proton at a device the game's TrueForce
+/// cannot reach, and the failure would be silent.
+///
+/// The id test is part of choosing the wheel, not a check applied after
+/// choosing one. Applied afterwards, a first candidate that fails it (the
+/// logi-ffb virtual wheel while the proxy runs, or any device whose
+/// directory name is not in the kernel's BUS:VID:PID.SEQ layout) yielded
+/// None for the whole chain, and the wrapper fell back to the bare `1`
+/// this exists to avoid. Keep looking instead.
+///
+/// Lives here, next to [`LaunchPlan`], because it fills the plan's
+/// [`hidraw_scope`](LaunchPlan::hidraw_scope): every front-end that renders
+/// or prints a plan goes through this one function, so the sentence the
+/// Setup pages show and the value `logi-launch` sets cannot drift apart.
+pub fn hidraw_scope_for<S: crate::sysfs::SysfsIo>(
+    wheels: &[crate::Device<S>],
+    caps: WheelCaps,
+) -> Option<String> {
+    wheels
+        .iter()
+        .filter(|d| d.wheel_caps().sdk_trueforce == caps.sdk_trueforce)
+        .filter_map(|d| d.product_id())
+        .find(|pid| {
+            crate::device::DD_PIDS.contains(pid) || crate::device::G923_PIDS.contains(pid)
+        })
+        .map(|pid| format!("0x046D/0x{pid:04X}"))
 }
 
 /// "a", "a and b", "a, b and c" - an Oxford-comma-free list, because these

@@ -429,10 +429,14 @@ fn open_in_browser(url: &str) {
 }
 
 /// The exact launch-options string the Setup page's "Copy" button copies.
-// The logi-ffb launch options, from the registry that also resolves
-// them per game, so the standalone FFB panel cannot drift from the
-// per-game rows.
-const FFB_LAUNCH_OPTIONS: &str = logi_wheel_core::games::LAUNCH_LOGI_FFB;
+// The wrapper line, from the registry that also resolves the recipe per
+// game: logi-launch runs logi-ffb for the DirectInput sims itself, so the
+// standalone FFB panel hands out the same line as the per-game rows.
+const FFB_LAUNCH_OPTIONS: &str = logi_wheel_core::games::LAUNCH_WRAPPER;
+
+/// The bare logi-ffb line, shown only as the by-hand alternative for
+/// anyone who skips the wrapper.
+const FFB_MANUAL_LAUNCH: &str = logi_wheel_core::games::LAUNCH_LOGI_FFB;
 
 /// The SDK folder field's prefill: `$LOGITECH_TRUEFORCE_SDK_DIR` when set,
 /// else `~/.local/share/logitech-trueforce/sdk` (the installer script's
@@ -476,6 +480,15 @@ fn sdk_status(field: &str, installer: Option<&std::path::Path>) -> (Option<std::
 /// re-walking slow Steam/Lutris/Heroic libraries.
 type GamesCache = Arc<Mutex<Vec<logi_wheel_core::launchers::DiscoveredGame>>>;
 
+/// The `PROTON_ENABLE_HIDRAW` value `logi-launch` would set for a wheel
+/// with `caps`, resolved over the wheels attached right now
+/// (`games::hidraw_scope_for`). Threaded into every "Your games" rebuild so
+/// each row's plan sentence shows the scoped `0xVID/0xPID` form the wrapper
+/// really sets, not the bare `1` it exists to avoid.
+fn hidraw_scope(caps: logi_wheel_core::games::WheelCaps) -> Option<String> {
+    logi_wheel_core::games::hidraw_scope_for(&logi_wheel_core::Device::discover_all(), caps)
+}
+
 /// The managed wheel's capabilities, as reported by the worker with the
 /// wheel list. Shared because the Setup page's advice is rebuilt from
 /// several places (first scan, config edits, wheel switch) and every one
@@ -500,7 +513,7 @@ fn refresh_games(app: &App, cache: &GamesCache, caps: &CapsCell) {
     // enumerated first, so on a two-wheel rig the direct-drive owner was
     // shown the G923's advice for every SDK title.
     let caps = *caps.lock().unwrap();
-    let items = bridge::setup_games(&games, &cfg, caps);
+    let items = bridge::setup_games(&games, &cfg, caps, hidraw_scope(caps).as_deref());
     app.set_setup_games_summary(bridge::games_summary(&items).into());
     app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
     app.set_addable_games(slint::ModelRc::new(slint::VecModel::from(bridge::addable_games(&games))));
@@ -525,7 +538,8 @@ fn scan_games(app_weak: slint::Weak<App>, cache: GamesCache, caps: CapsCell) {
         *cache.lock().unwrap() = games.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else { return };
-            let items = bridge::setup_games(&games, &cfg, *caps.lock().unwrap());
+            let caps = *caps.lock().unwrap();
+            let items = bridge::setup_games(&games, &cfg, caps, hidraw_scope(caps).as_deref());
             app.set_setup_games_summary(bridge::games_summary(&items).into());
             app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
             app.set_addable_games(slint::ModelRc::new(slint::VecModel::from(bridge::addable_games(&games))));
@@ -1168,6 +1182,14 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_setup_ffb_path(
         ffb_binary.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default().into(),
     );
+    // The launch wrapper itself: every launch line this page hands out is
+    // `logi-launch %command%`, so the games area leads with whether that
+    // wrapper is actually there to run.
+    let launch_binary = logi_wheel_core::helpers::launch_path();
+    app.set_setup_launch_found(launch_binary.is_some());
+    app.set_setup_launch_path(
+        launch_binary.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default().into(),
+    );
     // The installer's resolved path is kept both ways: the string feeds the
     // status line and the shim runs, the `PathBuf` anchors the SDK
     // resolution's repo-`sdk/` candidate (see `sdk_status`).
@@ -1184,6 +1206,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let dir = sdk_dir.lock().unwrap().clone();
         let (resolved, message) = sdk_status(&dir, installer_path.as_deref());
         app.set_setup_ffb_launch_options(FFB_LAUNCH_OPTIONS.into());
+        app.set_setup_ffb_manual_launch(FFB_MANUAL_LAUNCH.into());
         app.set_setup_sdk_dir(dir.into());
         app.set_setup_sdk_valid(resolved.is_some());
         app.set_setup_sdk_status(message.into());

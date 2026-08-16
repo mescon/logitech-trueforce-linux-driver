@@ -250,6 +250,12 @@ pub struct App<S: SysfsIo> {
     /// see `logi_wheel_core::helpers`), or `None` if it was not found at
     /// startup. The Setup body shows the path.
     pub ffb_path: Option<PathBuf>,
+    /// `logi-launch`'s resolved path (`PATH`, else the checkout's
+    /// `tools/logi-launch.sh` above this executable), or `None` if it was
+    /// not found at startup. Every launch line the Setup view hands out is
+    /// the wrapper line, so the games list leads with whether the wrapper
+    /// is actually there to run.
+    pub launch_bin: Option<PathBuf>,
     /// The TrueForce SDK shim installer's resolved path (`PATH`, else the
     /// checkout's `tools/install-tf-shim.sh` above this executable), or
     /// `None` if it was not found at startup.
@@ -455,6 +461,7 @@ impl<S: SysfsIo> App<S> {
             quit: false,
             shaping_toggles: shaping::AxisToggles::default(),
             ffb_path: logi_wheel_core::helpers::ffb_path(),
+            launch_bin: logi_wheel_core::helpers::launch_path(),
             shim_binary: logi_wheel_core::helpers::installer_path(),
             sdk_dir: sdk_field_prefill(),
             sdk_resolved: None,
@@ -1484,6 +1491,18 @@ impl<S: SysfsIo> App<S> {
         } else {
             self.device.wheel_caps()
         }
+    }
+
+    /// The `PROTON_ENABLE_HIDRAW` value `logi-launch` would set for the
+    /// managed wheel (`games::hidraw_scope_for` over just that wheel), or
+    /// `None` with no wheel or no nameable product id. The Setup view's
+    /// plan sentences read this so they show the scoped `0xVID/0xPID` form
+    /// the wrapper really sets, not the bare `1` it exists to avoid.
+    pub fn hidraw_scope(&self) -> Option<String> {
+        if self.no_wheel {
+            return None;
+        }
+        games::hidraw_scope_for(std::slice::from_ref(&self.device), self.wheel_caps())
     }
 
     /// The Steam launch options to copy for the selected game: the one

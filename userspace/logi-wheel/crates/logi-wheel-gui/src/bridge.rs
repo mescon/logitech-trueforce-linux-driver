@@ -939,7 +939,18 @@ pub fn setup_effects(cfg: &tfsim::Config) -> Vec<SetupEffect> {
 /// `caps` is what the attached wheel can do; a title's recipe depends on
 /// it, and on a wheel with no SDK TrueForce the direct-drive advice is
 /// worse than none (see [`games::WheelCaps`]).
-pub fn setup_games(games: &[DiscoveredGame], cfg: &tfsim::Config, caps: games::WheelCaps) -> Vec<SetupGame> {
+///
+/// `hidraw_scope` is the `PROTON_ENABLE_HIDRAW` value `logi-launch` would
+/// set for that wheel (`games::hidraw_scope_for`), threaded into each row's
+/// plan sentence so the page shows the scoped `0xVID/0xPID` form the
+/// wrapper really sets rather than the bare `1` it exists to avoid. `None`
+/// when no wheel can be named, where the sentence falls back to `1`.
+pub fn setup_games(
+    games: &[DiscoveredGame],
+    cfg: &tfsim::Config,
+    caps: games::WheelCaps,
+    hidraw_scope: Option<&str>,
+) -> Vec<SetupGame> {
     let prefix_of = |g: &DiscoveredGame| g.prefix().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     games
         .iter()
@@ -978,7 +989,11 @@ pub fn setup_games(games: &[DiscoveredGame], cfg: &tfsim::Config, caps: games::W
                     // false here because the page is already showing one
                     // wheel's answer: `caps` is the wheel being managed,
                     // which the user picks in the app.
-                    plan: games::LaunchPlan::for_game(compat, caps, false).describe().into(),
+                    plan: {
+                        let mut plan = games::LaunchPlan::for_game(compat, caps, false);
+                        plan.hidraw_scope = hidraw_scope.map(str::to_string);
+                        plan.describe().into()
+                    },
                     installed: g.shim_installed,
                     sim_id: sim_id.into(),
                     sim_enabled: sim.enabled,
@@ -1120,7 +1135,7 @@ mod tests {
             wine_game("DiRT Rally 2.0", Source::Steam, false),
             wine_game("Wreckfest", Source::Steam, false),
         ];
-        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed());
+        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None);
         assert_eq!(rows.len(), games.len(), "one row per recognised game, order preserved");
 
         // Built-in TrueForce -> shim action, its installed flag carried.
@@ -1170,7 +1185,7 @@ mod tests {
             wine_game("TEKKEN 8", Source::Steam, false),
             wine_game("Some Unknown Sim", Source::Steam, true),
         ];
-        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed());
+        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None);
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1220,7 +1235,7 @@ mod tests {
         // instead of running the installer with `--prefix ""`.
         let cfg = tfsim::Config::default();
         let games = vec![native_game("Assetto Corsa Competizione", Source::Steam)];
-        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed());
+        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None);
         assert_eq!(rows.len(), 1);
         let acc = &rows[0];
         assert_eq!(acc.action, ACTION_SHIM);
@@ -1230,7 +1245,7 @@ mod tests {
         // Same title, but launched at least once: a normal Wine game with
         // a prefix still gets the enabled install path.
         let launched = vec![wine_game("Assetto Corsa Competizione", Source::Steam, false)];
-        let rows2 = setup_games(&launched, &cfg, games::WheelCaps::assumed());
+        let rows2 = setup_games(&launched, &cfg, games::WheelCaps::assumed(), None);
         let acc2 = &rows2[0];
         assert_eq!(acc2.action, ACTION_SHIM);
         assert!(!acc2.prefix.is_empty());
@@ -1246,7 +1261,7 @@ mod tests {
             wine_game("Automobilista 2", Source::Steam, false),
             wine_game("Project CARS 2", Source::Steam, false),
         ];
-        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed());
+        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None);
         assert!(rows.iter().all(|r| r.action == ACTION_SIM_TF && r.sim_id == "ams2-pcars2"));
         assert!(rows.iter().all(|r| r.sim_enabled));
         assert!(rows.iter().all(|r| r.sim_intensity == 100));
@@ -1261,7 +1276,7 @@ mod tests {
         let games_list = vec![wine_game("Assetto Corsa Competizione", Source::Steam, false)];
         let g923 = games::WheelCaps { sdk_trueforce: false };
 
-        let rows = setup_games(&games_list, &cfg, g923);
+        let rows = setup_games(&games_list, &cfg, g923, None);
         assert_eq!(rows[0].action, ACTION_OUT_OF_BOX);
         // The line offered is the wheel-aware one, so it is safe to paste on
         // any wheel: logi-launch resolves the recipe at launch from the
@@ -1284,10 +1299,34 @@ mod tests {
         // is the part that is per wheel: it gets the shim. The launch line
         // is deliberately identical on both, because the line itself no
         // longer encodes the recipe.
-        let dd = setup_games(&games_list, &cfg, games::WheelCaps { sdk_trueforce: true });
+        let dd = setup_games(&games_list, &cfg, games::WheelCaps { sdk_trueforce: true }, None);
         assert_eq!(dd[0].action, ACTION_SHIM);
         assert_eq!(dd[0].launch, "logi-launch %command%");
         assert_ne!(dd[0].action, rows[0].action, "the wheels must still differ somewhere");
+    }
+
+    /// The plan sentence must show the scoped `0xVID/0xPID` value the
+    /// wrapper really sets, not the bare `1` it exists to avoid; with no
+    /// nameable wheel it falls back to `1`, matching the wrapper.
+    #[test]
+    fn setup_games_threads_the_hidraw_scope_into_the_plan_sentence() {
+        let cfg = tfsim::Config::default();
+        let games_list = vec![wine_game("Assetto Corsa Competizione", Source::Steam, false)];
+        let dd = games::WheelCaps { sdk_trueforce: true };
+
+        let rows = setup_games(&games_list, &cfg, dd, Some("0x046D/0xC276"));
+        assert!(
+            rows[0].plan.contains("PROTON_ENABLE_HIDRAW=0x046D/0xC276"),
+            "the sentence must show the scoped form: {}",
+            rows[0].plan
+        );
+
+        let rows = setup_games(&games_list, &cfg, dd, None);
+        assert!(
+            rows[0].plan.contains("PROTON_ENABLE_HIDRAW=1"),
+            "no nameable wheel falls back to the bare form: {}",
+            rows[0].plan
+        );
     }
 
     #[test]
@@ -1307,12 +1346,12 @@ mod tests {
             wine_game("Wreckfest", Source::Steam, false),                  // out of the box
             wine_game("Assetto Corsa EVO", Source::Steam, true),           // shim, installed
         ];
-        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed());
+        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None);
         assert_eq!(games_summary(&rows), "3 installed, 1 need setup");
 
         // Nothing outstanding reads as "all set".
         let done = vec![wine_game("Wreckfest", Source::Steam, false), wine_game("Assetto Corsa EVO", Source::Steam, true)];
-        assert_eq!(games_summary(&setup_games(&done, &cfg, games::WheelCaps::assumed())), "2 installed, all set");
+        assert_eq!(games_summary(&setup_games(&done, &cfg, games::WheelCaps::assumed(), None)), "2 installed, all set");
     }
 
     #[test]

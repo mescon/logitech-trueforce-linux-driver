@@ -196,6 +196,11 @@ export component Setup inherits Rectangle {
     // repo-checkout fallback (logi-ffb next to the app binary, the
     // installer in tools/ above it).
     in property <string> ffb-path: "";
+    // The logi-launch wrapper itself ("" while not found): every launch
+    // line this page hands out is the wrapper line, so the games area
+    // leads with whether the wrapper is actually there to run.
+    in property <bool> launch-found: false;
+    in property <string> launch-path: "";
     in property <bool> shim-found: false;
     in property <string> shim-path: "";
     in property <bool> shim-running: false;
@@ -277,9 +282,12 @@ export component Setup inherits Rectangle {
     // a fallback). Takes the string because it differs per game and per
     // wheel, so there is no one value the page could assume.
     callback copy-launch(string);
-    // The logi-ffb launch options, pushed in from the Rust side
-    // (`games::LAUNCH_LOGI_FFB`) so this page never spells them out.
+    // The launch line the FFB helper section shows, pushed in from the
+    // Rust side (`games::LAUNCH_WRAPPER`) so this page never spells it
+    // out, and the bare logi-ffb line (`games::LAUNCH_LOGI_FFB`), kept
+    // only as the by-hand alternative for anyone who skips the wrapper.
     in property <string> ffb-launch-options;
+    in property <string> ffb-manual-launch;
     // The SDK folder field's edit-accept: re-runs the full resolution and
     // pushes the fresh outcome back into `sdk-status`/`sdk-valid`.
     // Installs pass the RESOLVED directory explicitly (--sdk-dir), so what
@@ -360,7 +368,7 @@ export component Setup inherits Rectangle {
                     wrap: word-wrap;
                 }
                 Text {
-                    text: "TrueForce is Logitech's extra detail on top: fine high-frequency vibration driven by the game's engine and surfaces (engine growl, tyre scrub, road texture). Some games have it built in; for the rest, this app can simulate it from the game's live telemetry.";
+                    text: "TrueForce is Logitech's extra detail on top: fine high-frequency vibration driven by the game's engine and surfaces (engine growl, tyre scrub, road texture). Some games have it built in; for the rest, this app can simulate it from the game's live telemetry. In games with it built in, the driver also blends engine texture into the stream and drives the rev lights from the game's telemetry, all handled per game by logi-launch.";
                     font-size: 12px;
                     color: Theme.muted-text-color;
                     wrap: word-wrap;
@@ -409,6 +417,19 @@ export component Setup inherits Rectangle {
                             enabled: !root.shim-running;
                             clicked => { root.rescan-games(); }
                         }
+                    }
+
+                    // Whether the launch wrapper is actually there, before
+                    // any row hands its line out: every launch line below
+                    // is `logi-launch %command%`, so a missing wrapper
+                    // makes all of them a line that does nothing.
+                    Text {
+                        text: root.launch-found
+                            ? "logi-launch: found: " + root.launch-path
+                            : "logi-launch: not found (on your PATH or in the repo's tools/). Every launch line below depends on it.";
+                        font-size: 12px;
+                        color: root.launch-found ? Theme.text-color : Theme.error-color;
+                        wrap: word-wrap;
                     }
 
                     if root.games-scanned && root.games.length == 0: Text {
@@ -563,15 +584,16 @@ export component Setup inherits Rectangle {
                                 wrap: word-wrap;
                             }
 
-                            // The same recipe by hand, for anyone who would
-                            // rather not use the wrapper. Last, and labelled
-                            // as an alternative, so it cannot be mistaken
-                            // for a list of things still left to do. It is
-                            // also where the advice logi-launch CANNOT
-                            // carry out lives, Steam Input being the one
-                            // that matters.
+                            // The registry's full recipe sentence, last.
+                            // Labelled as details rather than as a by-hand
+                            // alternative: the sentence itself now names
+                            // logi-launch and what it does, so "or by
+                            // hand" read as a second, conflicting recipe.
+                            // It is also where the advice logi-launch
+                            // CANNOT carry out lives, Steam Input being
+                            // the one that matters.
                             if game.plan != "": Text {
-                                text: "Or by hand: " + game.summary;
+                                text: "Details: " + game.summary;
                                 font-size: 11px;
                                 color: Theme.muted-text-color;
                                 wrap: word-wrap;
@@ -628,7 +650,7 @@ export component Setup inherits Rectangle {
                     open <=> root.ffb-open;
 
                     Text {
-                        text: "Games that use the older DirectInput force-feedback method (for example Le Mans Ultimate) get no force feedback through Proton by default. Launching them with the logi-ffb helper gives them force feedback through a virtual wheel.";
+                        text: "Games that use the older DirectInput force-feedback method (for example Le Mans Ultimate) get no force feedback through Proton by default. logi-launch runs them through the logi-ffb helper automatically, which gives them force feedback through a virtual wheel.";
                         color: Theme.muted-text-color;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -657,6 +679,12 @@ export component Setup inherits Rectangle {
                             text: "Copy";
                             clicked => { root.copy-launch(root.ffb-launch-options); }
                         }
+                    }
+                    Text {
+                        text: "By hand, if you skip the wrapper: launch the game with `" + root.ffb-manual-launch + "` instead.";
+                        font-size: 11px;
+                        color: Theme.muted-text-color;
+                        wrap: word-wrap;
                     }
                 }
 
@@ -704,7 +732,7 @@ export component Setup inherits Rectangle {
                     open <=> root.simtf-open;
 
                     Text {
-                        text: "Creates TrueForce-style engine vibration from a game's own telemetry, for games without built-in TrueForce. The background helper listens quietly and only sends vibration while a supported game is streaming its telemetry. Turn it on for individual games in the list above.";
+                        text: "Creates TrueForce-style engine vibration from a game's own telemetry, for games without built-in TrueForce. The background helper listens quietly and only sends vibration while a supported game is streaming its telemetry. Turn it on for individual games in the list above. logi-launch starts this helper when a game that needs it launches; Start and Stop here are for trying it now.";
                         font-size: 12px;
                         color: Theme.muted-text-color;
                         wrap: word-wrap;

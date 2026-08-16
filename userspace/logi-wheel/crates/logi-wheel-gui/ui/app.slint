@@ -82,6 +82,10 @@ export component App inherits Window {
     // The resolved helper paths ("" while not found): PATH hit or the
     // repo-checkout fallback; shown in the Setup status lines.
     in property <string> setup-ffb-path: "";
+    // The logi-launch wrapper itself: every launch line the Setup page
+    // hands out depends on it, so its presence leads the games area.
+    in property <bool> setup-launch-found: false;
+    in property <string> setup-launch-path: "";
     in property <bool> setup-shim-found: false;
     in property <string> setup-shim-path: "";
     in property <bool> setup-shim-running: false;
@@ -123,9 +127,12 @@ export component App inherits Window {
     in property <bool> setup-tf-sweep-running: false;
     in property <string> setup-tf-output: "";
     callback setup-copy-launch(string);
-    // The logi-ffb launch options, set once at startup from
-    // `games::LAUNCH_LOGI_FFB`.
+    // The launch line the FFB helper section shows (the wrapper line, set
+    // once at startup from `games::LAUNCH_WRAPPER`), and the bare logi-ffb
+    // line kept only as the by-hand alternative
+    // (`games::LAUNCH_LOGI_FFB`).
     in property <string> setup-ffb-launch-options;
+    in property <string> setup-ffb-manual-launch;
     callback setup-sdk-dir-edited(string);
     // Per-game shim install/remove; the argument is the row's wine prefix.
     callback setup-install-game(string);
@@ -648,6 +655,8 @@ export component App inherits Window {
                     project-url: root.project-url;
                     ffb-found: root.setup-ffb-found;
                     ffb-path: root.setup-ffb-path;
+                    launch-found: root.setup-launch-found;
+                    launch-path: root.setup-launch-path;
                     shim-found: root.setup-shim-found;
                     shim-path: root.setup-shim-path;
                     shim-running: root.setup-shim-running;
@@ -674,6 +683,7 @@ export component App inherits Window {
                     tf-output: root.setup-tf-output;
                     copy-launch(text) => { root.setup-copy-launch(text); }
                     ffb-launch-options: root.setup-ffb-launch-options;
+                    ffb-manual-launch: root.setup-ffb-manual-launch;
                     sdk-dir-edited(dir) => { root.setup-sdk-dir-edited(dir); }
                     install-game(pfx) => { root.setup-install-game(pfx); }
                     install-relay(pfx) => { root.setup-install-relay(pfx); }

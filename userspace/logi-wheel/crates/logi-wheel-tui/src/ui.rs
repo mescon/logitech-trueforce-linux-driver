@@ -853,6 +853,22 @@ fn setup_sections<S: SysfsIo>(
                         "  Your installed Proton games and what each one needs.",
                         dim,
                     )));
+                    // Whether the wrapper is actually there, before any
+                    // card hands its line out: every launch line below is
+                    // `logi-launch %command%`, so a missing wrapper makes
+                    // all of them a line that does nothing.
+                    lines.push(Line::from(vec![
+                        Span::styled("  logi-launch: ", dim),
+                        Span::styled(
+                            match &app.launch_bin {
+                                Some(p) => format!("found: {}", p.display()),
+                                None => "not found (PATH or the repo's tools/); every \
+                                         launch line below depends on it"
+                                    .to_string(),
+                            },
+                            found_style(app.launch_bin.is_some()),
+                        ),
+                    ]));
                     if app.games.is_empty() {
                         lines.push(Line::from(Span::styled(
                             if app.games_scanned {
@@ -882,8 +898,12 @@ fn setup_sections<S: SysfsIo>(
                                     Span::styled("TrueForce off (i installs)", dim)
                                 }
                             }
+                            // Names the helper rather than repeating the
+                            // wrapper line: the card's setup sentence below
+                            // carries `logi-launch %command%` already, and
+                            // one copy per card is the rule.
                             Some(logi_wheel_core::games::SetupAction::UseLogiFfb) => Span::styled(
-                                format!("launch: {}", logi_wheel_core::games::LAUNCH_WRAPPER),
+                                "needs logi-ffb (logi-launch runs it)",
                                 Style::default().fg(Color::Yellow),
                             ),
                             Some(logi_wheel_core::games::SetupAction::SimulatedTrueForce) => {
@@ -926,8 +946,9 @@ fn setup_sections<S: SysfsIo>(
                         // the registry, dimmed under the game; an added-by-
                         // hand title gets its own short explainer instead.
                         if let Some(c) = compat {
+                            let setup_line = c.setup_line(app.wheel_caps());
                             lines.push(Line::from(Span::styled(
-                                format!("    {}", c.setup_line(app.wheel_caps())),
+                                format!("    {setup_line}"),
                                 dim,
                             )));
                             // One launch line for every title, spelled out
@@ -937,30 +958,35 @@ fn setup_sections<S: SysfsIo>(
                             // taught people to paste a setting that is
                             // right for one wheel and wrong for the other.
                             // Nothing is written to the user's Steam
-                            // config.
-                            lines.push(Line::from(vec![
-                                Span::styled("    launch options: ", dim),
-                                Span::styled(
-                                    logi_wheel_core::games::LAUNCH_WRAPPER,
-                                    Style::default().fg(Color::Yellow),
-                                ),
-                                Span::styled("  [c copies]", dim),
-                            ]));
+                            // config. Skipped when the setup sentence
+                            // above already spells the wrapper line out:
+                            // one copy per card, and `c` copies it either
+                            // way.
+                            if !setup_line.contains(logi_wheel_core::games::LAUNCH_WRAPPER) {
+                                lines.push(Line::from(vec![
+                                    Span::styled("    launch options: ", dim),
+                                    Span::styled(
+                                        logi_wheel_core::games::LAUNCH_WRAPPER,
+                                        Style::default().fg(Color::Yellow),
+                                    ),
+                                    Span::styled("  [c copies]", dim),
+                                ]));
+                            }
                             // What the wrapper will do for this title on
                             // this wheel, as information rather than as
                             // settings to paste: the same plan the wrapper
                             // reads, from the same function the GUI's
-                            // Setup page shows.
+                            // Setup page shows, with the hidraw value
+                            // scoped to the managed wheel the same way the
+                            // wrapper scopes it.
+                            let mut plan = logi_wheel_core::games::LaunchPlan::for_game(
+                                c,
+                                app.wheel_caps(),
+                                false,
+                            );
+                            plan.hidraw_scope = app.hidraw_scope();
                             lines.push(Line::from(Span::styled(
-                                format!(
-                                    "    {}",
-                                    logi_wheel_core::games::LaunchPlan::for_game(
-                                        c,
-                                        app.wheel_caps(),
-                                        false,
-                                    )
-                                    .describe()
-                                ),
+                                format!("    {}", plan.describe()),
                                 dim,
                             )));
                         } else {
@@ -1005,6 +1031,8 @@ fn setup_sections<S: SysfsIo>(
                     for text in [
                         "Creates TrueForce-style engine vibration from a game's",
                         "own telemetry, for games without built-in TrueForce.",
+                        "logi-launch starts this helper when a game that needs",
+                        "it launches; the daemon control (d) is for trying it now.",
                     ] {
                         lines.push(Line::from(format!("  {text}")));
                     }
