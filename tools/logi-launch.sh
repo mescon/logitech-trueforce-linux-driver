@@ -456,6 +456,15 @@ if [ ${#helper_exes[@]} -gt 0 ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; 
 	# One wine process each, started together. Waiting for the first to
 	# exit before starting the second would mean the second never runs:
 	# these are long-lived bridges that stay up for the whole session.
+	#
+	# The sync flags must match the wineserver Proton started for the
+	# game, or wine refuses to join it and the helper dies before its
+	# first instruction ("Server is running with WINEFSYNC but this
+	# process is not", #59). Proton enables fsync and esync unless the
+	# user opted out, so mirror exactly that.
+	helper_fsync=1; helper_esync=1
+	[ "${PROTON_NO_FSYNC:-0}" = "1" ] && helper_fsync=0
+	[ "${PROTON_NO_ESYNC:-0}" = "1" ] && helper_esync=0
 	i=0
 	while [ "$i" -lt ${#helper_exes[@]} ]; do
 		exe="${helper_exes[$i]}"
@@ -463,6 +472,7 @@ if [ ${#helper_exes[@]} -gt 0 ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; 
 		(
 			say "starting $exe${args:+ $args} in $prefix_root/pfx"
 			WINEPREFIX="$prefix_root/pfx" WINEDEBUG="${WINEDEBUG:--all}" \
+				WINEFSYNC="$helper_fsync" WINEESYNC="$helper_esync" \
 				"$wine_bin" "$exe" $args >>"$LOG" 2>&1
 			# Named, because "helper exited" says nothing about which one
 			# when two are running.

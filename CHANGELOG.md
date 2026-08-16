@@ -5,6 +5,18 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.35.3 - 2026-08-16
+
+**In-prefix helpers no longer die on the wineserver's sync flags.**
+`logi-launch` started its telemetry relay with wine's default sync
+settings, but Proton runs the game's wineserver with fsync enabled, and
+a wine process whose flags do not match the server refuses to start:
+the relay exited before its first instruction, silently under the
+wrapper's quiet wine logging, which presented as "no telemetry" (#59).
+Helpers now inherit exactly Proton's logic, fsync and esync on unless
+`PROTON_NO_FSYNC` / `PROTON_NO_ESYNC` opt out.
+
+
 ## 0.35.2 - 2026-08-15
 
 **The from-source install now ships the whole launch chain, and stale
