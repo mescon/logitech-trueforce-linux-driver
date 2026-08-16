@@ -526,7 +526,7 @@ doctor() {
 	# DirectInput sims want it absent, because setting it there removes
 	# force feedback. Titles that need neither are not listed at all.
 	for appid in $SDK_SIM_APPIDS $DINPUT_SIM_APPIDS; do
-		local installed=0 has_opt=0 wants_hidraw=0
+		local installed=0 has_opt=0 has_wrapper=0 wants_hidraw=0 opts_line=""
 		case " $SDK_SIM_APPIDS " in *" $appid "*) wants_hidraw=1;; esac
 		while IFS= read -r root; do
 			[ -d "$root/steamapps/compatdata/$appid" ] && installed=1
@@ -540,7 +540,7 @@ doctor() {
 				# reports the NEXT app's. Measured against a real config
 				# that got two of three wrong, both false negatives, so
 				# it told owners to set a variable they had already set.
-				if awk -v id="\"$appid\"" '
+				opts_line=$(awk -v id="\"$appid\"" '
 					$0 ~ "^[ \t]*" id "[ \t]*$" { cand = 1; depth = 0; seen = 0; next }
 					cand {
 						o = gsub(/\{/, "{"); c = gsub(/\}/, "}")
@@ -548,14 +548,24 @@ doctor() {
 						depth += o - c
 						if (/"LaunchOptions"/) { print; exit }
 						if (seen && depth <= 0) cand = 0
-					}' "$cfg" | grep -q 'PROTON_ENABLE_HIDRAW=1'; then
-					has_opt=1
-				fi
+					}' "$cfg")
+				case "$opts_line" in *PROTON_ENABLE_HIDRAW=1*) has_opt=1;; esac
+				# The wrapper resolves the whole recipe per game and
+				# wheel, so its presence satisfies this check outright
+				# for every group (it sets the scoped hidraw form, which
+				# the =1 grep above deliberately does not match).
+				case "$opts_line" in *logi-launch*) has_wrapper=1;; esac
 			done
 		done <<< "$(steam_roots)"
 		[ "$installed" -eq 1 ] || continue
 		checked=$((checked+1))
-		if [ "$wants_hidraw" -eq 1 ]; then
+		if [ "$has_wrapper" -eq 1 ]; then
+			if [ "$has_opt" -eq 1 ] && [ "$wants_hidraw" -eq 0 ]; then
+				bad "appid $appid: logi-launch is set but so is PROTON_ENABLE_HIDRAW=1, which overrides it and stops force feedback on a DirectInput sim - remove the variable, keep the wrapper"
+			else
+				ok "appid $appid launches through logi-launch (the wrapper works the recipe out per game and wheel)"
+			fi
+		elif [ "$wants_hidraw" -eq 1 ]; then
 			if ! wheel_has_sdk_trueforce; then
 				# The shim cannot reach this wheel, so the variable buys
 				# nothing and costs the force feedback it already has.
@@ -565,14 +575,14 @@ doctor() {
 					ok "appid $appid correctly has no PROTON_ENABLE_HIDRAW (this wheel has no SDK TrueForce)"
 				fi
 			elif [ "$has_opt" -eq 1 ]; then
-				ok "appid $appid has PROTON_ENABLE_HIDRAW=1"
+				ok "appid $appid has PROTON_ENABLE_HIDRAW=1 (by hand; 'logi-launch %command%' does this and the rest for you)"
 			else
-				wrn "appid $appid: PROTON_ENABLE_HIDRAW=1 not found in launch options (needed for TrueForce; set it in Steam > Properties)"
+				wrn "appid $appid: launch options do not run logi-launch (set 'logi-launch %command%' in Steam > Properties; it enables TrueForce here)"
 			fi
 		elif [ "$has_opt" -eq 1 ]; then
-			bad "appid $appid: PROTON_ENABLE_HIDRAW=1 is set on a DirectInput sim - it stops force feedback reaching the game; remove it and use 'logi-ffb %command%' instead"
+			bad "appid $appid: PROTON_ENABLE_HIDRAW=1 is set on a DirectInput sim - it stops force feedback reaching the game; remove it and set 'logi-launch %command%' instead"
 		else
-			ok "appid $appid correctly has no PROTON_ENABLE_HIDRAW (DirectInput sim; launch it with 'logi-ffb %command%')"
+			wrn "appid $appid: launch options do not run logi-launch (set 'logi-launch %command%' in Steam > Properties; this sim needs the logi-ffb proxy it starts)"
 		fi
 	done
 	[ "$checked" -eq 0 ] && wrn "no known SDK or DirectInput sims found installed (nothing to check)"
