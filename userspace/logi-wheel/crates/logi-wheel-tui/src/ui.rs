@@ -843,7 +843,7 @@ fn setup_sections<S: SysfsIo>(
             }
             SetupSection::Games => {
                 let hint = if inside {
-                    "[i/u install/remove  h helper  c copy launch  g sim TF  a add  Esc back]"
+                    "[i/u install/remove  h helper  c copy launch  g sim TF  b rev lights  a add  Esc back]"
                 } else {
                     "[Enter opens the list]"
                 };
@@ -985,10 +985,36 @@ fn setup_sections<S: SysfsIo>(
                                 false,
                             );
                             plan.hidraw_scope = app.hidraw_scope();
+                            plan.rev_leds = app.rev_leds;
                             lines.push(Line::from(Span::styled(
                                 format!("    {}", plan.describe()),
                                 dim,
                             )));
+                            // A texture-merge title's card also says how
+                            // its two moving pieces stand: whether the
+                            // dinput8 escape proxy (the merge's RPM feed)
+                            // is staged in the game's directory, and which
+                            // rev-light style the bridge will use.
+                            if plan.texture_merge {
+                                if let Some(state) = app.proxy_states.get(g_idx).copied() {
+                                    let style = if state.is_warning() {
+                                        Style::default().fg(Color::Yellow)
+                                    } else {
+                                        dim
+                                    };
+                                    lines.push(Line::from(Span::styled(
+                                        format!("    escape proxy: {}", state.label()),
+                                        style,
+                                    )));
+                                }
+                                lines.push(Line::from(Span::styled(
+                                    format!(
+                                        "    rev lights: {} (b switches)",
+                                        app.rev_leds.label()
+                                    ),
+                                    dim,
+                                )));
+                            }
                         } else {
                             lines.push(Line::from(Span::styled(
                                 "    Added by you; remove if this game does not use TrueForce.",
@@ -1048,6 +1074,16 @@ fn setup_sections<S: SysfsIo>(
                         Span::raw("   daemon: "),
                         daemon_span,
                     ]));
+                    // The store forgives unknown and unparsable lines per
+                    // line; this is where a hand-edit that quietly did
+                    // nothing is said out loud (same text the daemon logs
+                    // at its own startup).
+                    if let Some(warning) = &app.tf_conf_warning {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {warning}"),
+                            Style::default().fg(Color::Yellow),
+                        )));
+                    }
                     // Whichever value editor is active shows as its yellow
                     // draft.
                     let draft_or = |draft: &Option<String>, value: String| match draft {
@@ -1924,6 +1960,7 @@ mod tests {
                     prefix: std::path::PathBuf::from("/pfx/acc"),
                 },
                 shim_installed: false,
+                install_dir: None,
             },
             logi_wheel_core::launchers::DiscoveredGame {
                 name: "TEKKEN 8".to_string(),
@@ -1932,6 +1969,7 @@ mod tests {
                     prefix: std::path::PathBuf::from("/pfx/tekken"),
                 },
                 shim_installed: true,
+                install_dir: None,
             },
         ];
         term.draw(|f| draw(f, &a)).unwrap();
@@ -1953,6 +1991,7 @@ mod tests {
                 prefix: std::path::PathBuf::from("/pfx/tekken"),
             },
             shim_installed: false,
+            install_dir: None,
         }];
         a.add_game = Some(crate::app::AddGamePicker { idx: 0, manual: None });
         term.draw(|f| draw(f, &a)).unwrap();

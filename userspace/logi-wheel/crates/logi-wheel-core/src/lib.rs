@@ -21,6 +21,7 @@ pub use setting::{Access, Category, ModeReq, SettingSpec};
 pub mod registry;
 pub use registry::{CLASSIC_REGISTRY, REGISTRY};
 pub mod helpers;
+pub mod launch;
 pub mod launchers;
 pub mod onboard;
 pub mod profiles;

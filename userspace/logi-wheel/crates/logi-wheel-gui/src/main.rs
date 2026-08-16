@@ -513,10 +513,33 @@ fn refresh_games(app: &App, cache: &GamesCache, caps: &CapsCell) {
     // enumerated first, so on a two-wheel rig the direct-drive owner was
     // shown the G923's advice for every SDK title.
     let caps = *caps.lock().unwrap();
-    let items = bridge::setup_games(&games, &cfg, caps, hidraw_scope(caps).as_deref());
+    let rev_leds = logi_wheel_core::launch::rev_leds();
+    let proxy_master = logi_wheel_core::helpers::proxy_master_path();
+    let items = bridge::setup_games(
+        &games,
+        &cfg,
+        caps,
+        hidraw_scope(caps).as_deref(),
+        rev_leds,
+        proxy_master.as_deref(),
+    );
     app.set_setup_games_summary(bridge::games_summary(&items).into());
     app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
     app.set_addable_games(slint::ModelRc::new(slint::VecModel::from(bridge::addable_games(&games))));
+    app.set_setup_rev_leds(rev_leds_index(rev_leds));
+    // A rebuild follows every tf-sim.conf edit, so the section's
+    // unrecognised-line warning stays a fact about the current file.
+    app.set_setup_tf_conf_warning(
+        logi_wheel_core::tfsim::conf_warning(&logi_wheel_core::tfsim::default_path())
+            .unwrap_or_default()
+            .into(),
+    );
+}
+
+/// The Slint index of a rev-light mode (into `games::RevLeds::ALL`, the
+/// order the choices model is built in).
+fn rev_leds_index(mode: logi_wheel_core::games::RevLeds) -> i32 {
+    logi_wheel_core::games::RevLeds::ALL.iter().position(|m| *m == mode).unwrap_or(0) as i32
 }
 
 /// Rescan the installed games across every launcher off the UI thread (the
@@ -536,10 +559,22 @@ fn scan_games(app_weak: slint::Weak<App>, cache: GamesCache, caps: CapsCell) {
         };
         let cfg = logi_wheel_core::tfsim::Config::load();
         *cache.lock().unwrap() = games.clone();
+        // Resolved off the UI thread with the scan: the rev-light mode is
+        // a config read and the proxy master a filesystem probe.
+        let rev_leds = logi_wheel_core::launch::rev_leds();
+        let proxy_master = logi_wheel_core::helpers::proxy_master_path();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else { return };
             let caps = *caps.lock().unwrap();
-            let items = bridge::setup_games(&games, &cfg, caps, hidraw_scope(caps).as_deref());
+            let items = bridge::setup_games(
+                &games,
+                &cfg,
+                caps,
+                hidraw_scope(caps).as_deref(),
+                rev_leds,
+                proxy_master.as_deref(),
+            );
+            app.set_setup_rev_leds(rev_leds_index(rev_leds));
             app.set_setup_games_summary(bridge::games_summary(&items).into());
             app.set_setup_games(slint::ModelRc::new(slint::VecModel::from(items)));
             app.set_addable_games(slint::ModelRc::new(slint::VecModel::from(bridge::addable_games(&games))));
@@ -1251,6 +1286,22 @@ fn main() -> Result<(), slint::PlatformError> {
             WheelChoice::ALL.iter().position(|c| *c == cfg.wheel).unwrap_or(0) as i32,
         );
         app.set_setup_tf_wheel_visible(logi_wheel_core::Device::discover_all().len() > 1);
+        // The section's unrecognised-line warning: the store forgives
+        // unknown and unparsable lines per line, and this is where a
+        // hand-edit that quietly did nothing is said out loud (the daemon
+        // logs the same sentence at its own startup).
+        app.set_setup_tf_conf_warning(
+            logi_wheel_core::tfsim::conf_warning(&logi_wheel_core::tfsim::default_path())
+                .unwrap_or_default()
+                .into(),
+        );
+        // The rev-light style for texture-merge sessions, persisted in
+        // launch.conf; the picker lives on each merge title's card.
+        use logi_wheel_core::games::RevLeds;
+        app.set_setup_rev_leds_choices(slint::ModelRc::new(slint::VecModel::from(
+            RevLeds::ALL.iter().map(|m| slint::SharedString::from(m.label())).collect::<Vec<_>>(),
+        )));
+        app.set_setup_rev_leds(rev_leds_index(logi_wheel_core::launch::rev_leds()));
     }
     refresh_tf_daemon(app.as_weak(), None);
     // Installed once, here, and never replaced: `load_rows`/`update_row`
@@ -2744,6 +2795,27 @@ fn main() -> Result<(), slint::PlatformError> {
                     v.clamp(0, 100) as u8,
                 ),
             );
+            refresh_games(&app, &games_cache, &wheel_caps_cell);
+        });
+    }
+    {
+        // The rev-light style for texture-merge sessions: one launch.conf
+        // key, then a games rebuild so every merge card's plan sentence
+        // says the mode that was actually stored.
+        let app_weak = app.as_weak();
+        let games_cache = games_cache.clone();
+        let wheel_caps_cell = wheel_caps_cell.clone();
+        app.on_setup_set_rev_leds(move |index| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mode = logi_wheel_core::games::RevLeds::ALL
+                .get(index.max(0) as usize)
+                .copied()
+                .unwrap_or_default();
+            if let Err(e) = logi_wheel_core::launch::set_rev_leds(mode) {
+                // The picker sits in the games section, so its failure
+                // lands in that section's output panel.
+                app.set_setup_shim_output(format!("launch.conf: {e}").into());
+            }
             refresh_games(&app, &games_cache, &wheel_caps_cell);
         });
     }

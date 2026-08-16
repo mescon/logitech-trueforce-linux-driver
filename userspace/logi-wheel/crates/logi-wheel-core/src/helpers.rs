@@ -128,6 +128,90 @@ pub fn resolve_rpm_bridge(path_var: Option<&OsStr>, exe: Option<&Path>) -> Optio
     find_on_path(RPM_BRIDGE_BIN, path_var).or_else(|| walk_up_for(REPO_RPM_BRIDGE, exe))
 }
 
+/// The packaged master copy of the dinput8 escape proxy, the same first
+/// candidate `tools/logi-launch.sh` stages from.
+pub const PROXY_MASTER_PACKAGED: &str = "/usr/share/logitech-trueforce/dinput8-escape.dll";
+
+/// The proxy master's path inside a repo checkout, relative to the
+/// checkout root (the wrapper's own fallback is the copy next to itself
+/// in `tools/`).
+const REPO_PROXY_MASTER: &str = "tools/dinput8-escape.dll";
+
+/// Resolve the dinput8 escape proxy's master copy: the packaged path
+/// first (`packaged`, [`PROXY_MASTER_PACKAGED`] in real use), else the
+/// checkout's `tools/dinput8-escape.dll` by the same walk up the
+/// installer uses. Mirrors `logi-launch`'s own two candidates, so what
+/// the Setup pages report present is what the wrapper would stage.
+pub fn resolve_proxy_master(packaged: &Path, exe: Option<&Path>) -> Option<PathBuf> {
+    if packaged.is_file() {
+        return Some(packaged.to_path_buf());
+    }
+    walk_up_for(REPO_PROXY_MASTER, exe)
+}
+
+/// [`resolve_proxy_master`] over the real process environment.
+pub fn proxy_master_path() -> Option<PathBuf> {
+    resolve_proxy_master(
+        Path::new(PROXY_MASTER_PACKAGED),
+        std::env::current_exe().ok().as_deref(),
+    )
+}
+
+/// Whether the dinput8 escape proxy is staged in a texture-merge title's
+/// own directory, for that game's Setup card. `logi-launch` stages the
+/// proxy at launch and compares by content (Steam validation rewrites
+/// files, so a stale copy looks exactly like a missing one); this asks
+/// the same question ahead of time so the card can say what will happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscapeProxyState {
+    /// `dinput8.dll` is in the game's directory and byte-identical to the
+    /// master copy: the merge's RPM feed is ready before the game starts.
+    Staged,
+    /// The master copy exists but the game's directory lacks it (or holds
+    /// a different build, or the directory is not known): `logi-launch`
+    /// will stage it on the next launch.
+    StagesOnLaunch,
+    /// No master copy anywhere: the wrapper will have nothing to stage,
+    /// and the texture merge will idle without its RPM feed.
+    MasterMissing,
+}
+
+impl EscapeProxyState {
+    /// The card text.
+    pub fn label(self) -> &'static str {
+        match self {
+            EscapeProxyState::Staged => "escape proxy staged",
+            EscapeProxyState::StagesOnLaunch => "stages on first launch",
+            EscapeProxyState::MasterMissing => "proxy master copy missing",
+        }
+    }
+
+    /// Whether the card should render this as a warning.
+    pub fn is_warning(self) -> bool {
+        matches!(self, EscapeProxyState::MasterMissing)
+    }
+}
+
+/// Derive the [`EscapeProxyState`] for a game: `master` is the resolved
+/// master copy ([`resolve_proxy_master`], `None` when neither candidate
+/// exists) and `game_dir` the game's own installation directory (`None`
+/// when the launcher scan could not name one, e.g. a non-Steam install).
+/// The comparison is byte-for-byte against `<game_dir>/dinput8.dll`,
+/// exactly the `cmp` the wrapper performs before copying.
+pub fn escape_proxy_state(master: Option<&Path>, game_dir: Option<&Path>) -> EscapeProxyState {
+    let Some(master) = master else { return EscapeProxyState::MasterMissing };
+    let Ok(want) = std::fs::read(master) else { return EscapeProxyState::MasterMissing };
+    let staged = game_dir
+        .map(|dir| dir.join("dinput8.dll"))
+        .and_then(|dll| std::fs::read(dll).ok())
+        .is_some_and(|have| have == want);
+    if staged {
+        EscapeProxyState::Staged
+    } else {
+        EscapeProxyState::StagesOnLaunch
+    }
+}
+
 /// [`resolve_ffb`] over the real process environment.
 pub fn ffb_path() -> Option<PathBuf> {
     resolve_ffb(std::env::var_os("PATH").as_deref(), std::env::current_exe().ok().as_deref())
@@ -290,6 +374,76 @@ mod tests {
         let found = resolve_rpm_bridge(Some(&path_var(&[&empty])), Some(&exe)).unwrap();
         assert_eq!(found, repo.join(REPO_RPM_BRIDGE), "the checkout's tools/ build");
         assert_eq!(resolve_rpm_bridge(None, None), None, "nothing found never panics");
+    }
+
+    #[test]
+    fn proxy_master_prefers_the_packaged_copy_then_the_checkout() {
+        let tree = TempTree::new();
+        let packaged = tree.path().join("usr-share").join("dinput8-escape.dll");
+        let (repo, exe) = checkout(&tree);
+        touch(&repo.join(REPO_PROXY_MASTER));
+
+        // Packaged copy absent: the checkout's tools/ copy wins.
+        let found = resolve_proxy_master(&packaged, Some(&exe)).unwrap();
+        assert_eq!(found, repo.join(REPO_PROXY_MASTER));
+
+        // Packaged copy present: it wins, same order as logi-launch.
+        touch(&packaged);
+        let found = resolve_proxy_master(&packaged, Some(&exe)).unwrap();
+        assert_eq!(found, packaged);
+
+        assert_eq!(
+            resolve_proxy_master(&tree.path().join("nowhere.dll"), None),
+            None,
+            "nothing found never panics"
+        );
+    }
+
+    /// The three staging states, derived exactly as the wrapper decides
+    /// them: content compare, never a timestamp.
+    #[test]
+    fn escape_proxy_state_is_derived_by_content() {
+        let tree = TempTree::new();
+        let master = tree.path().join("master").join("dinput8-escape.dll");
+        fs::create_dir_all(master.parent().unwrap()).unwrap();
+        fs::write(&master, b"proxy build A").unwrap();
+        let game_dir = tree.path().join("steamapps/common/Game");
+        fs::create_dir_all(&game_dir).unwrap();
+
+        // No master anywhere: the warning state, whatever the game holds.
+        assert_eq!(
+            escape_proxy_state(None, Some(&game_dir)),
+            EscapeProxyState::MasterMissing
+        );
+        assert!(EscapeProxyState::MasterMissing.is_warning());
+
+        // Master present, game dir lacks the dll: stages on launch.
+        assert_eq!(
+            escape_proxy_state(Some(&master), Some(&game_dir)),
+            EscapeProxyState::StagesOnLaunch
+        );
+        // An unknown game dir reads the same way: the wrapper finds the
+        // real directory from the launch command we cannot see.
+        assert_eq!(
+            escape_proxy_state(Some(&master), None),
+            EscapeProxyState::StagesOnLaunch
+        );
+
+        // A stale copy looks exactly like a missing one (Steam validation
+        // rewrites files), so a different build is NOT "staged".
+        fs::write(game_dir.join("dinput8.dll"), b"proxy build B").unwrap();
+        assert_eq!(
+            escape_proxy_state(Some(&master), Some(&game_dir)),
+            EscapeProxyState::StagesOnLaunch
+        );
+
+        // Byte-identical: staged.
+        fs::write(game_dir.join("dinput8.dll"), b"proxy build A").unwrap();
+        assert_eq!(
+            escape_proxy_state(Some(&master), Some(&game_dir)),
+            EscapeProxyState::Staged
+        );
+        assert!(!EscapeProxyState::Staged.is_warning());
     }
 
     #[test]

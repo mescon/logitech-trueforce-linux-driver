@@ -43,6 +43,17 @@ export struct SetupGame {
     // get that variable and gets the simulated kind instead. Empty for a
     // game the registry does not know, where there is nothing to describe.
     plan: string,
+    // Whether this game's plan grants the kernel texture merge on the
+    // wheel plugged in now. A merge card carries two extra pieces: the
+    // escape-proxy staging state and the rev-light style picker.
+    texture-merge: bool,
+    // The dinput8 escape proxy's staging state for this game
+    // (`helpers::EscapeProxyState::label`): staged in the game's
+    // directory, staged by logi-launch on the next launch, or (the
+    // warning state, `proxy-warn`) no master copy anywhere to stage
+    // from. Empty for a game without the merge.
+    proxy-status: string,
+    proxy-warn: bool,
 }
 
 // One haptic layer of the simulated-TrueForce effects engine, built on the
@@ -329,6 +340,16 @@ export component Setup inherits Rectangle {
     // plus the new value.
     callback sim-game-enabled(string, bool);
     callback sim-game-intensity(string, int);
+    // The rev-light style for texture-merge sessions: one global
+    // launch.conf setting (indices into `games::RevLeds::ALL`), shown on
+    // each merge title's card because that is the only place it does
+    // anything. The labels come from Rust so this page never spells them.
+    in property <[string]> rev-leds-choices: [];
+    in property <int> rev-leds: 0;
+    callback set-rev-leds(int);
+    // The Simulated TrueForce section's config-file warning, "" while
+    // every line of tf-sim.conf parses (`tfsim::conf_warning`).
+    in property <string> tf-conf-warning: "";
 
     background: transparent;
 
@@ -599,6 +620,45 @@ export component Setup inherits Rectangle {
                                 wrap: word-wrap;
                             }
 
+                            // Texture-merge titles only: whether the
+                            // dinput8 escape proxy (the merge's RPM feed)
+                            // is staged in the game's directory, asked the
+                            // same way logi-launch will (content compare
+                            // against the master copy).
+                            if game.texture-merge && game.proxy-status != "": Text {
+                                text: "Engine-note merge: " + game.proxy-status;
+                                font-size: 12px;
+                                color: game.proxy-warn ? Theme.error-color : Theme.muted-text-color;
+                                wrap: word-wrap;
+                            }
+                            // The rev-light style the merge's bridge uses:
+                            // one global setting, shown here because a
+                            // merge session is the only place it acts.
+                            if game.texture-merge: HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Rev lights";
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    color: Theme.text-color;
+                                }
+                                ComboBox {
+                                    model: root.rev-leds-choices;
+                                    current-index: root.rev-leds;
+                                    selected => { root.set-rev-leds(self.current-index); }
+                                }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: root.rev-leds == 0
+                                        ? "LED 1 as soon as the engine turns, all ten at the limiter."
+                                        : "Dark until the car's first shift light, like the dash in G HUB.";
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                    color: Theme.muted-text-color;
+                                    wrap: word-wrap;
+                                }
+                            }
+
                             // Simulated TrueForce: the game's own switch
                             // + strength, writing tf-sim.conf.
                             if game.action == root.action-sim-tf: HorizontalLayout {
@@ -743,6 +803,16 @@ export component Setup inherits Rectangle {
                             : "logi-tf-sim: not found (on your PATH or next to this app)";
                         font-size: 12px;
                         color: root.tf-found ? Theme.text-color : Theme.error-color;
+                        wrap: word-wrap;
+                    }
+                    // The config store forgives unknown and unparsable
+                    // lines per line; this is where a hand-edit that
+                    // quietly did nothing is said out loud (the daemon
+                    // logs the same sentence at its own startup).
+                    if root.tf-conf-warning != "": Text {
+                        text: root.tf-conf-warning;
+                        font-size: 12px;
+                        color: Theme.error-color;
                         wrap: word-wrap;
                     }
                     HorizontalLayout {

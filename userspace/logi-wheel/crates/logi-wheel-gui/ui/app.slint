@@ -153,6 +153,14 @@ export component App inherits Window {
     callback setup-tf-sweep-stop();
     callback setup-sim-game-enabled(string, bool);
     callback setup-sim-game-intensity(string, int);
+    // The rev-light style for texture-merge sessions (indices into
+    // `games::RevLeds::ALL`, labels pushed from Rust) and the Simulated
+    // TrueForce section's tf-sim.conf warning ("" while the file parses
+    // clean); see `Setup`'s properties of the same names.
+    in property <[string]> setup-rev-leds-choices: [];
+    in property <int> setup-rev-leds: 0;
+    callback setup-set-rev-leds(int);
+    in property <string> setup-tf-conf-warning: "";
 
     // The sidebar index of the Info category (the page that carries the
     // live input monitor), set once from Rust; `-1` until then, same guard
@@ -681,6 +689,9 @@ export component App inherits Window {
                     tf-effect-rows: root.setup-tf-effect-rows;
                     tf-sweep-running: root.setup-tf-sweep-running;
                     tf-output: root.setup-tf-output;
+                    tf-conf-warning: root.setup-tf-conf-warning;
+                    rev-leds-choices: root.setup-rev-leds-choices;
+                    rev-leds: root.setup-rev-leds;
                     copy-launch(text) => { root.setup-copy-launch(text); }
                     ffb-launch-options: root.setup-ffb-launch-options;
                     ffb-manual-launch: root.setup-ffb-manual-launch;
@@ -700,6 +711,7 @@ export component App inherits Window {
                     tf-stop-daemon() => { root.setup-tf-stop-daemon(); }
                     tf-sweep() => { root.setup-tf-sweep(); }
                     tf-sweep-stop() => { root.setup-tf-sweep-stop(); }
+                    set-rev-leds(v) => { root.setup-set-rev-leds(v); }
                     sim-game-enabled(id, v) => { root.setup-sim-game-enabled(id, v); }
                     sim-game-intensity(id, v) => { root.setup-sim-game-intensity(id, v); }
                     open-url(url) => { root.open-url(url); }

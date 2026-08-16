@@ -9,6 +9,7 @@ use logi_wheel_core::shaping::{self, ShapingRole};
 use logi_wheel_core::{lightsync, Access, Category, Color, Error, Kind, Value, WheelModel, REGISTRY};
 
 use logi_wheel_core::games::{self, SetupAction};
+use logi_wheel_core::helpers;
 use logi_wheel_core::launchers::DiscoveredGame;
 use logi_wheel_core::tfsim;
 
@@ -945,11 +946,19 @@ pub fn setup_effects(cfg: &tfsim::Config) -> Vec<SetupEffect> {
 /// plan sentence so the page shows the scoped `0xVID/0xPID` form the
 /// wrapper really sets rather than the bare `1` it exists to avoid. `None`
 /// when no wheel can be named, where the sentence falls back to `1`.
+///
+/// `rev_leds` is the persisted rev-light style for texture-merge sessions
+/// (`launch::rev_leds`), threaded into each plan the same way, and
+/// `proxy_master` the resolved dinput8 escape proxy master copy
+/// (`helpers::proxy_master_path`): a merge title's card derives its
+/// staging state from it (`helpers::escape_proxy_state`).
 pub fn setup_games(
     games: &[DiscoveredGame],
     cfg: &tfsim::Config,
     caps: games::WheelCaps,
     hidraw_scope: Option<&str>,
+    rev_leds: games::RevLeds,
+    proxy_master: Option<&std::path::Path>,
 ) -> Vec<SetupGame> {
     let prefix_of = |g: &DiscoveredGame| g.prefix().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     games
@@ -971,6 +980,24 @@ pub fn setup_games(
                 let needs_relay = th::needs_relay(sim_id);
                 let relay_installed =
                     needs_relay && th::relay_installed_in(std::path::Path::new(&prefix));
+                // The same decision the wrapper makes, from the same
+                // function, so the page cannot describe one recipe while
+                // logi-launch applies another. `ambiguous` is false here
+                // because the page is already showing one wheel's answer:
+                // `caps` is the wheel being managed, which the user picks
+                // in the app.
+                let plan = {
+                    let mut plan = games::LaunchPlan::for_game(compat, caps, false);
+                    plan.hidraw_scope = hidraw_scope.map(str::to_string);
+                    plan.rev_leds = rev_leds;
+                    plan
+                };
+                // Only a merge title's card asks after the escape proxy:
+                // for every other row the answer would be a fact about a
+                // file the wrapper will never stage.
+                let proxy_state = plan.texture_merge.then(|| {
+                    helpers::escape_proxy_state(proxy_master, g.install_dir.as_deref())
+                });
                 Some(SetupGame {
                     name: g.name.as_str().into(),
                     prefix: prefix.as_str().into(),
@@ -983,17 +1010,10 @@ pub fn setup_games(
                     // it here instead taught people to paste a setting that
                     // is right for one wheel and wrong for the other.
                     launch: "logi-launch %command%".into(),
-                    // The same decision the wrapper makes, from the same
-                    // function, so the page cannot describe one recipe
-                    // while logi-launch applies another. `ambiguous` is
-                    // false here because the page is already showing one
-                    // wheel's answer: `caps` is the wheel being managed,
-                    // which the user picks in the app.
-                    plan: {
-                        let mut plan = games::LaunchPlan::for_game(compat, caps, false);
-                        plan.hidraw_scope = hidraw_scope.map(str::to_string);
-                        plan.describe().into()
-                    },
+                    plan: plan.describe().into(),
+                    texture_merge: plan.texture_merge,
+                    proxy_status: proxy_state.map(|s| s.label()).unwrap_or_default().into(),
+                    proxy_warn: proxy_state.is_some_and(|s| s.is_warning()),
                     installed: g.shim_installed,
                     sim_id: sim_id.into(),
                     sim_enabled: sim.enabled,
@@ -1013,6 +1033,9 @@ pub fn setup_games(
                 // offering nothing.
                 launch: String::new().into(),
                 plan: String::new().into(),
+                texture_merge: false,
+                proxy_status: String::new().into(),
+                proxy_warn: false,
                 installed: true,
                 sim_id: String::new().into(),
                 sim_enabled: false,
@@ -1114,12 +1137,13 @@ mod tests {
             source,
             kind: GameKind::Wine { prefix: std::path::PathBuf::from(format!("/pfx/{name}")) },
             shim_installed,
+            install_dir: None,
         }
     }
 
     /// A native Linux game (no wine prefix, shim never applies).
     fn native_game(name: &str, source: Source) -> DiscoveredGame {
-        DiscoveredGame { name: name.to_string(), source, kind: GameKind::Native, shim_installed: false }
+        DiscoveredGame { name: name.to_string(), source, kind: GameKind::Native, shim_installed: false, install_dir: None }
     }
 
     #[test]
@@ -1135,7 +1159,7 @@ mod tests {
             wine_game("DiRT Rally 2.0", Source::Steam, false),
             wine_game("Wreckfest", Source::Steam, false),
         ];
-        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None);
+        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None, games::RevLeds::Bar, None);
         assert_eq!(rows.len(), games.len(), "one row per recognised game, order preserved");
 
         // Built-in TrueForce -> shim action, its installed flag carried.
@@ -1185,7 +1209,7 @@ mod tests {
             wine_game("TEKKEN 8", Source::Steam, false),
             wine_game("Some Unknown Sim", Source::Steam, true),
         ];
-        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None);
+        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None, games::RevLeds::Bar, None);
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1235,7 +1259,7 @@ mod tests {
         // instead of running the installer with `--prefix ""`.
         let cfg = tfsim::Config::default();
         let games = vec![native_game("Assetto Corsa Competizione", Source::Steam)];
-        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None);
+        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None, games::RevLeds::Bar, None);
         assert_eq!(rows.len(), 1);
         let acc = &rows[0];
         assert_eq!(acc.action, ACTION_SHIM);
@@ -1245,7 +1269,7 @@ mod tests {
         // Same title, but launched at least once: a normal Wine game with
         // a prefix still gets the enabled install path.
         let launched = vec![wine_game("Assetto Corsa Competizione", Source::Steam, false)];
-        let rows2 = setup_games(&launched, &cfg, games::WheelCaps::assumed(), None);
+        let rows2 = setup_games(&launched, &cfg, games::WheelCaps::assumed(), None, games::RevLeds::Bar, None);
         let acc2 = &rows2[0];
         assert_eq!(acc2.action, ACTION_SHIM);
         assert!(!acc2.prefix.is_empty());
@@ -1261,7 +1285,7 @@ mod tests {
             wine_game("Automobilista 2", Source::Steam, false),
             wine_game("Project CARS 2", Source::Steam, false),
         ];
-        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None);
+        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None, games::RevLeds::Bar, None);
         assert!(rows.iter().all(|r| r.action == ACTION_SIM_TF && r.sim_id == "ams2-pcars2"));
         assert!(rows.iter().all(|r| r.sim_enabled));
         assert!(rows.iter().all(|r| r.sim_intensity == 100));
@@ -1276,7 +1300,7 @@ mod tests {
         let games_list = vec![wine_game("Assetto Corsa Competizione", Source::Steam, false)];
         let g923 = games::WheelCaps { sdk_trueforce: false };
 
-        let rows = setup_games(&games_list, &cfg, g923, None);
+        let rows = setup_games(&games_list, &cfg, g923, None, games::RevLeds::Bar, None);
         assert_eq!(rows[0].action, ACTION_OUT_OF_BOX);
         // The line offered is the wheel-aware one, so it is safe to paste on
         // any wheel: logi-launch resolves the recipe at launch from the
@@ -1299,7 +1323,7 @@ mod tests {
         // is the part that is per wheel: it gets the shim. The launch line
         // is deliberately identical on both, because the line itself no
         // longer encodes the recipe.
-        let dd = setup_games(&games_list, &cfg, games::WheelCaps { sdk_trueforce: true }, None);
+        let dd = setup_games(&games_list, &cfg, games::WheelCaps { sdk_trueforce: true }, None, games::RevLeds::Bar, None);
         assert_eq!(dd[0].action, ACTION_SHIM);
         assert_eq!(dd[0].launch, "logi-launch %command%");
         assert_ne!(dd[0].action, rows[0].action, "the wheels must still differ somewhere");
@@ -1314,19 +1338,69 @@ mod tests {
         let games_list = vec![wine_game("Assetto Corsa Competizione", Source::Steam, false)];
         let dd = games::WheelCaps { sdk_trueforce: true };
 
-        let rows = setup_games(&games_list, &cfg, dd, Some("0x046D/0xC276"));
+        let rows = setup_games(&games_list, &cfg, dd, Some("0x046D/0xC276"), games::RevLeds::Bar, None);
         assert!(
             rows[0].plan.contains("PROTON_ENABLE_HIDRAW=0x046D/0xC276"),
             "the sentence must show the scoped form: {}",
             rows[0].plan
         );
 
-        let rows = setup_games(&games_list, &cfg, dd, None);
+        let rows = setup_games(&games_list, &cfg, dd, None, games::RevLeds::Bar, None);
         assert!(
             rows[0].plan.contains("PROTON_ENABLE_HIDRAW=1"),
             "no nameable wheel falls back to the bare form: {}",
             rows[0].plan
         );
+    }
+
+    /// A texture-merge title's card carries the merge extras (the proxy
+    /// staging state and the rev-light style in the plan sentence); every
+    /// other row carries none of it.
+    #[test]
+    fn a_merge_title_card_carries_the_proxy_state_and_rev_light_style() {
+        let cfg = tfsim::Config::default();
+        let dd = games::WheelCaps { sdk_trueforce: true };
+        let games_list = vec![
+            wine_game("Assetto Corsa EVO", Source::Steam, false),
+            wine_game("Assetto Corsa Competizione", Source::Steam, false),
+        ];
+
+        // No master copy resolvable: the warning state, spelled out.
+        let rows = setup_games(&games_list, &cfg, dd, None, games::RevLeds::Bar, None);
+        let evo = rows.iter().find(|r| r.name.as_str().contains("EVO")).unwrap();
+        assert!(evo.texture_merge);
+        assert_eq!(evo.proxy_status, "proxy master copy missing");
+        assert!(evo.proxy_warn);
+        assert!(evo.plan.contains("as a full bar"), "{}", evo.plan);
+
+        let acc = rows.iter().find(|r| !r.name.as_str().contains("EVO")).unwrap();
+        assert!(!acc.texture_merge, "only AC EVO's RPM relay is validated");
+        assert_eq!(acc.proxy_status, "");
+        assert!(!acc.proxy_warn);
+
+        // With a master copy and no known install dir, the honest answer
+        // is that the wrapper stages it at launch; and the persisted
+        // shift style reaches the plan sentence.
+        let master_dir = std::env::temp_dir().join(format!(
+            "logi-wheel-bridge-proxy-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&master_dir).unwrap();
+        let master = master_dir.join("dinput8-escape.dll");
+        std::fs::write(&master, b"proxy").unwrap();
+        let rows = setup_games(
+            &games_list,
+            &cfg,
+            dd,
+            None,
+            games::RevLeds::Shift,
+            Some(&master),
+        );
+        let evo = rows.iter().find(|r| r.name.as_str().contains("EVO")).unwrap();
+        assert_eq!(evo.proxy_status, "stages on first launch");
+        assert!(!evo.proxy_warn);
+        assert!(evo.plan.contains("dashboard band"), "{}", evo.plan);
+        let _ = std::fs::remove_dir_all(&master_dir);
     }
 
     #[test]
@@ -1346,12 +1420,12 @@ mod tests {
             wine_game("Wreckfest", Source::Steam, false),                  // out of the box
             wine_game("Assetto Corsa EVO", Source::Steam, true),           // shim, installed
         ];
-        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None);
+        let rows = setup_games(&games, &cfg, games::WheelCaps::assumed(), None, games::RevLeds::Bar, None);
         assert_eq!(games_summary(&rows), "3 installed, 1 need setup");
 
         // Nothing outstanding reads as "all set".
         let done = vec![wine_game("Wreckfest", Source::Steam, false), wine_game("Assetto Corsa EVO", Source::Steam, true)];
-        assert_eq!(games_summary(&setup_games(&done, &cfg, games::WheelCaps::assumed(), None)), "2 installed, all set");
+        assert_eq!(games_summary(&setup_games(&done, &cfg, games::WheelCaps::assumed(), None, games::RevLeds::Bar, None)), "2 installed, all set");
     }
 
     #[test]

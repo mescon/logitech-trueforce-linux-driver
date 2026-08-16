@@ -105,6 +105,9 @@ pub fn heroic_games(config_home: &Path) -> Vec<DiscoveredGame> {
                 source: Source::Heroic,
                 kind: GameKind::Wine { prefix },
                 shim_installed,
+                // Heroic's config names the wine prefix but not the
+                // game's own install directory.
+                install_dir: None,
             });
         }
     }

@@ -5,7 +5,10 @@
 //! `~/.config/logi-wheel/tf-sim.conf`), hand-rolled key=value in the same
 //! discipline as the logi-wheel profile store: trivial format, std only,
 //! comments and blank lines allowed, unknown or unparsable lines ignored
-//! individually so a hand-edited file never fails wholesale.
+//! individually so a hand-edited file never fails wholesale. Ignored is
+//! not silent, though: the loader counts what it skipped ([`LoadReport`])
+//! and the daemon logs one warning line at startup when that count is
+//! nonzero, so a typoed key stops masquerading as a setting that took.
 //!
 //! Keys:
 //! - `enabled` (0/1): master switch
@@ -274,125 +277,172 @@ fn parse_percent(raw: &str) -> Option<u8> {
     raw.parse::<u8>().ok().filter(|v| *v <= 100)
 }
 
+/// What [`Config::load_from_with_report`] found besides the config: how
+/// many non-comment lines the parser skipped (unknown keys and unparsable
+/// or out-of-range values alike), and the first such line's text.
+///
+/// Exists because the parser's per-line forgiveness, which is right for a
+/// hand-edited file, used to be indistinguishable from silence: a typoed
+/// `intensty=80` loaded fine and simply did nothing, and nothing anywhere
+/// said so. The forgiveness stays; this makes it audible.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LoadReport {
+    /// Non-comment lines the parser skipped.
+    pub skipped: usize,
+    /// The first skipped line, verbatim.
+    pub first: Option<String>,
+}
+
+impl LoadReport {
+    /// The one warning line the daemon logs at startup, or `None` when
+    /// every line parsed.
+    pub fn warning(&self) -> Option<String> {
+        let first = self.first.as_deref()?;
+        Some(format!(
+            "{} unrecognised line{} in {FILE_NAME}, first: {first}",
+            self.skipped,
+            if self.skipped == 1 { "" } else { "s" }
+        ))
+    }
+}
+
+/// Apply one `key=value` line to `cfg`. Returns whether the line was
+/// consumed: false for an unknown key AND for a known key whose value was
+/// unparsable or out of range (both leave the config untouched, and both
+/// are exactly what [`LoadReport`] exists to count).
+fn apply_line(cfg: &mut Config, key: &str, raw: &str) -> bool {
+    match key {
+        "enabled" => {
+            let Some(v) = parse_bool(raw) else { return false };
+            cfg.enabled = v;
+        }
+        "intensity" => {
+            let Some(v) = parse_percent(raw) else { return false };
+            cfg.intensity = v;
+        }
+        "wheel" => {
+            let Some(v) = logi_wheel_core::tfsim::WheelChoice::parse(raw) else { return false };
+            cfg.wheel = v;
+        }
+        "pitch" => {
+            let Some(v) = raw.parse::<u8>().ok().filter(|v| (10..=200u16).contains(&u16::from(*v)))
+            else {
+                return false;
+            };
+            cfg.pitch_pct = v;
+        }
+        "cylinders" => {
+            // 1..16 covers a Ducati twin through a W16. Out of range
+            // keeps the default rather than producing an engine note
+            // nothing on earth makes.
+            let Some(v) = raw.parse::<u8>().ok().filter(|v| (1..=16).contains(v)) else {
+                return false;
+            };
+            cfg.cylinders = v;
+        }
+        "leds" => {
+            let Some(v) = parse_bool(raw) else { return false };
+            cfg.leds = v;
+        }
+        "port.codemasters" => {
+            let Ok(v) = raw.parse::<u16>() else { return false };
+            cfg.codemasters_port = v;
+        }
+        "port.pcars" => {
+            let Ok(v) = raw.parse::<u16>() else { return false };
+            cfg.pcars_port = v;
+        }
+        "port.beamng" => {
+            let Ok(v) = raw.parse::<u16>() else { return false };
+            cfg.beamng_port = v;
+        }
+        "port.relay" => {
+            let Ok(v) = raw.parse::<u16>() else { return false };
+            cfg.relay_port = v;
+        }
+        "effects" => {
+            let Some(v) = parse_bool(raw) else { return false };
+            cfg.effects = v;
+        }
+        "g923.ffb_invert" => {
+            let Some(v) = parse_bool(raw) else { return false };
+            cfg.g923_ffb_invert = v;
+        }
+        _ => {
+            // One arm serves all ten layers: `effect_<name>`.
+            if let Some(name) = key.strip_prefix("effect_") {
+                let (Some(id), Some(v)) =
+                    (crate::effects::EffectId::from_key(name), parse_percent(raw))
+                else {
+                    return false;
+                };
+                cfg.effect_gains.set(id, v);
+                return true;
+            }
+            let Some(rest) = key.strip_prefix("game.") else { return false };
+            let Some((id, field)) = rest.rsplit_once('.') else { return false };
+            if id.is_empty() {
+                return false;
+            }
+            match field {
+                "enabled" => {
+                    let Some(v) = parse_bool(raw) else { return false };
+                    cfg.games.entry(id.to_string()).or_default().enabled = v;
+                }
+                "intensity" => {
+                    let Some(v) = parse_percent(raw) else { return false };
+                    cfg.games.entry(id.to_string()).or_default().intensity = v;
+                }
+                _ => return false,
+            }
+        }
+    }
+    true
+}
+
 impl Config {
     /// Load from [`default_path`]; a missing file is the default config.
     pub fn load() -> Config {
         Config::load_from(&default_path())
     }
 
+    /// [`Config::load_from_with_report`] over [`default_path`].
+    pub fn load_with_report() -> (Config, LoadReport) {
+        Config::load_from_with_report(&default_path())
+    }
+
     /// Load from `path`. A missing or unreadable file yields the defaults;
     /// within a readable file, each unknown or unparsable line is ignored
-    /// individually.
+    /// individually. Callers that can surface the skips use
+    /// [`Config::load_from_with_report`] instead.
     pub fn load_from(path: &Path) -> Config {
+        Config::load_from_with_report(path).0
+    }
+
+    /// [`Config::load_from`], also reporting the lines it skipped. A
+    /// missing or unreadable file reports nothing skipped: there were no
+    /// lines to misread, and warning about an absent file would nag every
+    /// fresh install.
+    pub fn load_from_with_report(path: &Path) -> (Config, LoadReport) {
         let mut cfg = Config::default();
-        let Ok(text) = fs::read_to_string(path) else { return cfg };
+        let mut report = LoadReport::default();
+        let Ok(text) = fs::read_to_string(path) else { return (cfg, report) };
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((key, raw)) = line.split_once('=') else { continue };
-            let (key, raw) = (key.trim(), raw.trim());
-            match key {
-                "enabled" => {
-                    if let Some(v) = parse_bool(raw) {
-                        cfg.enabled = v;
-                    }
-                }
-                "intensity" => {
-                    if let Some(v) = parse_percent(raw) {
-                        cfg.intensity = v;
-                    }
-                }
-                "wheel" => {
-                    if let Some(v) = logi_wheel_core::tfsim::WheelChoice::parse(raw) {
-                        cfg.wheel = v;
-                    }
-                }
-                "pitch" => {
-                    if let Ok(v) = raw.parse::<u8>() {
-                        if (10..=200u16).contains(&u16::from(v)) {
-                            cfg.pitch_pct = v;
-                        }
-                    }
-                }
-                "cylinders" => {
-                    // 1..16 covers a Ducati twin through a W16. Out of range
-                    // keeps the default rather than producing an engine note
-                    // nothing on earth makes.
-                    if let Ok(v) = raw.parse::<u8>() {
-                        if (1..=16).contains(&v) {
-                            cfg.cylinders = v;
-                        }
-                    }
-                }
-                "leds" => {
-                    if let Some(v) = parse_bool(raw) {
-                        cfg.leds = v;
-                    }
-                }
-                "port.codemasters" => {
-                    if let Ok(v) = raw.parse::<u16>() {
-                        cfg.codemasters_port = v;
-                    }
-                }
-                "port.pcars" => {
-                    if let Ok(v) = raw.parse::<u16>() {
-                        cfg.pcars_port = v;
-                    }
-                }
-                "port.beamng" => {
-                    if let Ok(v) = raw.parse::<u16>() {
-                        cfg.beamng_port = v;
-                    }
-                }
-                "port.relay" => {
-                    if let Ok(v) = raw.parse::<u16>() {
-                        cfg.relay_port = v;
-                    }
-                }
-                "effects" => {
-                    if let Some(v) = parse_bool(raw) {
-                        cfg.effects = v;
-                    }
-                }
-                "g923.ffb_invert" => {
-                    if let Some(v) = parse_bool(raw) {
-                        cfg.g923_ffb_invert = v;
-                    }
-                }
-                _ => {
-                    // One arm serves all ten layers: `effect_<name>`.
-                    if let Some(name) = key.strip_prefix("effect_") {
-                        if let (Some(id), Some(v)) =
-                            (crate::effects::EffectId::from_key(name), parse_percent(raw))
-                        {
-                            cfg.effect_gains.set(id, v);
-                        }
-                        continue;
-                    }
-                    let Some(rest) = key.strip_prefix("game.") else { continue };
-                    let Some((id, field)) = rest.rsplit_once('.') else { continue };
-                    if id.is_empty() {
-                        continue;
-                    }
-                    match field {
-                        "enabled" => {
-                            if let Some(v) = parse_bool(raw) {
-                                cfg.games.entry(id.to_string()).or_default().enabled = v;
-                            }
-                        }
-                        "intensity" => {
-                            if let Some(v) = parse_percent(raw) {
-                                cfg.games.entry(id.to_string()).or_default().intensity = v;
-                            }
-                        }
-                        _ => {}
-                    }
+            let used = line
+                .split_once('=')
+                .is_some_and(|(key, raw)| apply_line(&mut cfg, key.trim(), raw.trim()));
+            if !used {
+                report.skipped += 1;
+                if report.first.is_none() {
+                    report.first = Some(line.to_string());
                 }
             }
         }
-        cfg
+        (cfg, report)
     }
 
     /// Save to [`default_path`], creating the directory as needed.
@@ -551,6 +601,66 @@ mod tests {
 
         fs::write(&path, format!("{FILE_HEADER}\ng923.ffb_invert=maybe\n")).unwrap();
         assert!(Config::load_from(&path).g923_ffb_invert, "unparsable bool keeps the (inverted) default");
+    }
+
+    /// The skip count sees exactly what the parser refuses: unknown keys,
+    /// unparsable values, out-of-range values and keyless lines, with
+    /// comments and blanks exempt, and the first offender is quoted.
+    #[test]
+    fn skipped_lines_are_counted_and_the_first_is_quoted() {
+        let path = tempdir().join(FILE_NAME);
+        fs::write(
+            &path,
+            format!(
+                "{FILE_HEADER}\n\
+                 \n\
+                 intensity=55\n\
+                 bogus_key=7\n\
+                 intensity=notanumber\n\
+                 not a line\n\
+                 game..enabled=1\n\
+                 game.dirt-rally-2.bogus=3\n\
+                 effect_typo=50\n\
+                 pitch=5\n\
+                 leds=1\n"
+            ),
+        )
+        .unwrap();
+        let (cfg, report) = Config::load_from_with_report(&path);
+        assert_eq!(cfg.intensity, 55, "the good lines still load");
+        assert!(cfg.leds);
+        assert_eq!(report.skipped, 7, "{report:?}");
+        assert_eq!(report.first.as_deref(), Some("bogus_key=7"));
+        let warning = report.warning().unwrap();
+        assert_eq!(warning, "7 unrecognised lines in tf-sim.conf, first: bogus_key=7");
+    }
+
+    /// The daemon's own writer never produces a line its reader skips, so
+    /// a freshly saved config reports clean; and a single skip reads as
+    /// one line, not "1 lines".
+    #[test]
+    fn a_saved_config_reports_no_skips_and_one_skip_reads_singular() {
+        let path = tempdir().join(FILE_NAME);
+        let mut cfg = Config::default();
+        cfg.games.insert("f1".into(), GameConfig { enabled: false, intensity: 70 });
+        cfg.save_to(&path).unwrap();
+        let (_, report) = Config::load_from_with_report(&path);
+        assert_eq!(report, LoadReport::default(), "the writer's own output must parse clean");
+        assert_eq!(report.warning(), None);
+
+        fs::write(&path, format!("{FILE_HEADER}\nintensty=80\n")).unwrap();
+        let (_, report) = Config::load_from_with_report(&path);
+        assert_eq!(
+            report.warning().as_deref(),
+            Some("1 unrecognised line in tf-sim.conf, first: intensty=80")
+        );
+    }
+
+    /// A missing file is a fresh install, not a problem to warn about.
+    #[test]
+    fn a_missing_file_reports_nothing_skipped() {
+        let (_, report) = Config::load_from_with_report(Path::new("/nonexistent-tf-sim.conf"));
+        assert_eq!(report, LoadReport::default());
     }
 
     #[test]

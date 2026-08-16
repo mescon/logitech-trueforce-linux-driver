@@ -180,7 +180,12 @@ want_ffb=$(plan_get ffb)
 want_relay=$(plan_get relay)
 want_tfsim=$(plan_get tfsim)
 want_texture=$(plan_get texture)
-say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-unset} ffb=${want_ffb:-native} relay=${want_relay:-none} tfsim=${want_tfsim:-0} texture=${want_texture:-none}"
+# How the rev strip is mapped while the texture merge drives it: the
+# bridge's own default is the full bar, so only `shift` needs acting on
+# (LOGI_REV_MODE=shift in the bridge's environment, below). The app
+# persists the choice in launch.conf and states it in the plan.
+want_revleds=$(plan_get revleds)
+say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-unset} ffb=${want_ffb:-native} relay=${want_relay:-none} tfsim=${want_tfsim:-0} texture=${want_texture:-none} revleds=${want_revleds:-bar}"
 
 # TrueForce in an SDK title needs the game to reach the wheel's raw HID
 # interface. Set here so nobody has to remember it, and NEVER guessed: on a
@@ -314,9 +319,16 @@ if [ "$want_texture" = "merge" ] && \
 		bridge_bin="$(dirname "$0")/logi-rpm-bridge"
 	fi
 	if [ -n "$bridge_bin" ]; then
-		"$bridge_bin" >>"$LOG" 2>&1 &
+		# The rev-light mapping is the bridge's to apply: bar is its
+		# default, shift is opted into per plan. Set only on the
+		# bridge's own environment, not exported to the game.
+		if [ "$want_revleds" = "shift" ]; then
+			LOGI_REV_MODE=shift "$bridge_bin" >>"$LOG" 2>&1 &
+		else
+			"$bridge_bin" >>"$LOG" 2>&1 &
+		fi
 		rpm_bridge_pid=$!
-		say "started logi-rpm-bridge (pid $rpm_bridge_pid)"
+		say "started logi-rpm-bridge (pid $rpm_bridge_pid, rev lights ${want_revleds:-bar})"
 	else
 		say "logi-rpm-bridge is not installed; the texture merge has no RPM feed"
 	fi

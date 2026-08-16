@@ -163,6 +163,19 @@ pub fn installed_games(roots: &[PathBuf]) -> Vec<SteamGame> {
     games
 }
 
+/// The game's own installation directory named by its manifest
+/// (`steamapps/common/<installdir>`), when both the field and the
+/// directory actually exist. This is the directory `logi-launch` stages
+/// the dinput8 escape proxy into for a texture-merge title, so the Setup
+/// pages resolve it the same way to report the staging state ahead of a
+/// launch.
+pub fn manifest_install_dir(manifest: &Path, steamapps: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(manifest).ok()?;
+    let installdir = text.lines().find_map(|l| vdf_string(l, "installdir"))?;
+    let dir = steamapps.join("common").join(installdir);
+    dir.is_dir().then_some(dir)
+}
+
 /// One installed native game that loads a plugin from its own
 /// installation directory, rather than running in a wine prefix.
 #[derive(Debug, Clone, PartialEq, Eq)]

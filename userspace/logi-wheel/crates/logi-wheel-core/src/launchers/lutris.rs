@@ -62,7 +62,9 @@ pub fn lutris_games(config_home: &Path) -> Vec<DiscoveredGame> {
             GameKind::Wine { prefix } => shim_installed_in(prefix),
             GameKind::Native => false,
         };
-        games.push(DiscoveredGame { name, source: Source::Lutris, kind, shim_installed });
+        // Lutris config stubs name the prefix but not the game's own
+        // install directory.
+        games.push(DiscoveredGame { name, source: Source::Lutris, kind, shim_installed, install_dir: None });
     }
     games.sort_by_key(|g| g.name.to_lowercase());
     games

@@ -137,7 +137,18 @@ fn main() -> ExitCode {
             eprintln!("logi-tf-sim: {msg}\n{USAGE}");
             return ExitCode::FAILURE;
         }
-        Mode::Daemon => daemon::run(&Config::load()),
+        Mode::Daemon => {
+            // The store forgives unknown and unparsable lines per line,
+            // which is right for a hand-edited file, but forgiving is not
+            // the same as silent: a typoed key that loads clean and does
+            // nothing looks exactly like a setting that took. One line,
+            // once, at startup.
+            let (cfg, report) = Config::load_with_report();
+            if let Some(warning) = report.warning() {
+                eprintln!("logi-tf-sim: {warning}");
+            }
+            daemon::run(&cfg)
+        }
         Mode::Version => {
             println!("logi-tf-sim {}", env!("CARGO_PKG_VERSION"));
             Ok(())

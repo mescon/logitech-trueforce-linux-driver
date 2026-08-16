@@ -317,6 +317,21 @@ pub struct App<S: SysfsIo> {
     /// The last-loaded tf-sim configuration: the Setup view's master
     /// line and the per-game cells render from this.
     pub tf_cfg: tfsim::Config,
+    /// The Simulated TrueForce section's config-file warning
+    /// (`tfsim::conf_warning`): the store forgives unknown and unparsable
+    /// lines per line, and this is where a hand-edit that quietly did
+    /// nothing is said out loud. Recomputed with every `tf_reload`.
+    pub tf_conf_warning: Option<String>,
+    /// Where launch.conf lives (`launch::default_path()`); overridable in
+    /// tests, same discipline as `tf_conf`.
+    pub launch_conf: PathBuf,
+    /// The persisted rev-light mode for texture-merge sessions (the `b`
+    /// key on a merge title's card flips it; see `games::RevLeds`).
+    pub rev_leds: games::RevLeds,
+    /// Per-game escape-proxy staging state, parallel to `games`; computed
+    /// by `scan_games` (it reads the filesystem, which the render loop
+    /// must not). Only a texture-merge title's card shows it.
+    pub proxy_states: Vec<logi_wheel_core::helpers::EscapeProxyState>,
     /// The proc root the daemon probe scans (`/proc`); overridable in
     /// tests.
     pub proc_root: PathBuf,
@@ -475,6 +490,10 @@ impl<S: SysfsIo> App<S> {
             tf_bin: logi_wheel_core::helpers::tf_sim_path(),
             tf_conf: tfsim::default_path(),
             tf_cfg: tfsim::Config::load(),
+            tf_conf_warning: tfsim::conf_warning(&tfsim::default_path()),
+            launch_conf: logi_wheel_core::launch::default_path(),
+            rev_leds: logi_wheel_core::launch::rev_leds(),
+            proxy_states: Vec::new(),
             proc_root: PathBuf::from("/proc"),
             tf_daemon: false,
             tf_intensity_edit: None,
@@ -1403,6 +1422,20 @@ impl<S: SysfsIo> App<S> {
         let found = launchers::discover(&home);
         self.games = found.iter().filter(|&g| launchers::keep_for_setup(g)).cloned().collect();
         self.addable = found.iter().filter(|&g| launchers::is_addable(g)).cloned().collect();
+        // The escape-proxy staging state per game, computed here rather
+        // than at render time (it reads files, and the draw loop runs at
+        // up to 30 Hz). Only a texture-merge title's card shows it.
+        let master = logi_wheel_core::helpers::proxy_master_path();
+        self.proxy_states = self
+            .games
+            .iter()
+            .map(|g| {
+                logi_wheel_core::helpers::escape_proxy_state(
+                    master.as_deref(),
+                    g.install_dir.as_deref(),
+                )
+            })
+            .collect();
         self.games_scanned = true;
         if self.game_idx >= self.games.len() {
             self.game_idx = self.games.len().saturating_sub(1);
@@ -1518,6 +1551,32 @@ impl<S: SysfsIo> App<S> {
             .map(|_| games::LAUNCH_WRAPPER)
     }
 
+    /// Whether the selected game's plan on this wheel grants the kernel
+    /// texture merge: the games whose card shows the rev-light style and
+    /// the escape-proxy staging state, and the only place the `b` toggle
+    /// acts.
+    pub fn selected_game_merges_texture(&self) -> bool {
+        self.selected_game()
+            .and_then(|g| games::match_title(&g.name))
+            .map(|c| games::LaunchPlan::for_game(c, self.wheel_caps(), false).texture_merge)
+            .unwrap_or(false)
+    }
+
+    /// Flip the rev-light style for texture-merge sessions (full bar to
+    /// dashboard band and back), persist it in launch.conf, and reload
+    /// from the file so the card shows what was actually stored.
+    fn toggle_rev_leds(&mut self) {
+        let target = match self.rev_leds {
+            games::RevLeds::Bar => games::RevLeds::Shift,
+            games::RevLeds::Shift => games::RevLeds::Bar,
+        };
+        self.status = match logi_wheel_core::launch::set_rev_leds_in(&self.launch_conf, target) {
+            Ok(()) => format!("rev lights during the texture merge: {}", target.label()),
+            Err(e) => format!("launch.conf: {e}"),
+        };
+        self.rev_leds = logi_wheel_core::launch::rev_leds_from(&self.launch_conf);
+    }
+
     /// Take the shim run the last key press queued, if any; see
     /// `pending_shim`.
     pub fn take_pending_shim(&mut self) -> Option<(Vec<String>, &'static str)> {
@@ -1559,9 +1618,11 @@ impl<S: SysfsIo> App<S> {
     }
 
     /// Reload tf-sim.conf into `tf_cfg` (after every write; tests that
-    /// point `tf_conf` elsewhere call it directly).
+    /// point `tf_conf` elsewhere call it directly), and refresh the
+    /// section's unrecognised-line warning from the same file.
     pub fn tf_reload(&mut self) {
         self.tf_cfg = tfsim::Config::load_from(&self.tf_conf);
+        self.tf_conf_warning = tfsim::conf_warning(&self.tf_conf);
     }
 
     /// Re-probe whether the logi-tf-sim daemon is running (a proc comm
@@ -2755,6 +2816,19 @@ impl<S: SysfsIo> App<S> {
                 Char('g') if inside && section == SetupSection::Games => {
                     self.tf_toggle_selected_game()
                 }
+                // The rev-light style for texture-merge sessions. The
+                // setting is global (one launch.conf key), but it only
+                // does anything where the merge runs, so the key lives on
+                // a merge title's card and says so anywhere else.
+                Char('b') if inside && section == SetupSection::Games => {
+                    if self.selected_game_merges_texture() {
+                        self.toggle_rev_leds();
+                    } else {
+                        self.status = "rev-light style applies to games with the texture merge \
+                                       (AC EVO on a direct-drive wheel)"
+                            .to_string();
+                    }
+                }
                 Char('a') if inside && section == SetupSection::Games => {
                     self.add_game = Some(AddGamePicker { idx: 0, manual: None });
                 }
@@ -3783,6 +3857,7 @@ mod tests {
             source: launchers::Source::Steam,
             kind: launchers::GameKind::Wine { prefix: PathBuf::from(prefix) },
             shim_installed,
+            install_dir: None,
         }
     }
 
@@ -4698,6 +4773,57 @@ mod tests {
         a.tf_reload();
         a.tf_bin = None;
         a
+    }
+
+    /// `b` on a texture-merge title's card flips the rev-light style and
+    /// persists it in launch.conf; on any other card it only explains
+    /// itself, so the global setting cannot be flipped by accident from a
+    /// card it does nothing for.
+    #[test]
+    fn setup_b_toggles_the_rev_light_style_on_a_merge_title_only() {
+        use crossterm::event::KeyCode;
+        let mut a = tf_setup_app();
+        a.launch_conf = a.tf_conf.with_file_name("launch.conf");
+        a.rev_leds = logi_wheel_core::launch::rev_leds_from(&a.launch_conf);
+        a.games = vec![wine_game("Assetto Corsa EVO", "/pfx/evo", false)];
+        a.game_idx = 0;
+        // The merge is granted on a direct-drive wheel. The fake-sysfs
+        // device cannot name a model (whose caps would be the cautious
+        // no-SDK answer), so describe the general case instead, which is
+        // direct drive.
+        a.no_wheel = true;
+        enter_setup(&mut a, SetupSection::Games);
+        assert!(a.selected_game_merges_texture());
+        assert_eq!(a.rev_leds, games::RevLeds::Bar);
+
+        a.on_key(KeyCode::Char('b'));
+        assert_eq!(a.rev_leds, games::RevLeds::Shift);
+        let text = std::fs::read_to_string(&a.launch_conf).unwrap();
+        assert!(text.contains("revleds=shift"), "persisted: {text}");
+        a.on_key(KeyCode::Char('b'));
+        assert_eq!(a.rev_leds, games::RevLeds::Bar);
+
+        // A card without the merge: the key changes nothing and says why.
+        a.games = vec![wine_game("Wreckfest", "/pfx/wreckfest", false)];
+        assert!(!a.selected_game_merges_texture());
+        a.on_key(KeyCode::Char('b'));
+        assert_eq!(a.rev_leds, games::RevLeds::Bar);
+        assert!(a.status.contains("texture merge"), "{}", a.status);
+    }
+
+    /// The Simulated TrueForce section's config warning tracks the file
+    /// through `tf_reload`, and quotes the daemon's own sentence.
+    #[test]
+    fn tf_conf_warning_follows_the_file() {
+        let mut a = tf_setup_app();
+        assert_eq!(a.tf_conf_warning, None, "a missing file warns about nothing");
+        std::fs::write(&a.tf_conf, "intensty=80\nintensity=40\n").unwrap();
+        a.tf_reload();
+        assert_eq!(
+            a.tf_conf_warning.as_deref(),
+            Some("1 unrecognised line in tf-sim.conf, first: intensty=80")
+        );
+        assert_eq!(a.tf_cfg.intensity, 40, "the good line still loads");
     }
 
     #[test]

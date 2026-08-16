@@ -508,6 +508,7 @@ built-in plan asks for). To force something off, state it: `texture=none`,
 | `relay` | `acc`, `ac-evo`, `assetto`, `iracing`, `raceroom`, `rf2`, `lmu`, `none` | which decoder the in-prefix telemetry relay should use |
 | `tfsim` | `1`, `0` | run `logi-tf-sim`. Set `0` for a game whose own TrueForce already reaches your wheel |
 | `texture` | `merge`, `none` | mix the driver's engine-note texture into the game's own TrueForce on the wheel. `merge` makes `logi-launch` stage the dinput8 escape proxy into the game's directory, start `logi-rpm-bridge` and switch `wheel_tf_merge` on, undoing all of it when the game exits. The same chain also lights the rev strip from the game's own telemetry: the proxy relays live rpm, first-shift-light rpm and redline, and `logi-rpm-bridge` drives `wheel_rev_level` with them (full bar by default, `LOGI_REV_MODE=shift` for the dash band). Only does anything for a direct-drive wheel in an SDK title with the TrueForce files installed |
+| `revleds` | `bar`, `shift` | how `logi-rpm-bridge` maps the rev strip while `texture=merge` drives it: `bar` (the default) lights LED 1 as soon as the engine turns and all 10 at the limiter, `shift` is the dash band (dark below the car's first shift light, level 1 exactly there). The apps persist this choice in `~/.config/logi-wheel/launch.conf` and it shows on a merge title's Setup card; a games.conf line overrides it per game like any other key |
 
 A line that works for you is also exactly the report needed to add the game
 properly, so please open an issue with it.

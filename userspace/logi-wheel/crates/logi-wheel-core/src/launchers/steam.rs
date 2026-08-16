@@ -6,7 +6,7 @@
 //! the aggregator can show a complete library.
 
 use super::{DiscoveredGame, GameKind, Source};
-use crate::steam::{is_runtime_tooling, parse_manifest, shim_installed_in};
+use crate::steam::{is_runtime_tooling, manifest_install_dir, parse_manifest, shim_installed_in};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -40,7 +40,10 @@ pub fn steam_games(roots: &[PathBuf]) -> Vec<DiscoveredGame> {
                 GameKind::Wine { prefix } => shim_installed_in(prefix),
                 GameKind::Native => false,
             };
-            games.push(DiscoveredGame { name, source: Source::Steam, kind, shim_installed });
+            // The game's own install directory, for the escape-proxy
+            // staging state on a texture-merge title's card.
+            let install_dir = manifest_install_dir(&path, &steamapps);
+            games.push(DiscoveredGame { name, source: Source::Steam, kind, shim_installed, install_dir });
         }
     }
     games.sort_by_key(|g| g.name.to_lowercase());
@@ -126,5 +129,31 @@ mod tests {
         assert_eq!(ets2.kind, GameKind::Native);
         assert!(!ets2.shim_installed);
         assert_eq!(ets2.prefix(), None);
+    }
+
+    /// `install_dir` is filled only when the manifest names an installdir
+    /// AND that directory exists on disk; a manifest without one (or with
+    /// a directory that is gone) reports `None` rather than a path nothing
+    /// can be staged into.
+    #[test]
+    fn steam_games_reports_the_install_dir_when_it_exists() {
+        let (_tree, root) = fixture();
+        let steamapps = root.join("steamapps");
+        write(
+            &steamapps.join("appmanifest_200.acf"),
+            "\"AppState\"\n{\n\t\"appid\"\t\t\"200\"\n\t\"name\"\t\t\"Assetto Corsa EVO\"\n\t\"installdir\"\t\t\"Assetto Corsa EVO\"\n}\n",
+        );
+        fs::create_dir_all(steamapps.join("compatdata").join("200").join("pfx")).unwrap();
+        fs::create_dir_all(steamapps.join("common").join("Assetto Corsa EVO")).unwrap();
+
+        let games = steam_games(std::slice::from_ref(&root));
+        let evo = games.iter().find(|g| g.name == "Assetto Corsa EVO").unwrap();
+        assert_eq!(
+            evo.install_dir.as_deref(),
+            Some(steamapps.join("common").join("Assetto Corsa EVO").as_path())
+        );
+        // The fixture's other two manifests carry no installdir at all.
+        let acc = games.iter().find(|g| g.name == "Assetto Corsa Competizione").unwrap();
+        assert_eq!(acc.install_dir, None);
     }
 }

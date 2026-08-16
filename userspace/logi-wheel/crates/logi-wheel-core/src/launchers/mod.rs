@@ -51,6 +51,15 @@ pub struct DiscoveredGame {
     /// wine prefix. Always `false` for [`GameKind::Native`]: the shim is
     /// Wine-only, there is no prefix to install it into.
     pub shim_installed: bool,
+    /// The game's own installation directory (Steam's
+    /// `steamapps/common/<installdir>`), when the launcher reports one.
+    /// This is where `logi-launch` stages the dinput8 escape proxy for a
+    /// texture-merge title, so the Setup cards can say whether it is
+    /// staged (see [`crate::helpers::escape_proxy_state`]). `None` from
+    /// the Lutris/Heroic backends and for manual entries: their layouts
+    /// do not name one, and the wrapper finds the real directory from the
+    /// launch command at launch time anyway.
+    pub install_dir: Option<PathBuf>,
 }
 
 impl DiscoveredGame {
@@ -203,12 +212,13 @@ mod tests {
             source,
             kind: GameKind::Wine { prefix: PathBuf::from(format!("/pfx/{name}")) },
             shim_installed,
+            install_dir: None,
         }
     }
 
     /// A native Linux game (no wine prefix, shim never applies).
     fn native_game(name: &str, source: Source) -> DiscoveredGame {
-        DiscoveredGame { name: name.to_string(), source, kind: GameKind::Native, shim_installed: false }
+        DiscoveredGame { name: name.to_string(), source, kind: GameKind::Native, shim_installed: false, install_dir: None }
     }
 
     #[test]

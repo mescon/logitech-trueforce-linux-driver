@@ -278,3 +278,44 @@ fn wheel_key_absent_means_auto_on_both_sides() {
     assert_eq!(Config::load_from(&path).wheel, WheelChoice::Auto);
     assert_eq!(logi_wheel_core::tfsim::Config::load_from(&path).wheel, WheelChoice::Auto);
 }
+
+/// The unrecognised-line count must agree between the daemon's loader
+/// (`LoadReport`) and the front-ends' scan (`tfsim::unrecognised_lines`),
+/// or the app warns about a file the daemon reads clean, or stays quiet
+/// about one it does not.
+#[test]
+fn unrecognised_line_counts_agree_between_daemon_and_frontends() {
+    let tree = TempTree::new();
+    let path = tree.path().join("tf-sim.conf");
+
+    // Everything the daemon's writer emits parses clean on both sides.
+    full_config().save_to(&path).unwrap();
+    let (_, report) = Config::load_from_with_report(&path);
+    assert_eq!((report.skipped, report.first.clone()), (0, None));
+    assert_eq!(logi_wheel_core::tfsim::unrecognised_lines(&path), (0, None));
+
+    // A mixed file: opaque-to-the-apps keys (ports, cylinders, the G923
+    // sign flag) beside genuine garbage of each kind the parser refuses.
+    fs::write(
+        &path,
+        "# comment\n\
+         port.codemasters=20777\n\
+         cylinders=8\n\
+         g923.ffb_invert=0\n\
+         intensty=80\n\
+         pitch=5\n\
+         not a line\n\
+         game.f1.bogus=1\n\
+         effect_typo=50\n",
+    )
+    .unwrap();
+    let (_, report) = Config::load_from_with_report(&path);
+    let mirrored = logi_wheel_core::tfsim::unrecognised_lines(&path);
+    assert_eq!((report.skipped, report.first), (mirrored.0, mirrored.1.clone()));
+    assert_eq!(mirrored, (5, Some("intensty=80".to_string())));
+
+    // And the two warning sentences are the same text, so the app and the
+    // daemon's log name one problem one way.
+    let (_, report) = Config::load_from_with_report(&path);
+    assert_eq!(report.warning(), logi_wheel_core::tfsim::conf_warning(&path));
+}

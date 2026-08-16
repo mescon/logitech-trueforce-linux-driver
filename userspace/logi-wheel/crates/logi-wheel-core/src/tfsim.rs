@@ -487,6 +487,83 @@ impl Config {
     }
 }
 
+/// Whether the DAEMON's parser would consume this `key=value` pair.
+///
+/// Deliberately wider than [`Config::load_from`] above: the front-ends
+/// only model the keys they edit and treat the rest (`port.*`,
+/// `cylinders`, `g923.ffb_invert`) as opaque, but "opaque to the apps" is
+/// not "unrecognised", and a warning that flagged every port line would
+/// cry wolf. So this mirrors the daemon's full grammar, the same way the
+/// rest of this module mirrors its config (the crates cannot link; see
+/// the module doc), and the daemon's `frontend_compat` test pins the two
+/// against each other.
+fn daemon_recognises(key: &str, raw: &str) -> bool {
+    match key {
+        "enabled" | "leds" | "effects" | "g923.ffb_invert" => parse_bool(raw).is_some(),
+        "intensity" => parse_percent(raw).is_some(),
+        "wheel" => WheelChoice::parse(raw).is_some(),
+        "pitch" => raw.parse::<u8>().is_ok_and(|v| (10..=200u16).contains(&u16::from(v))),
+        "cylinders" => raw.parse::<u8>().is_ok_and(|v| (1..=16).contains(&v)),
+        "port.codemasters" | "port.pcars" | "port.beamng" | "port.relay" => {
+            raw.parse::<u16>().is_ok()
+        }
+        _ => {
+            if let Some(name) = key.strip_prefix("effect_") {
+                return effect_by_key(name).is_some() && parse_percent(raw).is_some();
+            }
+            let Some(rest) = key.strip_prefix("game.") else { return false };
+            let Some((id, field)) = rest.rsplit_once('.') else { return false };
+            if id.is_empty() {
+                return false;
+            }
+            match field {
+                "enabled" => parse_bool(raw).is_some(),
+                "intensity" => parse_percent(raw).is_some(),
+                _ => false,
+            }
+        }
+    }
+}
+
+/// The non-comment lines in the file at `path` that the daemon's parser
+/// would skip (unknown keys and unparsable or out-of-range values alike):
+/// the count and the first such line's text. A missing or unreadable file
+/// is `(0, None)`, the daemon's own answer for it.
+pub fn unrecognised_lines(path: &Path) -> (usize, Option<String>) {
+    let Ok(text) = fs::read_to_string(path) else { return (0, None) };
+    let mut skipped = 0;
+    let mut first = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let used = line
+            .split_once('=')
+            .is_some_and(|(key, raw)| daemon_recognises(key.trim(), raw.trim()));
+        if !used {
+            skipped += 1;
+            if first.is_none() {
+                first = Some(line.to_string());
+            }
+        }
+    }
+    (skipped, first)
+}
+
+/// The warning the Setup pages show beside the Simulated TrueForce
+/// section, or `None` while every line of the file parses. The same text
+/// the daemon logs at its own startup, so the app and the log name one
+/// problem one way.
+pub fn conf_warning(path: &Path) -> Option<String> {
+    let (skipped, first) = unrecognised_lines(path);
+    let first = first?;
+    Some(format!(
+        "{skipped} unrecognised line{} in {FILE_NAME}, first: {first}",
+        if skipped == 1 { "" } else { "s" }
+    ))
+}
+
 /// Rewrite exactly one `key=value` line in the file at `path`, preserving
 /// every other line (unknown keys, the `port.*` settings, comments, blank
 /// lines) verbatim. The first line carrying `key` is replaced in place and
@@ -836,6 +913,48 @@ mod tests {
         assert!(cfg.enabled, "unparsable bool keeps the default");
         assert_eq!(cfg.pitch_pct, DEFAULT_PITCH, "pitch below 10 is ignored");
         assert!(cfg.games.is_empty(), "empty id and out-of-range intensity are ignored");
+    }
+
+    /// The warning scan must speak the DAEMON's grammar, not the
+    /// front-ends' subset: the keys the apps treat as opaque (`port.*`,
+    /// `cylinders`, `g923.ffb_invert`) are all recognised, while a genuine
+    /// typo is counted and quoted. Pinned against the daemon's own count
+    /// by its `frontend_compat` test.
+    #[test]
+    fn unrecognised_scan_accepts_the_daemons_full_grammar() {
+        let tree = TempTree::new();
+        let path = tree.path().join(FILE_NAME);
+        fs::write(
+            &path,
+            format!(
+                "{FILE_HEADER}\n\
+                 enabled=1\nintensity=30\npitch=35\ncylinders=8\nwheel=dd\n\
+                 leds=1\neffects=0\neffect_engine=90\n\
+                 port.codemasters=20777\nport.pcars=5606\nport.beamng=4444\nport.relay=20780\n\
+                 g923.ffb_invert=1\ngame.f1.enabled=0\ngame.f1.intensity=70\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(unrecognised_lines(&path), (0, None), "every daemon key is recognised");
+        assert_eq!(conf_warning(&path), None);
+
+        fs::write(
+            &path,
+            format!("{FILE_HEADER}\nintensty=80\npitch=5\ngame.f1.bogus=1\nleds=1\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            unrecognised_lines(&path),
+            (3, Some("intensty=80".to_string())),
+            "typos, out-of-range values and unknown per-game fields all count"
+        );
+        assert_eq!(
+            conf_warning(&path).as_deref(),
+            Some("3 unrecognised lines in tf-sim.conf, first: intensty=80")
+        );
+
+        assert_eq!(unrecognised_lines(Path::new("/nonexistent-tf-sim.conf")), (0, None));
+        assert_eq!(conf_warning(Path::new("/nonexistent-tf-sim.conf")), None);
     }
 
     #[test]

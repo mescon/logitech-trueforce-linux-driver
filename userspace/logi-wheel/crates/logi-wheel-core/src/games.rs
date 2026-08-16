@@ -273,6 +273,61 @@ pub const LAUNCH_LOGI_FFB: &str = "logi-ffb %command%";
 /// staged SDK DLLs drive.
 pub const LAUNCH_HIDRAW: &str = "PROTON_ENABLE_HIDRAW=1 %command%";
 
+/// How the rev strip is mapped while the kernel texture merge is driving
+/// it: `logi-rpm-bridge`'s two mappings, chosen per session by
+/// `logi-launch` from the plan's `revleds=` key.
+///
+/// The bridge's default is the full bar (LED 1 as soon as the engine
+/// turns, all ten at the limiter), so `Bar` needs no environment variable;
+/// `Shift` is the `LOGI_REV_MODE=shift` dashboard mapping, dark below the
+/// car's own first-shift-light rpm, exactly like G HUB's dash. The user's
+/// choice persists in `launch.conf` (see [`crate::launch`]) and is
+/// threaded into a plan by its builder, the same way
+/// [`LaunchPlan::hidraw_scope`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RevLeds {
+    /// The full-range rev bar: LED 1 as soon as the engine turns, all ten
+    /// at the limiter. The bridge's own default.
+    #[default]
+    Bar,
+    /// G HUB's dash mapping: dark below the car's first-shift-light rpm,
+    /// level 1 exactly there, all ten at the limiter.
+    Shift,
+}
+
+impl RevLeds {
+    /// The stored / wire spelling (`launch.conf` and the plan's `revleds=`
+    /// key both carry this).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RevLeds::Bar => "bar",
+            RevLeds::Shift => "shift",
+        }
+    }
+
+    /// Parse the stored spelling; anything else is `None` so a garbled
+    /// config line keeps the previous value rather than silently becoming
+    /// a default.
+    pub fn parse(raw: &str) -> Option<RevLeds> {
+        match raw.trim() {
+            "bar" => Some(RevLeds::Bar),
+            "shift" => Some(RevLeds::Shift),
+            _ => None,
+        }
+    }
+
+    /// The label the apps show.
+    pub fn label(self) -> &'static str {
+        match self {
+            RevLeds::Bar => "Full bar",
+            RevLeds::Shift => "Dashboard band",
+        }
+    }
+
+    /// Both choices, in the order a picker should list them.
+    pub const ALL: [RevLeds; 2] = [RevLeds::Bar, RevLeds::Shift];
+}
+
 /// The wheel-side half of a setup recipe.
 ///
 /// A recipe is not a property of the game alone, and treating it as one was
@@ -549,7 +604,10 @@ pub const GAMES: &[GameCompat] = &[
         // silence. Competizione publishes the same shared memory as Assetto
         // Corsa, byte for byte, so this needed no new decoder.
         simulated_tf: SimTf::LiveNow("acc"),
-        setup: "Install the TrueForce shim once; launch options `logi-launch %command%` (it turns raw HID on and stages everything this game needs); turn Steam Input off.",
+        // The last sentence is the answer to "why does AC EVO's card say
+        // texture merge and this one does not": the merge is gated per
+        // title in `LaunchPlan::for_game`, and ACC is not in the gate.
+        setup: "Install the TrueForce shim once; launch options `logi-launch %command%` (it turns raw HID on and stages everything this game needs); turn Steam Input off. No engine-note texture merge here: ACC produces its own TrueForce audio, so the merge is not wired for it.",
         confidence: Confidence::Verified,
     },
     GameCompat {
@@ -916,6 +974,15 @@ pub struct LaunchPlan {
     /// wheel that cannot receive the SDK stream there is nothing to merge
     /// into.
     pub texture_merge: bool,
+    /// How the rev strip is mapped while the texture merge drives it (the
+    /// bridge's `bar` / `shift` mappings; see [`RevLeds`]). Defaults to
+    /// [`RevLeds::Bar`], the bridge's own default; plan builders thread
+    /// the persisted choice (`crate::launch::rev_leds`) in, the same way
+    /// they fill [`hidraw_scope`](Self::hidraw_scope), so [`for_game`]
+    /// itself stays a pure function of (game, wheel).
+    ///
+    /// [`for_game`]: Self::for_game
+    pub rev_leds: RevLeds,
     /// The `PROTON_ENABLE_HIDRAW` value to use when [`Self::hidraw`] is on:
     /// `0xVID/0xPID` naming the attached wheel.
     ///
@@ -1036,6 +1103,12 @@ impl LaunchPlan {
         }
         if self.texture_merge {
             out.push("texture=merge".into());
+            // Beside the merge because it configures the merge's bridge:
+            // `logi-launch` exports LOGI_REV_MODE=shift to logi-rpm-bridge
+            // when this says shift, and `bar` is the bridge's own default.
+            // Stated even then, so the effective mode is readable off the
+            // plan rather than inferred from an absence.
+            out.push(format!("revleds={}", self.rev_leds.as_str()));
         }
         if self.ffb_proxy {
             out.push("ffb=proxy".into());
@@ -1071,11 +1144,14 @@ impl LaunchPlan {
             None => {}
         }
         if self.texture_merge {
-            parts.push(
+            parts.push(format!(
                 "merges the engine-note texture into the game's own TrueForce on the wheel \
-                 and drives the rev lights from the game's telemetry"
-                    .into(),
-            );
+                 and drives the rev lights from the game's telemetry {}",
+                match self.rev_leds {
+                    RevLeds::Bar => "as a full bar",
+                    RevLeds::Shift => "as the dashboard band (dark until the car's first shift light)",
+                }
+            ));
         }
         if self.ffb_proxy {
             parts.push("runs the game through logi-ffb for force feedback".into());
@@ -1284,6 +1360,60 @@ mod tests {
         // must not inherit AC EVO's recipe by accident.
         let acc_dd = LaunchPlan::for_game(acc(), DD, false);
         assert!(!acc_dd.texture_merge, "only AC EVO's RPM relay is validated");
+    }
+
+    /// The rev-light mode rides the texture merge: stated on a merge plan
+    /// in both spellings (so the effective mode is readable off the plan),
+    /// absent everywhere else (it configures the merge's bridge, which
+    /// only merge sessions start).
+    #[test]
+    fn the_rev_light_mode_is_stated_exactly_where_the_merge_is() {
+        let evo = compat_for_appid(3058630).expect("Assetto Corsa EVO is in the registry");
+
+        let mut plan = LaunchPlan::for_game(evo, DD, false);
+        assert_eq!(plan.rev_leds, RevLeds::Bar, "the bridge's own default");
+        assert!(
+            plan.lines().contains(&"revleds=bar".to_string()),
+            "the default is stated, not inferred from an absence: {:?}",
+            plan.lines()
+        );
+        assert!(plan.describe().contains("as a full bar"), "{}", plan.describe());
+
+        plan.rev_leds = RevLeds::Shift;
+        assert!(plan.lines().contains(&"revleds=shift".to_string()), "{:?}", plan.lines());
+        assert!(plan.describe().contains("dashboard band"), "{}", plan.describe());
+
+        // No merge, no bridge, no key: a G923 plan for the same title.
+        let classic = LaunchPlan::for_game(evo, G923, false);
+        assert!(
+            !classic.lines().iter().any(|l| l.starts_with("revleds=")),
+            "the key configures the merge's bridge, which this session never starts: {:?}",
+            classic.lines()
+        );
+    }
+
+    /// The stored spelling round-trips, and garbage parses to `None` so a
+    /// hand-edited `launch.conf` line keeps the previous value.
+    #[test]
+    fn rev_leds_round_trips_its_stored_spelling() {
+        for mode in RevLeds::ALL {
+            assert_eq!(RevLeds::parse(mode.as_str()), Some(mode));
+            assert!(!mode.label().is_empty());
+        }
+        assert_eq!(RevLeds::parse(" shift "), Some(RevLeds::Shift), "whitespace tolerated");
+        assert_eq!(RevLeds::parse("dashboard"), None);
+        assert_eq!(RevLeds::parse(""), None);
+    }
+
+    /// ACC's card must say why it has no texture merge while AC EVO's
+    /// does, or the difference reads as an oversight.
+    #[test]
+    fn acc_explains_why_it_has_no_texture_merge() {
+        assert!(
+            acc().setup.contains("the merge is not wired for it"),
+            "ACC's setup sentence must carry the explanation: {}",
+            acc().setup
+        );
     }
 
     /// An unknown title still gets the daemon: the UDP sims need nothing

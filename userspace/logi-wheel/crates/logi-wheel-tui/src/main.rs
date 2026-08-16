@@ -407,8 +407,10 @@ fn launch_plan(
     let mut plan = games::LaunchPlan::for_game(game, caps, ambiguous);
     // The scope derivation lives in the core beside the plan itself
     // (`games::hidraw_scope_for`), so this printer, the GUI's Setup page
-    // and the TUI's game cards all name the same wheel the same way.
+    // and the TUI's game cards all name the same wheel the same way. The
+    // rev-light mode is threaded in the same way, from launch.conf.
     plan.hidraw_scope = games::hidraw_scope_for(&wheels, caps);
+    plan.rev_leds = logi_wheel_core::launch::rev_leds();
     for line in plan.lines() {
         println!("{line}");
     }
@@ -430,6 +432,7 @@ fn launch_plan_list() -> Result<(), Box<dyn std::error::Error>> {
     let caps =
         wheels.first().map(|d| d.wheel_caps()).unwrap_or_else(games::WheelCaps::assumed);
     let scope = games::hidraw_scope_for(&wheels, caps);
+    let rev_leds = logi_wheel_core::launch::rev_leds();
     println!("# for a {} wheel", if caps.sdk_trueforce { "direct-drive" } else { "classic" });
     println!("{:<28} {:<9} {:<34} settings", "--game", "appid", "title");
     for g in games::GAMES {
@@ -437,6 +440,7 @@ fn launch_plan_list() -> Result<(), Box<dyn std::error::Error>> {
         let appid = games::appid_for(g.name).map(|a| a.to_string()).unwrap_or_else(|| "-".into());
         let mut plan = games::LaunchPlan::for_game(g, caps, false);
         plan.hidraw_scope = scope.clone();
+        plan.rev_leds = rev_leds;
         // The key=value settings without the prose: note= lines carry
         // whole sentences, which belong to `--launch-plan`'s full output
         // rather than to a table cell.

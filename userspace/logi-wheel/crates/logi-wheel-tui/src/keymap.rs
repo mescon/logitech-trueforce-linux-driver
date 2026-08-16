@@ -279,6 +279,7 @@ fn setup_section<S: SysfsIo>(app: &App<S>) -> Section {
                 keys.push(bfs("i", "install the SDK shim", "install"));
                 keys.push(bfs("u", "remove the SDK shim", "remove"));
                 keys.push(bfs("g", "toggle simulated TF for the game", "sim TF"));
+                keys.push(bfs("b", "rev-light style for the texture merge", "rev lights"));
                 keys.push(bfs("a", "add an unrecognised Wine game", "add game"));
                 keys.push(bfs("Esc/Left", "back to the sections", "back"));
             }
