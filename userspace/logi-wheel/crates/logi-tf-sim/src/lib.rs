@@ -19,6 +19,8 @@
 //! - [`g923`]: TrueForce for the Logitech G923, which libtrueforce does not
 //!   recognize; discovery, packet building, and the FFB-mirror/idle state
 //!   machine live here instead.
+//! - [`lease`]: the per-wheel streaming lease, so two of our own streamers
+//!   never take turns on the wheel's one-packet-per-millisecond endpoint.
 //! - [`leds`]: the rev-display feeder (`wheel_rev_level` via sysfs).
 //! - [`relay`]: the shared-memory telemetry relay wire format, for sims
 //!   (iRacing, rF2/LMU, ...) that only publish telemetry through a
@@ -39,6 +41,7 @@ pub mod error;
 pub mod f1;
 pub mod ffb_keepalive;
 pub mod g923;
+pub mod lease;
 pub mod leds;
 pub mod pcars;
 pub use logi_wheel_core::relay;

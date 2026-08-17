@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::config::{Config, DEFAULT_INTENSITY};
-use crate::daemon::open_wheel_stream;
+use crate::daemon::{open_wheel_stream, OpenWheel};
 use crate::error::{Error, Result};
 use crate::synth::{EngineSynth, SAMPLES_PER_MS};
 
@@ -42,16 +42,18 @@ pub fn run(cfg: &Config, pitch_override_pct: Option<u8>, stop: &AtomicBool) -> R
     let pitch = f32::from(pitch_pct) / 100.0;
 
     eprintln!("logi-tf-sim: sweep: {SWEEP_SECS} s synthetic RPM sweep at intensity {intensity_pct}%, pitch {pitch_pct}%");
-    eprintln!("logi-tf-sim: sweep: the wheel WILL produce haptic force; hold the rim");
-    for n in (1..=3u32).rev() {
-        if stop.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        eprintln!("logi-tf-sim: sweep: starting in {n}...");
-        thread::sleep(Duration::from_secs(1));
-    }
 
-    let stream_probe = open_wheel_stream(cfg)?;
+    // Before the countdown, not after it, for two reasons.
+    //
+    // Opening takes the wheel's streaming lease, so a sweep fired while the
+    // daemon (or another sweep) is streaming refuses here with
+    // `Error::Busy`, naming the holder, instead of taking turns with it on
+    // an endpoint that carries one packet per millisecond. Asking first
+    // means the refusal arrives before anyone is told to hold the rim, and
+    // means the lease cannot be taken by somebody else during the three
+    // seconds we spend counting. The lease lives as long as `_lease` does,
+    // which is the whole sweep.
+    let OpenWheel { stream: stream_probe, lease: _lease, .. } = open_wheel_stream(cfg)?;
     if !stream_probe.is_stabilised() {
         // Refuse rather than warn. This is the one code path whose entire
         // purpose is to drive the wheel because somebody asked it to, and
@@ -63,6 +65,15 @@ pub fn run(cfg: &Config, pitch_override_pct: Option<u8>, stop: &AtomicBool) -> R
         drop(stream_probe);
         return Err(Error::Unstabilised);
     }
+    eprintln!("logi-tf-sim: sweep: the wheel WILL produce haptic force; hold the rim");
+    for n in (1..=3u32).rev() {
+        if stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        eprintln!("logi-tf-sim: sweep: starting in {n}...");
+        thread::sleep(Duration::from_secs(1));
+    }
+
     let mut stream = stream_probe;
     let mut synth = EngineSynth::new();
     let mut samples = Vec::with_capacity(CHUNK_MS * SAMPLES_PER_MS);

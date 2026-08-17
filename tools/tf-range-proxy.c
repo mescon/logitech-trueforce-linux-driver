@@ -232,10 +232,19 @@ __declspec(dllexport) int logiWheelGetOperatingRangeBoundsRadians(int index,
  * the direct-drive wheels take. What was missing was the game's own data.
  *
  * So: every call below is forwarded to Logitech's library exactly as before
- * (direct-drive wheels see no change whatsoever), and the samples are
- * additionally copied to logi-tf-sim over localhost UDP, which streams them
- * to the wheel's interface-2 transport. If nothing is listening the sends
- * fail silently and the game is unaffected.
+ * (direct-drive wheels see no change whatsoever), and on a G923 the samples
+ * are additionally copied to logi-tf-sim over localhost UDP, which streams
+ * them to the wheel's transport. If nothing is listening the sends fail
+ * silently and the game is unaffected.
+ *
+ * "On a G923" is a gate, not a description of who happens to benefit. On a
+ * direct-drive wheel Logitech's library streams these samples itself, so
+ * relaying them to logi-tf-sim as well puts TWO writers on an endpoint that
+ * carries one packet per millisecond: they do not share it, they take turns,
+ * and the motor is square-modulated at 500 Hz. That is a real reported buzz,
+ * root-caused on the wire, and it was reachable here because the copy was
+ * unconditional while the comment above described it as a G923 arrangement.
+ * See [`tf_capture_enabled`] for how the wheel is told apart.
  *
  * Wire format: userspace/logi-wheel/crates/logi-wheel-core/src/tfstream.rs.
  * That module owns the layout and its golden-bytes test; the constants here
@@ -259,6 +268,75 @@ typedef char tf_layout_assert[
 static SOCKET tf_sock = INVALID_SOCKET;
 static struct sockaddr_in tf_addr;
 
+/*
+ * Whether a wheel of each family is attached, by the sysfs attribute only
+ * that family has: the direct-drive driver publishes wheel_range, the
+ * classic (G923) engine publishes range and no wheel_* namespace at all.
+ * Both are read through the same Z: view of /sys the range getters use.
+ */
+static void wheels_present(int *dd, int *classic)
+{
+	WIN32_FIND_DATAA fd;
+	HANDLE h;
+	char path[MAX_PATH + 64];
+
+	*dd = 0;
+	*classic = 0;
+	h = FindFirstFileA(SYSFS_GLOB, &fd);
+	if (h == INVALID_HANDLE_VALUE)
+		return;
+	do {
+		if (fd.cFileName[0] == '.')
+			continue;
+		snprintf(path, sizeof(path),
+			 "Z:\\sys\\class\\hidraw\\%s\\device\\wheel_range",
+			 fd.cFileName);
+		if (read_int_file(path) > 0) {
+			*dd = 1;
+			continue;
+		}
+		snprintf(path, sizeof(path),
+			 "Z:\\sys\\class\\hidraw\\%s\\device\\range",
+			 fd.cFileName);
+		if (read_int_file(path) > 0)
+			*classic = 1;
+	} while (FindNextFileA(h, &fd));
+	FindClose(h);
+}
+
+/*
+ * Whether to copy the game's TrueForce to logi-tf-sim.
+ *
+ * LOGI_TF_CAPTURE decides it outright when set (logi-launch exports it from
+ * the wheel it resolved for the session, which is the same answer it gives
+ * every other helper, and a person testing by hand can set it too).
+ *
+ * Otherwise the wheels attached decide. A direct-drive wheel is already
+ * being streamed to by Logitech's own library, so relaying is a second
+ * writer on its endpoint and the answer is no, even if a G923 is attached as
+ * well: on that rig the cost of relaying is a buzz on the wheel the game is
+ * most likely being played on, and the cost of not relaying is a G923 with
+ * no TrueForce, which is what it had before any of this existed. Only a rig
+ * with a classic wheel and no direct-drive wheel relays by default.
+ */
+static int tf_capture_enabled(void)
+{
+	const char *env = getenv("LOGI_TF_CAPTURE");
+	int dd = 0, classic = 0;
+
+	if (env && *env)
+		return *env != '0';
+	wheels_present(&dd, &classic);
+	if (dd) {
+		say("TrueForce capture off: a direct-drive wheel is attached and "
+		    "Logitech's library already streams to it");
+		return 0;
+	}
+	if (!classic)
+		say("TrueForce capture off: no classic wheel found to relay to");
+	return classic;
+}
+
 /* Real entry points, resolved once so the forwards below still reach
  * Logitech's library now that these are implemented here instead of being
  * PE-forwarded. */
@@ -280,6 +358,14 @@ static void tf_capture_init(HMODULE real)
 	real_SetTorqueTFint8   = (void *)GetProcAddress(real, "logiTrueForceSetTorqueTFint8");
 	real_SetStreamTF       = (void *)GetProcAddress(real, "logiTrueForceSetStreamTF");
 
+	/*
+	 * Decided once, here: the set of attached wheels does not change
+	 * during a game, and a per-call sysfs walk on the audio path would
+	 * cost more than the capture is worth. With the socket left closed
+	 * tf_send() is a no-op, so the gate needs no second test anywhere.
+	 */
+	if (!tf_capture_enabled())
+		return;
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
 		return;
 	tf_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);

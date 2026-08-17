@@ -10,6 +10,11 @@
 //! stop flag. The wheel stream is opened lazily on the first enabled
 //! telemetry and torn down (with a clear) on silence, error, or exit,
 //! so no force is ever left queued.
+//!
+//! The wheel is taken, not assumed: opening a stream takes that wheel's
+//! streaming lease ([`crate::lease`]) and standby gives it back, so this
+//! daemon and a test sweep never end up taking turns on an endpoint that
+//! carries one packet per millisecond.
 
 use std::path::Path;
 use std::net::UdpSocket;
@@ -19,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::lease::Lease;
 use crate::leds::RevLeds;
 use crate::effects::Mixer;
 use crate::telemetry::Telemetry;
@@ -39,7 +45,14 @@ const POLL_TIMEOUT_MS: i32 = 50;
 /// scheduling stall longer than this drops the backlog instead of bursting
 /// it. Expressed in time rather than samples, because the sample count for
 /// a given stretch of time depends on the stream rate.
-const MAX_GEN_MS: u64 = 100;
+///
+/// This is also the producer's worst-case single push, so every transport's
+/// own backlog bound has to sit above it or it discards part of a burst on
+/// arrival while nothing is actually wrong. Both derive from this one
+/// constant: [`crate::g923::MAX_PENDING_MS`] here, and
+/// `LOGITF_TF_MAX_PENDING_MS` in libtrueforce's `internal.h` for the
+/// direct-drive path.
+pub(crate) const MAX_GEN_MS: u64 = 100;
 /// How long to wait before re-probing for a wheel after a failed open.
 const OPEN_RETRY: Duration = Duration::from_secs(5);
 
@@ -190,6 +203,19 @@ impl SilenceGate {
         self.standby
     }
 
+    /// Park again after a [`GateAction::Resume`] the caller could not act
+    /// on, so the next block of force asks once more.
+    ///
+    /// The daemon needs this when it cannot re-take the wheel's streaming
+    /// lease on the way out of standby: the gate has already decided force
+    /// returned, but the stream must stay silent until whoever else has the
+    /// wheel is done with it. The zero counter is left at the grace period
+    /// so this does not re-announce a standby it never left.
+    pub(crate) fn hold_standby(&mut self) {
+        self.standby = true;
+        self.zero_ms = ZERO_FORCE_STANDBY_MS;
+    }
+
     /// Account one rendered block: `silent` is "every sample was exactly
     /// zero", `audio_ms` how much audio time the block covers.
     pub(crate) fn observe(&mut self, silent: bool, audio_ms: u64) -> GateAction {
@@ -213,12 +239,94 @@ impl SilenceGate {
     }
 }
 
+/// How this daemon names itself in the streaming lease, for whoever it
+/// refuses next.
+const LEASE_HOLDER: &str = "logi-tf-sim";
+
+/// An open wheel, everything the caller needs to keep it open, and the
+/// identity it was opened against.
+pub(crate) struct OpenWheel {
+    pub(crate) stream: WheelStream,
+    /// The HID device carrying this wheel's rev display, when it is known.
+    /// `None` means "scan for one", which is only right with a single wheel
+    /// attached (see [`crate::leds::RevLeds::discover`]).
+    pub(crate) led_owner: Option<String>,
+    /// Held for as long as the stream is open, and released with it. See
+    /// [`crate::lease`] for why streaming without it is a 500 Hz buzz.
+    pub(crate) lease: Lease,
+    /// Which wheel the lease is for, so a holder that released it in
+    /// standby can ask for the same one back.
+    pub(crate) lease_key: String,
+}
+
+/// The HID device id (`0003:046D:C276.0003`) of the first attached
+/// direct-drive wheel, or `None`.
+///
+/// libtrueforce hands back no sysfs path at all, so this is where the DD
+/// path gets an identity: the driver's own attribute directory, which is
+/// the same device that carries `wheel_rev_level` (both live in one
+/// attribute group in the driver). It is used for two things, the lease key
+/// and the rev display's owner, and both were previously answered by
+/// "whichever one sysfs listed first", independently of each other.
+///
+/// `None` under the `LOGI_WHEEL_SYSFS_DIR` development override: a fixture
+/// directory's name is not a HID device id, and passing it on would send
+/// the rev-display lookup somewhere that cannot exist. The override's own
+/// handling in [`crate::leds::RevLeds::discover`] covers that case.
+fn dd_hid_id() -> Option<String> {
+    if crate::leds::sysfs_dir_override().is_some() {
+        return None;
+    }
+    logi_wheel_core::Device::discover_all()
+        .into_iter()
+        .find(|d| d.model() != logi_wheel_core::WheelModel::G923)
+        .and_then(|d| d.hid_id())
+}
+
+/// Take the streaming lease for `key`, turning a refusal into the error the
+/// caller reports.
+fn take_lease(key: &str) -> Result<Lease> {
+    crate::lease::try_acquire(key, LEASE_HOLDER).map_err(|busy| Error::Busy(busy.holder))
+}
+
 /// Open whichever wheel is present: a G923 (via [`g923::discover`], which
 /// libtrueforce cannot see) takes priority since a G923 never answers
 /// libtrueforce's own RS50-family discovery; otherwise fall back to the DD
 /// wheels' libtrueforce-backed [`TfStream`].
-pub(crate) fn open_wheel_stream(cfg: &Config) -> Result<WheelStream> {
-    open_wheel_stream_with_leds(cfg).map(|(stream, _)| stream)
+pub(crate) fn open_wheel_stream(cfg: &Config) -> Result<OpenWheel> {
+    open_wheel_stream_with_leds(cfg)
+}
+
+/// Open a G923 at `paths`, taking the lease first.
+///
+/// The lease is taken BEFORE the stream, not after: the point is to leave
+/// the wheel alone when somebody else has it, and a stream opened and
+/// dropped again has already touched the device.
+fn open_g923(cfg: &Config, paths: &g923::G923Paths) -> Result<OpenWheel> {
+    // Discovery already correlated the TrueForce interface with its
+    // interface-0 sibling to find `ffb_output`; that sibling is the device
+    // carrying the rev LEDs, so the identity comes free here.
+    let led_owner = paths
+        .ffb_output
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned());
+    let lease_key = led_owner.clone().unwrap_or_else(|| crate::lease::UNKNOWN_WHEEL_KEY.to_string());
+    let lease = take_lease(&lease_key)?;
+    let sign = g923::Sign::resolve(cfg.g923_ffb_invert);
+    let stream = g923::G923Stream::open(paths, sign)
+        .map_err(|e| Error::Io("open G923 TrueForce stream".into(), e))?;
+    Ok(OpenWheel { stream: WheelStream::G923(stream), led_owner, lease, lease_key })
+}
+
+/// Open the direct-drive wheel through libtrueforce, taking the lease first.
+fn open_dd() -> Result<OpenWheel> {
+    let led_owner = dd_hid_id();
+    let lease_key = led_owner.clone().unwrap_or_else(|| crate::lease::UNKNOWN_WHEEL_KEY.to_string());
+    let lease = take_lease(&lease_key)?;
+    let stream = TfStream::open(0)?;
+    Ok(OpenWheel { stream: WheelStream::Dd(stream), led_owner, lease, lease_key })
 }
 
 /// Open a wheel, and say which HID device its rev display belongs to.
@@ -228,11 +336,7 @@ pub(crate) fn open_wheel_stream(cfg: &Config) -> Result<WheelStream> {
 /// sysfs listed first. With one wheel attached those always agree. With two
 /// they need not, and on the development rig they did not: the G923 got the
 /// haptics and the RS50 got the lights.
-///
-/// For a G923 the answer comes free from discovery, which already
-/// correlates the TrueForce interface with its interface-0 sibling to find
-/// `ffb_output`. That sibling is the device carrying the rev LEDs.
-pub(crate) fn open_wheel_stream_with_leds(cfg: &Config) -> Result<(WheelStream, Option<String>)> {
+pub(crate) fn open_wheel_stream_with_leds(cfg: &Config) -> Result<OpenWheel> {
     // Which wheel to drive. `auto` prefers a G923 whenever one is present,
     // which is right for the overwhelmingly common case of a single wheel
     // and wrong for a rig with both: the direct-drive wheel would be
@@ -247,7 +351,7 @@ pub(crate) fn open_wheel_stream_with_leds(cfg: &Config) -> Result<(WheelStream, 
         _ => cfg.wheel,
     };
     if choice == WheelChoice::DirectDrive {
-        return TfStream::open(0).map(|s| (WheelStream::Dd(s), None));
+        return open_dd();
     }
     if choice == WheelChoice::G923 {
         let paths = g923::discover().ok_or_else(|| {
@@ -256,34 +360,12 @@ pub(crate) fn open_wheel_stream_with_leds(cfg: &Config) -> Result<(WheelStream, 
                 std::io::Error::from(std::io::ErrorKind::NotFound),
             )
         })?;
-        let led_owner = paths
-            .ffb_output
-            .as_deref()
-            .and_then(Path::parent)
-            .and_then(Path::file_name)
-            .map(|n| n.to_string_lossy().into_owned());
-        let sign = g923::Sign::resolve(cfg.g923_ffb_invert);
-        let stream = g923::G923Stream::open(&paths, sign)
-            .map_err(|e| Error::Io("open G923 TrueForce stream".into(), e))?;
-        return Ok((WheelStream::G923(stream), led_owner));
+        return open_g923(cfg, &paths);
     }
     if let Some(paths) = g923::discover() {
-        let led_owner = paths
-            .ffb_output
-            .as_deref()
-            .and_then(Path::parent)
-            .and_then(Path::file_name)
-            .map(|n| n.to_string_lossy().into_owned());
-        let sign = g923::Sign::resolve(cfg.g923_ffb_invert);
-        let stream = g923::G923Stream::open(&paths, sign)
-            .map_err(|e| Error::Io("open G923 TrueForce stream".into(), e))?;
-        return Ok((WheelStream::G923(stream), led_owner));
+        return open_g923(cfg, &paths);
     }
-    // The DD wheels are opened through libtrueforce, which does not hand
-    // back a sysfs path, so their rev display is still found by scanning.
-    // That is safe for them: `wheel_rev_level` is the DD surface, and a
-    // G923 does not expose it.
-    TfStream::open(0).map(|s| (WheelStream::Dd(s), None))
+    open_dd()
 }
 
 /// A live wheel stream plus the state that feeds it.
@@ -311,6 +393,29 @@ fn drain_captured_tf(sock: &UdpSocket, buf: &mut [u8]) -> Vec<f32> {
     out
 }
 
+/// How long one captured-TrueForce datagram keeps synthesis quiet.
+///
+/// The rule is "a game that sent its own TrueForce gets its own TrueForce,
+/// not an engine note invented over the top of it". What that rule must NOT
+/// depend on is who opened the stream first, which is what it used to key
+/// on: `game == CAPTURED_GAME` is true only when the captured path opened
+/// the stream, so a game whose telemetry arrived first got both, its own
+/// samples AND synthesis, in the same iteration.
+///
+/// Long enough to bridge the gaps between a game's sample runs (the SDK
+/// hands them over in bursts, not evenly), short enough that synthesis
+/// comes back promptly when the game stops sending. Half the telemetry
+/// watchdog, which is the same scale of judgement.
+pub(crate) const CAPTURED_PRECEDENCE_MS: u64 = 250;
+
+/// Whether captured TrueForce is recent enough to own the stream.
+///
+/// Pure and content-based: the argument is the age of the newest captured
+/// sample, which is the only thing that should decide this.
+pub(crate) fn captured_has_precedence(age: Option<Duration>) -> bool {
+    age.is_some_and(|age| age < Duration::from_millis(CAPTURED_PRECEDENCE_MS))
+}
+
 struct Active {
     stream: WheelStream,
     mixer: Mixer,
@@ -319,6 +424,10 @@ struct Active {
     last_telemetry: Instant,
     last_gen: Instant,
     samples: Vec<f32>,
+    /// When captured TrueForce last arrived, so
+    /// [`captured_has_precedence`] can decide by content rather than by
+    /// which path happened to open the stream.
+    last_captured: Option<Instant>,
     /// The wheel's rev display, when the config enables it and a rev
     /// display (either the DD wheels' `wheel_rev_level` attribute or the
     /// G923's LED classdevs) was found at stream start; `None` otherwise.
@@ -327,6 +436,17 @@ struct Active {
     /// Menu standby: zero-force output past the grace period parks the
     /// stream even while telemetry keeps arriving.
     gate: SilenceGate,
+    /// The wheel's streaming lease, held while this stream is fed and
+    /// released in standby so a test sweep can have the wheel between
+    /// sessions. `None` means "not currently held", which is standby, or a
+    /// standby we could not come back from because somebody else took it.
+    lease: Option<Lease>,
+    /// Which wheel to ask for when coming out of standby.
+    lease_key: String,
+    /// Whether the failure to re-take the lease has already been reported.
+    /// The retry runs per iteration, and one line per 50 ms is a log nobody
+    /// can read.
+    warned_busy: bool,
 }
 
 fn bind(port: u16) -> Result<UdpSocket> {
@@ -335,6 +455,40 @@ fn bind(port: u16) -> Result<UdpSocket> {
     sock.set_nonblocking(true)
         .map_err(|e| Error::Io(format!("set_nonblocking on port {port}"), e))?;
     Ok(sock)
+}
+
+/// Bind a port we are willing to run without, saying loudly what a taken
+/// one costs.
+///
+/// The relay port is shared with logi-rpm-bridge, which reads the very same
+/// LTFR datagrams for the kernel texture merge, and the two cannot both have
+/// them: measured on 7.1.x, a unicast datagram goes to exactly ONE socket
+/// however the port is shared. SO_REUSEADDR on both ends only makes both
+/// binds succeed while the kernel picks a single winner, which turns this
+/// into a silent loss; SO_REUSEPORT is a load balancer, so it splits or
+/// arbitrarily assigns the stream instead of duplicating it. Neither
+/// delivers to both, so the port stays exclusive and the loser says so.
+///
+/// Unlike the bridge, this daemon has four other telemetry sockets and a
+/// wheel to drive, so it keeps running: a UDP-telemetry game still gets its
+/// simulated TrueForce, only the shared-memory relay's games do not.
+fn bind_optional(port: u16, what: &str, holder: &str, cost: &str) -> Option<UdpSocket> {
+    match bind(port) {
+        Ok(sock) => Some(sock),
+        Err(e) => {
+            eprintln!("logi-tf-sim: cannot listen for {what} on udp/{port}: {e}");
+            eprintln!(
+                "logi-tf-sim: that port is normally held by {holder}, and only one of us can \
+                 have the datagrams"
+            );
+            eprintln!("logi-tf-sim: {cost}");
+            eprintln!(
+                "logi-tf-sim: everything else keeps working. To get it back, stop the other \
+                 program and start this one again"
+            );
+            None
+        }
+    }
 }
 
 /// Block until any of the sockets is readable or the timeout expires.
@@ -405,7 +559,14 @@ pub fn run(cfg: &Config) -> Result<()> {
     let cm_sock = bind(cfg.codemasters_port)?;
     let pc_sock = bind(cfg.pcars_port)?;
     let bn_sock = bind(cfg.beamng_port)?;
-    let relay_sock = bind(cfg.relay_port)?;
+    let relay_sock = bind_optional(
+        cfg.relay_port,
+        "the shared-memory relay",
+        "logi-rpm-bridge (logi-launch starts it for the kernel texture merge, and it reads the \
+         same datagrams)",
+        "while it is taken, the games that publish only into Windows shared memory (the Assetto \
+         family, iRacing, RaceRoom, rFactor 2, Le Mans Ultimate) drive nothing here",
+    );
     // TrueForce a game produced itself, captured from its SDK calls by the
     // proxy DLL and forwarded here. Separate from the telemetry sockets
     // because it is finished haptics rather than an input to synthesis: the
@@ -415,11 +576,14 @@ pub fn run(cfg: &Config) -> Result<()> {
 
     eprintln!(
         "logi-tf-sim: listening (codemasters/F1/WRC on udp/{}, pcars2/ams2 on udp/{}, \
-         beamng on udp/{}, shared-memory relay on udp/{}, captured TrueForce on udp/{})",
+         beamng on udp/{}, shared-memory relay on udp/{}{}, captured TrueForce on udp/{})",
         cfg.codemasters_port,
         cfg.pcars_port,
         cfg.beamng_port,
         cfg.relay_port,
+        // The line is the daemon's own account of what it is doing, so it
+        // must not claim a socket the bind above lost.
+        if relay_sock.is_some() { "" } else { " (NOT LISTENING, see above)" },
         logi_wheel_core::tfstream::DEFAULT_PORT
     );
     if !cfg.enabled {
@@ -431,8 +595,13 @@ pub fn run(cfg: &Config) -> Result<()> {
     let mut next_open_attempt = Instant::now();
     let mut buf = [0u8; 2048];
 
+    // Everything poll(2) watches, built once: the relay socket is absent
+    // when its port was taken.
+    let mut polled = vec![&cm_sock, &pc_sock, &bn_sock, &tf_sock];
+    polled.extend(relay_sock.as_ref());
+
     while !STOP.load(Ordering::SeqCst) {
-        poll_sockets(&[&cm_sock, &pc_sock, &bn_sock, &relay_sock, &tf_sock]);
+        poll_sockets(&polled);
 
         // Drained first and kept separate: captured samples are the game's
         // own TrueForce and must not be mixed with, or replaced by, anything
@@ -443,7 +612,9 @@ pub fn run(cfg: &Config) -> Result<()> {
         drain(&cm_sock, &mut buf, |p| decoders.parse_codemasters_port(p), &mut latest);
         drain(&pc_sock, &mut buf, pcars::parse, &mut latest);
         drain(&bn_sock, &mut buf, |p| decoders.beamng.parse(p), &mut latest);
-        drain(&relay_sock, &mut buf, relay::parse, &mut latest);
+        if let Some(relay_sock) = &relay_sock {
+            drain(relay_sock, &mut buf, relay::parse, &mut latest);
+        }
 
         let now = Instant::now();
 
@@ -459,16 +630,29 @@ pub fn run(cfg: &Config) -> Result<()> {
                         a.last_telemetry = now;
                     }
                     None if now >= next_open_attempt => match open_wheel_stream_with_leds(cfg) {
-                        Ok((stream, led_owner)) => {
+                        Ok(OpenWheel { stream, led_owner, lease, lease_key }) => {
                             eprintln!(
                                 "logi-tf-sim: stream start ({id}, rpm {:.0}/{:.0}, speed {:.0} m/s)",
                                 tel.rpm, tel.max_rpm, tel.speed
                             );
-                            let leds = match (cfg.leds, led_owner.as_deref()) {
-                                (false, _) => None,
-                                (true, Some(owner)) => RevLeds::discover_for(owner),
-                                (true, None) => RevLeds::discover(),
+                            // One rev-display writer per session. When the
+                            // texture merge's bridge is up it owns the
+                            // strip and drives it from the game's own
+                            // telemetry triple, which is the better feed
+                            // and the narrower claim (see
+                            // `leds::other_owner`); ours would fight it.
+                            let taken = if cfg.leds { crate::leds::other_owner() } else { None };
+                            let leds = match (cfg.leds, &taken, led_owner.as_deref()) {
+                                (false, _, _) | (_, Some(_), _) => None,
+                                (true, None, Some(owner)) => RevLeds::discover_for(owner),
+                                (true, None, None) => RevLeds::discover(),
                             };
+                            if let Some(owner) = &taken {
+                                eprintln!(
+                                    "logi-tf-sim: leaving the rev display to {owner}, which is \
+                                     already driving it"
+                                );
+                            }
                             if leds.is_some() {
                                 eprintln!("logi-tf-sim: driving the wheel's rev display");
                             }
@@ -492,8 +676,12 @@ pub fn run(cfg: &Config) -> Result<()> {
                                 last_telemetry: now,
                                 last_gen: now,
                                 samples: Vec::with_capacity(MAX_GEN_MS as usize * crate::synth::SAMPLES_PER_MS),
+                                last_captured: None,
                                 leds,
                                 gate: SilenceGate::default(),
+                                lease: Some(lease),
+                                lease_key,
+                                warned_busy: false,
                             });
                         }
                         Err(e) => {
@@ -518,12 +706,40 @@ pub fn run(cfg: &Config) -> Result<()> {
             if let Some(a) = &mut active {
                 a.last_telemetry = now;
                 a.last_gen = now;
-                if let Err(e) = a.stream.push(&captured) {
-                    eprintln!("logi-tf-sim: captured TrueForce push failed: {e}");
+                a.last_captured = Some(now);
+                // Standby gave the wheel's lease up, and this path drives
+                // the wheel directly, so it has to be taken back first.
+                // Dropping a few milliseconds of the game's audio while
+                // somebody else has the wheel is the right cost; pushing
+                // into an endpoint another program is streaming to is the
+                // failure the lease exists to prevent.
+                if a.lease.is_none() {
+                    match take_lease(&a.lease_key) {
+                        Ok(lease) => {
+                            a.lease = Some(lease);
+                            a.warned_busy = false;
+                            // The DD path's standby sent the teardown pair,
+                            // so the stream is parked; samples pushed into a
+                            // parked stream go nowhere.
+                            a.stream.resume();
+                            a.gate = SilenceGate::default();
+                        }
+                        Err(e) => {
+                            if !a.warned_busy {
+                                a.warned_busy = true;
+                                eprintln!("logi-tf-sim: dropping captured TrueForce: {e}");
+                            }
+                        }
+                    }
+                }
+                if a.lease.is_some() {
+                    if let Err(e) = a.stream.push(&captured) {
+                        eprintln!("logi-tf-sim: captured TrueForce push failed: {e}");
+                    }
                 }
             } else if now >= next_open_attempt {
                 match open_wheel_stream(cfg) {
-                    Ok(stream) => {
+                    Ok(OpenWheel { stream, lease, lease_key, .. }) => {
                         eprintln!(
                             "logi-tf-sim: stream start (captured TrueForce from the game's own SDK)"
                         );
@@ -544,8 +760,12 @@ pub fn run(cfg: &Config) -> Result<()> {
                             last_telemetry: now,
                             last_gen: now,
                             samples: Vec::with_capacity(MAX_GEN_MS as usize * crate::synth::SAMPLES_PER_MS),
+                            last_captured: Some(now),
                             leds: None,
                             gate: SilenceGate::default(),
+                            lease: Some(lease),
+                            lease_key,
+                            warned_busy: false,
                         });
                     }
                     Err(e) => {
@@ -559,8 +779,12 @@ pub fn run(cfg: &Config) -> Result<()> {
         // Watchdog + generation for the active stream.
         let mut stop_reason: Option<String> = None;
         if let Some(a) = &mut active {
-            if a.game == CAPTURED_GAME && !captured.is_empty() {
-                // Fed directly above; nothing to synthesize this tick.
+            if captured_has_precedence(a.last_captured.map(|t| now.duration_since(t))) {
+                // The game's own TrueForce is flowing and was pushed above;
+                // synthesizing over the top of it is the one thing this
+                // must not do. Decided by how recently captured samples
+                // arrived, NOT by which path opened the stream: a game
+                // whose telemetry arrived first used to get both.
             } else if now.duration_since(a.last_telemetry) >= Duration::from_millis(SILENCE_TIMEOUT_MS) {
                 stop_reason = Some(format!("telemetry silent for {SILENCE_TIMEOUT_MS} ms"));
             } else {
@@ -587,15 +811,37 @@ pub fn run(cfg: &Config) -> Result<()> {
                     match a.gate.observe(silent, plan.audio_ms) {
                         GateAction::EnterStandby => {
                             a.stream.standby();
+                            // The wheel is not being driven while parked,
+                            // so it is not ours to hold: a test sweep
+                            // fired from the app between sessions should
+                            // get it rather than be refused by a daemon
+                            // that is emitting nothing.
+                            a.lease = None;
                             eprintln!(
                                 "logi-tf-sim: standby ({}): zero force for {ZERO_FORCE_STANDBY_MS} ms, telemetry still flowing",
                                 a.game
                             );
                         }
-                        GateAction::Resume => {
-                            a.stream.resume();
-                            eprintln!("logi-tf-sim: resume ({}): force returned", a.game);
-                        }
+                        GateAction::Resume => match take_lease(&a.lease_key) {
+                            Ok(lease) => {
+                                a.lease = Some(lease);
+                                a.warned_busy = false;
+                                a.stream.resume();
+                                eprintln!("logi-tf-sim: resume ({}): force returned", a.game);
+                            }
+                            Err(e) => {
+                                // Somebody took the wheel while we were
+                                // parked. Stay parked and try again on the
+                                // next block of force: sharing the endpoint
+                                // is the failure this whole lease exists to
+                                // prevent.
+                                a.gate.hold_standby();
+                                if !a.warned_busy {
+                                    a.warned_busy = true;
+                                    eprintln!("logi-tf-sim: staying in standby ({}): {e}", a.game);
+                                }
+                            }
+                        },
                         GateAction::Stay => {}
                     }
                     if !a.gate.in_standby() {
@@ -605,8 +851,9 @@ pub fn run(cfg: &Config) -> Result<()> {
                     }
                 }
                 // The rev display rides the same telemetry: RevLeds
-                // paces itself (>=160 ms between writes) and only writes
-                // changed levels, so this per-iteration call is cheap.
+                // paces itself (see `leds::MIN_WRITE_INTERVAL`) and only
+                // writes changed levels, so this per-iteration call is
+                // cheap.
                 if let Some(leds) = &mut a.leds {
                     leds.update(a.tel.rpm, a.tel.max_rpm, a.tel.pit_limiter, now);
                 }
@@ -713,6 +960,37 @@ mod generation_tests {
 }
 
 #[cfg(test)]
+mod captured_precedence_tests {
+    use super::{captured_has_precedence, CAPTURED_PRECEDENCE_MS};
+    use std::time::Duration;
+
+    /// A game sending its own TrueForce owns the stream for as long as it
+    /// keeps sending, whoever opened it. The old rule keyed on the opener
+    /// (`game == CAPTURED_GAME`), so a game whose telemetry arrived first
+    /// got its own samples AND an engine note synthesized over them.
+    #[test]
+    fn recent_captured_samples_own_the_stream() {
+        assert!(captured_has_precedence(Some(Duration::ZERO)), "just arrived");
+        assert!(captured_has_precedence(Some(Duration::from_millis(CAPTURED_PRECEDENCE_MS - 1))));
+    }
+
+    /// And give it back when they stop, so a game that only sends TrueForce
+    /// in some sessions still gets synthesis in the others.
+    #[test]
+    fn stale_captured_samples_hand_the_stream_back() {
+        assert!(!captured_has_precedence(Some(Duration::from_millis(CAPTURED_PRECEDENCE_MS))));
+        assert!(!captured_has_precedence(Some(Duration::from_secs(10))));
+    }
+
+    /// Nothing captured yet is not "captured owns it": a telemetry-only
+    /// game must synthesize from its first packet.
+    #[test]
+    fn no_captured_samples_means_synthesis() {
+        assert!(!captured_has_precedence(None));
+    }
+}
+
+#[cfg(test)]
 mod silence_gate_tests {
     use super::{GateAction, SilenceGate, ZERO_FORCE_STANDBY_MS};
 
@@ -763,6 +1041,21 @@ mod silence_gate_tests {
         assert_eq!(gate.observe(false, 50), GateAction::Resume);
         assert!(!gate.in_standby(), "the resuming block itself must be pushed");
         assert_eq!(gate.observe(false, 50), GateAction::Stay, "no second resume");
+    }
+
+    /// A Resume the daemon could not act on (the wheel's lease went to
+    /// somebody else while it was parked) parks it again, and the next
+    /// block of force asks once more rather than never.
+    #[test]
+    fn a_refused_resume_parks_again_and_retries() {
+        let mut gate = SilenceGate::default();
+        assert_eq!(gate.observe(true, ZERO_FORCE_STANDBY_MS), GateAction::EnterStandby);
+        assert_eq!(gate.observe(false, 50), GateAction::Resume);
+
+        gate.hold_standby();
+        assert!(gate.in_standby(), "still parked, so nothing is pushed");
+        assert_eq!(gate.observe(false, 50), GateAction::Resume, "asks again on the next force");
+        assert!(!gate.in_standby(), "and streams once the wheel is free");
     }
 
     /// The park-resume cycle repeats: menus, race, menus again.
