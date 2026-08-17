@@ -5421,6 +5421,19 @@ struct hidpp_dd_ff_data {
 	 */
 	unsigned long foreign_stream_at;
 	/*
+	 * The force this driver would be sending, offset-binary, published
+	 * every tick for the interceptor to write into a foreign writer's
+	 * packet (see hidpp_dd_texmerge_classify). Standing down from the
+	 * stream must not mean standing down from force: on these wheels
+	 * the stream's torque field overrides the HID++ force path, so a
+	 * silent driver would hand the wheel whatever the other writer put
+	 * there, which for a texture producer is its own samples around
+	 * centre. Measured on the wheel: a constant force applied while
+	 * the daemon streamed never moved the torque field off centre.
+	 * 0x8000 (centre) until the first tick publishes.
+	 */
+	atomic_t yield_force;
+	/*
 	 * One-shot restore of the SDK's operating-range push (see
 	 * hidpp_dd_texmerge_seen_range_push). Set under shim->lock from the
 	 * interceptor when a type-0x0e push is first seen; tm_restore_work
@@ -6384,17 +6397,6 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return HRTIMER_NORESTART;
 
-	/*
-	 * Someone else is driving the stream: keep ticking (so the takeover
-	 * is immediate once they stop) but send nothing. Sharing the
-	 * endpoint halves both writers and square-modulates the motor at
-	 * 500 Hz; see foreign_stream_at.
-	 */
-	if (hidpp_dd_foreign_stream_active(ff)) {
-		hrtimer_forward_now(t, HIDPP_DD_FF_TICK_KT);
-		return HRTIMER_RESTART;
-	}
-
 	route_tf = READ_ONCE(ff->texture_route) == HIDPP_DD_TEXTURE_ROUTE_TF;
 
 	/*
@@ -6746,6 +6748,19 @@ static void hidpp_dd_ff_send_force(struct hidpp_dd_ff_data *ff, s32 force)
 	if (!ff || atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
 
+	/*
+	 * Someone else owns the stream: publish this force for the
+	 * interceptor to write into their packets rather than sending a
+	 * packet of our own. Two writers do not share the endpoint, they
+	 * take turns on it, which square-modulates the motor at 500 Hz
+	 * (see foreign_stream_at); one writer carrying both values does.
+	 */
+	if (hidpp_dd_foreign_stream_active(ff)) {
+		atomic_set(&ff->yield_force,
+			   hidpp_dd_force_to_offset_binary(force));
+		return;
+	}
+
 	pending = atomic_read(&ff->pending_work);
 	if (pending >= HIDPP_DD_FF_MAX_PENDING_WORK) {
 		/*
@@ -6905,6 +6920,19 @@ static bool hidpp_dd_tf_queue_stream(struct hidpp_dd_ff_data *ff, s32 force,
 	u16 cur = hidpp_dd_force_to_offset_binary(force);
 	int shifted = HIDPP_DD_TF_WINDOW - HIDPP_DD_TF_NEW_SAMPLES;
 	int i;
+
+	/*
+	 * Yielding the stream: publish the force for the interceptor to
+	 * carry in the owner's packets (see hidpp_dd_ff_send_force). The
+	 * texture in `quartet` is dropped on purpose, the owner is
+	 * producing their own; only the force has no other way to the
+	 * wheel. Reported as sent so the caller's wind-down bookkeeping
+	 * does not treat a deliberate yield as queue pressure.
+	 */
+	if (hidpp_dd_foreign_stream_active(ff)) {
+		atomic_set(&ff->yield_force, cur);
+		return true;
+	}
 
 	pkt[0] = HIDPP_DD_FF_REPORT_ID;
 	pkt[4] = HIDPP_DD_TF_CMD_STREAM;
@@ -14707,6 +14735,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	 * is no longer where this counter's lifetime comes from.
 	 */
 	atomic_set(&ff->self_inflight, 0);
+	atomic_set(&ff->yield_force, 0x8000);
 	spin_lock_init(&ff->tm_shim_lock);
 	ff->last_err_log = 0;
 	ff->err_count = 0;
@@ -16707,8 +16736,24 @@ static void hidpp_dd_texmerge_classify(struct hidpp_dd_texmerge_shim *shim,
 	 * thread" is exactly the traffic that came from outside.
 	 */
 	if (shim->ff && len >= 5 && buf[0] == 0x01 && buf[4] == 0x01 &&
-	    !in_interrupt() && !(current->flags & PF_KTHREAD))
+	    !in_interrupt() && !(current->flags & PF_KTHREAD)) {
 		WRITE_ONCE(shim->ff->foreign_stream_at, jiffies | 1UL);
+		/*
+		 * Carry our force in their packet. The torque field
+		 * overrides the HID++ force path on these wheels, so a
+		 * driver that only stood down would leave the wheel with
+		 * whatever the owner put there: for a texture producer,
+		 * samples around centre, and the game's weight and centring
+		 * gone (measured: a constant force never moved the field off
+		 * centre). One writer, both values.
+		 */
+		if (len >= 10) {
+			u16 cur = (u16)atomic_read(&shim->ff->yield_force);
+
+			put_unaligned_le16(cur, &buf[6]);
+			put_unaligned_le16(cur, &buf[8]);
+		}
+	}
 
 	if (shim->ff && atomic_read(&shim->ff->self_inflight))
 		goto out;
