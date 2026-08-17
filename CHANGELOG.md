@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.37.0 - 2026-08-18
 
 **The harsh buzz is gone, and the engine note plays at its proper
 pitch.** Two programs streaming to the wheel's TrueForce endpoint do not
@@ -46,9 +46,8 @@ filled and stayed full, putting about a second between what the car did
 and what the rim did. Measured after fifteen seconds of continuous
 streaming, a change in engine speed now reaches the wire in 15 ms and
 has fully taken over the note by 90 ms. The G923 path had a bound
-smaller than the largest
-batch its producer sends, so part of every batch was quietly discarded;
-both bounds now come from one constant.
+smaller than the largest batch its producer sends, so part of every
+batch was quietly discarded; both bounds now come from one constant.
 
 **Force feedback no longer disappears for the next game.** `logi-ffb`
 left the wheel's force gain at zero when it exited. That gain is a
