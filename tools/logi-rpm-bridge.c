@@ -96,7 +96,25 @@ static int rev_level(float rpm, float first_led, float max_rpm, int shift_mode)
 	return level;
 }
 
-static void write_attr(const char *path, const char *val, time_t *last_warn)
+/* The wheel's two attribute paths, resolved together and re-resolved
+ * together: the rev path is derived from the rpm path's directory, so one
+ * without the other is a pair that can disagree about which wheel it means. */
+struct target {
+	char rpm_buf[256];
+	char rev_buf[256];
+	const char *rpm;	/* NULL when no wheel is attached */
+	const char *rev;	/* NULL when the wheel exposes no rev strip */
+};
+
+static void resolve_target(struct target *t)
+{
+	t->rpm = find_sysfs(t->rpm_buf, sizeof(t->rpm_buf));
+	t->rev = t->rpm ? find_rev_sysfs(t->rpm, t->rev_buf, sizeof(t->rev_buf))
+			: NULL;
+}
+
+/* Returns 0 on success, -1 with errno set. */
+static int write_attr(const char *path, const char *val, time_t *last_warn)
 {
 	FILE *f = fopen(path, "w");
 
@@ -108,21 +126,45 @@ static void write_attr(const char *path, const char *val, time_t *last_warn)
 				path, strerror(errno));
 			*last_warn = nowt;
 		}
-		return;		/* wheel unplugged; keep listening */
+		return -1;	/* wheel unplugged; keep listening */
 	}
 	fputs(val, f);
 	fclose(f);
+	return 0;
+}
+
+/* Whether a failed write means the path no longer names a wheel.
+ *
+ * The path is resolved once by a glob and then held for the process
+ * lifetime, which makes it an identity only until the first replug: hidraw
+ * numbering is recycled, so the node this program was started against can
+ * come back as a different wheel's, or not come back at all. ENOENT is the
+ * attribute file gone with its directory, ENODEV the directory still there
+ * with nothing behind it; either way the answer is to look again. */
+static int path_went_away(int err)
+{
+	return err == ENOENT || err == ENODEV;
+}
+
+/* Look for the wheel again, at most once a second: an unplugged wheel must
+ * not turn a 100 Hz write into a 100 Hz glob. */
+static void reresolve(struct target *t, time_t *last_try)
+{
+	time_t nowt = time(NULL);
+
+	if (nowt == *last_try)
+		return;
+	*last_try = nowt;
+	resolve_target(t);
 }
 
 int main(void)
 {
-	char pathbuf[256], revbuf[256];
-	const char *path = find_sysfs(pathbuf, sizeof(pathbuf));
-	const char *rev_path;
+	struct target t = { 0 };
 	struct sockaddr_in addr = { 0 };
 	unsigned char pkt[64];
 	struct timespec last = { 0 };
-	time_t last_warn = 0, last_rev_warn = 0;
+	time_t last_warn = 0, last_rev_warn = 0, last_resolve = 0;
 	int last_level = -1;	/* what the strip currently shows */
 	const char *mode = getenv("LOGI_REV_MODE");
 	int shift_mode = mode && !strcmp(mode, "shift");
@@ -130,20 +172,33 @@ int main(void)
 	int port = port_env && atoi(port_env) > 0 ? atoi(port_env) : 20780;
 	int fd;
 
-	if (!path) {
+	resolve_target(&t);
+	if (!t.rpm) {
 		fprintf(stderr, "logi-rpm-bridge: no wheel_texture_rpm in sysfs\n");
 		return 1;
 	}
-	rev_path = find_rev_sysfs(path, revbuf, sizeof(revbuf));
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (fd < 0) { perror("socket"); return 1; }
 	addr.sin_family = AF_INET;
 	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	addr.sin_port = htons((unsigned short)port);
-	{
-		int one = 1;
-		setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-	}
+	/*
+	 * Deliberately NO SO_REUSEADDR/SO_REUSEPORT here.
+	 *
+	 * logi-tf-sim listens for the same LTFR datagrams on the same port
+	 * (0.0.0.0:20780, its `port.relay`), and only one of us can have
+	 * them: measured on 7.1.x, two UDP sockets on one port deliver a
+	 * unicast datagram to exactly ONE socket. With SO_REUSEADDR on both
+	 * ends both binds succeed and the kernel hands every packet to the
+	 * more specific (or last) bind, so the loser sits on a live socket
+	 * that never receives anything. SO_REUSEPORT is worse: it is a
+	 * load balancer, so a single producer's packets all hash to one
+	 * socket anyway and a second producer would split the stream.
+	 *
+	 * Without the option the second bind fails with EADDRINUSE, which
+	 * is the point: a conflict we can name beats one that is silent.
+	 * UDP has no TIME_WAIT, so nothing else wanted the option either.
+	 */
 	{
 		/* Bounded recv so a vanished producer darkens the strip:
 		 * without telemetry the game is gone and stale lights lie. */
@@ -152,6 +207,27 @@ int main(void)
 		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	}
 	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		if (errno == EADDRINUSE) {
+			/* Almost always logi-tf-sim, which binds the same
+			 * port for the same datagrams and is left running
+			 * between sessions. Say what is lost and how to get
+			 * it back, because the symptom on its own (a flat
+			 * texture and a dark rev strip) looks like broken
+			 * hardware or a missing telemetry producer.
+			 *
+			 * Exiting, not idling: this socket is the whole
+			 * program, and a pid that stays up doing nothing is
+			 * exactly what made the old failure read as
+			 * success in logi-launch's log. */
+			fprintf(stderr,
+				"logi-rpm-bridge: udp/%d is already taken, almost certainly by logi-tf-sim\n"
+				"logi-rpm-bridge: it listens on the same port for the same telemetry, and only one of us can have it.\n"
+				"logi-rpm-bridge: without it the texture merge gets no rpm (the engine texture stays flat)\n"
+				"logi-rpm-bridge: and the rev lights stay dark. Stop logi-tf-sim (pkill -x logi-tf-sim) and\n"
+				"logi-rpm-bridge: start the game again, or move one of us with LOGI_RPM_PORT / the daemon's port.relay.\n",
+				port);
+			return 1;
+		}
 		perror("bind relay port"); return 1;
 	}
 	{
@@ -174,8 +250,8 @@ int main(void)
 
 		if (n < 0) {
 			if ((errno == EAGAIN || errno == EWOULDBLOCK) &&
-			    rev_path && last_level > 0) {
-				write_attr(rev_path, "0", &last_rev_warn);
+			    t.rev && last_level > 0) {
+				write_attr(t.rev, "0", &last_rev_warn);
 				last_level = 0;
 			}
 			continue;
@@ -196,7 +272,7 @@ int main(void)
 			max_rpm = 0.0f;
 		else if (max_rpm >= 30000.0f)
 			max_rpm = 29999.0f;
-		if (rev_path) {
+		if (t.rev) {
 			int level = rev_level(rpm, first_led, max_rpm,
 					      shift_mode);
 
@@ -204,7 +280,9 @@ int main(void)
 				char lv[4];
 
 				snprintf(lv, sizeof(lv), "%d", level);
-				write_attr(rev_path, lv, &last_rev_warn);
+				if (write_attr(t.rev, lv, &last_rev_warn) < 0 &&
+				    path_went_away(errno))
+					reresolve(&t, &last_resolve);
 				last_level = level;
 			}
 		}
@@ -220,11 +298,25 @@ int main(void)
 			char val[32];
 
 			snprintf(val, sizeof(val), "%.0f %.0f", rpm, max_rpm);
-			write_attr(path, val, &last_warn);
+			/* Nothing to write to: the wheel was unplugged, or a
+			 * write said its path is gone and the look again found
+			 * nothing. Keep looking (rate-limited) so a wheel that
+			 * comes back is picked up without a restart. */
+			if (!t.rpm)
+				reresolve(&t, &last_resolve);
+			if (t.rpm && write_attr(t.rpm, val, &last_warn) < 0 &&
+			    path_went_away(errno)) {
+				reresolve(&t, &last_resolve);
+				/* A wheel that came back knows nothing about
+				 * the level we last wrote, so the next packet
+				 * must write one rather than skip it as
+				 * unchanged. */
+				last_level = -1;
+			}
 		}
 	}
-	if (rev_path && last_level > 0)
-		write_attr(rev_path, "0", &last_rev_warn);
+	if (t.rev && last_level > 0)
+		write_attr(t.rev, "0", &last_rev_warn);
 	close(fd);
 	return 0;
 }

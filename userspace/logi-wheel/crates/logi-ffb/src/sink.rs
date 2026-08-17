@@ -303,11 +303,12 @@ pub struct Sink {
 impl Sink {
     /// Open the real wheel's evdev FF node read-write.
     ///
-    /// Device gain scales every uploaded effect, and it powers up unset (and is
-    /// left at 0 by a prior [`Sink::shutdown`]). A DirectInput host that never
-    /// sends a Device Gain report assumes the device defaults to full gain, so
-    /// without this an effect uploads successfully but renders as zero force.
-    /// Set it to full on open; a later `Gain` op from the host overrides it.
+    /// Device gain scales every uploaded effect, and it powers up unset. A
+    /// DirectInput host that never sends a Device Gain report assumes the
+    /// device defaults to full gain, so without this an effect uploads
+    /// successfully but renders as zero force. Set it to full on open; a
+    /// later `Gain` op from the host overrides it, and [`Sink::shutdown`]
+    /// puts it back to full for whoever runs next.
     pub fn open(evdev_path: &str) -> Result<Sink> {
         let fd = open(evdev_path, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())
             .map_err(|e| Error::Io(format!("open {evdev_path}"), std::io::Error::from(e)))?;
@@ -456,17 +457,26 @@ impl Sink {
         }
     }
 
-    /// Erase every effect uploaded so far and zero the device gain. Errors
-    /// removing an individual effect are not fatal (the effect may already
-    /// be gone, e.g. the device was reset out from under us) so this does
-    /// not return a `Result`; it is meant as an unconditional cleanup.
+    /// Erase every effect uploaded so far and hand the wheel back at full
+    /// gain. Errors removing an individual effect are not fatal (the effect
+    /// may already be gone, e.g. the device was reset out from under us) so
+    /// this does not return a `Result`; it is meant as an unconditional
+    /// cleanup.
+    ///
+    /// Full gain rather than zero: the gain is device-global driver state
+    /// that nothing resets when the node is closed (`hid-logitech-hidpp.c`,
+    /// the FF_GAIN case), so a zero left here follows the wheel out of this
+    /// session and into the next game, which then has no force at all until
+    /// the wheel is replugged. The effects are already erased above, so
+    /// zeroing bought no silence that the teardown did not, and full gain is
+    /// the state a freshly powered wheel and [`Sink::open`] both assume.
     pub fn shutdown(&mut self) {
         for (_, id) in self.effects.drain() {
             let _ = unsafe { eviocrmff(self.fd.as_raw_fd(), id as u64) };
         }
         self.kinds.clear();
         self.params.clear();
-        let _ = self.write_ff_event(FF_GAIN, 0);
+        let _ = self.write_ff_event(FF_GAIN, 0xFFFF);
     }
 }
 
@@ -604,6 +614,40 @@ mod tests {
         let mut sink = null_sink();
         sink.apply(EffectOp::DeviceControl { op: DeviceControlOp::Pause }).unwrap();
         sink.apply(EffectOp::DeviceControl { op: DeviceControlOp::Continue }).unwrap();
+    }
+
+    /// shutdown() must hand the wheel back at FULL gain, not zero.
+    ///
+    /// The gain is device-global driver state that nothing resets when the
+    /// node is closed, so a zero written here outlives this process: the
+    /// next DirectInput game (or a second logi-ffb alongside this one) gets
+    /// a wheel with no force at all, and only a replug explains it. Written
+    /// against a real file so the assertion is on the bytes that reach the
+    /// fd, which is what the wheel would see.
+    #[test]
+    fn shutdown_restores_full_gain() {
+        let path = std::env::temp_dir().join(format!("logi-ffb-gain-{}", std::process::id()));
+        let f = std::fs::File::options()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&path)
+            .expect("open the capture file");
+        let mut sink =
+            Sink { fd: f.into(), effects: HashMap::new(), kinds: HashMap::new(), params: HashMap::new() };
+
+        sink.shutdown();
+
+        let written = std::fs::read(&path).expect("read the capture file back");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(written.len(), EVENT_SIZE, "exactly one EV_FF event");
+        assert_eq!(u16::from_le_bytes([written[16], written[17]]), EV_FF);
+        assert_eq!(u16::from_le_bytes([written[18], written[19]]), FF_GAIN);
+        assert_eq!(
+            i32::from_le_bytes([written[20], written[21], written[22], written[23]]),
+            0xFFFF,
+            "shutdown must leave the gain at full, not 0",
+        );
     }
 
     #[test]

@@ -185,7 +185,13 @@ want_texture=$(plan_get texture)
 # (LOGI_REV_MODE=shift in the bridge's environment, below). The app
 # persists the choice in launch.conf and states it in the plan.
 want_revleds=$(plan_get revleds)
-say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-unset} ffb=${want_ffb:-native} relay=${want_relay:-none} tfsim=${want_tfsim:-0} texture=${want_texture:-none} revleds=${want_revleds:-bar}"
+# The tfsim default is 1 in BOTH places it is read (here and at the start
+# below), because a plan that states nothing means no plan was produced at
+# all, and an unidentified game still gets the daemon: it idles when nothing
+# is streaming, and withholding it would leave every UDP-telemetry title
+# unserved (`LaunchPlan::unknown`). This line said 0 while the code did 1,
+# so the log contradicted the behaviour for exactly those games.
+say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-unset} ffb=${want_ffb:-native} relay=${want_relay:-none} tfsim=${want_tfsim:-1} texture=${want_texture:-none} revleds=${want_revleds:-bar}"
 
 # TrueForce in an SDK title needs the game to reach the wheel's raw HID
 # interface. Set here so nobody has to remember it, and NEVER guessed: on a
@@ -266,6 +272,97 @@ case "$want_hidraw" in
 	;;
 esac
 
+# ONE wheel per invocation, resolved here and used by everything below.
+#
+# Everything after this point acts on hardware: the merge switch, and the
+# TrueForce teardown pair sent once the game is gone. Both used to find
+# their own wheel, and on a rig with two they could disagree: the merge was
+# armed on EVERY attached direct-drive wheel by a glob, while the teardown
+# took whichever hidraw node happened to sort first, ignoring --wheel
+# entirely. Then the exit path switched the merge off on every wheel again,
+# including ones this session never touched.
+#
+# Priority: the plan's own hidraw scope (`0x046D/0xC276`), which is the app
+# naming the wheel it built the recipe for and already honours --wheel; then
+# --wheel on its own, for a plan that granted no hidraw; then every
+# direct-drive product id, which is the single-wheel case.
+DD_PIDS="C276 C272 C268"
+G923_PIDS="C266 C267 C26E"
+wheel_pids="$DD_PIDS"
+case "$named_wheel" in
+"") ;;
+dd|direct-drive|rs50|gpro) wheel_pids="$DD_PIDS" ;;
+g923|classic) wheel_pids="$G923_PIDS" ;;
+*) say "unknown --wheel $named_wheel; treating it as a direct-drive wheel" ;;
+esac
+case "$want_hidraw" in
+0x*/0x*) wheel_pids="${want_hidraw##*/0x}" ;;
+esac
+
+# The one sysfs device directory carrying that wheel's attributes, or empty
+# when none of the wanted product ids is attached (a G923 always lands here:
+# it has no texture merge to arm and no TrueForce engine to tear down).
+wheel_dir=""
+for d in /sys/bus/hid/devices/*046D:C2*; do
+	[ -e "$d/wheel_tf_merge" ] || continue
+	d_id="${d##*/}"			# 0003:046D:C276.0003
+	d_pid="${d_id#*:*:}"; d_pid="${d_pid%%.*}"
+	case " $wheel_pids " in
+	*" $d_pid "*) wheel_dir="$d"; break ;;
+	esac
+done
+[ -n "$wheel_dir" ] && say "acting on the wheel at $wheel_dir"
+
+# That wheel's force-feedback evdev node, for the helpers that would
+# otherwise take whichever eventN sorted first.
+#
+# --wheel already reaches the plan, the merge switch, the teardown and
+# logi-tf-sim, and stopped here: logi-ffb picked its own device by scanning
+# for the first node that looks like a wheel. On a two-wheel rig that is a
+# coin toss, and the one selection this script had already made was right
+# there. Scoped by USB device (the physical parent both interfaces hang off)
+# rather than by name, which is the same test logi-wheel-core's
+# `discover_wheel_input_under` makes.
+wheel_event=""
+if [ -n "$wheel_dir" ]; then
+	# ../.. from the HID device directory is the USB device: the wheel's
+	# interfaces (hidraw here, input there) are siblings under it.
+	wheel_usb=$(cd "$wheel_dir/../.." 2>/dev/null && pwd -P) || wheel_usb=""
+	for e in /sys/class/input/event*; do
+		[ -d "$e/device" ] || continue
+		[ -n "$wheel_usb" ] || break
+		e_real=$(cd "$e/device" 2>/dev/null && pwd -P) || continue
+		case "$e_real" in
+		"$wheel_usb"/*) ;;
+		*) continue ;;
+		esac
+		# Force feedback, not the wheel's keyboard-like sibling nodes.
+		e_ff=$(cat "$e/device/capabilities/ff" 2>/dev/null || true)
+		case "$e_ff" in
+		""|0) continue ;;
+		esac
+		wheel_event="${e##*/}"
+		break
+	done
+	[ -n "$wheel_event" ] && say "the wheel's force-feedback node is $wheel_event"
+fi
+
+# Whether the SDK shim relays the game's own TrueForce to logi-tf-sim.
+#
+# It is only ever wanted for a G923, which never receives TrueForce from
+# Logitech's library at all. A direct-drive wheel is already being streamed
+# to by that library, and a second writer on an endpoint carrying one packet
+# per millisecond does not share it, it takes turns: the motor ends up
+# square-modulated at 500 Hz. The shim works this out from sysfs on its own;
+# this only passes on the answer this script already has. A value set by
+# hand wins over both.
+if [ -z "${LOGI_TF_CAPTURE:-}" ]; then
+	case "$named_wheel" in
+	g923|classic) export LOGI_TF_CAPTURE=1 ;;
+	dd|direct-drive|rs50|gpro) export LOGI_TF_CAPTURE=0 ;;
+	esac
+fi
+
 # The kernel texture merge: the driver mixes an engine-note texture into
 # the game's own TrueForce stream, on the wheel itself. Three pieces, all
 # undone when the game exits:
@@ -279,7 +376,9 @@ esac
 # there is no native stream to merge into. The no-prefix case passes for
 # the same reason it does there: the prefix may simply not exist yet.
 rpm_bridge_pid=""
-merge_enabled=""
+# The exact attribute paths this invocation wrote 1 to, one per line, so the
+# exit path can undo those and only those.
+merge_attrs=""
 if [ "$want_texture" = "merge" ] && \
    { [ "$have_tf_files" = "1" ] || [ -z "$prefix_root" ]; }; then
 	# The game's own directory, taken from the .exe in the command Steam
@@ -322,20 +421,38 @@ if [ "$want_texture" = "merge" ] && \
 		# The rev-light mapping is the bridge's to apply: bar is its
 		# default, shift is opted into per plan. Set only on the
 		# bridge's own environment, not exported to the game.
-		if [ "$want_revleds" = "shift" ]; then
-			LOGI_REV_MODE=shift "$bridge_bin" >>"$LOG" 2>&1 &
-		else
-			"$bridge_bin" >>"$LOG" 2>&1 &
-		fi
+		#
+		# Pointed at the wheel resolved above, rather than left to
+		# take the first one sysfs lists: its rev-light target is the
+		# neighbour of this attribute, so an unscoped bridge on a
+		# two-wheel rig feeds one wheel's texture and lights the
+		# other one's strip.
+		#
+		# Through env with an array, because both settings are
+		# optional: an assignment built by expanding a variable is
+		# not recognised as one, it is read as the command name.
+		bridge_env=()
+		[ "$want_revleds" = "shift" ] && bridge_env+=(LOGI_REV_MODE=shift)
+		[ -n "$wheel_dir" ] && \
+			bridge_env+=("LOGI_RPM_SYSFS=$wheel_dir/wheel_texture_rpm")
+		env "${bridge_env[@]}" "$bridge_bin" >>"$LOG" 2>&1 &
 		rpm_bridge_pid=$!
 		say "started logi-rpm-bridge (pid $rpm_bridge_pid, rev lights ${want_revleds:-bar})"
 	else
 		say "logi-rpm-bridge is not installed; the texture merge has no RPM feed"
 	fi
-	for d in /sys/bus/hid/devices/*046D:C2*/wheel_tf_merge; do
-		[ -w "$d" ] && echo 1 > "$d" && merge_enabled=1 && \
-			say "texture merge enabled ($d)"
-	done
+	# The resolved wheel only, and remembered by path: switching the merge
+	# on for every wheel in sysfs armed hardware this game never uses, and
+	# a bare "it was on" flag then had the exit path switch it off on all
+	# of them, including one another session had armed for itself.
+	if [ -z "$wheel_dir" ]; then
+		say "no wheel with a texture merge attached; nothing to arm"
+	elif [ -w "$wheel_dir/wheel_tf_merge" ] && echo 1 > "$wheel_dir/wheel_tf_merge"; then
+		merge_attrs="$wheel_dir/wheel_tf_merge"
+		say "texture merge enabled ($wheel_dir/wheel_tf_merge)"
+	else
+		say "cannot write $wheel_dir/wheel_tf_merge; the texture merge stays off"
+	fi
 fi
 
 # Work out what to start in the prefix, if the caller did not say.
@@ -384,6 +501,14 @@ fi
 # dark. Started only if it is not already up, and left running, since
 # it idles when nothing is streaming.
 if [ "${LOGI_LAUNCH_TF_SIM:-1}" = "1" ] && [ "${want_tfsim:-1}" = "1" ]; then
+	# Both at once is a recipe only a hand-written games.conf line can
+	# ask for: the two read the same relay port and only one can have
+	# it, so say which is which before either complains on its own.
+	if [ -n "$rpm_bridge_pid" ]; then
+		say "note: logi-rpm-bridge holds the relay port for this session, so the daemon"
+		say "note: runs without it. The bridge is feeding the texture merge and the rev"
+		say "note: lights; drop tfsim=1 from your games.conf line to keep the log quiet."
+	fi
 	if pgrep -x logi-tf-sim >/dev/null 2>&1; then
 		say "logi-tf-sim is already running"
 		# It was started for some other session, possibly aimed at the
@@ -513,6 +638,15 @@ fi
 # asked of the user, so one prepend really is enough.
 if [ "$want_ffb" = "proxy" ] && command -v logi-ffb >/dev/null 2>&1; then
 	say "launching through logi-ffb for DirectInput force feedback"
+	# Aimed at the wheel resolved above. Without this the proxy runs its
+	# own scan and takes the first eventN that looks like a wheel, which
+	# on a two-wheel rig can be the one this session is not setting up:
+	# the game would then push force into the other wheel. A value set by
+	# hand still wins, same as everywhere else here.
+	if [ -n "$wheel_event" ] && [ -z "${LOGI_FFB_DEVICE:-}" ]; then
+		export LOGI_FFB_DEVICE="$wheel_event"
+		say "aiming logi-ffb at $wheel_event"
+	fi
 	set -- logi-ffb "$@"
 fi
 
@@ -529,26 +663,60 @@ fi
 # python; as printf escapes it needs a NUL-safe printf, a fractional
 # sleep, and a realpath chain that differ across shells. logi-tf-init.py
 # already makes python3 part of this tool set.
+#
+# Scoped to the wheel resolved at the top: the interface-2 node must belong
+# to the SAME wheel this session set up, or a two-wheel rig gets its other
+# wheel's TrueForce engine stopped while the one that was actually played
+# keeps whining. WHEEL_DIR pins it to one USB device; WHEEL_PIDS is the
+# fallback when the driver exposed no attribute directory to resolve. A
+# wheel with no direct-drive product id (a G923) has no TrueForce engine to
+# tear down, so nothing matches and nothing is sent.
 send_teardown_pair() {
 	if ! command -v python3 >/dev/null 2>&1; then
 		say "python3 not found; cannot send the wheel teardown pair"
 		return 0
 	fi
-	python3 - >>"$LOG" 2>&1 <<'PYEOF'
+	# Direct-drive only. The pair is this family's TrueForce engine
+	# protocol; a G923 speaks the classic one and has no such engine, so
+	# there is nothing here to send it.
+	case " $wheel_pids " in
+	*" C276 "*|*" C272 "*|*" C268 "*) ;;
+	*) say "the wheel for this session has no TrueForce engine; teardown pair skipped"
+	   return 0 ;;
+	esac
+	WHEEL_DIR="$wheel_dir" WHEEL_PIDS="$wheel_pids" python3 - >>"$LOG" 2>&1 <<'PYEOF'
 import glob, os, time
 
+# The USB device the resolved wheel's attributes hang off, so siblings of
+# THAT device are the only candidates: /sys/bus/hid/devices/<id> is a link
+# into .../<usb device>/<interface>/<hid id>.
+def wanted_usb_device():
+    d = os.environ.get("WHEEL_DIR", "")
+    if not d:
+        return None
+    try:
+        return os.path.realpath(os.path.join(d, "..", ".."))
+    except OSError:
+        return None
+
 def find_tf_hidraw():
+    usb = wanted_usb_device()
+    pids = [p for p in os.environ.get("WHEEL_PIDS", "").upper().split() if p]
     for h in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
         dev = os.path.join(h, "device")
         try:
-            hid_id = ""
-            for line in open(os.path.join(dev, "uevent")):
-                if line.startswith("HID_ID="):
-                    hid_id = line.strip().split("=", 1)[1]
-            up = hid_id.upper()
-            if "046D" not in up or not any(p in up for p in ("C276", "C272", "C268")):
-                continue
             iface = os.path.realpath(os.path.join(dev, ".."))
+            if usb:
+                if os.path.realpath(os.path.join(iface, "..")) != usb:
+                    continue
+            else:
+                hid_id = ""
+                for line in open(os.path.join(dev, "uevent")):
+                    if line.startswith("HID_ID="):
+                        hid_id = line.strip().split("=", 1)[1]
+                up = hid_id.upper()
+                if "046D" not in up or not any(p in up for p in pids):
+                    continue
             bnum = open(os.path.join(iface, "bInterfaceNumber")).read().strip()
             if int(bnum, 16) == 2:
                 return "/dev/" + os.path.basename(h)
@@ -599,21 +767,40 @@ send_tf_rearm() {
 		say "TF re-arm requested but tf-init.bin or python3 missing; skipped"
 		return 0
 	fi
-	REARM_BLOB="$rearm_blob" python3 - >>"$LOG" 2>&1 <<'PYEOF'
+	# Same wheel scoping as send_teardown_pair, and for the same reason:
+	# these bytes must reach the wheel this session is for, not whichever
+	# one sorts first.
+	REARM_BLOB="$rearm_blob" WHEEL_DIR="$wheel_dir" WHEEL_PIDS="$wheel_pids" \
+		python3 - >>"$LOG" 2>&1 <<'PYEOF'
 import glob, os, time
 
+def wanted_usb_device():
+    d = os.environ.get("WHEEL_DIR", "")
+    if not d:
+        return None
+    try:
+        return os.path.realpath(os.path.join(d, "..", ".."))
+    except OSError:
+        return None
+
 def find_tf_hidraw():
+    usb = wanted_usb_device()
+    pids = [p for p in os.environ.get("WHEEL_PIDS", "").upper().split() if p]
     for h in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
         dev = os.path.join(h, "device")
         try:
-            hid_id = ""
-            for line in open(os.path.join(dev, "uevent")):
-                if line.startswith("HID_ID="):
-                    hid_id = line.strip().split("=", 1)[1]
-            up = hid_id.upper()
-            if "046D" not in up or not any(p in up for p in ("C276", "C272", "C268")):
-                continue
             iface = os.path.realpath(os.path.join(dev, ".."))
+            if usb:
+                if os.path.realpath(os.path.join(iface, "..")) != usb:
+                    continue
+            else:
+                hid_id = ""
+                for line in open(os.path.join(dev, "uevent")):
+                    if line.startswith("HID_ID="):
+                        hid_id = line.strip().split("=", 1)[1]
+                up = hid_id.upper()
+                if "046D" not in up or not any(p in up for p in pids):
+                    continue
             if int(open(os.path.join(iface, "bInterfaceNumber")).read().strip(), 16) == 2:
                 return "/dev/" + os.path.basename(h)
         except (OSError, ValueError):
@@ -649,7 +836,7 @@ fi
 # the wheel gets the teardown pair an SDK title never sends under Proton.
 # Everything else keeps the historical exec, which leaves no wrapper
 # process behind.
-if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ] || \
+if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_attrs" ] || \
    [ -n "$hidraw_granted" ] || [ -n "$helper_group_pid" ]; then
 	session_cleanup() {
 		[ -n "$rpm_bridge_pid" ] && kill "$rpm_bridge_pid" 2>/dev/null
@@ -669,11 +856,18 @@ if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ] || \
 			rm -f "$HELPER_PIDS"
 			say "in-prefix helper stopped"
 		fi
-		if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ]; then
-			for d in /sys/bus/hid/devices/*046D:C2*/wheel_tf_merge; do
+		# Exactly the attributes this invocation wrote 1 to. Undoing
+		# the glob instead switched the merge off on wheels this
+		# session never armed, including one another session had just
+		# armed for itself.
+		if [ -n "$merge_attrs" ]; then
+			while read -r d; do
+				[ -n "$d" ] || continue
 				[ -w "$d" ] && echo 0 > "$d"
-			done
-			say "texture merge disabled"
+				say "texture merge disabled ($d)"
+			done <<-MERGEATTRS
+			$merge_attrs
+			MERGEATTRS
 		fi
 		send_teardown_pair
 	}

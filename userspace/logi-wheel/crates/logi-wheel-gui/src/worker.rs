@@ -192,6 +192,9 @@ impl Worker {
             // every (re-)discovery, because wheels come and go.
             let mut wheels = Device::discover_all();
             let mut active = 0usize;
+            // The identity behind that index, so a rediscovery follows the
+            // wheel rather than the position it used to be at.
+            let mut active_key = key_of(&wheels, active);
             let mut active_usb = usb_of(&wheels, active);
             let (mut vm, resp) = discover_outcome(pick(&mut wheels, active));
             let mut no_wheel_msg = no_wheel_message(&resp);
@@ -231,7 +234,13 @@ impl Worker {
                 // borrows the viewmodel it cannot swap.
                 if matches!(req, Request::Discover) {
                     wheels = Device::discover_all();
-                    active = 0;
+                    // Keep managing the wheel the user chose, at whatever
+                    // index it now sits: this used to reset to 0, so a
+                    // Retry (or the drift watcher's rediscovery) silently
+                    // moved the app onto another wheel. Back to the first
+                    // one only when the chosen wheel is really gone.
+                    active = index_of_key(&wheels, active_key.as_deref());
+                    active_key = key_of(&wheels, active);
                     active_usb = usb_of(&wheels, active);
                     let (new_vm, resp) = discover_outcome(pick(&mut wheels, active));
                     vm = new_vm;
@@ -274,6 +283,7 @@ impl Worker {
                         continue;
                     }
                     active = index;
+                    active_key = key_of(&wheels, active);
                     active_usb = usb_of(&wheels, active);
                     let (new_vm, resp) = discover_outcome(pick(&mut wheels, active));
                     vm = new_vm;
@@ -382,6 +392,27 @@ fn announce_wheels(
 fn usb_of(wheels: &[Device<RealSysfs>], index: usize) -> Option<std::path::PathBuf> {
     let key = wheels.get(index)?.sysfs_key()?;
     logi_wheel_core::device::usb_device_dir(&key)
+}
+
+/// The canonical sysfs path of the wheel at `index`, read (like [`usb_of`])
+/// before `pick` removes it from the list.
+///
+/// This is what the worker remembers between discoveries. An index is a
+/// position in a list that is rebuilt every time, not an identity: unplug
+/// the wheel sorting first and every remaining index shifts by one, so the
+/// app would carry on managing a different wheel under the same selection.
+fn key_of(wheels: &[Device<RealSysfs>], index: usize) -> Option<std::path::PathBuf> {
+    wheels.get(index)?.sysfs_key()
+}
+
+/// Where the wheel identified by `key` sits in a freshly discovered list.
+///
+/// Falls back to the first wheel when the remembered one is not attached any
+/// more (or was never identified), which is what a rediscovery after an
+/// unplug should do: manage something rather than nothing.
+fn index_of_key(wheels: &[Device<RealSysfs>], key: Option<&std::path::Path>) -> usize {
+    let Some(key) = key else { return 0 };
+    wheels.iter().position(|d| d.sysfs_key().as_deref() == Some(key)).unwrap_or(0)
 }
 
 fn discover_outcome<S: SysfsIo>(result: Result<Device<S>, Error>) -> (Option<ViewModel<S>>, Response) {
@@ -527,9 +558,14 @@ fn led_try_on_wheel<S: SysfsIo>(
 /// and follows its direction, so the user sees the slot as a live
 /// animated fill. The caller restores `wheel_led_effect` afterwards,
 /// which exits the fill back to the idle pattern.
+///
+/// Through `test_write` rather than `edit`: the app models
+/// `wheel_rev_level` read-only so no widget can race the live rev feed, and
+/// this asked-for test borrowing the strip for a second is the exception
+/// that flag is not about.
 fn rev_sweep<S: SysfsIo>(vm: &ViewModel<S>, step: Duration) -> Result<(), Error> {
     for level in (0..=10i64).chain((0..10).rev()) {
-        vm.edit("wheel_rev_level", WidgetInput::Slider(level))?;
+        vm.test_write("wheel_rev_level", WidgetInput::Slider(level))?;
         thread::sleep(step);
     }
     Ok(())

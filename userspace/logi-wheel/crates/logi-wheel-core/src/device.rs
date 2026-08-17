@@ -555,6 +555,28 @@ impl<S: SysfsIo> Device<S> {
         self.sysfs_key.clone()
     }
 
+    /// This wheel's HID device id (`0003:046D:C276.0003`), the last
+    /// component of [`Device::sysfs_key`].
+    ///
+    /// The stable name for one wheel, and the one the rest of the project
+    /// already speaks: it is what `/sys/bus/hid/devices` and
+    /// `/sys/class/leds` entries are named after, so a caller holding it can
+    /// address this wheel's attributes and its rev display without a fresh
+    /// scan that might land on a different wheel. Unlike a hidraw node
+    /// number it survives nothing being replugged, and unlike an index into
+    /// a discovery list it does not depend on iteration order.
+    ///
+    /// `None` for a device with no sysfs path behind it (tests, the
+    /// `LOGI_WHEEL_SYSFS_DIR` fixture), whose directory name is not an id.
+    pub fn hid_id(&self) -> Option<String> {
+        let key = self.sysfs_key.as_ref()?;
+        let name = key.file_name()?.to_string_lossy().into_owned();
+        // A fixture directory is not an id, and handing its name out as one
+        // would send every lookup keyed on it somewhere that cannot exist.
+        // The kernel writes ids as BUS:VID:PID.SEQ.
+        (name.matches(':').count() == 2 && name.contains('.')).then_some(name)
+    }
+
     pub fn model(&self) -> WheelModel {
         self.model
     }
@@ -816,6 +838,32 @@ impl<S: SysfsIo> Device<S> {
         if spec.access == Access::ReadOnly {
             return Err(Error::Invalid);
         }
+        self.write_checked(spec, v)
+    }
+
+    /// [`Device::write`] for the deliberate hardware tests that borrow an
+    /// attribute a live feed normally owns, such as the LED test's rev
+    /// sweep over `wheel_rev_level`.
+    ///
+    /// `Access::ReadOnly` in the registry means "not a control on the
+    /// settings page", not "the wheel refuses it": several of those
+    /// attributes are read-write on the wire and are modeled read-only so
+    /// the app cannot race logi-rpm-bridge or logi-launch. A test the user
+    /// asked for, which runs for a moment and puts the display back, is the
+    /// one case where taking the strip is what they meant. Everything else
+    /// goes through `write`, so no widget can reach this.
+    pub fn write_test_pattern(&self, attr: &str, v: &Value) -> Result<(), Error> {
+        let spec = Self::spec(attr).ok_or(Error::Invalid)?;
+        if spec.access == Access::Action {
+            return Err(Error::Invalid);
+        }
+        self.write_checked(spec, v)
+    }
+
+    /// The shared half of the two writes above: validate, gate on mode, and
+    /// hand the formatted value to sysfs. Access is the caller's business.
+    fn write_checked(&self, spec: &SettingSpec, v: &Value) -> Result<(), Error> {
+        let attr = spec.attr;
         spec.kind.validate(v)?;
         // Mode gating: reject up front with a WrongMode the UI can act on.
         match spec.mode_req {
@@ -932,6 +980,32 @@ mod tests {
     fn write_out_of_range_rejected_before_io() {
         let d = dev();
         assert!(matches!(d.write("wheel_range", &Value::Int(45)), Err(Error::OutOfRange)));
+    }
+
+    /// The rev strip belongs to whichever feed is driving it, so an ordinary
+    /// write (a settings widget) is refused while the LED test's explicit
+    /// borrow still lands. The wheel takes both: the difference is ownership,
+    /// not what the hardware accepts.
+    #[test]
+    fn the_rev_strip_refuses_a_widget_and_allows_the_led_test() {
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_rev_level", "0");
+        let d = Device::with_io(fs);
+        assert!(matches!(d.write("wheel_rev_level", &Value::Int(7)), Err(Error::Invalid)));
+        assert_eq!(d.read("wheel_rev_level").unwrap(), Value::Int(0), "the feed's level stands");
+        d.write_test_pattern("wheel_rev_level", &Value::Int(7)).unwrap();
+        assert_eq!(d.read("wheel_rev_level").unwrap(), Value::Int(7));
+        // Still validated: the escape hatch is about access, nothing else.
+        assert!(matches!(
+            d.write_test_pattern("wheel_rev_level", &Value::Int(11)),
+            Err(Error::OutOfRange)
+        ));
+        // And write-only triggers stay out of reach: they are not values.
+        assert!(matches!(
+            d.write_test_pattern("wheel_calibrate_here", &Value::Trigger),
+            Err(Error::Invalid)
+        ));
     }
 
     #[test]
@@ -1444,6 +1518,30 @@ mod tests {
         std::fs::write(dir.join("uevent"), "DRIVER=x\nHID_UNIQ=\n").unwrap();
         assert_eq!(read_hid_uniq(&dir), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The identity callers carry instead of an index or a hidraw node
+    /// number: the last component of the canonical sysfs path, and only
+    /// when it really is a kernel HID id.
+    #[test]
+    fn hid_id_is_the_device_id_and_nothing_else() {
+        let with_key = |key: &str| Device {
+            io: FakeSysfs::new(),
+            model: WheelModel::Rs50,
+            hid_dir: None,
+            sysfs_key: Some(std::path::PathBuf::from(key)),
+        };
+        assert_eq!(
+            with_key("/sys/devices/pci0000:00/usb1/1-8/1-8:1.2/0003:046D:C276.0003").hid_id(),
+            Some("0003:046D:C276.0003".to_string())
+        );
+        // A LOGI_WHEEL_SYSFS_DIR fixture: a directory of attribute files
+        // whose name is not an id. Passing that on as one would send every
+        // lookup keyed on it (the rev display, the streaming lease) to a
+        // path that cannot exist.
+        assert_eq!(with_key("/tmp/my-fake-wheel").hid_id(), None);
+        // No sysfs behind it at all.
+        assert_eq!(Device::with_io(FakeSysfs::new()).hid_id(), None);
     }
 
     #[test]

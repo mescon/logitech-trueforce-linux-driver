@@ -48,7 +48,7 @@ const LEDS_ROOT: &str = "/sys/class/leds";
 /// when both are set. Duplicated from `logi-wheel-core`'s own helper rather
 /// than linked (this crate is GPL-2.0-only and does not depend on core at
 /// runtime; see the module doc for the license boundary).
-fn sysfs_dir_override() -> Option<String> {
+pub(crate) fn sysfs_dir_override() -> Option<String> {
     std::env::var("LOGI_WHEEL_SYSFS_DIR").ok().or_else(|| std::env::var("LOGI_DD_SYSFS_DIR").ok())
 }
 
@@ -137,6 +137,53 @@ fn discover_classdevs_at(root: &Path) -> Option<[PathBuf; 5]> {
         }
     }
     None
+}
+
+/// The other program that writes [`ATTR`]: logi-launch starts it for the
+/// kernel texture merge, and it drives the strip from the game's own
+/// telemetry triple. Spelled as `/proc/<pid>/comm` reports it, which is the
+/// executable's name truncated to 15 characters; this one is exactly 15, so
+/// the comparison below is against the whole name.
+const BRIDGE_COMM: &str = "logi-rpm-bridge";
+
+/// Where process names are read from.
+const PROC_ROOT: &str = "/proc";
+
+/// Who else is already driving the rev display, as `name (pid N)`.
+///
+/// One writer per session, or the strip renders two mappings at once: the
+/// bridge's dash band (dark until the car's first shift light) and this
+/// daemon's full-range bar disagree at nearly every rpm, and both write on
+/// change, so the strip would flicker between them with no way to tell from
+/// the outside which one is in charge. The bridge wins because it is the
+/// narrower claim: it exists for the length of one game session, started
+/// and stopped by logi-launch, while this daemon is left running between
+/// them.
+///
+/// Checked at stream start rather than once at boot, so a daemon that was
+/// already up when the game (and its bridge) started still stands down: a
+/// stream starts on the first telemetry after silence, which is exactly the
+/// moment a session begins.
+pub fn other_owner() -> Option<String> {
+    other_owner_at(Path::new(PROC_ROOT))
+}
+
+/// [`other_owner`] against a caller-supplied proc root, so the detection is
+/// testable without a live bridge process.
+pub fn other_owner_at(proc_root: &Path) -> Option<String> {
+    let mut found: Option<u32> = None;
+    for entry in std::fs::read_dir(proc_root).ok()?.flatten() {
+        let name = entry.file_name();
+        let Ok(pid) = name.to_string_lossy().parse::<u32>() else { continue };
+        let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else { continue };
+        if comm.trim() != BRIDGE_COMM {
+            continue;
+        }
+        // Lowest pid wins, so two bridges (or a stale one) still name the
+        // same process every time this is called.
+        found = Some(found.map_or(pid, |lowest: u32| lowest.min(pid)));
+    }
+    found.map(|pid| format!("{BRIDGE_COMM} (pid {pid})"))
 }
 
 /// Which sysfs surface a [`RevLeds`] drives.
@@ -451,6 +498,46 @@ mod tests {
             RevLeds::discover_for_at("0003:046D:CAFE.0001", &sysfs, &leds).is_none(),
             "an unknown wheel must get nothing, not the first display in sysfs"
         );
+    }
+
+    /// A fake /proc holding one process per (pid, comm) pair.
+    fn fake_proc(entries: &[(&str, &str)]) -> PathBuf {
+        let root = tempdir();
+        for (pid, comm) in entries {
+            let dir = root.join(pid);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("comm"), format!("{comm}\n")).unwrap();
+        }
+        // The real /proc carries plenty of non-pid entries; they must not
+        // upset the scan.
+        fs::create_dir_all(root.join("self")).unwrap();
+        fs::write(root.join("uptime"), "1 1\n").unwrap();
+        root
+    }
+
+    /// The rev strip has one writer per session: a running bridge is
+    /// reported, so the daemon can stand down instead of fighting it.
+    #[test]
+    fn a_running_bridge_is_reported_as_the_rev_display_owner() {
+        let proc = fake_proc(&[("1", "systemd"), ("4242", BRIDGE_COMM), ("991", "logi-tf-sim")]);
+        assert_eq!(other_owner_at(&proc).as_deref(), Some("logi-rpm-bridge (pid 4242)"));
+    }
+
+    /// Nothing else may be mistaken for it, including this daemon itself:
+    /// standing down when nobody is there costs the user their rev lights
+    /// for no reason at all.
+    #[test]
+    fn no_bridge_means_the_display_is_ours() {
+        let proc = fake_proc(&[("1", "systemd"), ("991", "logi-tf-sim"), ("7", "logi-rpm-bridg")]);
+        assert_eq!(other_owner_at(&proc), None);
+    }
+
+    /// Two bridges (one stale, one live) still name the same process on
+    /// every call, so the log does not wander between them.
+    #[test]
+    fn the_lowest_pid_wins_when_several_bridges_are_up() {
+        let proc = fake_proc(&[("900", BRIDGE_COMM), ("120", BRIDGE_COMM)]);
+        assert_eq!(other_owner_at(&proc).as_deref(), Some("logi-rpm-bridge (pid 120)"));
     }
 
     fn read(path: &Path) -> String {

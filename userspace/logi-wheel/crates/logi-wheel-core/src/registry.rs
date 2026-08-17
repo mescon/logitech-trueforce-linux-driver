@@ -55,7 +55,14 @@ pub const REGISTRY: &[SettingSpec] = &[
     // DesktopOnly pre-check would falsely reject onboard-mode writes.
     SettingSpec { attr: "wheel_response_curve", label: "Response curve", help: "Shapes the whole steering response by hand, so you can soften or sharpen the feel at any point of the turn. Use 'reset' to go back to the built-in feel.", category: Steering, kind: Kind::Curve, access: ReadWrite, mode_req: Any },
     SettingSpec { attr: "wheel_calibrate_here", label: "Calibrate centre here", help: "Sets the wheel's current physical position as dead centre. Hold the wheel straight, then run this if the centre point has drifted.", category: Steering, kind: Kind::Action, access: Action, mode_req: Any },
-    SettingSpec { attr: "wheel_rev_level", label: "Rev lights", help: "Lights up this many of the 10 rev LEDs by hand (0-10), using the active colour set. Mainly for testing; in play, logi-rpm-bridge drives it with live engine RPM. Two mappings: by default the bar fills across the whole rev range, and LOGI_REV_MODE=shift keeps it dark until the car's first shift light, like the dashboard.", category: Steering, kind: Kind::IntRange { min: 0, max: 10, step: 1, unit: "" }, access: ReadWrite, mode_req: Any },
+    // Read-only in this app for the reason `wheel_texture_rpm` above is: the
+    // strip is a live feed, driven by logi-rpm-bridge during a texture-merge
+    // session and by logi-tf-sim's rev feeder otherwise, both at up to 60 Hz.
+    // An editable control here would be a third writer racing them, and the
+    // one that lost would look like a broken slider. The wheel itself takes
+    // the write (`Device::write_test_pattern` is how the LED test borrows the
+    // strip); this flag is about who owns it, not what the hardware accepts.
+    SettingSpec { attr: "wheel_rev_level", label: "Rev lights", help: "How many of the 10 rev LEDs are lit right now (0-10), in the active colour set. Driven live by logi-rpm-bridge during a game, or by logi-tf-sim from telemetry. Two mappings: by default the bar fills across the whole rev range, and LOGI_REV_MODE=shift keeps it dark until the car's first shift light, like the dashboard.", category: Steering, kind: Kind::IntRange { min: 0, max: 10, step: 1, unit: "" }, access: ReadOnly, mode_req: Any },
     // --- Pedals ---
     // Each pedal has three generators that all write the one 0x80A4 curve the
     // pedal MCU applies to its axis (hardware-verified 2026-07-16). Last write
@@ -322,6 +329,17 @@ mod tests {
             let s = REGISTRY.iter().find(|s| s.attr == attr).unwrap();
             assert_eq!(s.access, Access::ReadOnly, "{attr}");
         }
+    }
+
+    /// The rev strip is a live feed's, not a slider's: logi-rpm-bridge
+    /// drives it during a texture-merge session and logi-tf-sim's rev feeder
+    /// otherwise, both at up to 60 Hz. An editable row here was a third
+    /// writer, and whichever lost looked like a broken control. The LED test
+    /// still borrows the strip through `Device::write_test_pattern`.
+    #[test]
+    fn the_rev_strip_is_read_only_in_this_app() {
+        let s = REGISTRY.iter().find(|s| s.attr == "wheel_rev_level").unwrap();
+        assert_eq!(s.access, Access::ReadOnly);
     }
 
     /// The rpm feed's live-vs-stale display, exercised through the actual
