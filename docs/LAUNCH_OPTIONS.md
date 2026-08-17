@@ -304,6 +304,8 @@ app's Setup page, **Install relay**.
 | `LOGI_LAUNCH_TF_SIM` | `1` | `0` leaves the `logi-tf-sim` daemon alone, for running it yourself |
 | `LOGI_LAUNCH_LOG` | `/tmp/logi-launch.log` | Where it writes what it did |
 | `LOGI_REV_MODE` | full bar | `shift` makes `logi-rpm-bridge` map the rev strip to the dash band: dark below the car's first shift light, level 1 exactly there, 10 at the limiter. The default lights LED 1 as soon as rpm > 0 and all 10 at the limiter |
+| `LOGI_FFB_DEVICE` | the wheel `--wheel` resolved | Which evdev node `logi-ffb` drives (`eventN` or a full path). `logi-launch` sets it from the wheel it set the session up for; set it yourself only to override that |
+| `LOGI_TF_CAPTURE` | worked out from the wheels attached | `1` makes the TrueForce SDK shim relay the game's own TrueForce to `logi-tf-sim`, `0` stops it. Only a G923 wants it: on a direct-drive wheel Logitech's library streams those samples itself, and a second writer on the wheel's one-packet-per-millisecond endpoint takes turns with it rather than sharing, which buzzes. `logi-launch` sets it from `--wheel` when you name one |
 | `LOGI_TF_REARM` | `0` | **Experimental.** `1` makes `logi-launch` re-arm the TrueForce session before the game starts (the stop/start pair plus the 68-packet init, twice, from `tools/tf-init.bin`), for recovering from a previous session that died without teardown. Off by default pending hardware validation; a power cycle of the base remains the proven recovery |
 
 `LOGI_LAUNCH_EXE` replaces the relay, so simulated TrueForce and the rev

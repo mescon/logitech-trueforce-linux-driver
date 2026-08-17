@@ -237,6 +237,16 @@ grants `texture=merge` (the registry in
 `userspace/logi-wheel/crates/logi-wheel-core/src/games.rs`; today only
 AC EVO, because grants ride hardware evidence).
 
+**One consumer at a time.** The port takes any number of producers, but a
+unicast datagram is delivered to exactly one socket, whatever socket options
+the listeners set (`SO_REUSEADDR` only lets both bind while the kernel still
+picks one winner; `SO_REUSEPORT` load-balances, which splits a stream rather
+than duplicating it). So `logi-rpm-bridge` and `logi-tf-sim` cannot both read
+20780: whichever starts second says so and names the other, the bridge by
+exiting (the socket is its whole job) and the daemon by carrying on without
+its relay games. Move one of them with `LOGI_RPM_PORT` or the daemon's
+`port.relay` if you really want both, and point your producer at both ports.
+
 `logi-rpm-bridge` is also the rev-light feeder: besides
 `wheel_texture_rpm`, it drives `wheel_rev_level` from the same datagrams.
 The default mapping is a full rev bar (LED 1 as soon as rpm > 0, all 10 at
@@ -245,7 +255,10 @@ selects the dash band instead: dark below the first-shift-light rpm,
 level 1 exactly there, 10 at the limiter (needs the 32-byte form below).
 `LOGI_REV_SYSFS` overrides the LED target attribute and `LOGI_RPM_PORT`
 the UDP port. The strip darkens on telemetry loss (1 s) and on bridge
-exit.
+exit. The strip has one feeder per session: `logi-tf-sim` drives it from
+telemetry too, so while a bridge is running the daemon leaves the rev
+display alone (it says so in its log) rather than writing a second mapping
+over the top of it.
 
 The wire format, LTFR version 2 (32 bytes since 2026-08-14, little-endian,
 append-only - the first 28 bytes are the original version-2 layout, the

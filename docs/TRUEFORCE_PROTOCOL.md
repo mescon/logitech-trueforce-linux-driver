@@ -151,7 +151,7 @@ byte[60-63]: window[12]
 **Layout invariants observed across captures and replicated in `src/stream.c`:**
 
 - The 13-slot rolling window holds the most recent samples, oldest at `window[0]`, newest at `window[12]`.
-- Each packet advances the window by **4 new samples**; the oldest 4 fall off the front.
+- Each packet advances the window by **as many samples as byte 10 declares**; that many fall off the front. G Hub sends 4 almost always and 5 in some captures, so the field is a count and not a constant. `libtrueforce` sends 4 in the steady state, fewer when a drain came up short, and up to 12 (`LOGITF_TF_CATCHUP_MAX`) on a packet making up a coalesced timer expiry. 13 is the ceiling the window can express.
 - Every u16 sample is duplicated (L and R channels). The wheel is single-motor, the stereo duplication is ceremonial.
 - Values are unsigned 16-bit little-endian, offset binary (centre `0x8000`, `0x0000` = full left, `0xFFFF` = full right).
 - The preamble at bytes 6-9 ("cur") is the **motor torque target**, duplicated as
@@ -178,7 +178,54 @@ byte[60-63]: window[12]
   cur bytes - a wire-perfect texture stream that renders nothing. Any
   producer that adds samples to a packet must also stamp `0x0d`.
 
-Packet cadence in libtrueforce is 250 Hz (4 new samples * 250 Hz = 1000 sample/s effective); the kernel driver's unified stream runs 1000 Hz (4 kHz slot rate, 4 kHz unique content) since 0.30.0, having really run at 333 Hz before it. Games vary: ACC captures show 250-500 pkt/s, AC EVO up to ~1000 pkt/s (4 kHz audio) per TF4ALL measurements - the wheel accepts the whole range. If userspace can't keep up the thread repeats the previous window (Windows does the same under input starvation) and the wheel gradually unwinds. If userspace overruns the ring, `logitf_stream_push_s16()` blocks on `ring_space`.
+Packet cadence in libtrueforce is 1000 Hz (4 new samples * 1000 Hz = 4000 sample/s effective); the kernel driver's unified stream runs 1000 Hz (4 kHz slot rate, 4 kHz unique content) since 0.30.0, having really run at 333 Hz before it. Games vary: ACC captures show 250-500 pkt/s, AC EVO up to ~1000 pkt/s (4 kHz audio) per TF4ALL measurements - the wheel accepts the whole range. If userspace can't keep up the thread holds the window for `LOGITF_TF_STARVE_HOLD_TICKS` and then flushes it toward centre while the held force unwinds (Windows does something similar under input starvation). If userspace overruns the transport, `logitf_stream_push_s16()` drops the OLDEST queued samples to hold the backlog to `LOGITF_TF_MAX_PENDING_MS` of audio, counting and reporting them; it does not block.
+
+## One writer at a time (measured 2026-08-17)
+
+**The stream has exactly one owner, and the endpoint enforces it whether
+the software agrees or not.** Endpoint `0x03` is an interrupt OUT with a
+1 ms interval, so it carries one packet per millisecond in total, not
+one per writer. Two programs each streaming at 1 kHz therefore do not
+share it, they take turns on it: each gets every other frame.
+
+What that does to the wheel is worse than halving a rate. Bytes 6-9 are
+a level, not an event: the wheel holds the last value it was given. So
+with two writers the torque target alternates between their two values
+every millisecond, which is a 500 Hz square wave on the motor. Measured
+on an RS50 with the kernel driver and a userspace producer both
+streaming:
+
+| | two writers | one writer |
+|---|---|---|
+| packets carrying samples | 49% | 99% |
+| gap between sample packets | 2.000 ms | 1.000 ms |
+| samples delivered per second | 1934 | 3635 |
+| 450-500 Hz content in the torque field | dominant | none |
+
+Audibly this is a fixed buzz that does NOT move with the engine note, at
+exactly 500.00 Hz with a strong third harmonic and almost no second: the
+odd-harmonic signature of a level stepping every 2 ms rather than a
+resonance (issue #59). The samples also play at half rate, an octave
+low.
+
+Consequences for anyone implementing this protocol:
+
+- **Take the stream, do not join it.** Before streaming, establish that
+  nothing else is: on Linux the kernel driver yields automatically (it
+  detects a userspace writer on interface 2 and stops sending its own
+  packets), but two userspace programs must arbitrate between
+  themselves.
+- **The torque field belongs to whoever owns the stream.** When the
+  driver yields it does not go silent: if it has force of its own to
+  apply it writes that force into bytes 6-9 of the owner's packet on
+  the way past, so one packet carries the owner's samples and the
+  driver's force. It leaves those bytes alone when it has no effect
+  running, because a native SDK session puts the GAME's force there and
+  overwriting it would replace force feedback with dead centre.
+- **A silent endpoint is the normal idle state.** With nothing streaming
+  there is no traffic at all on `0x03`; G HUB holds no idle session
+  open, and neither should anything else (see the whine notes in the
+  session-state section).
 
 ## Type `0x0e`: Operating Range (root cause of the "90 degrees on game launch" bug)
 
@@ -412,7 +459,7 @@ Used for constant force values with extended precision.
 ## Open Items
 
 - libtrueforce consumes type-`0x02` device responses while a stream is active and exposes them via `logitf_get_stream_feedback()` (2026-07-02). The motor field (bytes 6-7), status byte (8), and byte 17 checksum-like field are still undecoded; correlating the motor field against commanded torque on a live wheel would pin it down.
-- ~~The constant flag word at byte 11 (`0x0d`) is passed through verbatim; its exact meaning is still not decoded.~~ **Resolved 2026-08-14**: byte 11 is the sample-window valid flag, one half of the byte10/byte11 demux pair (see the stream layout invariants above); the wheel discards the window of any packet that carries samples without it. Value `0x05` has been seen instead of `0x04` in byte 10 in some captures, corresponding to 5 new samples; libtrueforce uses the 4-new-samples variant exclusively.
+- ~~The constant flag word at byte 11 (`0x0d`) is passed through verbatim; its exact meaning is still not decoded.~~ **Resolved 2026-08-14**: byte 11 is the sample-window valid flag, one half of the byte10/byte11 demux pair (see the stream layout invariants above); the wheel discards the window of any packet that carries samples without it. Value `0x05` has been seen instead of `0x04` in byte 10 in some captures, corresponding to 5 new samples; libtrueforce sent the 4-new-samples variant exclusively until it began declaring the real count (4 in the steady state, fewer on a short drain, up to 12 when catching up a coalesced timer expiry).
 - Per-title parameter variation (are the 48 init floats game-specific or universal?) is unconfirmed. So far the same data produces audible TRUEFORCE across BeamNG and ACC.
 
 

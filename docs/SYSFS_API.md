@@ -294,7 +294,7 @@ echo 75 > wheel_brake_force
 **Values**: `0` to `100` (percentage)
 **Mode Restriction**: Writes only accepted in **desktop mode**; reads always succeed.
 
-Shapes the steering response curve via feature `0x80A4`
+Bends the steering response curve via feature `0x80A4`
 (AxisResponseCurve): a 64-point cubic Bezier from (0,0) to (1,1) with
 control points P1=(1-s, s), P2=(s, 1-s) for s = value/100. Values below
 `50` soften the response near centre; values above `50` sharpen it. `50`
@@ -454,7 +454,7 @@ texture-class effect actually plays, the driver replays the captured
 68-packet init sequence twice (G Hub behaviour) and then streams
 unified packets at 500 Hz while texture effects are active - each
 packet carries the steering-force sum in its preamble and four
-texture-audio window slots (2 kHz slot rate), the same shape AC EVO
+texture-audio window slots (2 kHz slot rate), the same layout AC EVO
 streams (dmesg: `TrueForce texture channel ready`). Wheels that never see texture
 effects never see TF traffic. If the init fails, texture effects
 fall back to the steering channel - degraded feel, never lost - and
@@ -991,7 +991,7 @@ echo "8 5" > wheel_clutch_deadzone
 
 > Because sensitivity, deadzone and the raw curve all write the one hardware
 > curve per axis, use one of them at a time per pedal. To combine a deadzone
-> with a custom shape, author the whole thing as a single `_curve` upload (this
+> with a custom curve, author the whole thing as a single `_curve` upload (this
 > is what the logi-wheel editor does).
 
 ### wheel_combined_pedals
@@ -1069,14 +1069,14 @@ values set here and values set in G HUB will not correspond.
 
 Response-curve shaping for the **RS Shifter & Handbrake** in analog handbrake
 mode. The handbrake drives a base axis (`0x80A4` axis 4, evdev `ABS_Z`), and the
-driver shapes it with the same mechanism as the pedals, verified on an RS50.
+driver bends it with the same mechanism as the pedals, verified on an RS50.
 
 - `wheel_handbrake_curve` - raw `in:out` points or `reset`, like `wheel_response_curve`.
 - `wheel_handbrake_sensitivity` - the 0-100 G HUB slider (50 = linear).
 
 Both write the one curve the axis holds; last write wins. The handbrake *input*
 itself needs no configuration: connected to the wheel base, it works out of the
-box as `ABS_Z`. These attributes only shape it.
+box as `ABS_Z`. These attributes only bend it.
 
 ```bash
 echo 70 > wheel_handbrake_sensitivity
@@ -1372,6 +1372,25 @@ else
     echo "Switched to desktop mode"
 fi
 ```
+
+---
+
+## Module parameters
+
+Set at load time (`modprobe hid-logitech-dd stream_yield=N`) or, where the
+mode allows, live under `/sys/module/hid_logitech_dd/parameters/`. All of
+them default to the right thing; each exists so a behaviour that was
+introduced to fix something can be turned off again if it ever misbehaves
+on hardware nobody here has.
+
+| Parameter | Default | What it does |
+|---|---|---|
+| `stream_yield` | `Y` | Stay off the TrueForce stream while another process is writing it. The endpoint carries one packet per millisecond, so two streamers halve each other and square-modulate the motor at 500 Hz (see the one-writer section of TRUEFORCE_PROTOCOL.md). While yielding, the driver still applies its own force by writing it into the owner's packet, but only when an effect is actually running here, so a game's own force is never overwritten. `N` restores the old behaviour of streaming regardless. |
+| `kf_idle_gate` | `Y` | Stop the 1 kHz zero-force keepalive after 500 ms of exact-zero force, which is what keeps an idle wheel silent instead of holding a stream open. `N` streams always. |
+| `inject_pid` | `0` (off) | Appends a PID force-feedback collection to interface 0's report descriptor. **Leave it off**: the injected collection declares report ids this wheel does not use, so its input reports are then misparsed and steering and pedals stop working. It was briefly a default in 0.34.0 and that is exactly what happened (#59, #63). `1` is a dry run, `2` actuates. |
+
+`disable_tap_to_click` also exists, inherited from the in-tree driver this
+one forked: it concerns a K400 touchpad and nothing about a wheel.
 
 ---
 

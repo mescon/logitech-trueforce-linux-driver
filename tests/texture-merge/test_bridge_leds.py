@@ -4,9 +4,9 @@
 Covers both mappings ("bar" default: LED 1 as soon as the engine turns,
 10 at the limiter; "shift": G HUB's dash band, dark below the car's
 first-shift-light rpm) plus the legacy 28-byte datagram behaviour in each.
-Runs the bridge on an isolated port (LOGI_RPM_PORT) so a live bridge on
-the standard 20780 - SO_REUSEADDR lets both bind - cannot steal the test
-datagrams (learned the hard way, 2026-08-14).
+Runs the bridge on an isolated port (LOGI_RPM_PORT) so a live bridge (or
+logi-tf-sim) on the standard 20780 neither steals the test datagrams nor
+makes the test's own bridge fail to bind: the port has exactly one owner.
 """
 import os
 import socket
