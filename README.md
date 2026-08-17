@@ -116,7 +116,7 @@ lsusb | grep -i 046d
 
 | Product id | Wheel | What you get |
 |---|---|---|
-| `c276` | RS50 | Everything: force feedback, the game's own TrueForce and simulated TrueForce, rev lights, every setting. |
+| `c276` | RS50 (both editions) | Everything: force feedback, the game's own TrueForce and simulated TrueForce, rev lights, every setting. The Xbox edition uses this same id in its PC mode and is covered by the same support; its Xbox mode speaks the console's own protocol and is not supported. |
 | `c272` | RS50 in compatibility mode, **or** a G PRO (Xbox/PC) | Same as above. The two share this id; Logi Wheel names which one it found. |
 | `c268` | G PRO Racing Wheel (PS/PC) | Same as above. |
 | `c266`, `c267` | G923 PlayStation edition | Force feedback (no other Linux driver gives this wheel any), simulated TrueForce, rev lights, and the core settings. |
@@ -179,7 +179,8 @@ to work · 🟡 needs a tester · `-` not applicable.
 | Simulated TrueForce from game telemetry (`logi-tf-sim`) | ✅ (sweep-verified) | 🟢 |
 | Centre calibration, mode / profile switching, computer-side profiles | ✅ | 🟢 |
 
-USB IDs covered: RS50 (`046d:c276` native, `046d:c272` compatibility mode),
+USB IDs covered: RS50 (`046d:c276` native for both the PlayStation and the
+Xbox edition, `046d:c272` compatibility mode),
 G PRO Racing Wheel (`046d:c272` Xbox/PC, `046d:c268` PS/PC), and the G923
 (`046d:c266`/`c267` PlayStation edition, `046d:c26d`/`c26e` Xbox edition -
 see [G923 support](#g923-support)).
