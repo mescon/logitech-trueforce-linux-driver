@@ -16765,8 +16765,20 @@ static void hidpp_dd_texmerge_classify(struct hidpp_dd_texmerge_shim *shim,
 		 * samples around centre, and the game's weight and centring
 		 * gone (measured: a constant force never moved the field off
 		 * centre). One writer, both values.
+		 *
+		 * Only when we have force of our own to carry, which is what
+		 * `any_effect_playing` says: an effect was uploaded to us and
+		 * is running. That distinction is the whole safety of this.
+		 * A title driving the wheel through Logitech's SDK uploads no
+		 * effect here and puts ITS force in this same field, so
+		 * overwriting unconditionally would replace a game's force
+		 * feedback with dead centre, which is the opposite of the bug
+		 * being fixed. A texture producer like the simulated
+		 * TrueForce daemon does hold an effect open (a zero-level
+		 * constant, see issue #57), so the case that needs the carry
+		 * is exactly the case that asks for it.
 		 */
-		if (len >= 10) {
+		if (len >= 10 && READ_ONCE(shim->ff->any_effect_playing)) {
 			u16 cur = (u16)atomic_read(&shim->ff->yield_force);
 
 			put_unaligned_le16(cur, &buf[6]);
