@@ -162,7 +162,11 @@ export component SettingsList inherits ScrollView {
                             alignment: end;
 
                             RotationDial {
-                                value: row.int-value;
+                                // The slider's live value, not the stored
+                                // one: the dial and the readout below follow
+                                // the knob through the drag and settle on
+                                // whatever it commits.
+                                value: range-slider.shown;
                                 minimum: row.min;
                                 maximum: row.max;
                             }
@@ -186,6 +190,14 @@ export component SettingsList inherits ScrollView {
                                             enabled: row.available && row.mode-ok;
                                             property <int> rev: row.revision;
                                             changed rev => { self.text = "\{row.int-value}"; }
+                                            // Track the knob while it moves.
+                                            // TextInput.text stops following
+                                            // a binding once typed into, so
+                                            // this assigns rather than binds,
+                                            // and typing still wins until the
+                                            // next drag or revision.
+                                            property <int> live: range-slider.shown;
+                                            changed live => { self.text = "\{self.live}"; }
                                             property <int> typed: clamp(round(self.text.to-float()), row.min, row.max);
                                             accepted => {
                                                 self.clear-focus();
@@ -205,7 +217,7 @@ export component SettingsList inherits ScrollView {
                                         y: parent.height - self.height - 5px;
                                     }
                                 }
-                                ValueSlider {
+                                range-slider := ValueSlider {
                                     width: 220px;
                                     minimum: row.min;
                                     maximum: row.max;

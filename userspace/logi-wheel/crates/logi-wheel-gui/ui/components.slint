@@ -61,7 +61,11 @@ export component ValueSlider inherits Rectangle {
     // Drag scratch value; only consulted while `dragging`.
     property <bool> dragging: false;
     property <int> live: root.value;
-    property <int> shown: root.dragging ? root.live : root.value;
+    // What the track is drawing right now: the drag value mid-gesture, the
+    // committed one otherwise. Exposed so a caller that renders the value
+    // itself (the steering-range row's dial and readout) can follow the
+    // knob during the drag instead of jumping when it is let go.
+    out property <int> shown: root.dragging ? root.live : root.value;
     property <int> span: max(1, root.maximum - root.minimum);
     property <float> frac: (root.shown - root.minimum) / root.span;
 

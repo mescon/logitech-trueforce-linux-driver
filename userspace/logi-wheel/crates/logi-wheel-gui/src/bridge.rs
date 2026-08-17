@@ -687,6 +687,38 @@ fn from_frac(f: f32) -> u16 {
     (f.clamp(0.0, 1.0) * f32::from(FULL)).round() as u16
 }
 
+// The plot draws `curve.compose()`, which squeezes every control point's
+// INPUT into the span left between the deadzones and leaves its output
+// alone. The control points are authored in the uncompressed space, so
+// with a deadzone set the two spaces disagree along x, and a handle drawn
+// at its raw input sits beside the line it belongs to rather than on it
+// (and a click landed a point where the hover ghost had not promised).
+// These two convert between the spaces so everything the editor draws and
+// everything a gesture edits live in the plot's space. With both deadzones
+// at zero the span is the whole axis and both are the identity.
+
+/// The plot x a control point at `input` is drawn at.
+fn input_to_plot(curve: &Curve, input: u16) -> u16 {
+    let lo = u32::from(curve.lower_deadzone()) * u32::from(FULL) / 100;
+    let hi = u32::from(100 - curve.upper_deadzone()) * u32::from(FULL) / 100;
+    let span = hi.saturating_sub(lo);
+    (lo + u32::from(input) * span / u32::from(FULL)) as u16
+}
+
+/// The control-point input a plot x refers to: `input_to_plot` inverted,
+/// clamped into the deadzone span so a click inside a deadzone authors the
+/// nearest real input rather than an out-of-range one.
+fn plot_to_input(curve: &Curve, plot: u16) -> u16 {
+    let lo = u32::from(curve.lower_deadzone()) * u32::from(FULL) / 100;
+    let hi = u32::from(100 - curve.upper_deadzone()) * u32::from(FULL) / 100;
+    let span = hi.saturating_sub(lo);
+    if span == 0 {
+        return 0;
+    }
+    let clamped = u32::from(plot).clamp(lo, hi);
+    ((clamped - lo) * u32::from(FULL) / span) as u16
+}
+
 /// Build the SVG-style path-commands string `curve_editor.slint`'s `Path`
 /// draws: one `M`/`L` command per `curve.compose()` sample, in screen-
 /// fraction space (the `Path` itself uses a `1x1` viewbox, so these
@@ -710,7 +742,7 @@ fn control_point_frac_pairs(curve: &Curve) -> Vec<(f32, f32)> {
     curve
         .points()
         .iter()
-        .map(|&(input, output)| to_screen_frac(input, output))
+        .map(|&(input, output)| to_screen_frac(input_to_plot(curve, input), output))
         .collect()
 }
 
@@ -736,7 +768,7 @@ pub fn control_point_fracs(curve: &Curve) -> Vec<(f32, f32)> {
 /// endpoints untouched, so this only needs to undo the screen-fraction
 /// conversion before delegating.
 pub fn apply_move_point(curve: &mut Curve, index: usize, x_frac: f32, y_frac: f32) {
-    let input = from_frac(x_frac);
+    let input = plot_to_input(curve, from_frac(x_frac));
     let output = from_frac(1.0 - y_frac.clamp(0.0, 1.0));
     curve.move_point(index, input, output);
 }
@@ -744,7 +776,8 @@ pub fn apply_move_point(curve: &mut Curve, index: usize, x_frac: f32, y_frac: f3
 /// Apply the editor's `add-point` callback (an input screen-fraction) to
 /// `curve`.
 pub fn apply_add_point(curve: &mut Curve, x_frac: f32) {
-    curve.add_point(from_frac(x_frac));
+    let input = plot_to_input(curve, from_frac(x_frac));
+    curve.add_point(input);
 }
 
 /// The composed curve's output at the input screen-fraction `x_frac`, as a
@@ -1959,6 +1992,43 @@ mod tests {
         // Out-of-plot hover fractions clamp instead of panicking.
         assert!((curve_ghost_y_frac(&c, -0.5) - 1.0).abs() < 0.01);
         assert!((curve_ghost_y_frac(&c, 1.5) - 0.0).abs() < 0.01);
+    }
+
+    // The editor draws the composed curve but authors the raw one, and with
+    // a deadzone set those disagree along x. Everything the user sees or
+    // grabs therefore lives in the plot's space: a handle sits ON the line,
+    // and a click lands the point the hover ghost promised. Both held
+    // trivially before deadzones existed, which is how they came to be
+    // wrong once they did.
+    #[test]
+    fn control_points_and_new_points_live_in_the_plot_space() {
+        let mut c = linear_curve();
+        c.add_point(FULL / 2);
+        apply_lower_deadzone(&mut c, 20);
+        apply_upper_deadzone(&mut c, 10);
+
+        // Every handle lies on the drawn line: the plot's y where the handle
+        // is drawn matches the composed curve's y at that same x.
+        for (x, y) in control_point_frac_pairs(&c) {
+            let on_line = curve_ghost_y_frac(&c, x);
+            assert!(
+                (y - on_line).abs() < 0.01,
+                "handle at x={x} drawn at y={y}, line is at {on_line}"
+            );
+        }
+
+        // A click adds the point the ghost previewed, at the same x.
+        let click_x = 0.4_f32;
+        let promised = curve_ghost_y_frac(&c, click_x);
+        apply_add_point(&mut c, click_x);
+        let added = control_point_frac_pairs(&c)
+            .into_iter()
+            .min_by(|a, b| {
+                (a.0 - click_x).abs().partial_cmp(&(b.0 - click_x).abs()).unwrap()
+            })
+            .expect("a point exists");
+        assert!((added.0 - click_x).abs() < 0.02, "added at x={}", added.0);
+        assert!((added.1 - promised).abs() < 0.02, "added y={} promised {promised}", added.1);
     }
 
     #[test]
