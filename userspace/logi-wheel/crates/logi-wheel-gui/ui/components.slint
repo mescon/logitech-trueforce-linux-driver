@@ -261,7 +261,13 @@ export component RotationDial inherits Rectangle {
         fill: transparent;
         stroke: Theme.accent;
         stroke-width: 8px;
-        commands: "M \{root.px(root.a0)} \{root.py(root.a0)} A 44 44 0 \{root.frac > 0.5 ? 1 : 0} 1 \{root.px(root.acur)} \{root.py(root.acur)}";
+        // The large-arc flag asks whether THIS arc sweeps more than 180
+        // degrees, and the dial's full sweep is 260, not 360: keying it on
+        // "past halfway" claimed a large arc from 50 percent while the real
+        // one only starts at 180/260, so every value in between drew the
+        // long way round and the gauge appeared to jump and heal (on the
+        // 90..2700 range: broken from 1370, correct again at 1882).
+        commands: "M \{root.px(root.a0)} \{root.py(root.a0)} A 44 44 0 \{(root.acur - root.a0) > 180deg ? 1 : 0} 1 \{root.px(root.acur)} \{root.py(root.acur)}";
     }
 
     Path {
