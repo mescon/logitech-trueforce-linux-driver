@@ -5,6 +5,56 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.36.0 - 2026-08-17
+
+**The apps now teach one recipe.** Their sections were written across
+several eras of this project, and it showed: the window's force-feedback
+page still taught the bare `logi-ffb %command%` line one panel below the
+game rows that said the wrapper runs it, eight per-game sentences told
+you to start helpers `logi-launch` starts itself, and the plan text
+quoted a raw-HID setting different from the one the wrapper actually
+uses. One pass over both front-ends: every surface leads with
+`logi-launch %command%`, by-hand lines are labelled as the fallback they
+are, Setup opens with whether `logi-launch` is installed at all (every
+line it hands out depends on that), and `doctor` stops warning about
+games that are already set up correctly through the wrapper.
+
+**The rev lights get a style, and it is a setting.** Full bar by default
+(first LED as the engine turns, all ten at the limiter) or the car's own
+dashboard band (dark until its first shift light), chosen on the game's
+card in the window or with `b` in the terminal, stored in
+`~/.config/logi-wheel/launch.conf` and passed to the telemetry bridge by
+`logi-launch`. The thresholds come live from the game, per car.
+
+**Fewer silent surprises.** The simulated-TrueForce config file used to
+ignore lines it could not parse without saying so, which quietly cost a
+tester their first working setup; the daemon and both apps now say how
+many lines were skipped and show the first one. Game cards that get the
+engine-note merge say whether the SDK forwarder is staged yet, and
+Assetto Corsa Competizione's card explains why it has no merge (it
+produces its own TrueForce audio).
+
+**Window fixes.**
+
+- The rotation range's dial and big readout follow the slider while you
+  drag it, instead of jumping when you let go. The readout has always
+  been editable; type a number and press Enter.
+- The rotation dial's arc no longer draws the long way round between
+  1370 and 1882 degrees (an arc flag that assumed a full circle on a
+  gauge that sweeps 260).
+- Curve editor: control points now sit on the line they belong to and a
+  new point lands where the preview promised. With a deadzone set, the
+  handles were drawn in the curve's own space while the line was drawn
+  in the deadzone-compressed one, so they disagreed.
+- The rev-light picker no longer stretches to fill its card.
+
+**Terminal app.** Everything above is in both, and the key overlay now
+lists the relay-install and copy-launch keys the cards advertise; Enter
+on a read-only row says who does write it; the rev-light key is offered
+only where it applies; and the escape-proxy line stays put during a
+rescan.
+
+
 ## 0.35.3 - 2026-08-16
 
 **In-prefix helpers no longer die on the wineserver's sync flags.**
