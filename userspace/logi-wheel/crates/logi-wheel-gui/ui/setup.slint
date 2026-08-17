@@ -636,6 +636,15 @@ export component Setup inherits Rectangle {
                             // merge session is the only place it acts.
                             if game.texture-merge: HorizontalLayout {
                                 spacing: 8px;
+                                // A ComboBox asks for vertical stretch, and
+                                // unpinned it takes every spare pixel the
+                                // card has, dragging this row with it: the
+                                // control ends up hundreds of pixels tall
+                                // with the card's whitespace inside it.
+                                // Both the row and the control are held at
+                                // their natural height instead.
+                                vertical-stretch: 0;
+                                alignment: start;
                                 Text {
                                     text: "Rev lights";
                                     font-size: 12px;
@@ -643,6 +652,9 @@ export component Setup inherits Rectangle {
                                     color: Theme.text-color;
                                 }
                                 ComboBox {
+                                    width: 190px;
+                                    height: 30px;
+                                    vertical-stretch: 0;
                                     model: root.rev-leds-choices;
                                     current-index: root.rev-leds;
                                     selected => { root.set-rev-leds(self.current-index); }
