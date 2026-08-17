@@ -252,6 +252,18 @@ impl<S: SysfsIo> ViewModel<S> {
         self.device.read(attr)
     }
 
+    /// [`ViewModel::edit`] for a deliberate hardware test that borrows an
+    /// attribute a live feed owns (the LIGHTSYNC try-on-wheel rev sweep over
+    /// `wheel_rev_level`); see `Device::write_test_pattern`. Not reachable
+    /// from a widget: the rows go through `edit`, which still refuses a
+    /// read-only attr.
+    #[allow(dead_code)] // used by the rev sweep, which returns with the staged slot preview
+    pub fn test_write(&self, attr: &str, input: WidgetInput) -> Result<(), Error> {
+        let spec = Device::<S>::spec(attr).ok_or(Error::Invalid)?;
+        let value = to_value(spec.kind, input)?;
+        self.device.write_test_pattern(attr, &value)
+    }
+
     // --- "Edit onboard slot" flow: see `logi_wheel_core::onboard` ---
 
     /// Whether the flow is active (a slot has been picked and is being

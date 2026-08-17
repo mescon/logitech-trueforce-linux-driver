@@ -1298,10 +1298,15 @@ impl<S: SysfsIo> App<S> {
     /// step per `step`. The fill uses the active slot's colours and
     /// follows its direction; the caller's `wheel_led_effect` restore
     /// exits the fill afterwards.
+    ///
+    /// Through `write_test_pattern`, because the strip is a live feed's:
+    /// the app models `wheel_rev_level` read-only so no widget can race
+    /// logi-rpm-bridge, and this asked-for test borrowing it for a second
+    /// is the exception that flag is not about.
     #[allow(dead_code)] // returns with the sweep preview once the fill is re-verified after the slot-switch fix
     fn rev_sweep(&self, step: std::time::Duration) -> Result<(), logi_wheel_core::Error> {
         for level in (0..=10i32).chain((0..10).rev()) {
-            self.device.write("wheel_rev_level", &Value::Int(level))?;
+            self.device.write_test_pattern("wheel_rev_level", &Value::Int(level))?;
             std::thread::sleep(step);
         }
         Ok(())
