@@ -443,6 +443,10 @@ if [ -n "$EXTRA_HELPERS" ]; then
 	IFS="$saved_ifs"
 fi
 
+helper_group_pid=""
+# Where the in-prefix helpers record their wine pids for the exit cleanup.
+# Per invocation, so two games running at once never read each other's.
+HELPER_PIDS="${TMPDIR:-/tmp}/logi-launch-helpers.$$"
 if [ ${#helper_exes[@]} -gt 0 ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; then
 (
 	# Wait for the game to take the prefix. Keying on the wineserver rather
@@ -485,7 +489,14 @@ if [ ${#helper_exes[@]} -gt 0 ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; 
 			say "starting $exe${args:+ $args} in $prefix_root/pfx"
 			WINEPREFIX="$prefix_root/pfx" WINEDEBUG="${WINEDEBUG:--all}" \
 				WINEFSYNC="$helper_fsync" WINEESYNC="$helper_esync" \
-				"$wine_bin" "$exe" $args >>"$LOG" 2>&1
+				"$wine_bin" "$exe" $args >>"$LOG" 2>&1 &
+			wine_pid=$!
+			# Recorded so the exit cleanup can end this helper by pid.
+			# A group kill is not available here: without job control
+			# these jobs share the wrapper's process group, which the
+			# game is in too.
+			echo "$wine_pid" >> "$HELPER_PIDS"
+			wait "$wine_pid"
 			# Named, because "helper exited" says nothing about which one
 			# when two are running.
 			say "$exe exited"
@@ -494,6 +505,7 @@ if [ ${#helper_exes[@]} -gt 0 ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; 
 	done
 	wait
 ) &
+helper_group_pid=$!
 fi
 
 # A DirectInput title drives force feedback through the older Windows path,
@@ -637,9 +649,26 @@ fi
 # the wheel gets the teardown pair an SDK title never sends under Proton.
 # Everything else keeps the historical exec, which leaves no wrapper
 # process behind.
-if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ] || [ -n "$hidraw_granted" ]; then
+if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ] || \
+   [ -n "$hidraw_granted" ] || [ -n "$helper_group_pid" ]; then
 	session_cleanup() {
 		[ -n "$rpm_bridge_pid" ] && kill "$rpm_bridge_pid" 2>/dev/null
+		# The in-prefix helper is a wine process, and wine keeps the
+		# prefix's wineserver alive for as long as one runs. Leaving it
+		# behind therefore leaves Steam believing the game is still
+		# running: the library entry stays green until the session is
+		# killed by hand (#59). Kill the whole helper job, not just its
+		# supervisor, so the wine process goes with it.
+		if [ -n "$helper_group_pid" ]; then
+			kill "$helper_group_pid" 2>/dev/null
+			if [ -r "$HELPER_PIDS" ]; then
+				while read -r hp; do
+					[ -n "$hp" ] && kill "$hp" 2>/dev/null
+				done < "$HELPER_PIDS"
+			fi
+			rm -f "$HELPER_PIDS"
+			say "in-prefix helper stopped"
+		fi
 		if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_enabled" ]; then
 			for d in /sys/bus/hid/devices/*046D:C2*/wheel_tf_merge; do
 				[ -w "$d" ] && echo 0 > "$d"

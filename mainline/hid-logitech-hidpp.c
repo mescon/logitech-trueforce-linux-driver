@@ -249,6 +249,20 @@ module_param(kf_idle_gate, bool, 0644);
 MODULE_PARM_DESC(kf_idle_gate,
 	"Stop the 1 kHz zero-force FFB keepalive after 500 ms of exact-zero force (Y, default). N restores the old always-stream behaviour.");
 
+static bool stream_yield = true;
+module_param(stream_yield, bool, 0644);
+MODULE_PARM_DESC(stream_yield,
+	"Stay off the TrueForce stream while another process is writing it (Y, default). The endpoint carries one packet per millisecond, so two streamers halve each other and square-modulate the motor at 500 Hz. N restores the old behaviour of streaming regardless.");
+
+/*
+ * How long after a foreign stream packet the driver keeps its own stream
+ * off. Long enough to bridge the gaps in a real producer's cadence (the
+ * simulated-TrueForce daemon parks its stream for 500 ms at zero force),
+ * short enough that the driver takes the stream back promptly once the
+ * other writer is gone.
+ */
+#define HIDPP_DD_FOREIGN_STREAM_GRACE_MS	750
+
 /*
  * HID++ software-id OR'd into every request's funcindex_clientid.
  *
@@ -5389,6 +5403,24 @@ struct hidpp_dd_ff_data {
 	 */
 	atomic_t self_inflight;
 	/*
+	 * Wall clock (jiffies) of the last interface-2 stream packet written
+	 * by SOMEONE ELSE: a game's SDK session, logi-tf-sim through
+	 * libtrueforce, anything holding the TrueForce stream itself. Zero
+	 * until one is seen. Written by the interceptor, read by the effect
+	 * timer, both without a lock: a stale read costs at most one packet
+	 * either way, and taking the shim's spinlock in the timer to protect
+	 * a single word would be worse.
+	 *
+	 * The endpoint carries ONE packet per millisecond, so two writers
+	 * streaming at 1 kHz each get every other frame, and the wheel's
+	 * torque target then alternates between their two values every
+	 * millisecond: a 500 Hz square wave on the motor, measured on the
+	 * wire and audible as a fixed buzz that does not move with the
+	 * engine note (issue #59). Whoever owns the stream must own it
+	 * alone, and the owner is whoever userspace gave it to.
+	 */
+	unsigned long foreign_stream_at;
+	/*
 	 * One-shot restore of the SDK's operating-range push (see
 	 * hidpp_dd_texmerge_seen_range_push). Set under shim->lock from the
 	 * interceptor when a type-0x0e push is first seen; tm_restore_work
@@ -6315,6 +6347,24 @@ static u16 hidpp_dd_force_to_offset_binary(s32 force)
 }
 
 /*
+ * Is another process currently writing the interface-2 stream?
+ *
+ * True from the moment the interceptor sees a foreign stream packet until
+ * HIDPP_DD_FOREIGN_STREAM_GRACE_MS after the last one. `foreign_stream_at`
+ * is stamped with jiffies | 1 so the zero value keeps meaning "never seen"
+ * even when jiffies itself is 0.
+ */
+static bool hidpp_dd_foreign_stream_active(struct hidpp_dd_ff_data *ff)
+{
+	unsigned long at = READ_ONCE(ff->foreign_stream_at);
+
+	if (!stream_yield || !at)
+		return false;
+	return time_before(jiffies,
+			   at + msecs_to_jiffies(HIDPP_DD_FOREIGN_STREAM_GRACE_MS));
+}
+
+/*
  * Timer callback - sends continuous force updates to the wheel.
  * Direct-drive wheels require periodic force commands to maintain FFB effect.
  */
@@ -6333,6 +6383,17 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return HRTIMER_NORESTART;
+
+	/*
+	 * Someone else is driving the stream: keep ticking (so the takeover
+	 * is immediate once they stop) but send nothing. Sharing the
+	 * endpoint halves both writers and square-modulates the motor at
+	 * 500 Hz; see foreign_stream_at.
+	 */
+	if (hidpp_dd_foreign_stream_active(ff)) {
+		hrtimer_forward_now(t, HIDPP_DD_FF_TICK_KT);
+		return HRTIMER_RESTART;
+	}
 
 	route_tf = READ_ONCE(ff->texture_route) == HIDPP_DD_TEXTURE_ROUTE_TF;
 
@@ -16628,6 +16689,27 @@ static void hidpp_dd_texmerge_classify(struct hidpp_dd_texmerge_shim *shim,
 	 * rather than a stale ff - and NULL means there is no in-kernel
 	 * sender left to exempt.
 	 */
+	/*
+	 * A stream packet written from a userspace process means the stream
+	 * has an owner that is not us: a game's SDK session, the
+	 * simulated-TrueForce daemon, anything else holding it. Note when,
+	 * so the effect timer can stand down for as long as that lasts (see
+	 * foreign_stream_at and hidpp_dd_foreign_stream_active).
+	 *
+	 * Keyed on the calling context, deliberately, and checked BEFORE the
+	 * self_inflight exemption below. self_inflight is a single flag
+	 * covering every in-kernel sender, so while the driver streams at
+	 * 1 kHz it is set often enough to hide a concurrent writer
+	 * completely: measured on the wheel, 50 userspace packets sent
+	 * during a live kernel stream produced not one detection. The
+	 * driver's own sends all run from its workqueue (kernel threads) or
+	 * from the timer's softirq, so "process context, not a kernel
+	 * thread" is exactly the traffic that came from outside.
+	 */
+	if (shim->ff && len >= 5 && buf[0] == 0x01 && buf[4] == 0x01 &&
+	    !in_interrupt() && !(current->flags & PF_KTHREAD))
+		WRITE_ONCE(shim->ff->foreign_stream_at, jiffies | 1UL);
+
 	if (shim->ff && atomic_read(&shim->ff->self_inflight))
 		goto out;
 
