@@ -475,7 +475,10 @@ in [docs/LAUNCH_OPTIONS.md](docs/LAUNCH_OPTIONS.md).
   telemetry setting. `logi-tf-sim` then plays engine haptics from live RPM and
   throttle, and drives the rev LEDs to match. Intensity and felt rev rate
   (pitch) are tunable, and a built-in test sweep (the app asks before running
-  it) lets you feel the effect without launching a game.
+  it) lets you feel the effect without launching a game. The sweep refuses,
+  and names what has the wheel, if a game or the daemon is already streaming
+  to it: the wheel's TrueForce endpoint takes one writer at a time, and two
+  at once buzz rather than blend.
   Hardware-verified with those test sweeps; in-game reports welcome.
 
   Two kinds of game need a helper before they can feed it. **`sudo
@@ -545,6 +548,13 @@ The settings you see, the values you write and the tests all belong to the
 wheel currently picked, and wheels of the same model are numbered so you can
 tell them apart. Nothing is shared between them: each wheel keeps its own
 settings on its own hardware.
+
+Games are scoped the same way. `logi-launch` resolves one wheel when it
+starts (`--wheel` picks it on a mixed rig) and hands that choice to
+everything it runs, so the engine texture, the rev lights and the force
+feedback all go to the wheel you are playing, and quitting the game undoes
+only what that session armed on it. Another session on the other wheel is
+left alone.
 
 The **RS Shifter & Handbrake** is supported too. Plug it into the wheel base
 and its settings appear on their own; unplug it and they go away again. The

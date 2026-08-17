@@ -260,6 +260,17 @@ telemetry too, so while a bridge is running the daemon leaves the rev
 display alone (it says so in its log) rather than writing a second mapping
 over the top of it.
 
+**Which wheel it writes to.** Left alone the bridge finds a wheel itself,
+which is right with one attached and a coin toss with two: its rev target
+is the neighbour of the texture attribute, so an unscoped bridge can feed
+one wheel's texture and light the other one's strip. `logi-launch` therefore
+passes `LOGI_RPM_SYSFS=<that wheel's>/wheel_texture_rpm` for the wheel it
+resolved for the session, and the rev target is taken from the same
+directory unless `LOGI_REV_SYSFS` says otherwise. If a write fails with the
+errors that mean the device moved (`ENOENT`, `ENODEV`), the bridge resolves
+again rather than writing into a stale path for the rest of the session, so
+a wheel that is replugged mid-game is picked up without restarting anything.
+
 The wire format, LTFR version 2 (32 bytes since 2026-08-14, little-endian,
 append-only - the first 28 bytes are the original version-2 layout, the
 version byte is unchanged, and old consumers keep reading just those 28;

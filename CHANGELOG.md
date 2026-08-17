@@ -5,6 +5,91 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The harsh buzz is gone, and the engine note plays at its proper
+pitch.** Two programs streaming to the wheel's TrueForce endpoint do not
+share it. That endpoint carries one packet per millisecond in total, so
+two writers at 1 kHz take turns on it, one frame each, and because the
+torque field is a level the wheel holds rather than an event, the motor
+then alternates between their two values every millisecond: a 500 Hz
+square wave, heard as a fixed harsh buzz that does not move with the
+engine note, with the samples underneath it playing at half rate, an
+octave low (#59). The kernel driver was the second writer in the cases
+people hit. It now notices a userspace writer on the stream and stops
+sending packets of its own, while still applying its own force by
+writing it into the owner's packet in passing, so nothing goes silent.
+Measured on an RS50, before and after: packets carrying samples 49% ->
+99%, the gap between them 2.000 ms -> 1.000 ms, samples delivered
+1934/s -> 3860/s, and the 500 Hz component gone. The wire evidence and
+the rules that follow from it are in
+[docs/TRUEFORCE_PROTOCOL.md](docs/TRUEFORCE_PROTOCOL.md); the
+`stream_yield` module parameter turns the new behaviour off again and is
+documented in [docs/SYSFS_API.md](docs/SYSFS_API.md).
+
+Two of this project's own programs could still collide the same way (the
+daemon, the app's test sweep and the range proxy all stream), so
+whichever one streams to a wheel now takes a lease on it first: a lock
+file per wheel under the runtime directory, with the holder's name
+written inside, released by the kernel if a holder dies. The test sweep
+asks for it before its countdown rather than after, and a refusal names
+who has the wheel instead of the two of them fighting over it.
+
+**Engine note latency, and the samples that used to go missing.** The
+streaming thread treated one timer wakeup as one packet, so whenever the
+system delivered two expiries at once the extra samples were dropped for
+good. It now makes them up in the next packet, which the wheel honours
+(verified by ear and on the wire against the usual four-sample form).
+Pushing samples no longer blocks either: the backlog is bounded by time,
+128 ms, oldest dropped and counted, where before a 1.02 second buffer
+filled and stayed full, putting about a second between what the car did
+and what the rim did. Measured after fifteen seconds of continuous
+streaming, a change in engine speed now reaches the wire in 15 ms and
+has fully taken over the note by 90 ms. The G923 path had a bound
+smaller than the largest
+batch its producer sends, so part of every batch was quietly discarded;
+both bounds now come from one constant.
+
+**Force feedback no longer disappears for the next game.** `logi-ffb`
+left the wheel's force gain at zero when it exited. That gain is a
+device-wide setting nothing else resets, so the next game, DirectInput
+or not, had no force at all until the wheel was replugged. It is handed
+back at full gain now, which is the state a freshly powered wheel is in.
+
+**Nothing lands on the wrong wheel any more.** With two wheels attached,
+several pieces picked one by position and then held it: the first sysfs
+match, the first event node that looked like a wheel, an index into a
+list that gets rebuilt, a raw-HID path cached across a replug (node
+numbers are recycled). So lights and settings could land on the wheel
+you were not playing, and after a replug a helper could quietly stop
+working. Each piece now carries the wheel's own identity instead:
+`logi-launch` resolves one wheel up front and hands it to everything it
+starts, the telemetry bridge writes that wheel's attributes and
+`logi-ffb` drives that wheel's force node, the daemon lights the strip
+of the wheel it is streaming to, and the window follows the wheel it was
+managing when the list changes underneath it. The bridge also re-resolves
+when the device moves, so a wheel that comes back is picked up without a
+restart.
+
+`logi-launch` also arms the engine-texture merge on that one wheel and
+undoes exactly what it armed. Before, it switched the merge on for every
+direct-drive wheel attached and cleared them all again on exit, so
+quitting one game reached into another session. The end-of-session
+TrueForce teardown goes to the same wheel, and is skipped on a G923,
+which has no such engine to tear down.
+
+**One feeder for the rev strip, one consumer for the telemetry port.**
+Three things could drive the rev lights at once (the telemetry bridge,
+the simulated-TrueForce daemon, and an editable row in the apps): the
+daemon now stands aside while the bridge owns the strip, and the apps
+show that row as the live state it is rather than a control that loses a
+race it never announced. Separately, `logi-rpm-bridge` and `logi-tf-sim`
+both want the telemetry port (udp/20780), and measured on this kernel no
+socket option delivers the same datagrams to both. Whichever loses now
+says so plainly, names the other, says what is lost and how to move one
+of them, instead of one of them dying without explanation.
+
+
 ## 0.36.0 - 2026-08-17
 
 **The apps now teach one recipe.** Their sections were written across
@@ -629,7 +714,7 @@ look like hardware or a wheel-side setting rather than a bug here.
 Two faults in the same sequence. The apply switched every LED **off**
 immediately before uploading the colours meant to be displayed: it sent a
 `0x807A fn6` "pre-config" whose byte 5 is the rev-display *level*, not a LED
-count and not a flag, and it sent zero there. The same command shape with a
+count and not a flag, and it sent zero there. The same command layout with a
 level of 10 is what lights all ten LEDs for the rev display. Second, the slot
 the colours were written into was never activated, so the upload was stored
 and never shown. G HUB follows every colour upload with an activate on
@@ -1055,7 +1140,7 @@ patch release.
   agree with the shipped library, checked against its own machine code rather
   than a header. `logiWheelGetVersion` had also invented a leading index
   argument it does not have. This changes the library's ABI, which costs
-  nothing, because the old shape could never have been linked against
+  nothing, because the old signature could never have been linked against
   successfully. See `docs/SDK_ABI_NOTES.md`.
 
 
@@ -1239,7 +1324,7 @@ patch release.
 ### Documentation
 
 - **The RS50's Dynamic OLED is largely decoded**, contributed by @PeposCJ:
-  the command set, ten layouts, and the finding that shapes any future
+  the command set, ten layouts, and the finding that governs any future
   support, which is that the panel takes typed text fields per layout rather
   than a picture. The driver still sends nothing to it.
 - **What a busy HID++ channel tolerates**, from @Mhytee's TF4ALL work and
@@ -1863,7 +1948,7 @@ completeness).
   ride the wheel's existing report): sequential shift = `BTN_TOP2` / `BTN_PINKIE`,
   digital handbrake = `BTN_THUMB2`, analog handbrake = `ABS_Z`, all hardware-mapped
   on an RS50. Added `wheel_handbrake_curve` and `wheel_handbrake_sensitivity` to
-  shape the analog handbrake (base `0x80A4` axis 4), the same curve type as the
+  bend the analog handbrake (base `0x80A4` axis 4), the same curve type as the
   pedals, verified live. Wired into logi-dd.
 - **Hardware pedal shaping.** The pedal unit (HID++ sub-device `0x02`) applies a
   `0x80A4` response curve to each axis it reports to the PC, the same mechanism
@@ -1932,7 +2017,7 @@ an API break, but not a behaviour change: pedals were already reported raw.
   the input layer), so the attributes accepted settings that did nothing.
   `wheel_pedal_response_curve` uploaded a hardware curve that a raw-HID capture
   showed the wheel stores but never applies to its PC output. Pedals are
-  reported raw, exactly as before; shape them in userspace instead. The steering
+  reported raw, exactly as before; curve them in userspace instead. The steering
   `wheel_response_curve` is unaffected. Oversteer hides its combine-pedals
   control when the attribute is absent; every other Oversteer attribute is
   unchanged.

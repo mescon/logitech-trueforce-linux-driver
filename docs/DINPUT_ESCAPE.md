@@ -67,7 +67,7 @@ The game calls `IDirectInputDevice8::Escape` at 187 calls per second with a
 | 16 | 4 | **float: redline** (established 2026-08-14, dash-verified; per-car, live in every packet) |
 
 RPM was established, not guessed: with the car **stationary**, four rev cycles
-and a held fifth pull reproduced exactly that shape in the live field, and
+and a held fifth pull reproduced exactly that pattern in the live field, and
 nothing else in a stationary car varies that way.
 
 **This is the game's engine state, not the SDK's haptic output.** The game

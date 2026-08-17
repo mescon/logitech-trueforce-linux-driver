@@ -815,7 +815,7 @@ analysis; index-to-ID mapping derived from IFeatureSet fn1 pairing in
     **On the BASE, not the pedal MCU.** The pedal sub-device exposes its own
     `0x80A4` store and will accept a 64-point upload, reporting it back as
     loaded - but it never applies it to the axis it reports to the PC. The
-    curve that actually shapes a pedal lives on the base, one axis up from
+    curve that actually bends a pedal lives on the base, one axis up from
     the pedal index. Hardware-proven 2026-07-28 with a step curve (output
     plateaus `0x2000`/`0xE000`, which an applied curve makes the band between
     unreachable):
@@ -941,7 +941,7 @@ on every init:
   - **`0x80A4` AxisResponseCurve** - the accessory's own store, 1 axis
     (HID usage `0x32` = Z, same usage as the base's handbrake axis 4),
     0/64 points loaded (built-in linear response active). Same fn0/fn1
-    wire shape as every other `0x80A4` store (section 5.1); the driver
+    wire layout as every other `0x80A4` store (section 5.1); the driver
     uses this axis count to identify the accessory during discovery
     (`HIDPP_DD_SHIFTER_AXIS_COUNT`).
   - **`0x80B1` BANDED_AXIS** - unique to this sub-device across the
@@ -1019,7 +1019,7 @@ on every init:
   The accessory's own `0x80A4` store is deliberately NOT used: G Hub writes
   the handbrake curve there, but on this hardware a curve written to the
   accessory has no observable effect, while the same curve on base axis 4
-  shapes `ABS_Z` immediately (both tested 2026-07-28 with the unit confirmed
+  bends `ABS_Z` immediately (both tested 2026-07-28 with the unit confirmed
   in analog-handbrake mode). So `wheel_handbrake_curve` targets the base.
   "G Hub writes somewhere else" and "our target is wrong" are different
   claims, and only the second justifies a change.

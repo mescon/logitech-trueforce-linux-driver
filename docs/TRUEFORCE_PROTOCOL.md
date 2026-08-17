@@ -199,8 +199,13 @@ streaming:
 |---|---|---|
 | packets carrying samples | 49% | 99% |
 | gap between sample packets | 2.000 ms | 1.000 ms |
-| samples delivered per second | 1934 | 3635 |
+| samples delivered per second | 1934 | 3860 |
 | 450-500 Hz content in the torque field | dominant | none |
+
+(The one-writer column is the finished state. Making the driver yield
+took the rate from 1934/s to 3635/s on its own; the remaining gap was a
+producer discarding coalesced timer expirations, and closing that
+reached 3860/s against a 4000/s clock.)
 
 Audibly this is a fixed buzz that does NOT move with the engine note, at
 exactly 500.00 Hz with a strong third harmonic and almost no second: the

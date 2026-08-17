@@ -29,7 +29,7 @@ explicitly, not assumed.** The game supplies no texture at all - every SDK
 packet from AC EVO carries `byte10=0`. On Windows the buzz is not something
 sent over the wire and decoded; it is G HUB inventing it from the game's RPM
 on the host and merging it into the same stream. There was accordingly no
-protocol to reverse-engineer for the texture itself, only a shape to fit
+protocol to reverse-engineer for the texture itself, only a pattern to fit
 (`docs/TF_TEXTURE_RECIPE.md`, from the Windows capture). That this project
 should do the same synthesis, in the kernel, rather than keep hunting for a
 wire format that does not exist, was confirmed before implementation started

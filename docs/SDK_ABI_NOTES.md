@@ -44,7 +44,7 @@ null context. Verified by trying it.
 | Function | Signature | How |
 |---|---|---|
 | `logiWheelGetOperatingRangeDegrees` | `int f(int index, double *out)` | RCX index, RDX null-checked out pointer, `0x80000001` when null |
-| `logiWheelGetOperatingRangeRadians` | `int f(int index, double *out)` | same shape |
+| `logiWheelGetOperatingRangeRadians` | `int f(int index, double *out)` | same layout |
 | `logiWheelGetOperatingRangeBoundsDegrees` | `int f(int index, double *lo, double *hi)` | RCX, RDX, R8; RDX null-checked |
 | `logiTrueForceSetGainTF` | `int f(int index, double gain)` | `movsd %xmm1` = second argument is a double |
 | `logiTrueForceAvailable` | first argument is a **pointer**, not an index | `test %rcx,%rcx` then `0x80000001` |
@@ -102,14 +102,14 @@ double logiTrueForceGetMaxPeakTorqueKF(int)
 int    logiWheelGetVersion(int index, ...)  -- first argument is a pointer
 ```
 
-Each should become `int f(..., T *out)` returning 0 or `0x80000001`, the shape
+Each should become `int f(..., T *out)` returning 0 or `0x80000001`, the signature
 already applied to the rotation getters. The setters, which pass values in
 rather than out, check out clean: `logiTrueForceSetGainTF(int, double)` and
 the `SetTorqueTF*` family match.
 
 This is an ABI break for `libtrueforce`, and deliberately not rushed in
 alongside a release. It costs nothing to defer, because no caller written
-against the real SDK could ever have linked against the current shape.
+against the real SDK could ever have linked against the current signature.
 
 Reproduce with the method above, or the throwaway script in the commit that
 added this section.
@@ -117,7 +117,7 @@ added this section.
 ## Not established
 
 - Whether the out parameter of each getter above is a `double`, an `int` or a
-  `bool`. The status-return shape is certain; the width is not, and the safe
+  `bool`. The status-return signature is certain; the width is not, and the safe
   way to settle each is the write instruction in the body rather than the
   prologue.
 
