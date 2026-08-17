@@ -7776,7 +7776,18 @@ static void hidpp_dd_ff_range_poll_work(struct work_struct *work)
 	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
 		return;
 
-	if (!READ_ONCE(ff->any_effect_playing)) {
+	/*
+	 * any_effect_playing only covers effects WE were given: a title that
+	 * drives the wheel through Logitech's SDK uploads none, so this
+	 * poller ran straight through a live session, reading the range over
+	 * HID++ every few seconds and, with a restore owed, writing one back
+	 * in the middle of it (the readback path also sleeps 50 ms between
+	 * two encoder reads). That is the "the driver should refuse, not
+	 * heal" case from the 90-degree investigation, and until now nothing
+	 * here could see such a session at all. foreign_stream_at can.
+	 */
+	if (!READ_ONCE(ff->any_effect_playing) &&
+	    !hidpp_dd_foreign_stream_active(ff)) {
 		hidpp_dd_ff_range_readback(ff);
 		/* Retry any owed restore until it lands or strikes out. */
 		hidpp_dd_ff_range_maybe_restore(ff);
@@ -7865,6 +7876,14 @@ static void hidpp_dd_ff_query_settings(struct hidpp_dd_ff_data *ff);
  * profile-change broadcast handler (user picked a profile from the
  * wheel-base Settings menu) or from hidpp_dd_set_mode after a successful
  * sysfs-driven switch.
+ *
+ * Runs on system_unbound_wq, not ff->wq. ff->wq is a singlethread queue
+ * and every force packet goes through it, so this run of synchronous
+ * HID++ round trips (settings, then every LIGHTSYNC slot) sat in front
+ * of the 1 kHz stream: picking a profile at the wheel could stall force
+ * feedback for as long as the wheel took to answer. tf_init_work and
+ * range_poll_work were moved off for the same reason; this one was
+ * missed.
  */
 static void hidpp_dd_lightsync_query_slot_configs(struct hidpp_device *hidpp,
 					      struct hidpp_dd_ff_data *ff);
@@ -7999,7 +8018,7 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 				 "Profile change broadcast -> %s (profile %u)\n",
 				 profile ? "onboard" : "desktop", profile);
 			/* Re-query profile-dependent settings. */
-			queue_work(ff->wq, &ff->settings_refresh_work);
+			queue_work(system_unbound_wq, &ff->settings_refresh_work);
 		}
 		return 1;
 	}
@@ -8019,7 +8038,7 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	    data[3] == 0x00) {
 		dd_info(hidpp->hid_dev,
 			 "OLED settings-edit broadcast -> re-querying settings\n");
-		queue_work(ff->wq, &ff->settings_refresh_work);
+		queue_work(system_unbound_wq, &ff->settings_refresh_work);
 		return 1;
 	}
 
@@ -8708,7 +8727,7 @@ static int hidpp_dd_set_mode(struct hidpp_dd_ff_data *ff, u8 profile)
 	 * but the settings we read via HID++ GETs don't trigger their own
 	 * events.
 	 */
-	queue_work(ff->wq, &ff->settings_refresh_work);
+	queue_work(system_unbound_wq, &ff->settings_refresh_work);
 
 	return 0;
 }
