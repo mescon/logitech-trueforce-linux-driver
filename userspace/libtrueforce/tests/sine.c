@@ -19,6 +19,28 @@
 
 #include <trueforce.h>
 
+/*
+ * The rate the library really drains the ring at: LOGITF_TF_PKT_HZ packets
+ * per second carrying LOGITF_TF_NEW samples each. This tool has to pace
+ * itself against it, because the push calls do not block: the queue is
+ * bounded by latency and sheds the oldest samples past it, so a producer
+ * that pushed a whole waveform in a tight loop would have all but the last
+ * fraction of it dropped before the wheel ever saw it.
+ */
+#define WHEEL_SAMPLE_RATE 4000.0
+
+/* Sleep for `seconds` of playback, so the next push lands as the previous
+ * batch finishes rather than on top of it. */
+static void pace(double seconds)
+{
+	struct timespec ts = {
+		.tv_sec  = (time_t)seconds,
+		.tv_nsec = (long)((seconds - (double)(time_t)seconds) * 1e9),
+	};
+
+	nanosleep(&ts, NULL);
+}
+
 /* Small readers: the SDK reports through an out parameter and returns a
  * status, so a test that wants the value still has to check the status. */
 static bool tf_available(void)
@@ -67,6 +89,7 @@ int main(int argc, char **argv)
 			fprintf(stderr, "push failed at %d: %d\n", i, rc);
 			break;
 		}
+		pace((double)n / WHEEL_SAMPLE_RATE);
 	}
 
 	/* Let the streaming thread drain the ring before we tear down. */

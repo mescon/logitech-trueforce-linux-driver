@@ -24,11 +24,12 @@
  *
  * A COUNT that behaves as a duration: 4096 samples is 4.1 s of audio at a
  * 1 kHz stream and 1.0 s at 4 kHz, so raising the packet rate quietly
- * quarters the worst-case buffered latency this permits. Harmless here
- * only because logitf_stream_push blocks rather than dropping when the
- * ring is full, so a producer pacing itself by wall clock never fills it;
- * the equivalent bound on the G923 path load-sheds instead, and being
- * written as a sample count is exactly what broke it at 4 kHz.
+ * quarters the worst-case buffered latency this permits. It is no longer
+ * what bounds the backlog: LOGITF_TF_MAX_PENDING below is, expressed as a
+ * latency, and this is only the allocation it has to fit inside. Sizing a
+ * haptic backlog by buffer capacity is the mistake that cost the G923 path
+ * a third of every batch (see g923.rs MAX_PENDING) and cost this path a
+ * full second of delay between the car and the rim.
  */
 #define LOGITF_TF_RING    4096
 /* Packets per second; with LOGITF_TF_NEW this is a 4 kHz sample stream.
@@ -62,6 +63,64 @@
 #define LOGITF_TF_PKT_HZ  1000
 
 /*
+ * Backlog bound, as a LATENCY rather than as a buffer size.
+ *
+ * The stream thread's own write()/poll()/read() syscalls make a tick
+ * occasionally overrun its 1 ms slot, so the wire runs slightly behind the
+ * producer: measured on an RS50 (2026-08-13) 3635 samples/sec reached the
+ * wheel of the 4000 asked for. Against a ring bounded only by
+ * LOGITF_TF_RING that deficit does not show up as a lost sample, it shows
+ * up as a queue that fills to 1.02 s and stays there, which is a full
+ * second of delay between the car and the rim, permanently. So the ring is
+ * held to this many milliseconds of audio and the OLDEST samples are
+ * dropped past it: nobody can feel a dropped millisecond, and everybody can
+ * feel a second of delay.
+ *
+ * 128 ms rather than something tighter because the bound must sit ABOVE the
+ * producer's worst-case single push, or it discards part of every burst on
+ * arrival while the transport is perfectly healthy. logi-tf-sim renders at
+ * most daemon.rs's MAX_GEN_MS (100 ms) of audio in one iteration and hands
+ * it over in one call, so anything below that would load-shed during normal
+ * play. logi-tf-sim's G923 transport derives its own bound from the same
+ * 100 ms for the same reason (g923.rs MAX_PENDING_MS); the two agree at
+ * 128 ms deliberately, so the two wheel families have the same worst-case
+ * haptic delay.
+ */
+#define LOGITF_TF_MAX_PENDING_MS  128
+#define LOGITF_TF_MAX_PENDING \
+	((LOGITF_TF_MAX_PENDING_MS * LOGITF_TF_PKT_HZ * LOGITF_TF_NEW) / 1000)
+_Static_assert(LOGITF_TF_MAX_PENDING < LOGITF_TF_RING - 1,
+	       "the latency bound must fit inside the ring allocation");
+
+/*
+ * Most new samples one packet may carry while making up coalesced timer
+ * expirations (see logitf_stream_tick_n).
+ *
+ * A tick that overruns its 1 ms slot makes the timerfd coalesce, and the
+ * expirations it reports are sample time that has already passed: throwing
+ * them away is what put the wire 9% behind the producer (3635 samples/sec
+ * of 4000, ~1% of packets carrying no samples at all). Making them up means
+ * one packet advancing the rolling window by more than LOGITF_TF_NEW, never
+ * writing more than one packet per slot - the endpoint carries exactly one
+ * per USB frame, and bursting into it is what the emit-once comment in
+ * stream.c was right to avoid.
+ *
+ * Capped at 12, three slots' worth: the packet's window is
+ * LOGITF_TF_WINDOW (13) samples, so anything past that cannot be expressed
+ * on the wire at all. Whatever a longer stall leaves in the ring stays
+ * there for the following ticks, bounded by LOGITF_TF_MAX_PENDING.
+ *
+ * Byte 10 carrying something other than 4 is not a guess: G Hub captures
+ * show it as 5 (docs/TRUEFORCE_PROTOCOL.md, byte-10 notes), which is what
+ * establishes it as a count rather than a constant. A value in 5..12 has
+ * not itself been seen on a wire, so the cap stays inside what the window
+ * can hold rather than being pushed further.
+ */
+#define LOGITF_TF_CATCHUP_MAX  (LOGITF_TF_NEW * 3)
+_Static_assert(LOGITF_TF_CATCHUP_MAX <= LOGITF_TF_WINDOW,
+	       "a packet cannot declare more new samples than its window holds");
+
+/*
  * Silence gate: consecutive ring-starved ticks at centre force before the
  * stream thread sends the 0x04+0x03 teardown pair and goes silent
  * (whine-investigation.md H1: a session held open at zero force is what
@@ -87,6 +146,28 @@
 #define LOGITF_TF_STARVE_DECAY_TICKS  40
 #define LOGITF_TF_STARVE_DECAY_STEP \
 	((0x8000 + LOGITF_TF_STARVE_DECAY_TICKS - 1) / LOGITF_TF_STARVE_DECAY_TICKS)
+
+/*
+ * Consecutive starved ticks before the decay above starts and the rolling
+ * window is flushed toward centre. Below this a starved tick HOLDS: window
+ * untouched, cur repeated in the keepalive.
+ *
+ * Starvation at 1 kHz is not the same event as a producer dying. A
+ * wall-clock-paced producer hands over one iteration's audio at a time
+ * (logi-tf-sim: 17 ms at 60 Hz telemetry, up to 50 ms of poll timeout), so
+ * the ring legitimately runs dry for the jitter between bursts, and 0.6% of
+ * packet gaps were measured past 1.5 ms. Flushing on the first such tick
+ * punched a four-sample hole of exact centre into the middle of otherwise
+ * continuous audio, which is a discontinuity the rim can feel, where a hold
+ * is inaudible.
+ *
+ * 8 ticks = 8 ms: several times the measured gap jitter, well short of one
+ * producer iteration, and it delays the safety property (a producer that
+ * died mid-waveform cannot command a stale force forever) by 8 ms on top of
+ * the 40 ms decay, keeping the total inside the same ~50 ms band the decay
+ * bound was reviewed against.
+ */
+#define LOGITF_TF_STARVE_HOLD_TICKS  8
 
 struct logitf_device {
 	bool in_use;
@@ -146,14 +227,25 @@ struct logitf_device {
 	bool tf_armed_idle;
 	bool tf_teardown_pending;
 	unsigned tf_idle_ticks;    /* consecutive starved ticks at centre (stream thread only) */
+	unsigned tf_starved_ticks; /* consecutive ticks that drained nothing (stream thread only) */
 	uint8_t tf_seq;            /* next outgoing packet sequence byte */
 
 	/* Streaming state (managed by stream.c) */
 	bool stream_running;
-	bool shutting_down;        /* set during teardown so blocked producers wake and return */
+	bool shutting_down;        /* set during teardown so producers stop pushing */
 	pthread_t stream_thread;
 	int stream_timerfd;
 	int stream_stopfd;         /* eventfd; signals the thread to exit */
+	/*
+	 * Why the stream thread stopped on its own, negative errno, 0 while
+	 * healthy. Written by the thread under `lock` just before it exits and
+	 * read by logitf_stream_push_s16, which turns it into the LOGITF_ERR_IO
+	 * every push API already documents: an unplugged wheel makes poll()
+	 * report POLLERR|POLLHUP forever and every tick return -ENODEV, and
+	 * with both discarded the thread spun a core at 100% while the caller
+	 * kept being told its pushes had succeeded.
+	 */
+	int stream_error;
 
 	uint16_t tf_window[LOGITF_TF_WINDOW]; /* offset-binary, newest at [WINDOW-1] */
 	uint16_t tf_last_current;             /* bytes 6-9 of each packet */
@@ -179,6 +271,16 @@ struct logitf_device {
 	uint16_t ring[LOGITF_TF_RING];        /* offset-binary samples */
 	unsigned ring_head;                    /* producer index (mod RING) */
 	unsigned ring_tail;                    /* consumer index (mod RING) */
+	/*
+	 * Samples dropped to hold the backlog to LOGITF_TF_MAX_PENDING, since
+	 * the stream started. A running total that is not zero means the
+	 * producer outran this transport; reported rather than silent, because
+	 * load-shedding on a force path otherwise looks exactly like a healthy
+	 * stream. ring_drop_warn_sec rate-limits the running report (monotonic
+	 * seconds); both are ring_lock state.
+	 */
+	uint64_t ring_dropped;
+	long     ring_drop_warn_sec;
 
 	pthread_mutex_t lock;      /* Protects mutable non-ring state */
 	pthread_cond_t  tf_teardown_done; /* paired with `lock`; see tf_teardown_pending above */
@@ -189,6 +291,13 @@ struct logitf_device *logitf_table(void);
 /* discovery.c */
 int logitf_discover(void);        /* Scan sysfs, populate the table. Idempotent. */
 int logitf_find_by_index(int index, struct logitf_device **out);
+/*
+ * Check that dev->hidraw_path still names THIS wheel's TF interface, and
+ * look for it again under dev->usb_root when it does not. Returns 0 when the
+ * path is usable, -1 when the wheel is gone. See the definition for why an
+ * unchecked cached path is a correctness problem and not just a stale one.
+ */
+int logitf_reresolve_hidraw(struct logitf_device *dev);
 
 /* sysfs.c - helpers for reading/writing the kernel driver's wheel_*
  * attributes (wheel_range, wheel_damping, wheel_trueforce, ...). */
@@ -206,9 +315,15 @@ int  logitf_stream_push_s16(struct logitf_device *dev, const int16_t *samples, i
 int  logitf_stream_clear(struct logitf_device *dev);
 int  logitf_stream_feedback_read(struct logitf_device *dev,
 				 struct logitf_stream_feedback *fb);
-/* Wire-shape builders, non-static so tests/unit.c can pin them. */
+/* Wire-format builders, non-static so tests/unit.c can pin them.
+ *
+ * new_count is byte 10, "new samples this packet": how many of the window's
+ * newest slots the caller has just filled from the ring. It is a real count
+ * and not the constant LOGITF_TF_NEW - a partial drain used to claim four
+ * fresh samples while up to three of them were repeats of the last one. */
 void logitf_build_stream_packet(uint8_t *pkt, uint8_t seq, uint16_t current,
-				const uint16_t window[LOGITF_TF_WINDOW]);
+				const uint16_t window[LOGITF_TF_WINDOW],
+				uint8_t new_count);
 void logitf_build_idle_packet(uint8_t *pkt, uint8_t seq, uint16_t current);
 void logitf_build_ctrl_packet(uint8_t *pkt, uint8_t type, uint8_t seq);
 /*
@@ -227,6 +342,14 @@ int  logitf_tf_send_stop_pair(struct logitf_device *dev);
  * a pipe standing in for hidraw, without a real timerfd/thread.
  */
 int  logitf_stream_tick(struct logitf_device *dev);
+/*
+ * The same, servicing `expiries` timer expirations in ONE packet: it drains
+ * up to expiries * LOGITF_TF_NEW samples (capped at LOGITF_TF_CATCHUP_MAX)
+ * and advances the rolling window by however many it got. Called with more
+ * than 1 only when the timerfd coalesced, i.e. when a previous tick overran
+ * its slot; logitf_stream_tick is exactly this with expiries = 1.
+ */
+int  logitf_stream_tick_n(struct logitf_device *dev, unsigned expiries);
 
 /* kf.c */
 int    logitf_evdev_ensure_open(struct logitf_device *dev);

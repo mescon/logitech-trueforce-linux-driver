@@ -137,6 +137,17 @@ int logitf_session_ensure(struct logitf_device *dev)
 	}
 
 	if (dev->hidraw_fd < 0) {
+		/*
+		 * The cached path is a node number, not an identity: it is
+		 * resolved once at discovery and hidraw numbering is recycled
+		 * across a replug. Check it still names this wheel before
+		 * opening it, or the init sequence below goes to whatever
+		 * took the number over (logitf_reresolve_hidraw).
+		 */
+		if (logitf_reresolve_hidraw(dev) < 0) {
+			pthread_mutex_unlock(&dev->lock);
+			return LOGITF_ERR_NOT_FOUND;
+		}
 		dev->hidraw_fd = open(dev->hidraw_path, O_RDWR | O_CLOEXEC);
 		if (dev->hidraw_fd < 0) {
 			int e = errno;

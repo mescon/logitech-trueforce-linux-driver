@@ -40,8 +40,9 @@
  * (0x04 stop/clear, then 0x03 arm ~2 ms later) and goes fully silent,
  * exactly the way every clean Windows session ends; the next pushed
  * sample resumes the stream without re-init, the engine having stayed
- * armed. If userspace overruns the ring, push blocks on ring_space (or
- * returns EAGAIN in non-blocking callers - a future 22.x item).
+ * armed. If userspace overruns the transport, push drops the OLDEST
+ * queued samples to hold the backlog to LOGITF_TF_MAX_PENDING_MS of
+ * audio; it never blocks (see logitf_stream_push_s16).
  *
  * Coexistence with the kernel driver on interface 2: our in-tree
  * hid-logitech-dd fork also writes to interface 2's ep 0x03 OUT
@@ -91,45 +92,116 @@ static unsigned ring_occupied(const struct logitf_device *dev)
 	return (dev->ring_head - dev->ring_tail) & (LOGITF_TF_RING - 1);
 }
 
-static unsigned ring_free(const struct logitf_device *dev)
+/* Monotonic seconds, for rate-limiting the load-shedding report. */
+static long monotonic_sec(void)
 {
-	return LOGITF_TF_RING - 1 - ring_occupied(dev);
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+		return 0;
+	return (long)ts.tv_sec;
+}
+
+/* Minimum spacing between "dropping stale samples" reports, so a sustained
+ * overrun says so occasionally instead of once per push. Matches the G923
+ * transport's DROP_WARN_INTERVAL. */
+#define LOGITF_TF_DROP_WARN_SEC  5
+
+/*
+ * Note the loss of `n` samples and say so, at most every
+ * LOGITF_TF_DROP_WARN_SEC. Caller holds ring_lock.
+ */
+static void note_dropped(struct logitf_device *dev, unsigned n)
+{
+	long now = monotonic_sec();
+	bool first = dev->ring_dropped == 0;
+
+	dev->ring_dropped += n;
+	if (first || now - dev->ring_drop_warn_sec >= LOGITF_TF_DROP_WARN_SEC) {
+		dev->ring_drop_warn_sec = now;
+		fprintf(stderr,
+			"libtrueforce: dropped %llu stale samples (the producer "
+			"is outrunning the wheel; backlog held to %d ms)\n",
+			(unsigned long long)dev->ring_dropped,
+			LOGITF_TF_MAX_PENDING_MS);
+	}
 }
 
 /*
- * Push `count` samples to the ring. Blocks until space is available
- * (Windows semantics: "SetTorque*" is synchronous). Returns LOGITF_OK
- * on success or a negative error code.
+ * Push `count` samples to the ring. Returns LOGITF_OK, or a negative
+ * error code if the stream is not running (which includes a stream thread
+ * that stopped on its own, e.g. the wheel was unplugged).
+ *
+ * Never blocks. The backlog is bounded by LATENCY (LOGITF_TF_MAX_PENDING,
+ * see internal.h) rather than by the ring's capacity, and the OLDEST
+ * samples go when it is exceeded. Blocking on a full ring is what this
+ * used to do, and against a wire running a few percent behind the producer
+ * it did not shed anything: it filled all 4096 slots and stayed there, so
+ * steady state became a full second of delay between the car and the rim,
+ * with the caller's only thread parked in here for most of every
+ * iteration. A haptic stream cannot buy that back later, so freshness wins
+ * over completeness: nobody can feel a dropped millisecond, and everybody
+ * can feel a second of delay. The G923 transport already made exactly this
+ * trade (logi-tf-sim's g923.rs, push_pending).
+ *
+ * This is a deliberate departure from the Windows SDK's synchronous
+ * "SetTorque*" semantics, which the blocking version was copying. The
+ * caller there is a game's own haptic thread pacing itself against the
+ * wheel; here it is just as often a single poll loop that also serves
+ * telemetry, the rev display and a second wheel, and parking it does more
+ * damage than the samples are worth.
  */
 int logitf_stream_push_s16(struct logitf_device *dev,
 			   const int16_t *samples, int count)
 {
+	unsigned occupied;
+
 	if (!samples || count < 0)
 		return LOGITF_ERR_INVALID_ARG;
 	if (count == 0)
 		return LOGITF_OK;
 
+	/*
+	 * Taken before ring_lock and released again, never nested inside it:
+	 * the one place that holds both is logitf_stream_start, which takes
+	 * `lock` then ring_lock, so acquiring them the other way round here
+	 * would be the second half of a lock cycle.
+	 */
+	pthread_mutex_lock(&dev->lock);
+	if (dev->stream_error != 0) {
+		pthread_mutex_unlock(&dev->lock);
+		return LOGITF_ERR_IO;
+	}
+	pthread_mutex_unlock(&dev->lock);
+
 	pthread_mutex_lock(&dev->ring_lock);
+	if (dev->shutting_down || !dev->stream_running) {
+		pthread_mutex_unlock(&dev->ring_lock);
+		return LOGITF_ERR_IO;
+	}
+	/*
+	 * A single push longer than the whole bound: keep its newest tail and
+	 * drop the rest here, so the copy below can never lap the consumer.
+	 */
+	if (count > LOGITF_TF_MAX_PENDING) {
+		unsigned over = (unsigned)count - LOGITF_TF_MAX_PENDING;
+
+		samples += over;
+		count = LOGITF_TF_MAX_PENDING;
+		note_dropped(dev, over);
+	}
 	for (int i = 0; i < count; i++) {
-		/*
-		 * Wait-predicate includes running/shutdown state so we
-		 * don't park indefinitely if the consumer never started
-		 * or is already going away. stream_stop broadcasts
-		 * ring_space to wake us.
-		 */
-		while (ring_free(dev) == 0 &&
-		       dev->stream_running &&
-		       !dev->shutting_down)
-			pthread_cond_wait(&dev->ring_space, &dev->ring_lock);
-		if (dev->shutting_down || !dev->stream_running) {
-			pthread_mutex_unlock(&dev->ring_lock);
-			return LOGITF_ERR_IO;
-		}
 		dev->ring[dev->ring_head & (LOGITF_TF_RING - 1)] =
 			logitf_s16_to_wire(samples[i]);
 		dev->ring_head++;
 	}
-	pthread_cond_broadcast(&dev->ring_data);
+	occupied = ring_occupied(dev);
+	if (occupied > LOGITF_TF_MAX_PENDING) {
+		unsigned over = occupied - LOGITF_TF_MAX_PENDING;
+
+		dev->ring_tail += over;
+		note_dropped(dev, over);
+	}
 	pthread_mutex_unlock(&dev->ring_lock);
 	return LOGITF_OK;
 }
@@ -162,7 +234,8 @@ int logitf_stream_clear(struct logitf_device *dev)
 
 void logitf_build_stream_packet(uint8_t *pkt, uint8_t seq,
 				uint16_t current,
-				const uint16_t window[LOGITF_TF_WINDOW])
+				const uint16_t window[LOGITF_TF_WINDOW],
+				uint8_t new_count)
 {
 	memset(pkt, 0, 64);
 	pkt[0] = 0x01;           /* HID report ID */
@@ -173,7 +246,15 @@ void logitf_build_stream_packet(uint8_t *pkt, uint8_t seq,
 	pkt[7] = current >> 8;
 	pkt[8] = current & 0xff;
 	pkt[9] = current >> 8;
-	pkt[10] = LOGITF_TF_NEW;  /* new-samples-this-packet */
+	/*
+	 * How many of the window's newest slots are new this packet. The
+	 * captures only ever show 4 because G HUB only ever had 4 to send;
+	 * the field is a count, and the window is 13 slots wide, so a
+	 * partial drain says 1..3 here and a catch-up packet says up to
+	 * LOGITF_TF_CATCHUP_MAX. Hardcoding 4 told the wheel four samples
+	 * were fresh when up to three of them were the previous one repeated.
+	 */
+	pkt[10] = new_count;
 	pkt[11] = 0x0d;           /* constant per captures */
 	/* bytes 12..63: 13 window slots, oldest first, each duplicated */
 	for (int i = 0; i < LOGITF_TF_WINDOW; i++) {
@@ -315,8 +396,13 @@ static uint16_t decay_towards_centre(uint16_t current)
 
 int logitf_stream_tick(struct logitf_device *dev)
 {
-	uint16_t new_samples[LOGITF_TF_NEW];
-	int n = 0;
+	return logitf_stream_tick_n(dev, 1);
+}
+
+int logitf_stream_tick_n(struct logitf_device *dev, unsigned expiries)
+{
+	uint16_t new_samples[LOGITF_TF_CATCHUP_MAX];
+	int want, n = 0;
 	uint8_t pkt[64];
 	ssize_t wr;
 	bool paused, armed_idle, idle_shape;
@@ -340,44 +426,71 @@ int logitf_stream_tick(struct logitf_device *dev)
 	armed_idle = dev->tf_armed_idle;
 	pthread_mutex_unlock(&dev->lock);
 
-	/* Drain up to LOGITF_TF_NEW samples from the ring (non-blocking). */
+	/*
+	 * Sample budget for this packet: one slot's worth per expiration the
+	 * timerfd reported, so time the previous tick overran is made up in
+	 * samples instead of being thrown away, capped at what the window can
+	 * carry (LOGITF_TF_CATCHUP_MAX). Still exactly ONE packet either way:
+	 * the interrupt OUT endpoint carries one per USB frame, so writing
+	 * several here would only queue jitter into the host controller.
+	 */
+	want = LOGITF_TF_NEW;
+	if (expiries > 1) {
+		want = (expiries >= LOGITF_TF_CATCHUP_MAX / LOGITF_TF_NEW)
+		     ? LOGITF_TF_CATCHUP_MAX
+		     : (int)expiries * LOGITF_TF_NEW;
+	}
+
+	/* Drain up to `want` samples from the ring (non-blocking). */
 	pthread_mutex_lock(&dev->ring_lock);
-	while (n < LOGITF_TF_NEW && dev->ring_tail != dev->ring_head) {
+	while (n < want && dev->ring_tail != dev->ring_head) {
 		new_samples[n++] = dev->ring[dev->ring_tail & (LOGITF_TF_RING - 1)];
 		dev->ring_tail++;
 	}
-	if (n > 0)
-		pthread_cond_broadcast(&dev->ring_space);
 	pthread_mutex_unlock(&dev->ring_lock);
 
 	if (n > 0) {
 		/*
-		 * Shift the window left by LOGITF_TF_NEW, append new samples
-		 * at the tail. If we got a partial batch, the unfilled slots
-		 * repeat the last known sample.
+		 * Shift the window left by exactly the number of samples we
+		 * got and append them at the tail, so the slots the packet
+		 * declares as new (byte 10) really are new and everything
+		 * before them is real history. A partial batch used to shift
+		 * by LOGITF_TF_NEW regardless and pad with repeats of the last
+		 * sample, which both invented audio and pushed real history
+		 * off the front of the window.
 		 */
-		int shift = LOGITF_TF_NEW;
+		int shift = n;
 
 		memmove(&dev->tf_window[0],
 			&dev->tf_window[shift],
 			(LOGITF_TF_WINDOW - shift) * sizeof(uint16_t));
-		uint16_t last = dev->tf_window[LOGITF_TF_WINDOW - shift - 1];
-
-		for (int i = 0; i < shift; i++) {
-			uint16_t v = (i < n) ? new_samples[i] : last;
-
-			dev->tf_window[LOGITF_TF_WINDOW - shift + i] = v;
-			last = v;
-		}
+		memcpy(&dev->tf_window[LOGITF_TF_WINDOW - shift],
+		       new_samples, shift * sizeof(uint16_t));
 		dev->tf_last_current = dev->tf_window[LOGITF_TF_WINDOW - 1];
+		dev->tf_starved_ticks = 0;
+	} else if (dev->tf_starved_ticks <= LOGITF_TF_STARVE_HOLD_TICKS &&
+		   ++dev->tf_starved_ticks <= LOGITF_TF_STARVE_HOLD_TICKS) {
+		/*
+		 * Inside the hold: leave the window and cur exactly as they
+		 * are. The counter saturates one past the bound rather than
+		 * running free, so a session parked in the silence gate for
+		 * hours cannot wrap it back through the hold.
+		 */
 	} else {
 		/*
-		 * Starved tick: flush the window toward centre so pre-idle
-		 * audio does not replay when the stream resumes, and step
-		 * the held force toward centre too (LOGITF_TF_STARVE_DECAY_STEP,
-		 * see internal.h) instead of freezing it - bounded so a
-		 * producer that quit mid-waveform cannot command a stale
-		 * force forever, and so the silence gate below can fire.
+		 * Sustained starvation: flush the window toward centre so
+		 * pre-idle audio does not replay when the stream resumes, and
+		 * step the held force toward centre too
+		 * (LOGITF_TF_STARVE_DECAY_STEP, see internal.h) instead of
+		 * freezing it - bounded so a producer that quit mid-waveform
+		 * cannot command a stale force forever, and so the silence
+		 * gate below can fire.
+		 *
+		 * Only past LOGITF_TF_STARVE_HOLD_TICKS: below that the branch
+		 * above holds instead, because one missed batch in the middle
+		 * of continuous audio is a gap the producer will fill a
+		 * millisecond later, and zeroing four slots for it puts a
+		 * discontinuity in the wheel's hands that a hold does not.
 		 */
 		memmove(&dev->tf_window[0],
 			&dev->tf_window[LOGITF_TF_NEW],
@@ -428,7 +541,7 @@ int logitf_stream_tick(struct logitf_device *dev)
 		pthread_mutex_unlock(&dev->lock);
 		logitf_build_stream_packet(pkt, dev->tf_seq++,
 					   dev->tf_last_current,
-					   dev->tf_window);
+					   dev->tf_window, (uint8_t)n);
 	}
 
 	wr = write(dev->hidraw_fd, pkt, sizeof(pkt));
@@ -511,6 +624,45 @@ int logitf_stream_feedback_read(struct logitf_device *dev,
 
 /* ---------- thread ---------- */
 
+/*
+ * True for the errno values that mean the wheel is gone rather than that
+ * one write went wrong: there is nothing to retry, and retrying at 1 kHz
+ * is what spins a core. Anything else (EINTR, EAGAIN, ...) is recorded but
+ * left to the next tick.
+ */
+static bool stream_error_is_fatal(int rc)
+{
+	switch (-rc) {
+	case ENODEV:
+	case ENXIO:
+	case EIO:
+	case EPIPE:
+	case EBADF:
+	case ESHUTDOWN:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/*
+ * Record why the stream thread is stopping, so logitf_stream_push_s16 can
+ * report it to the caller (the thread has no other way to be heard: its
+ * return value goes to pthread_join, which only teardown ever calls). First
+ * one wins; a later error is just noise from the same event.
+ */
+static void stream_record_error(struct logitf_device *dev, int rc)
+{
+	pthread_mutex_lock(&dev->lock);
+	if (dev->stream_error == 0) {
+		dev->stream_error = rc;
+		fprintf(stderr,
+			"libtrueforce: stream thread stopped: %s\n",
+			strerror(-rc));
+	}
+	pthread_mutex_unlock(&dev->lock);
+}
+
 static void *stream_thread_fn(void *arg)
 {
 	struct logitf_device *dev = arg;
@@ -526,25 +678,60 @@ static void *stream_thread_fn(void *arg)
 		if (pr < 0) {
 			if (errno == EINTR)
 				continue;
+			stream_record_error(dev, -errno);
 			break;
 		}
 		if (pfds[1].revents & POLLIN)
 			break;  /* stop requested */
+		/*
+		 * An unplugged wheel leaves its hidraw fd reporting
+		 * POLLERR|POLLHUP permanently. Only POLLIN used to be tested,
+		 * so poll() returned instantly forever with no branch taken:
+		 * one core at 100%, nothing logged, and the caller still being
+		 * told its pushes succeeded. These are reported regardless of
+		 * `events`, so they must be handled explicitly, and they are
+		 * fatal - the fd never recovers.
+		 */
+		if (pfds[2].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+			stream_record_error(dev, -ENODEV);
+			break;
+		}
 		if (pfds[2].revents & POLLIN)
 			drain_feedback(dev);
 		if (pfds[0].revents & POLLIN) {
 			uint64_t expiries;
+			int rc;
 
-			if (read(dev->stream_timerfd, &expiries, sizeof(expiries)) < 0)
+			if (read(dev->stream_timerfd, &expiries,
+				 sizeof(expiries)) < 0) {
+				if (errno == EINTR)
+					continue;
+				stream_record_error(dev, -errno);
 				break;
+			}
 			/*
-			 * Under severe scheduling stalls `expiries` can be > 1.
-			 * Emit one packet regardless; the next tick will catch
-			 * up on the ring drain. Emitting multiple packets here
-			 * would burst-write to the wheel and cause jitter.
+			 * A tick that overran its 1 ms slot (the write plus the
+			 * feedback drain are syscalls) makes the timerfd
+			 * coalesce, and `expiries` is then the number of sample
+			 * slots that have gone by. Discarding it is what put the
+			 * wire 9% behind the producer, so it is handed to the
+			 * tick, which makes the missed SAMPLES up inside one
+			 * packet rather than emitting several. Clamped because
+			 * the tick caps its own catch-up anyway and a suspended
+			 * laptop can report an enormous count.
 			 */
-			(void)expiries;
-			logitf_stream_tick(dev);
+			if (expiries > 64)
+				expiries = 64;
+			rc = logitf_stream_tick_n(dev, (unsigned)expiries);
+			/*
+			 * Only the fatal ones stop the thread and are recorded:
+			 * a transient write failure must not make every later
+			 * push fail, and the next tick retries it anyway.
+			 */
+			if (rc < 0 && stream_error_is_fatal(rc)) {
+				stream_record_error(dev, rc);
+				break;
+			}
 		}
 	}
 	return NULL;
@@ -571,7 +758,16 @@ int logitf_stream_start(struct logitf_device *dev)
 		dev->tf_window[i] = 0x8000;
 	dev->tf_last_current = 0x8000;
 	dev->tf_idle_ticks = 0;
+	dev->tf_starved_ticks = 0;
+	dev->stream_error = 0;
 	dev->tf_teardown_pending = false;	/* no thread was around to service one */
+
+	/* Per-session, like the G923 transport's counter: the total reported
+	 * at stop is about this session's health, not the process's. */
+	pthread_mutex_lock(&dev->ring_lock);
+	dev->ring_dropped = 0;
+	dev->ring_drop_warn_sec = 0;
+	pthread_mutex_unlock(&dev->ring_lock);
 
 	/*
 	 * Sequence counter is set by session_ensure to
@@ -634,13 +830,26 @@ int logitf_stream_stop(struct logitf_device *dev)
 	pthread_mutex_unlock(&dev->lock);
 
 	/*
-	 * Wake any producer blocked in push_s16 so they don't hold
-	 * ring_lock while we try to close fds below.
+	 * Refuse further pushes before the fds go away. Nothing parks in
+	 * push_s16 any more (it load-sheds instead of blocking), so the
+	 * condvars have no waiters left to wake; they are still broadcast
+	 * here so a future blocking caller cannot be missed by this path.
 	 */
 	pthread_mutex_lock(&dev->ring_lock);
 	dev->shutting_down = true;
 	pthread_cond_broadcast(&dev->ring_space);
 	pthread_cond_broadcast(&dev->ring_data);
+	/*
+	 * Say whether this session kept pace. A non-zero total means the
+	 * producer outran the transport and the oldest samples were thrown
+	 * away, which is otherwise indistinguishable from a healthy stream
+	 * (the same reason the G923 writer reports its own count at stop).
+	 */
+	if (dev->ring_dropped > 0)
+		fprintf(stderr,
+			"libtrueforce: stream dropped %llu stale samples this "
+			"session (the producer outran the wheel)\n",
+			(unsigned long long)dev->ring_dropped);
 	pthread_mutex_unlock(&dev->ring_lock);
 
 	/* Signal the consumer thread to exit and wait for it. */

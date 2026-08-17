@@ -334,6 +334,77 @@ int logitf_discover(void)
 	return LOGITF_OK;
 }
 
+/*
+ * Whether the hidraw node called `name` is this device's TF interface: same
+ * vendor and product, interface 2, and physically under the same USB device
+ * as when it was discovered.
+ */
+static bool hidraw_is_this_wheel(struct logitf_device *dev, const char *name)
+{
+	char linkpath[288];	/* '/sys/class/hidraw/' + d_name(255) + '/device' */
+	char resolved[PATH_MAX];
+	uint16_t vid, pid;
+	int ifnum;
+
+	if (hidraw_usb_ids(name, &vid, &pid, &ifnum) < 0)
+		return false;
+	if (vid != dev->vid || pid != dev->pid || ifnum != LOGITF_IFACE_TF)
+		return false;
+	if (dev->usb_root[0] == '\0')
+		return true;	/* nothing better to compare against */
+	snprintf(linkpath, sizeof(linkpath), "/sys/class/hidraw/%s/device", name);
+	if (!realpath(linkpath, resolved))
+		return false;
+	return strncmp(resolved, dev->usb_root, strlen(dev->usb_root)) == 0;
+}
+
+/*
+ * Re-validate (and if need be re-resolve) dev->hidraw_path.
+ *
+ * The table is populated once and deliberately not rescanned while any slot
+ * is in use, so a device's /dev/hidrawN path is frozen at the value it had
+ * when the process started. hidraw minor numbers are recycled: unplug the
+ * wheel and plug it back in and it is a different number, and the number it
+ * left behind can be handed to something else entirely. Reopening the cached
+ * path then sends the 136-packet TF init sequence to whatever now answers
+ * there, which is a correctness problem rather than a stale-data one.
+ *
+ * The identity checked against is the USB device sysfs path recorded at
+ * discovery, the same key sysfs.c and status.c already use to find this
+ * wheel's sibling interfaces. A wheel replugged into the same port keeps it;
+ * one moved to another port does not, and is treated as gone rather than
+ * guessed at.
+ */
+int logitf_reresolve_hidraw(struct logitf_device *dev)
+{
+	DIR *dir;
+	struct dirent *ent;
+	const char *current;
+
+	if (!dev)
+		return -1;
+	current = strrchr(dev->hidraw_path, '/');
+	current = current ? current + 1 : dev->hidraw_path;
+	if (*current && hidraw_is_this_wheel(dev, current))
+		return 0;
+
+	dir = opendir("/sys/class/hidraw");
+	if (!dir)
+		return -1;
+	while ((ent = readdir(dir))) {
+		if (strncmp(ent->d_name, "hidraw", 6) != 0)
+			continue;
+		if (!hidraw_is_this_wheel(dev, ent->d_name))
+			continue;
+		snprintf(dev->hidraw_path, sizeof(dev->hidraw_path),
+			 "/dev/%s", ent->d_name);
+		closedir(dir);
+		return 0;
+	}
+	closedir(dir);
+	return -1;
+}
+
 int logitf_find_by_index(int index, struct logitf_device **out)
 {
 	if (index < 0 || index >= LOGITF_MAX_CONTROLLERS)

@@ -132,7 +132,22 @@ pub const NEW_PER_PACKET: usize = 4;
 /// When it overflows the OLDEST samples go. For a live haptic stream,
 /// freshness beats completeness: nobody can feel a dropped millisecond, and
 /// everybody can feel a second of delay.
-pub const MAX_PENDING_MS: usize = 32;
+///
+/// It must still sit ABOVE the producer's worst-case single push, or it
+/// sheds during perfectly normal play. Written as a flat 32 it did exactly
+/// that: the daemon hands over up to [`daemon::MAX_GEN_MS`] (100 ms) of
+/// audio in one call when telemetry arrives slowly or a scheduling stall
+/// bunches an iteration up, so a third of every such batch was discarded on
+/// arrival, and the count only surfaced at teardown. So it is derived from
+/// that cap rather than picked, with headroom for the writer's own lag: the
+/// bound is a latency ceiling for a stalled transport, not a working queue
+/// depth. 128 ms is also what the direct-drive path allows
+/// (`LOGITF_TF_MAX_PENDING_MS`), so both wheel families have the same
+/// worst-case haptic delay.
+pub const MAX_PENDING_MS: usize = crate::daemon::MAX_GEN_MS as usize + MAX_PENDING_HEADROOM_MS;
+/// Slack above one producer burst, so a burst arriving on top of the tail
+/// of the previous one is still not shed.
+const MAX_PENDING_HEADROOM_MS: usize = 28;
 
 /// Backlog bound, in samples, derived from [`MAX_PENDING_MS`].
 ///
@@ -1552,6 +1567,27 @@ mod tests {
     }
 
 
+    /// Normal operation must never shed. The daemon renders in one burst
+    /// whatever wall-clock time an iteration covered, up to MAX_GEN_MS, and
+    /// hands it over in a single push; a bound below that discards part of
+    /// every such burst the instant it arrives, while the transport is
+    /// perfectly healthy and with nothing said until teardown. That is what a
+    /// flat 32 ms bound did against a 100 ms cap.
+    #[test]
+    fn a_full_producer_burst_survives_arrival() {
+        let mut writer = Writer::new(NullSink, FfbMirror::open(None), Sign::Normal);
+        let burst = crate::daemon::MAX_GEN_MS as usize * crate::synth::SAMPLES_PER_MS;
+
+        writer.push_pending(vec![0.5; burst]);
+
+        assert_eq!(writer.dropped_stale, 0, "a single full-sized burst must arrive intact");
+        assert_eq!(writer.pending.len(), burst);
+        assert!(
+            MAX_PENDING_MS >= crate::daemon::MAX_GEN_MS as usize,
+            "the latency bound ({MAX_PENDING_MS} ms) must not sit below the producer's burst cap",
+        );
+    }
+
     /// The writer consumes NEW_PER_PACKET samples per tick, which equals the
     /// producer's rate only if a tick is exactly TICK_INTERVAL. It never is,
     /// because a tick is the sleep plus the sysfs read plus the write. So the
@@ -1562,9 +1598,13 @@ mod tests {
     fn a_producer_faster_than_the_writer_cannot_grow_unbounded_latency() {
         let mut writer = Writer::new(NullSink, FfbMirror::open(None), Sign::Normal);
 
-        // 100 pushes of a full tick's worth and nothing consumed: a producer
-        // comfortably outrunning the writer.
-        for _ in 0..100 {
+        // Enough pushes of a full tick's worth to overrun the bound, with
+        // nothing consumed: a producer comfortably outrunning the writer.
+        // Counted off MAX_PENDING rather than a fixed number of pushes, so
+        // raising the bound cannot quietly stop this test from overflowing
+        // anything (a flat 100 stopped doing so the moment the bound went
+        // from 32 ms to 128).
+        for _ in 0..(MAX_PENDING / NEW_PER_PACKET + 10) {
             writer.push_pending(vec![0.5; NEW_PER_PACKET]);
         }
         assert!(

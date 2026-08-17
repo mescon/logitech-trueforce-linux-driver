@@ -49,6 +49,26 @@ static double now_s(void)
 	return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+/*
+ * The rate the library really drains the ring at: LOGITF_TF_PKT_HZ packets
+ * per second carrying LOGITF_TF_NEW samples each. The loop below has to
+ * pace itself against it, because the push calls do not block: the queue is
+ * bounded by latency and sheds the oldest samples past it, so a tight push
+ * loop would throw most of its own waveform away and log feedback for audio
+ * the wheel never received.
+ */
+#define WHEEL_SAMPLE_RATE 4000.0
+
+static void pace(double seconds)
+{
+	struct timespec ts = {
+		.tv_sec  = (time_t)seconds,
+		.tv_nsec = (long)((seconds - (double)(time_t)seconds) * 1e9),
+	};
+
+	nanosleep(&ts, NULL);
+}
+
 int main(int argc, char **argv)
 {
 	double freq  = argc > 1 ? atof(argv[1]) : 50.0;
@@ -99,6 +119,7 @@ int main(int argc, char **argv)
 			       fb.motor_raw, fb.status, fb.wheel_position,
 			       (unsigned long long)fb.packets);
 		fflush(stdout);
+		pace((double)batch / WHEEL_SAMPLE_RATE);
 	}
 
 	dllClose();

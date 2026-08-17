@@ -124,12 +124,16 @@ int    logiTrueForceGetReconstructionFilterKF(int index);
 
 /* ---- Trueforce audio-haptic stream ----
  *
- * All SetTorqueTF* / SetStreamTF calls feed a 4096-entry internal
- * ring that a dedicated thread drains at the wheel's 1 kHz sample
- * rate. If the ring fills (caller pushing faster than the wheel
- * consumes), these calls block until space is available - roughly
- * up to ~4 s of back-pressure at full saturation. Games driving the
- * stream should treat them as synchronous.
+ * All SetTorqueTF* / SetStreamTF calls feed an internal ring that a
+ * dedicated thread drains one packet per millisecond, four samples per
+ * packet. They do not block: the queue is bounded by LATENCY (about
+ * 128 ms of audio), and a caller pushing faster than the wheel consumes
+ * loses the OLDEST queued samples rather than being made to wait. This
+ * differs from the Windows SDK, whose SetTorque* calls are synchronous;
+ * the back-pressure there is a game's own haptic thread pacing itself,
+ * and on Linux the caller is as often a single loop that must not be
+ * parked. A stream held to a fixed sample count instead was measured
+ * queueing a full second of delay between the car and the rim.
  */
 
 int    logiTrueForceSetTorqueTFdouble(int index, const double  *samples, int count);

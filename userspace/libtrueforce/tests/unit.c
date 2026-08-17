@@ -9,6 +9,7 @@
  * obvious in a CI log).
  */
 
+#include <errno.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdint.h>
@@ -128,7 +129,7 @@ static int test_stream_packet_shape(void)
 
 	for (i = 0; i < LOGITF_TF_WINDOW; i++)
 		window[i] = (uint16_t)(0x8000 + i);
-	logitf_build_stream_packet(pkt, 0x42, 0x8123, window);
+	logitf_build_stream_packet(pkt, 0x42, 0x8123, window, LOGITF_TF_NEW);
 
 	EXPECT_EQ("stream:id",      pkt[0],  0x01);
 	EXPECT_EQ("stream:type",    pkt[4],  0x01);
@@ -147,6 +148,17 @@ static int test_stream_packet_shape(void)
 		EXPECT_EQ("stream:slot_lo2", p[2], (0x8000 + i) & 0xff);
 		EXPECT_EQ("stream:slot_hi2", p[3], (0x8000 + i) >> 8);
 	}
+
+	/*
+	 * Byte 10 is a count, not the constant 4: a partial drain says how
+	 * many slots really are new, and a catch-up packet says up to
+	 * LOGITF_TF_CATCHUP_MAX (F3 - claiming 4 fresh samples when three
+	 * were repeats told the wheel to play audio nobody generated).
+	 */
+	logitf_build_stream_packet(pkt, 0x42, 0x8123, window, 2);
+	EXPECT_EQ("stream:new_partial", pkt[10], 0x02);
+	logitf_build_stream_packet(pkt, 0x42, 0x8123, window, LOGITF_TF_CATCHUP_MAX);
+	EXPECT_EQ("stream:new_catchup", pkt[10], LOGITF_TF_CATCHUP_MAX);
 	return 0;
 }
 
@@ -276,6 +288,10 @@ static int test_stop_pair_ordering(void)
  * bounds the held force and lets the gate do its job (whine-
  * investigation.md F1: the old code held cur forever, which pinned
  * the gate shut since it requires cur==0x8000 exactly).
+ *
+ * The bound includes LOGITF_TF_STARVE_HOLD_TICKS: decay does not start
+ * until starvation has persisted that long (F3), so the worst case is the
+ * hold plus the decay and not the decay alone.
  */
 static int test_starvation_decays_and_gate_fires(void)
 {
@@ -284,7 +300,9 @@ static int test_starvation_decays_and_gate_fires(void)
 	unsigned tick;
 	unsigned decay_tick = 0;
 	bool reached_centre = false;
-	unsigned max_ticks = (unsigned)LOGITF_TF_STARVE_DECAY_TICKS +
+	unsigned decay_bound = (unsigned)LOGITF_TF_STARVE_HOLD_TICKS +
+			       (unsigned)LOGITF_TF_STARVE_DECAY_TICKS;
+	unsigned max_ticks = decay_bound +
 			     (unsigned)LOGITF_TF_IDLE_GRACE_TICKS + 5;
 
 	if (pipe(fds) != 0) {
@@ -318,9 +336,9 @@ static int test_starvation_decays_and_gate_fires(void)
 		fprintf(stderr, "FAIL decay: cur never reached 0x8000\n");
 		return 1;
 	}
-	if (decay_tick > (unsigned)LOGITF_TF_STARVE_DECAY_TICKS) {
+	if (decay_tick > decay_bound) {
 		fprintf(stderr, "FAIL decay: took %u ticks, bound is %u\n",
-			decay_tick, (unsigned)LOGITF_TF_STARVE_DECAY_TICKS);
+			decay_tick, decay_bound);
 		return 1;
 	}
 	EXPECT_EQ("decay:gate_fired", dev.tf_armed_idle, 1);
@@ -404,6 +422,309 @@ static int test_all_zero_block_is_starved_shape(void)
 	return 0;
 }
 
+/*
+ * Minimal stand-in for a discovered device: a pipe for the hidraw fd, the
+ * locks the streaming path takes, and a centred window. Enough to drive
+ * logitf_stream_tick_n and logitf_stream_push_s16 with no wheel attached.
+ */
+static int fake_dev_init(struct logitf_device *dev, int fds[2])
+{
+	int i;
+
+	if (pipe(fds) != 0)
+		return -1;
+	memset(dev, 0, sizeof(*dev));
+	pthread_mutex_init(&dev->lock, NULL);
+	pthread_cond_init(&dev->tf_teardown_done, NULL);
+	pthread_mutex_init(&dev->ring_lock, NULL);
+	pthread_cond_init(&dev->ring_space, NULL);
+	pthread_cond_init(&dev->ring_data, NULL);
+	dev->hidraw_fd = fds[1];
+	dev->tf_initialized = true;
+	dev->tf_seq = 1;
+	dev->stream_running = true;	/* logitf_stream_push_s16 requires it */
+	for (i = 0; i < LOGITF_TF_WINDOW; i++)
+		dev->tf_window[i] = 0x8000;
+	dev->tf_last_current = 0x8000;
+	return 0;
+}
+
+static void fake_dev_destroy(struct logitf_device *dev, int fds[2])
+{
+	close(fds[0]);
+	close(fds[1]);
+	pthread_mutex_destroy(&dev->lock);
+	pthread_cond_destroy(&dev->tf_teardown_done);
+	pthread_mutex_destroy(&dev->ring_lock);
+	pthread_cond_destroy(&dev->ring_space);
+	pthread_cond_destroy(&dev->ring_data);
+}
+
+/* One window slot as it appears on the wire (u16 LE, duplicated). */
+static uint16_t pkt_slot(const uint8_t *pkt, int slot)
+{
+	const uint8_t *p = pkt + 12 + slot * 4;
+
+	return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+/*
+ * F3: a tick that overran its slot makes the timerfd coalesce, and the
+ * expirations it reports are sample time that has already passed. Servicing
+ * only one of them is what put the wire 9% behind the producer (3635
+ * samples/sec measured of the 4000 asked for), so a tick handed 2
+ * expirations must take 2 slots' worth of samples in ONE packet, declare
+ * them all as new, and leave the ring empty.
+ */
+static int test_catchup_makes_up_coalesced_expiries(void)
+{
+	struct logitf_device dev;
+	int fds[2];
+	int16_t samples[2 * LOGITF_TF_NEW];
+	uint8_t pkt[64];
+	ssize_t n;
+	int i;
+
+	if (fake_dev_init(&dev, fds) != 0) {
+		fprintf(stderr, "FAIL catchup: pipe() failed\n");
+		return 1;
+	}
+	for (i = 0; i < (int)(sizeof(samples) / sizeof(samples[0])); i++)
+		samples[i] = (int16_t)(1000 + i);
+	if (logitf_stream_push_s16(&dev, samples, (int)(sizeof(samples) / sizeof(samples[0]))) != LOGITF_OK) {
+		fprintf(stderr, "FAIL catchup: push failed\n");
+		return 1;
+	}
+
+	logitf_stream_tick_n(&dev, 2);
+
+	n = read(fds[0], pkt, sizeof(pkt));
+	if (n != (ssize_t)sizeof(pkt)) {
+		fprintf(stderr, "FAIL catchup: short read (%zd bytes)\n", n);
+		return 1;
+	}
+	EXPECT_EQ("catchup:new", pkt[10], 2 * LOGITF_TF_NEW);
+	EXPECT_EQ("catchup:flag", pkt[11], 0x0d);
+	for (i = 0; i < 2 * LOGITF_TF_NEW; i++) {
+		int slot = LOGITF_TF_WINDOW - 2 * LOGITF_TF_NEW + i;
+
+		EXPECT_EQ("catchup:slot", pkt_slot(pkt, slot),
+			  logitf_s16_to_wire(samples[i]));
+	}
+	EXPECT_EQ("catchup:cur", dev.tf_last_current,
+		  logitf_s16_to_wire(samples[2 * LOGITF_TF_NEW - 1]));
+	/* Nothing left behind: the sample clock is caught up, not merely
+	 * shifted one tick later. */
+	EXPECT_EQ("catchup:ring_drained", dev.ring_head - dev.ring_tail, 0);
+
+	/* An enormous coalesced count still emits one packet and takes no
+	 * more than the window can express. */
+	if (logitf_stream_push_s16(&dev, samples, (int)(sizeof(samples) / sizeof(samples[0]))) != LOGITF_OK) {
+		fprintf(stderr, "FAIL catchup: second push failed\n");
+		return 1;
+	}
+	logitf_stream_tick_n(&dev, 1000);
+	n = read(fds[0], pkt, sizeof(pkt));
+	if (n != (ssize_t)sizeof(pkt)) {
+		fprintf(stderr, "FAIL catchup: short read after cap (%zd bytes)\n", n);
+		return 1;
+	}
+	EXPECT_EQ("catchup:capped", pkt[10], 2 * LOGITF_TF_NEW);
+
+	fake_dev_destroy(&dev, fds);
+	return 0;
+}
+
+/*
+ * F3: a partial drain must declare the count it really got. It used to
+ * hardcode 4 and pad the window with repeats of the last sample, so the
+ * wheel was told to play up to three samples nobody generated, and three
+ * slots of real history were pushed off the front of the window for them.
+ */
+static int test_partial_drain_reports_its_real_count(void)
+{
+	const uint16_t marker = 0xABCD;
+	struct logitf_device dev;
+	int16_t samples[2] = { 100, 200 };
+	int fds[2];
+	uint8_t pkt[64];
+	ssize_t n;
+	int i;
+
+	if (fake_dev_init(&dev, fds) != 0) {
+		fprintf(stderr, "FAIL partial: pipe() failed\n");
+		return 1;
+	}
+	for (i = 0; i < LOGITF_TF_WINDOW; i++)
+		dev.tf_window[i] = marker;
+	if (logitf_stream_push_s16(&dev, samples, 2) != LOGITF_OK) {
+		fprintf(stderr, "FAIL partial: push failed\n");
+		return 1;
+	}
+
+	logitf_stream_tick(&dev);
+
+	n = read(fds[0], pkt, sizeof(pkt));
+	if (n != (ssize_t)sizeof(pkt)) {
+		fprintf(stderr, "FAIL partial: short read (%zd bytes)\n", n);
+		return 1;
+	}
+	EXPECT_EQ("partial:new", pkt[10], 2);
+	EXPECT_EQ("partial:newest", pkt_slot(pkt, LOGITF_TF_WINDOW - 1),
+		  logitf_s16_to_wire(samples[1]));
+	EXPECT_EQ("partial:second_newest", pkt_slot(pkt, LOGITF_TF_WINDOW - 2),
+		  logitf_s16_to_wire(samples[0]));
+	/* The window shifted by 2, not by 4: the slot behind them is still
+	 * history rather than a repeat. */
+	EXPECT_EQ("partial:history_kept", pkt_slot(pkt, LOGITF_TF_WINDOW - 3), marker);
+
+	fake_dev_destroy(&dev, fds);
+	return 0;
+}
+
+/*
+ * F3: one missed batch is a gap the producer fills a millisecond later, so
+ * a starved tick HOLDS - window and cur untouched - and only sustained
+ * starvation (LOGITF_TF_STARVE_HOLD_TICKS consecutive) flushes toward
+ * centre. Zeroing four slots on the first one put a discontinuity into the
+ * middle of otherwise continuous audio.
+ */
+static int test_single_starved_tick_holds(void)
+{
+	const uint16_t held = (uint16_t)(0x8000 + 16000);
+	struct logitf_device dev;
+	int fds[2];
+	unsigned tick;
+	int i;
+
+	if (fake_dev_init(&dev, fds) != 0) {
+		fprintf(stderr, "FAIL hold: pipe() failed\n");
+		return 1;
+	}
+	for (i = 0; i < LOGITF_TF_WINDOW; i++)
+		dev.tf_window[i] = held;
+	dev.tf_last_current = held;
+
+	for (tick = 1; tick <= (unsigned)LOGITF_TF_STARVE_HOLD_TICKS; tick++) {
+		logitf_stream_tick(&dev);
+		EXPECT_EQ("hold:cur_held", dev.tf_last_current, held);
+		for (i = 0; i < LOGITF_TF_WINDOW; i++)
+			EXPECT_EQ("hold:window_held", dev.tf_window[i], held);
+	}
+
+	/* One tick past the hold: the flush and the decay both start. */
+	logitf_stream_tick(&dev);
+	EXPECT_EQ("hold:flushed", dev.tf_window[LOGITF_TF_WINDOW - 1], 0x8000);
+	EXPECT_EQ("hold:history_kept", dev.tf_window[0], held);
+	if (dev.tf_last_current >= held) {
+		fprintf(stderr, "FAIL hold: cur did not decay past the hold\n");
+		return 1;
+	}
+
+	fake_dev_destroy(&dev, fds);
+	return 0;
+}
+
+/*
+ * F4: the backlog is bounded by latency, not by the ring's capacity, and
+ * push never blocks. Blocking on a full 4096-sample ring turned the
+ * measured ~9% rate deficit into a permanent second of delay between the
+ * car and the rim, with the producer's only thread parked inside push.
+ * Past the bound the OLDEST samples go, and they are counted.
+ */
+static int test_push_bounds_the_backlog_by_latency(void)
+{
+	enum { EXCESS = 100 };
+	static int16_t samples[LOGITF_TF_MAX_PENDING + EXCESS];
+	struct logitf_device dev;
+	int fds[2];
+	unsigned occupied;
+	int i;
+
+	if (fake_dev_init(&dev, fds) != 0) {
+		fprintf(stderr, "FAIL backlog: pipe() failed\n");
+		return 1;
+	}
+	for (i = 0; i < (int)(sizeof(samples) / sizeof(samples[0])); i++)
+		samples[i] = (int16_t)(i & 0x7fff);
+
+	/* One oversized push: it returns immediately rather than waiting for
+	 * a consumer that is not running in this test at all. */
+	EXPECT_EQ("backlog:rc",
+		  logitf_stream_push_s16(&dev, samples,
+					 (int)(sizeof(samples) / sizeof(samples[0]))),
+		  LOGITF_OK);
+	occupied = dev.ring_head - dev.ring_tail;
+	EXPECT_EQ("backlog:bounded", occupied, LOGITF_TF_MAX_PENDING);
+	EXPECT_EQ("backlog:counted", (uint32_t)dev.ring_dropped, EXCESS);
+	/* The samples kept are the NEWEST ones. */
+	EXPECT_EQ("backlog:newest_kept",
+		  dev.ring[(dev.ring_head - 1) & (LOGITF_TF_RING - 1)],
+		  logitf_s16_to_wire(samples[sizeof(samples) / sizeof(samples[0]) - 1]));
+
+	/* A second push over an already-full backlog sheds the same way. */
+	EXPECT_EQ("backlog:rc2", logitf_stream_push_s16(&dev, samples, LOGITF_TF_NEW),
+		  LOGITF_OK);
+	EXPECT_EQ("backlog:bounded2", dev.ring_head - dev.ring_tail,
+		  LOGITF_TF_MAX_PENDING);
+	EXPECT_EQ("backlog:counted2", (uint32_t)dev.ring_dropped,
+		  EXCESS + LOGITF_TF_NEW);
+
+	/* And the bound really is a latency, not a sample count that happens
+	 * to be right at one particular stream rate. */
+	EXPECT_EQ("backlog:latency_ms",
+		  (LOGITF_TF_MAX_PENDING * 1000) / (LOGITF_TF_PKT_HZ * LOGITF_TF_NEW),
+		  LOGITF_TF_MAX_PENDING_MS);
+
+	fake_dev_destroy(&dev, fds);
+	return 0;
+}
+
+/*
+ * F3: a stream thread that stopped on its own (the wheel was unplugged)
+ * must be visible to the caller. Its exit reason used to go nowhere, so
+ * every push kept returning success into a dead stream.
+ */
+static int test_push_reports_a_dead_stream_thread(void)
+{
+	struct logitf_device dev;
+	int16_t sample = 1234;
+	int fds[2];
+
+	if (fake_dev_init(&dev, fds) != 0) {
+		fprintf(stderr, "FAIL dead: pipe() failed\n");
+		return 1;
+	}
+	EXPECT_EQ("dead:healthy", logitf_stream_push_s16(&dev, &sample, 1), LOGITF_OK);
+	dev.stream_error = -ENODEV;
+	EXPECT_EQ("dead:reported", logitf_stream_push_s16(&dev, &sample, 1),
+		  LOGITF_ERR_IO);
+
+	fake_dev_destroy(&dev, fds);
+	return 0;
+}
+
+/*
+ * A cached /dev/hidrawN path is a node number, not an identity, and the
+ * numbers are recycled: the session must be told the wheel is gone rather
+ * than open whatever inherited the number and send it the TF init sequence.
+ *
+ * The device here is deliberately impossible (vendor and product 0xffff, a
+ * node number nothing owns), so the answer is the same whatever hardware the
+ * machine running the tests happens to have attached.
+ */
+static int test_a_recycled_hidraw_node_is_not_accepted(void)
+{
+	struct logitf_device dev;
+
+	memset(&dev, 0, sizeof(dev));
+	dev.vid = 0xffff;
+	dev.pid = 0xffff;
+	snprintf(dev.hidraw_path, sizeof(dev.hidraw_path), "/dev/hidraw999");
+	EXPECT_EQ("reresolve:gone", logitf_reresolve_hidraw(&dev) == 0, 0);
+	return 0;
+}
+
 static int test_wire_monotonic(void)
 {
 	/*
@@ -445,6 +766,12 @@ int main(void)
 		{ "stop_pair_ordering",  test_stop_pair_ordering },
 		{ "starvation_decays_and_gate_fires", test_starvation_decays_and_gate_fires },
 		{ "all_zero_block_is_starved_shape", test_all_zero_block_is_starved_shape },
+		{ "catchup_makes_up_coalesced_expiries", test_catchup_makes_up_coalesced_expiries },
+		{ "partial_drain_reports_its_real_count", test_partial_drain_reports_its_real_count },
+		{ "single_starved_tick_holds", test_single_starved_tick_holds },
+		{ "push_bounds_the_backlog_by_latency", test_push_bounds_the_backlog_by_latency },
+		{ "push_reports_a_dead_stream_thread", test_push_reports_a_dead_stream_thread },
+		{ "recycled_hidraw_node_is_not_accepted", test_a_recycled_hidraw_node_is_not_accepted },
 	};
 	size_t i;
 

@@ -99,8 +99,13 @@ impl TfStream {
 
     /// Queue `samples` (each -1.0..1.0, at [`crate::synth::SAMPLE_RATE_HZ`]) for the wheel.
     ///
-    /// Mirrors the Windows SDK semantics: blocks when the library's
-    /// 4096-sample ring is full, so a real-time producer self-paces.
+    /// Does not block. libtrueforce bounds its queue by latency
+    /// (`LOGITF_TF_MAX_PENDING_MS`) and drops the oldest samples past it,
+    /// reporting the count, the same trade [`crate::g923`] makes. It used
+    /// to mirror the Windows SDK instead and block on a full 4096-sample
+    /// ring, which parked this thread - the daemon's only one, which also
+    /// serves telemetry and the rev display - for most of every iteration
+    /// as soon as the wire fell a few percent behind.
     pub fn push(&mut self, samples: &[f32]) -> Result<()> {
         if samples.is_empty() {
             return Ok(());
