@@ -2020,6 +2020,19 @@ impl<S: SysfsIo> App<S> {
         }
         let Some(spec) = Device::<S>::spec(&attr) else { return };
         if spec.access == Access::ReadOnly {
+            // Enter used to return in silence here, which reads as a
+            // control that is broken rather than one that is a readout.
+            // The two rows the wrapper drives also say who does write
+            // them, so the row is not just a dead end.
+            self.status = match attr.as_str() {
+                "wheel_tf_merge" => format!(
+                    "{label}: not editable here; logi-launch turns it on and off per game"
+                ),
+                "wheel_texture_rpm" => {
+                    format!("{label}: not editable here; the telemetry bridge writes it")
+                }
+                _ => format!("{label}: read-only"),
+            };
             return;
         }
         // The LIGHTSYNC Effect row cycles the selector entries, not the
@@ -2999,6 +3012,28 @@ mod tests {
         // absent attrs are marked unavailable, not dropped
         let s = a.rows.iter().find(|r| r.attr == "wheel_ffb_filter").unwrap();
         assert!(!s.available);
+    }
+
+    /// Enter on a read-only row says so instead of returning in silence:
+    /// a control that does nothing at all and says nothing reads as a
+    /// broken one. The two rows the wrapper drives also name who writes
+    /// them.
+    #[test]
+    fn enter_on_a_read_only_row_says_why_nothing_opens() {
+        use crossterm::event::KeyCode;
+        let mut a = app();
+        a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Ffb).unwrap();
+        a.reload();
+        for (attr, writer) in
+            [("wheel_tf_merge", "logi-launch"), ("wheel_texture_rpm", "telemetry bridge")]
+        {
+            a.row_idx = a.rows.iter().position(|r| r.attr == attr).unwrap();
+            a.status.clear();
+            a.on_key(KeyCode::Enter);
+            assert!(a.edit.is_none(), "{attr} opens no editor");
+            assert!(a.status.contains("not editable here"), "{attr}: {}", a.status);
+            assert!(a.status.contains(writer), "{attr}: {}", a.status);
+        }
     }
 
     // --- G923 (classic engine) ---

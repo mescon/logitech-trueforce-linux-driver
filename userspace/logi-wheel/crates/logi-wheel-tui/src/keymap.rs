@@ -278,8 +278,18 @@ fn setup_section<S: SysfsIo>(app: &App<S>) -> Section {
                 keys.push(bfs("Up/Down", "select a game", "game"));
                 keys.push(bfs("i", "install the SDK shim", "install"));
                 keys.push(bfs("u", "remove the SDK shim", "remove"));
+                // Overlay-only, like the card's own hint line already
+                // says: the footer is full at five keys, and these two
+                // act on the selected card rather than the list.
+                keys.push(b("h", "install the telemetry relay"));
+                keys.push(b("c", "copy the launch options"));
                 keys.push(bfs("g", "toggle simulated TF for the game", "sim TF"));
-                keys.push(bfs("b", "rev-light style for the texture merge", "rev lights"));
+                // Only where the key does something, the same condition
+                // the GUI gates its rev-light picker on: on any other
+                // card `b` only explains itself.
+                if app.selected_game_merges_texture() {
+                    keys.push(bfs("b", "rev-light style for the texture merge", "rev lights"));
+                }
                 keys.push(bfs("a", "add an unrecognised Wine game", "add game"));
                 keys.push(bfs("Esc/Left", "back to the sections", "back"));
             }

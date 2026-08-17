@@ -778,6 +778,16 @@ fn setup_sections<S: SysfsIo>(
                         Span::raw("  Steam launch options: "),
                         Span::styled(logi_wheel_core::games::LAUNCH_WRAPPER, Style::default().fg(Color::Yellow)),
                     ]));
+                    // The by-hand alternative, the same one the GUI's
+                    // Setup page offers: useful to anyone who wants the
+                    // virtual wheel without the wrapper around it.
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "  By hand, without the wrapper: {}",
+                            logi_wheel_core::games::LAUNCH_LOGI_FFB
+                        ),
+                        dim,
+                    )));
                 } else {
                     lines.push(Line::from(vec![
                         Span::styled("  logi-ffb: ", dim),
@@ -826,6 +836,7 @@ fn setup_sections<S: SysfsIo>(
                         "files in their Proton folder. They come from Logitech's",
                         "G HUB on Windows and are never redistributed; the README",
                         "says how to copy them. Install per game in Your games.",
+                        "Native Linux apps can drive TrueForce via libtrueforce.",
                     ] {
                         lines.push(Line::from(Span::styled(format!("  {text}"), dim)));
                     }
@@ -996,17 +1007,23 @@ fn setup_sections<S: SysfsIo>(
                             // is staged in the game's directory, and which
                             // rev-light style the bridge will use.
                             if plan.texture_merge {
-                                if let Some(state) = app.proxy_states.get(g_idx).copied() {
-                                    let style = if state.is_warning() {
-                                        Style::default().fg(Color::Yellow)
-                                    } else {
-                                        dim
+                                // A scan that started before the last
+                                // rescan can leave the state list shorter
+                                // than the game list; the field still
+                                // renders, so a card never loses a line
+                                // it had a moment ago.
+                                let (proxy_text, proxy_style) =
+                                    match app.proxy_states.get(g_idx).copied() {
+                                        Some(state) if state.is_warning() => {
+                                            (state.label(), Style::default().fg(Color::Yellow))
+                                        }
+                                        Some(state) => (state.label(), dim),
+                                        None => ("checking...", dim),
                                     };
-                                    lines.push(Line::from(Span::styled(
-                                        format!("    escape proxy: {}", state.label()),
-                                        style,
-                                    )));
-                                }
+                                lines.push(Line::from(Span::styled(
+                                    format!("    escape proxy: {proxy_text}"),
+                                    proxy_style,
+                                )));
                                 lines.push(Line::from(Span::styled(
                                     format!(
                                         "    rev lights: {} (b switches)",
