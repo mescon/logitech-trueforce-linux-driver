@@ -562,6 +562,9 @@ mod tests {
     #[test]
     fn recognizes_dd_wheel_names() {
         assert!(is_wheel("Logitech RS50 Base for PlayStation/PC"));
+        // The Xbox edition in PC mode reports a different string for the
+        // same wheel, so the proxy must recognise both.
+        assert!(is_wheel("Logitech RS50 Base for PC"));
         assert!(is_wheel("Logitech G PRO Racing Wheel"));
         // The real G PRO: no "G" before PRO, and two spaces (issue #51).
         assert!(is_wheel("Logitech  PRO Racing Wheel"));

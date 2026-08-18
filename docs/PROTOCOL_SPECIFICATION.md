@@ -1030,11 +1030,9 @@ on the accessory port and at dev `0x03` on the pedals' port
 (hardware-verified 2026-07-28: with the pedals unplugged and the accessory
 in their port, `0x03` was the accessory and no 3-axis sub-device existed at
 all). On this wheel the pedal MCU answers at `0x03` whether or not the
-accessory is attached, so the earlier claim here that it "moved from `0x02`
-to `0x03` when the accessory attached" was wrong: `0x02` was simply a bad
-hardcoded guess.
+accessory is attached. The index is the physical port, not the device type.
 
-Two consequences, both now enforced in the driver: never key on an index to
+Two consequences, both enforced in the driver: never key on an index to
 identify a device, and never skip an index because another device was once
 found there - a rescan optimisation that skipped the pedals' index made the
 accessory permanently undiscoverable on the second port. The

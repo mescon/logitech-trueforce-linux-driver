@@ -34,8 +34,6 @@ layout byte for byte: byte[5] a rolling sequence, bytes[6-9] `cur` duplicated,
 byte[10] the new-sample count, `00 80 00 80 00` at idle and `04` samples while
 driving. So its force arrives on the stream, not over HID++, and simulated
 TrueForce should be able to drive that wheel the same way it drives a `c266`.
-This corrects the earlier claim that the Xbox edition is the one wheel whose
-force rides HID++.
 
 The gear-driven **G923** carries the same interface-2 transport and stream protocol (first established by the TF4ALL project's Windows captures, issue #20; hardware-confirmed on a c266 by `logi-tf-sim`'s synthetic sweep). One G923-specific caveat: while a type-0x01 stream runs, the wheel's motor follows the stream's `cur` field and stops reacting to its classic interface-0 force-feedback commands, so a G923 streamer must mirror the live FFB into `cur` for the stream's duration - `logi-tf-sim` reads the kernel driver's `ffb_output` sysfs attribute for exactly this (see `SYSFS_API.md`). Feel under real game telemetry is not yet verified on the G923.
 
@@ -178,7 +176,7 @@ byte[60-63]: window[12]
   cur bytes - a wire-perfect texture stream that renders nothing. Any
   producer that adds samples to a packet must also stamp `0x0d`.
 
-Packet cadence in libtrueforce is 1000 Hz (4 new samples * 1000 Hz = 4000 sample/s effective); the kernel driver's unified stream runs 1000 Hz (4 kHz slot rate, 4 kHz unique content) since 0.30.0, having really run at 333 Hz before it. Games vary: ACC captures show 250-500 pkt/s, AC EVO up to ~1000 pkt/s (4 kHz audio) per TF4ALL measurements - the wheel accepts the whole range. If userspace can't keep up the thread holds the window for `LOGITF_TF_STARVE_HOLD_TICKS` and then flushes it toward centre while the held force unwinds (Windows does something similar under input starvation). If userspace overruns the transport, `logitf_stream_push_s16()` drops the OLDEST queued samples to hold the backlog to `LOGITF_TF_MAX_PENDING_MS` of audio, counting and reporting them; it does not block.
+Packet cadence in libtrueforce is 1000 Hz (4 new samples * 1000 Hz = 4000 sample/s effective); the kernel driver's unified stream runs at the same 1000 Hz (4 kHz slot rate, 4 kHz unique content), driven by an hrtimer because a self-rearming jiffies timer cannot hold this rate. Games vary: ACC captures show 250-500 pkt/s, AC EVO up to ~1000 pkt/s (4 kHz audio) per TF4ALL measurements - the wheel accepts the whole range. If userspace can't keep up the thread holds the window for `LOGITF_TF_STARVE_HOLD_TICKS` and then flushes it toward centre while the held force unwinds (Windows does something similar under input starvation). If userspace overruns the transport, `logitf_stream_push_s16()` drops the OLDEST queued samples to hold the backlog to `LOGITF_TF_MAX_PENDING_MS` of audio, counting and reporting them; it does not block.
 
 ## One writer at a time (measured 2026-08-17)
 
@@ -345,13 +343,11 @@ LEDs are hardware-validated running together. See
 | G923 Xbox (`c26e`) | **no**, see below |
 | G923 PlayStation (`c266`) | **no**, tested on hardware |
 
-The Xbox edition entry above previously read "yes", inferred from an owner
-reporting a 90 degree lock in ACC. That inference was wrong, and the same
-owner disproved it: in ACC's own config screen his rim turns its full 900
-degrees and the input bar tracks the whole way, with the limit appearing
-only on track. A real operating-range change would soft-stop the rim
-everywhere, menus included. So the wheel is never reconfigured on that
-edition; the game clamps its own steering because it believes the wheel has
+The Xbox edition is disproved on hardware: in ACC's own config screen the
+rim turns its full 900 degrees and the input bar tracks the whole way, with
+the limit appearing only on track. A real operating-range change would
+soft-stop the rim everywhere, menus included. So the wheel is never
+reconfigured on that edition; the game clamps its own steering because it believes the wheel has
 90 degrees of travel, which it gets from the TrueForce SDK falling back to
 the minimum of the legal range when it cannot reach G HUB. Nothing on the
 wheel is wrong, so there is nothing for a range restore to put back.

@@ -5,13 +5,12 @@ wheel and why the SDK reports 90 degrees under Proton. This one is about
 calling the SDK itself.
 
 What the shipped `trueforce_sdk_x64.dll` actually expects, taken from its own
-machine code rather than from any header. Written after three signatures in
-`userspace/libtrueforce/include/trueforce.h` turned out to be wrong, one of
-which made `tools/tf-range-proxy.c` incapable of working and cost a tester
-several rounds of testing (issue #27).
+machine code rather than from any header.
 
 **Read this before adding to `libtrueforce` or the proxy.** The header in
-that tree is not authoritative and never was.
+`userspace/libtrueforce/include/trueforce.h` is not authoritative: three of
+its signatures disagree with the DLL, and one of those disagreements is
+enough to stop `tools/tf-range-proxy.c` working at all (issue #27).
 
 ## How to check a signature
 

@@ -443,7 +443,7 @@ effects at 20 Hz or faster (period <= 50 ms) - are actuated:
   audio-haptic channel (interface 2, ~1 kHz sample rate), the same
   physical path the Windows SDK uses for texture. Steering-shaping
   effects (`FF_CONSTANT`, conditions, slow periodics) stay on the
-  force channel, so rumble no longer modulates the steering axis.
+  force channel, so rumble does not modulate the steering axis.
   This matches the Windows KF/TF split; the "gritty/notchy steering
   under rumble" reported in issue #8 is the `kf` behaviour.
 - `kf` - legacy: everything is summed into the single steering
@@ -935,10 +935,6 @@ between its two output plateaus unreachable if it is applied: loaded on the
 pedal MCU the axis swept straight through that band, while the same curve on
 base axis 1 pinned the axis to the plateau exactly, with the pedals
 untouched.
-
-Driver versions before 0.21.0 wrote these to the pedal MCU, so every pedal
-curve, sensitivity and deadzone did nothing at all - while reading back
-plausible values, which is why it went unnoticed for so long.
 
 These attributes still require a pedal unit to be present: the base has
 axes 1/2/3 regardless, but shaping an axis nothing drives is pointless, so

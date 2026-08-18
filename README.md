@@ -240,9 +240,9 @@ takes a different path than the RS50 and G PRO above, but the result is the
 same: real forces in games, engine haptics through the rim, working rev
 lights, and the settings app.
 
-Both editions are now verified on hardware. The Xbox edition was confirmed
-by an owner over the course of issue #27, on a wheel none of the maintainers
-own (see [CREDITS.md](CREDITS.md)).
+Both editions are verified on hardware. The Xbox edition was confirmed by an
+owner in issue #27, on a wheel none of the maintainers own (see
+[CREDITS.md](CREDITS.md)).
 
 **PlayStation edition** (`046d:c266`/`c267`) is fully supported and verified on
 hardware:
@@ -275,9 +275,9 @@ which force feedback alone cannot do.
 confirmed on a real unit, and **rev lights**. Neither the forces nor the
 haptics existed for this wheel on Linux before this project.
 
-The rev lights are new in 0.34.0 and are the one part not yet confirmed in a
-game: the strip has been lit on a real Xbox wheel, but nothing has driven it
-from live telemetry yet. It exposes the same five `::RPM1`..`::RPM5` LED
+The rev lights are the one part not yet confirmed in a game: the strip has
+been lit on a real Xbox wheel, but nothing has driven it from live telemetry
+yet. It exposes the same five `::RPM1`..`::RPM5` LED
 devices the PlayStation edition does, so anything that drives those works
 here unchanged.
 
@@ -290,6 +290,10 @@ optional dependency**, so install it yourself there:
 ```bash
 sudo pacman -S usb_modeswitch
 ```
+
+The RS50 Xbox edition (`046d:c275`) is handled by the same rule and the same
+helper. `sudo logi-wheel-modeswitch` switches either wheel by hand, which is
+the answer on a system without systemd.
 
 If the wheel never leaves console mode, the out-of-tree `xone` driver has
 probably claimed it first.

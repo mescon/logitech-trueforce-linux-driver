@@ -909,6 +909,11 @@ mod tests {
     fn model_from_name_identifies_each_wheel() {
         // The exact strings these wheels put on their input nodes.
         assert_eq!(model_from_name("Logitech RS50 Base for PlayStation/PC"), WheelModel::Rs50);
+        // The Xbox edition's own string, which it reports once it has been
+        // switched to PC mode. It differs from the PlayStation edition's, so
+        // matching on the model rather than the whole name is what makes one
+        // wheel out of the two.
+        assert_eq!(model_from_name("Logitech RS50 Base for PC"), WheelModel::Rs50);
         assert_eq!(
             model_from_name("Logitech G923 Racing Wheel for Xbox One and PC"),
             WheelModel::G923,
