@@ -1,14 +1,14 @@
-# G923 Xbox/PC edition (046d:c26d): switch from console/boot mode to PC
-# mode (046d:c26e) on every plug-in.
+# Xbox editions (046d:c26d G923, 046d:c275 RS50): switch from console/boot
+# mode to PC mode (046d:c26e, 046d:c276) on every plug-in.
 #
-# The Xbox edition of the G923 always boots into a console-only USB mode
-# (idProduct c26d). In that mode it has no HID++ interface at all, so it
-# shows up on `lsusb` but creates no /dev/input node - neither this
-# driver nor the in-tree hid-logitech-hidpp can do anything with it. A
-# single USB control message switches it into PC mode (idProduct c26e,
-# HID++), which is the mode udev/72-logitech-g923-rebind.rules and the
-# driver both already handle. The wheel does not remember the switch, so
-# this has to fire on every single plug-in and cold boot, not just once.
+# The Xbox edition of either wheel always boots into a console-only USB
+# mode. In that mode it has no HID++ interface at all, so it shows up on
+# `lsusb` but creates no /dev/input node - neither this driver nor the
+# in-tree hid-logitech-hidpp can do anything with it. A single USB control
+# message switches it into PC mode, which is the mode the rest of these
+# rules and the driver both already handle. Neither wheel remembers the
+# switch, so this has to fire on every single plug-in and cold boot, not
+# just once.
 #
 # The switch command and its magic message are the same ones the G920
 # family (046d:c261 console mode -> 046d:c262 PC mode) has used for
@@ -16,7 +16,10 @@
 # endpoint 0x81, confirmed by the target settling on device class 0x03
 # (HID). Sourced from batocera's udev/99-wheels.rules and the community
 # four43/logitech-g923-driver install script, both of which apply this
-# exact recipe to the G923 Xbox edition specifically.
+# exact recipe to the G923 Xbox edition specifically. The RS50 pair
+# (c275 -> c276) was confirmed on hardware by the reporter of issue #65,
+# who ran the same message by hand and watched the wheel come back as
+# "RS50 Base for PC".
 #
 # NEVER call usb_modeswitch from RUN+= directly. RUN+= executes inside
 # the udev worker and holds the device lock for the whole USB control
@@ -34,12 +37,12 @@
 # Driver contention: in console mode the wheel speaks Xbox GIP, so
 # xbox-gip binds it first (the out-of-tree xone driver does the same on
 # other setups), and usb_modeswitch cannot drive an interface another
-# driver already owns. logi-g923-modeswitch releases the holder before
+# driver already owns. logi-wheel-modeswitch releases the holder before
 # switching, so this is handled rather than merely documented.
 #
 # Without systemd-run this rule does nothing at all, deliberately: a
 # silent no-op is a far better failure than freezing the machine. Run
-# `sudo logi-g923-modeswitch` by hand on such a system.
+# `sudo logi-wheel-modeswitch` by hand on such a system.
 #
 # Gated on usb_modeswitch actually being installed (it is a recommended,
 # not hard, dependency in every packaging channel): distros disagree about
@@ -52,9 +55,9 @@
 # build time and treats any path-shaped string as a reference to check,
 # comments included, so naming the directories here fails that build.)
 
-ACTION!="add|change", GOTO="g923_xbox_modeswitch_end"
-SUBSYSTEM!="usb", GOTO="g923_xbox_modeswitch_end"
+ACTION!="add|change", GOTO="xbox_modeswitch_end"
+SUBSYSTEM!="usb", GOTO="xbox_modeswitch_end"
 
-ATTR{idVendor}=="046d", ATTR{idProduct}=="c26d", PROGRAM=="/bin/sh -c 'command -v systemd-run >/dev/null && command -v usb_modeswitch >/dev/null && [ -x /usr/bin/logi-g923-modeswitch ]'", RUN+="/bin/sh -c 'systemd-run --no-block --collect --description=\"Logitech G923 Xbox mode switch\" /usr/bin/logi-g923-modeswitch >/dev/null 2>&1'"
+ATTR{idVendor}=="046d", ATTR{idProduct}=="c26d|c275", PROGRAM=="/bin/sh -c 'command -v systemd-run >/dev/null && command -v usb_modeswitch >/dev/null && [ -x /usr/bin/logi-wheel-modeswitch ]'", RUN+="/bin/sh -c 'systemd-run --no-block --collect --description=\"Logitech wheel Xbox mode switch\" /usr/bin/logi-wheel-modeswitch >/dev/null 2>&1'"
 
-LABEL="g923_xbox_modeswitch_end"
+LABEL="xbox_modeswitch_end"

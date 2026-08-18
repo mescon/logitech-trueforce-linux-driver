@@ -93,8 +93,12 @@ override_dh_install:
 		$(TUI)/usr/share/logitech-trueforce/logi-tf-relay.exe
 	# G923 Xbox mode-switch helper, dispatched by udev rule 73. Must not be
 	# run from the udev worker itself; see the rule's own comment.
-	install -D -m 0755 tools/g923-xbox-modeswitch.sh \
-		$(TUI)/usr/bin/logi-g923-modeswitch
+	install -D -m 0755 tools/xbox-modeswitch.sh \
+		$(TUI)/usr/bin/logi-wheel-modeswitch
+	# The pre-0.38.0 name, kept as a symlink: issue #52 and the wiki both
+	# tell people to run it by hand, and it now covers a second wheel
+	# rather than becoming a second command.
+	ln -sf logi-wheel-modeswitch $(TUI)/usr/bin/logi-g923-modeswitch
 	# Rebinds a wheel that another driver claimed, which the settings apps'
 	# diagnostics offer as a fix. Kept as a script rather than a command in the
 	# app because a wheel presents several HID interfaces and all of them have

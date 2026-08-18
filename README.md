@@ -116,14 +116,16 @@ lsusb | grep -i 046d
 
 | Product id | Wheel | What you get |
 |---|---|---|
-| `c276` | RS50 (both editions) | Everything: force feedback, the game's own TrueForce and simulated TrueForce, rev lights, every setting. The Xbox edition uses this same id in its PC mode and is covered by the same support; its Xbox mode speaks the console's own protocol and is not supported. |
+| `c275`, `c276` | RS50 (both editions) | Everything: force feedback, the game's own TrueForce and simulated TrueForce, rev lights, every setting. The Xbox edition plugs in as `c275` and is switched to `c276` automatically, after which it is the same wheel to everything here. Needs `usb_modeswitch` installed. |
 | `c272` | RS50 in compatibility mode, **or** a G PRO (Xbox/PC) | Same as above. The two share this id; Logi Wheel names which one it found. |
 | `c268` | G PRO Racing Wheel (PS/PC) | Same as above. |
 | `c266`, `c267` | G923 PlayStation edition | Force feedback (no other Linux driver gives this wheel any), simulated TrueForce, rev lights, and the core settings. |
 | `c26d`, `c26e` | G923 Xbox edition | Force feedback and TrueForce, both confirmed on a real unit. Rev lights are implemented and awaiting an owner's confirmation in a game. Needs `usb_modeswitch` installed; see [G923 support](#g923-support). |
 
-A wheel that plugs in as `c267` or `c26d` is switched to its PC mode
+A wheel that plugs in as `c267`, `c26d` or `c275` is switched to its PC mode
 automatically, so a different id after plugging in is expected, not a fault.
+The two Xbox editions need `usb_modeswitch` installed for that, and
+`sudo logi-wheel-modeswitch` does it by hand on a system without systemd.
 
 If nothing above matches, this driver is not for your wheel. The **G920** is
 already handled by the kernel's own `hid-logitech-hidpp`, and the older

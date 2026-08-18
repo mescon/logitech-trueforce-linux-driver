@@ -23,10 +23,11 @@ use std::path::Path;
 
 use crate::device::{is_g923_pid, DD_PIDS, G923_PIDS, LOGITECH_VID};
 
-/// The Xbox G923 before its mode switch. It enumerates as a console device
-/// that speaks nothing we can use, and no amount of driver debugging helps
-/// until it is switched.
-const G923_XBOX_CONSOLE_PID: u16 = 0xc26d;
+/// The Xbox editions before their mode switch. Each enumerates as a console
+/// device that speaks nothing we can use, and no amount of driver debugging
+/// helps until it is switched. The RS50's id was confirmed on hardware by
+/// the reporter of issue #65.
+const XBOX_CONSOLE_PIDS: &[(u16, &str)] = &[(0xc26d, "G923"), (0xc275, "RS50")];
 
 /// How much a finding blocks the wheel working.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,10 +87,13 @@ pub fn diagnose_in(sys: &Path, root: &Path) -> Vec<Finding> {
     // 1. Is there a wheel at all? Everything else is meaningless without
     //    one, and this is the single most common answer.
     if attached.is_empty() {
-        if console_mode_g923(sys) {
+        if let Some(wheel) = console_mode_wheel(sys) {
             out.push(Finding {
                 severity: Severity::Blocking,
-                title: "Your G923 is in console mode".to_string(),
+                // Named, because the fix is the same but the reader's wheel
+                // is not: being told about a G923 you do not own reads as a
+                // tool that has misidentified your hardware.
+                title: format!("Your {wheel} is in console mode"),
                 detail: "The Xbox edition starts up pretending to be a console \
                          controller and has to be switched into PC mode before \
                          anything can talk to it. This normally happens by \
@@ -97,7 +101,7 @@ pub fn diagnose_in(sys: &Path, root: &Path) -> Vec<Finding> {
                          the switch by hand fixes it until the next replug."
                     .to_string(),
                 fix: Some(Fix {
-                    command: "logi-g923-modeswitch".to_string(),
+                    command: "logi-wheel-modeswitch".to_string(),
                     needs_root: true,
                 }),
             });
@@ -249,8 +253,10 @@ fn attached_wheels(sys: &Path) -> Vec<u16> {
     usb_pids(sys).into_iter().filter(|p| supported_pid(*p)).collect()
 }
 
-fn console_mode_g923(sys: &Path) -> bool {
-    usb_pids(sys).contains(&G923_XBOX_CONSOLE_PID)
+/// Which wheel, if any, is sitting on the bus in Xbox console mode.
+fn console_mode_wheel(sys: &Path) -> Option<&'static str> {
+    let pids = usb_pids(sys);
+    XBOX_CONSOLE_PIDS.iter().find(|(pid, _)| pids.contains(pid)).map(|(_, name)| *name)
 }
 
 /// Every Logitech product id on the USB bus.
@@ -415,14 +421,21 @@ mod tests {
         assert_eq!(out.len(), 1);
     }
 
+    /// Both Xbox editions, and each named as itself: the fix is shared, but
+    /// telling an RS50 owner about a G923 reads as a misidentified wheel.
     #[test]
-    fn a_console_mode_g923_is_named_rather_than_called_missing() {
-        let f = Fixture::new("console");
-        f.usb(G923_XBOX_CONSOLE_PID);
-        let out = diagnose_in(&f.sys(), &f.root());
-        let first = first_problem(&out).expect("a problem");
-        assert!(first.title.contains("console mode"), "{}", first.title);
-        assert!(first.fix.as_ref().unwrap().needs_root);
+    fn a_console_mode_wheel_is_named_rather_than_called_missing() {
+        for (pid, name) in XBOX_CONSOLE_PIDS {
+            let f = Fixture::new(&format!("console-{pid:04x}"));
+            f.usb(*pid);
+            let out = diagnose_in(&f.sys(), &f.root());
+            let first = first_problem(&out).expect("a problem");
+            assert!(first.title.contains("console mode"), "{}", first.title);
+            assert!(first.title.contains(name), "{} must name the wheel", first.title);
+            let fix = first.fix.as_ref().unwrap();
+            assert!(fix.needs_root);
+            assert_eq!(fix.command, "logi-wheel-modeswitch", "one helper covers both");
+        }
     }
 
     #[test]
@@ -507,7 +520,7 @@ mod tests {
         collect(&Fixture::new("no-wheel"));
 
         let f = Fixture::new("console");
-        f.usb(G923_XBOX_CONSOLE_PID);
+        f.usb(XBOX_CONSOLE_PIDS[0].0);
         collect(&f);
 
         let f = Fixture::new("no-module");
@@ -557,7 +570,7 @@ mod tests {
 
     /// Helpers we install ourselves. Kept beside the check that every one of
     /// them is actually installed by every packaging path.
-    const OUR_HELPERS: &[&str] = &["logi-g923-modeswitch", "logi-rebind-wheel"];
+    const OUR_HELPERS: &[&str] = &["logi-wheel-modeswitch", "logi-rebind-wheel"];
 
     #[test]
     fn every_helper_we_offer_is_installed_by_every_package() {

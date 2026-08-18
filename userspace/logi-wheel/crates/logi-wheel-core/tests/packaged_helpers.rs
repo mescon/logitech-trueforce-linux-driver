@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 /// `tools/` script -> the name it is installed as.
 const HELPERS: &[(&str, &str)] = &[
-    ("tools/g923-xbox-modeswitch.sh", "logi-g923-modeswitch"),
+    ("tools/xbox-modeswitch.sh", "logi-wheel-modeswitch"),
     ("tools/rebind-wheel.sh", "logi-rebind-wheel"),
     ("tools/logi-launch.sh", "logi-launch"),
 ];

@@ -179,7 +179,7 @@
         };
 
         logiG923Modeswitch = pkgs.stdenv.mkDerivation {
-          pname = "logi-g923-modeswitch";
+          pname = "logi-wheel-modeswitch";
           inherit version src;
 
           nativeBuildInputs = [ pkgs.makeWrapper ];
@@ -187,10 +187,13 @@
 
           installPhase = ''
             mkdir -p $out/bin
-            cp tools/g923-xbox-modeswitch.sh $out/bin/logi-g923-modeswitch
-            chmod +x $out/bin/logi-g923-modeswitch
-            wrapProgram $out/bin/logi-g923-modeswitch \
+            cp tools/xbox-modeswitch.sh $out/bin/logi-wheel-modeswitch
+            chmod +x $out/bin/logi-wheel-modeswitch
+            wrapProgram $out/bin/logi-wheel-modeswitch \
               --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.usb-modeswitch ]}
+            # The pre-0.38.0 name, kept working for anyone following the
+            # instructions in issue #52 or the wiki.
+            ln -s logi-wheel-modeswitch $out/bin/logi-g923-modeswitch
           '';
 
           meta = with pkgs.lib; {
@@ -198,7 +201,7 @@
             homepage = "https://github.com/mescon/logitech-trueforce-linux-driver";
             license = licenses.gpl2Only;
             platforms = platforms.linux;
-            mainProgram = "logi-g923-modeswitch";
+            mainProgram = "logi-wheel-modeswitch";
           };
         };
 
@@ -207,12 +210,12 @@
           cp ${src}/udev/70-logitech-trueforce.rules $out/lib/udev/rules.d/
           cp ${src}/udev/71-logi-ffb-uhid.rules $out/lib/udev/rules.d/
           cp ${src}/udev/72-logitech-g923-rebind.rules $out/lib/udev/rules.d/
-          cp ${src}/udev/73-logitech-g923-xbox-modeswitch.rules $out/lib/udev/rules.d/
+          cp ${src}/udev/73-logitech-xbox-modeswitch.rules $out/lib/udev/rules.d/
 
           substituteInPlace $out/lib/udev/rules.d/70-logitech-trueforce.rules --replace-quiet "/bin/sh" "${pkgs.runtimeShell}"
           substituteInPlace $out/lib/udev/rules.d/72-logitech-g923-rebind.rules --replace-quiet "/bin/sh" "${pkgs.runtimeShell}"
-          substituteInPlace $out/lib/udev/rules.d/73-logitech-g923-xbox-modeswitch.rules --replace-quiet "/usr/bin/logi-g923-modeswitch" "${logiG923Modeswitch}/bin/logi-g923-modeswitch"
-          substituteInPlace $out/lib/udev/rules.d/73-logitech-g923-xbox-modeswitch.rules --replace-quiet "/bin/sh" "${pkgs.runtimeShell}"
+          substituteInPlace $out/lib/udev/rules.d/73-logitech-xbox-modeswitch.rules --replace-quiet "/usr/bin/logi-wheel-modeswitch" "${logiG923Modeswitch}/bin/logi-wheel-modeswitch"
+          substituteInPlace $out/lib/udev/rules.d/73-logitech-xbox-modeswitch.rules --replace-quiet "/bin/sh" "${pkgs.runtimeShell}"
         '';
 
       in
@@ -221,7 +224,7 @@
           default = logiWheel;
           logi-wheel = logiWheel;
           kernel-module = logitechTrueforceModule { kernel = pkgs.linuxPackages.kernel; };
-          logi-g923-modeswitch = logiG923Modeswitch;
+          logi-wheel-modeswitch = logiG923Modeswitch;
           udev-rules = udevRules;
         };
 
@@ -264,7 +267,7 @@
             services.udev.packages = [ self.packages.${pkgs.system}.udev-rules ];
             environment.systemPackages = [
               self.packages.${pkgs.system}.logi-wheel 
-              self.packages.${pkgs.system}.logi-g923-modeswitch 
+              self.packages.${pkgs.system}.logi-wheel-modeswitch 
             ];
           };
         };

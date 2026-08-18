@@ -25,9 +25,9 @@ OLD_BLACKLIST_FILE="/etc/modprobe.d/blacklist-hid-logitech-hidpp.conf"
 UDEV_DST="/etc/udev/rules.d/70-logitech-trueforce.rules"
 UDEV_FFB_DST="/etc/udev/rules.d/71-logi-ffb-uhid.rules"
 UDEV_G923_DST="/etc/udev/rules.d/72-logitech-g923-rebind.rules"
-UDEV_G923_XBOX_DST="/etc/udev/rules.d/73-logitech-g923-xbox-modeswitch.rules"
+UDEV_XBOX_DST="/etc/udev/rules.d/73-logitech-xbox-modeswitch.rules"
 MODPROBE_DST="/etc/modprobe.d/hid-logitech-dd.conf"
-MODESWITCH_DST="/usr/bin/logi-g923-modeswitch"
+MODESWITCH_DST="/usr/bin/logi-wheel-modeswitch"
 # Direct-drive wheels, then the G923 editions. doctor was written before the
 # G923 was supported and checked only the first three, so every G923 owner was
 # told "no wheel detected" with the wheel plugged in and working, and the
@@ -35,6 +35,12 @@ MODESWITCH_DST="/usr/bin/logi-g923-modeswitch"
 WHEEL_PIDS_DD="c276 c272 c268"
 WHEEL_PIDS_G923="c266 c267 c26e"
 WHEEL_PID_G923_CONSOLE="c26d"
+# The RS50 has an Xbox edition too, and it behaves the same way: it boots as
+# c275 speaking Xbox GIP and becomes c276 after the same mode switch
+# (confirmed on hardware in issue #65). Kept separate from the G923 id
+# because the two are diagnosed with different wheel names.
+WHEEL_PID_DD_CONSOLE="c275"
+WHEEL_PIDS_CONSOLE="$WHEEL_PID_G923_CONSOLE $WHEEL_PID_DD_CONSOLE"
 WHEEL_PIDS="$WHEEL_PIDS_DD $WHEEL_PIDS_G923"
 # G HUB revises the SDK and the version is a directory name, so never assume
 # one: a current install ships 1_3_12 and 9_1_1, and hardcoding the older
@@ -285,7 +291,9 @@ doctor() {
 	local pid_re console_line
 	pid_re="$(echo "$WHEEL_PIDS" | tr ' ' '|')"
 	usbline="$(lsusb 2>/dev/null | grep -iE "046d:($pid_re)")"
-	console_line="$(lsusb 2>/dev/null | grep -iE "046d:$WHEEL_PID_G923_CONSOLE")"
+	local console_re console_pid console_name console_target
+	console_re="$(echo "$WHEEL_PIDS_CONSOLE" | tr ' ' '|')"
+	console_line="$(lsusb 2>/dev/null | grep -iE "046d:($console_re)")"
 	if [ -n "$usbline" ]; then
 		# One line per wheel. More than one is normal here (a G923 and a
 		# direct-drive base together), and printing the list as a single
@@ -296,7 +304,18 @@ doctor() {
 	elif [ -n "$console_line" ]; then
 		# Not "no wheel": a G923 Xbox that never left console mode. Saying
 		# nothing was found sends the owner looking for the wrong fault.
-		bad "G923 Xbox edition is in console mode ($WHEEL_PID_G923_CONSOLE) and unusable until it switches to $WHEEL_PIDS_G923; install usb_modeswitch and replug (see [4] for the rule and helper)"
+		# Which wheel, by the id that is actually on the bus: "G923" in
+		# front of an RS50 owner sends them looking for the wrong fault.
+		if echo "$console_line" | grep -qiE "046d:$WHEEL_PID_DD_CONSOLE"; then
+			console_pid="$WHEEL_PID_DD_CONSOLE"
+			console_name="RS50 Xbox edition"
+			console_target="c276"
+		else
+			console_pid="$WHEEL_PID_G923_CONSOLE"
+			console_name="G923 Xbox edition"
+			console_target="$WHEEL_PIDS_G923"
+		fi
+		bad "$console_name is in console mode ($console_pid) and unusable until it switches to $console_target; install usb_modeswitch and replug (see [4] for the rule and helper)"
 	else
 		wrn "no wheel detected on USB (plug it in and re-run doctor; everything below that needs the wheel is skipped)"
 	fi
@@ -393,10 +412,18 @@ doctor() {
 		else
 			wrn "G923 rebind rule missing - the in-tree driver may keep winning the bind race on c266/c267/c26e (run: sudo ./tools/setup.sh)"
 		fi
-		if [ -f "$UDEV_G923_XBOX_DST" ] || [ -f "/usr/lib/udev/rules.d/73-logitech-g923-xbox-modeswitch.rules" ]; then
-			ok "G923 Xbox edition (c26d) mode-switch rule installed"
+	fi
+	# Reported for a G923 of any edition (its PC ids only exist on the Xbox
+	# edition after a switch) and for any wheel sitting in console mode
+	# right now, which is the case where these two matter most. Not for a
+	# plain c276: that is also what a switched RS50 looks like, and telling
+	# every RS50 owner about a mode switch they never needed is the noise
+	# #54 was about.
+	if g923_on_usb || [ -n "$console_line" ]; then
+		if [ -f "$UDEV_XBOX_DST" ] || [ -f "/usr/lib/udev/rules.d/73-logitech-xbox-modeswitch.rules" ]; then
+			ok "Xbox edition (c26d/c275) mode-switch rule installed"
 		else
-			wrn "G923 Xbox mode-switch rule missing - the Xbox edition will not switch out of console mode (run: sudo ./tools/setup.sh)"
+			wrn "Xbox mode-switch rule missing - an Xbox edition will not switch out of console mode (run: sudo ./tools/setup.sh)"
 		fi
 		# Checked separately from the rule above: the rule dispatches this
 		# through systemd-run with the output discarded, so a missing helper
@@ -404,9 +431,9 @@ doctor() {
 		# enumerates (issue #27). Inside this guard because its warning
 		# refers to "the rule above", which is only printed here.
 		if [ -x "$MODESWITCH_DST" ]; then
-			ok "G923 Xbox mode-switch helper installed"
+			ok "Xbox mode-switch helper installed"
 		else
-			wrn "G923 Xbox mode-switch helper missing ($MODESWITCH_DST) - the rule above cannot do anything without it, and the Xbox edition will look like a dead wheel (run: sudo ./tools/setup.sh)"
+			wrn "Xbox mode-switch helper missing ($MODESWITCH_DST) - the rule above cannot do anything without it, and an Xbox edition will look like a dead wheel (run: sudo ./tools/setup.sh)"
 		fi
 	fi
 	if [ -f "$MODPROBE_DST" ]; then

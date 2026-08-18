@@ -19,7 +19,7 @@ pkgname = logitech-trueforce-dkms
 	depends = dkms
 	optdepends = logi-wheel: settings TUI, FFB proxy, simulated TrueForce and shim installer
 	optdepends = oversteer: GUI to configure wheel settings
-	optdepends = usb_modeswitch: switch the G923 Xbox edition (c26d) into PC mode on plug-in
+	optdepends = usb_modeswitch: switch an Xbox edition (G923 c26d, RS50 c275) into PC mode on plug-in
 	provides = logitech-trueforce
 	conflicts = logitech-trueforce
 

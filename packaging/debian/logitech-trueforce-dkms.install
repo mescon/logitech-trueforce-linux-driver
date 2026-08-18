@@ -6,7 +6,7 @@
 udev/70-logitech-trueforce.rules usr/lib/udev/rules.d/
 udev/71-logi-ffb-uhid.rules usr/lib/udev/rules.d/
 udev/72-logitech-g923-rebind.rules usr/lib/udev/rules.d/
-udev/73-logitech-g923-xbox-modeswitch.rules usr/lib/udev/rules.d/
+udev/73-logitech-xbox-modeswitch.rules usr/lib/udev/rules.d/
 # softdep ordering hint for the G923 PIDs, plus a narrow blacklist of the
 # standalone new-lg4ff DKMS fork (files under /etc are auto-flagged as
 # conffiles by debhelper, so no explicit conffiles list is needed).

@@ -61,10 +61,13 @@ UDEV_FFB_SRC="$REPO_ROOT/udev/71-logi-ffb-uhid.rules"
 UDEV_FFB_DST="/etc/udev/rules.d/71-logi-ffb-uhid.rules"
 UDEV_G923_SRC="$REPO_ROOT/udev/72-logitech-g923-rebind.rules"
 UDEV_G923_DST="/etc/udev/rules.d/72-logitech-g923-rebind.rules"
-UDEV_G923_XBOX_SRC="$REPO_ROOT/udev/73-logitech-g923-xbox-modeswitch.rules"
-UDEV_G923_XBOX_DST="/etc/udev/rules.d/73-logitech-g923-xbox-modeswitch.rules"
-MODESWITCH_SRC="$REPO_ROOT/tools/g923-xbox-modeswitch.sh"
-MODESWITCH_DST="/usr/bin/logi-g923-modeswitch"
+UDEV_XBOX_SRC="$REPO_ROOT/udev/73-logitech-xbox-modeswitch.rules"
+UDEV_XBOX_DST="/etc/udev/rules.d/73-logitech-xbox-modeswitch.rules"
+MODESWITCH_SRC="$REPO_ROOT/tools/xbox-modeswitch.sh"
+MODESWITCH_DST="/usr/bin/logi-wheel-modeswitch"
+# Pre-0.38.0 name, kept working: issue #52 and the wiki both tell people to
+# run it, and it now covers a second wheel rather than a second command.
+MODESWITCH_OLD_DST="/usr/bin/logi-g923-modeswitch"
 REBIND_SRC="$REPO_ROOT/tools/rebind-wheel.sh"
 REBIND_DST="/usr/bin/logi-rebind-wheel"
 LAUNCH_SRC="$REPO_ROOT/tools/logi-launch.sh"
@@ -211,6 +214,13 @@ if [ -f "$MODESWITCH_SRC" ]; then
 	else
 		echo "mode-switch helper up to date ($MODESWITCH_DST)"
 	fi
+	# The old command name keeps working. It was published in issue #52
+	# and the wiki, and an owner following those instructions on a wheel
+	# that now has a rule of its own should not meet "command not found".
+	if [ ! -L "$MODESWITCH_OLD_DST" ]; then
+		rm -f "$MODESWITCH_OLD_DST"
+		ln -s "$(basename "$MODESWITCH_DST")" "$MODESWITCH_OLD_DST"
+	fi
 fi
 
 # The rebind helper, which the settings apps' diagnostics offer by name
@@ -238,17 +248,21 @@ if [ -f "$LAUNCH_SRC" ]; then
 	fi
 fi
 
-# Same for the G923 Xbox edition (c26d) boot-mode switch: it fires on
+# Same for the Xbox editions' boot-mode switch (G923 c26d, RS50 c275): it
+# fires on
 # SUBSYSTEM=="usb" add/change, on the raw USB device, not the HID
 # interfaces the other two rules watch.
-if [ -f "$UDEV_G923_XBOX_SRC" ]; then
-	if needs_rule "$UDEV_G923_XBOX_SRC" "$UDEV_G923_XBOX_DST"; then
-		echo "== installing udev rule to $UDEV_G923_XBOX_DST =="
-		install -m 0644 "$UDEV_G923_XBOX_SRC" "$UDEV_G923_XBOX_DST"
+if [ -f "$UDEV_XBOX_SRC" ]; then
+	# Pre-rename installs used this filename, and it dispatches the same
+	# helper, so leaving it would switch every wheel twice.
+	rm -f /etc/udev/rules.d/73-logitech-g923-xbox-modeswitch.rules
+	if needs_rule "$UDEV_XBOX_SRC" "$UDEV_XBOX_DST"; then
+		echo "== installing udev rule to $UDEV_XBOX_DST =="
+		install -m 0644 "$UDEV_XBOX_SRC" "$UDEV_XBOX_DST"
 		udevadm control --reload
 		udevadm trigger --subsystem-match=usb
 	else
-		echo "udev rule up to date ($UDEV_G923_XBOX_DST)"
+		echo "udev rule up to date ($UDEV_XBOX_DST)"
 	fi
 fi
 

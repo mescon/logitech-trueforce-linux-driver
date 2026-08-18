@@ -42,7 +42,7 @@ Requires:       dkms >= 2.1.0.0
 # logi-wheel keeps "install the driver, get the ecosystem" while still
 # allowing a lean module-only install.
 Recommends:     logi-wheel
-# Switches the G923 Xbox edition (c26d) into PC mode (c26e) on plug-in;
+# Switches an Xbox edition (G923 c26d, RS50 c275) into PC mode (c26e, c276) on plug-in;
 # the udev rule that runs it is a no-op without the binary present.
 Recommends:     usb_modeswitch
 Requires(post): dkms
@@ -210,10 +210,10 @@ install -D -m 0644 udev/71-logi-ffb-uhid.rules \
 # softdep/blacklist hint (see the file for why the fork blacklist is safe).
 install -D -m 0644 udev/72-logitech-g923-rebind.rules \
     %{buildroot}%{_prefix}/lib/udev/rules.d/72-logitech-g923-rebind.rules
-# G923 Xbox edition (c26d) boot-mode switch: needs usb_modeswitch
+# Xbox editions (G923 c26d, RS50 c275) boot-mode switch: needs usb_modeswitch
 # (Recommends above), a no-op without it.
-install -D -m 0644 udev/73-logitech-g923-xbox-modeswitch.rules \
-    %{buildroot}%{_prefix}/lib/udev/rules.d/73-logitech-g923-xbox-modeswitch.rules
+install -D -m 0644 udev/73-logitech-xbox-modeswitch.rules \
+    %{buildroot}%{_prefix}/lib/udev/rules.d/73-logitech-xbox-modeswitch.rules
 install -D -m 0644 packaging/modprobe.d/hid-logitech-dd.conf \
     %{buildroot}%{_sysconfdir}/modprobe.d/hid-logitech-dd.conf
 
@@ -250,8 +250,11 @@ install -D -m 0644 userspace/logi-wheel/target/release/liblogi_tf_scs.so \
 install -D -m 0644 tools/logi-tf-relay.exe \
     %{buildroot}%{_datadir}/logitech-trueforce/logi-tf-relay.exe
 # G923 Xbox mode-switch helper, dispatched by udev rule 73.
-install -D -m 0755 tools/g923-xbox-modeswitch.sh \
-    %{buildroot}%{_bindir}/logi-g923-modeswitch
+install -D -m 0755 tools/xbox-modeswitch.sh \
+    %{buildroot}%{_bindir}/logi-wheel-modeswitch
+# The pre-0.38.0 name, kept as a symlink: issue #52 and the wiki both tell
+# people to run it by hand.
+ln -sf logi-wheel-modeswitch %{buildroot}%{_bindir}/logi-g923-modeswitch
 # Rebinds a wheel that another driver claimed, which the settings apps'
 # diagnostics offer as a fix. Kept as a script rather than a command in the
 # app because a wheel presents several HID interfaces and all of them have
@@ -284,7 +287,7 @@ ln -s logi-wheel-gui %{buildroot}%{_bindir}/logi-dd-gui
 %{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules
 %{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
 %{_prefix}/lib/udev/rules.d/72-logitech-g923-rebind.rules
-%{_prefix}/lib/udev/rules.d/73-logitech-g923-xbox-modeswitch.rules
+%{_prefix}/lib/udev/rules.d/73-logitech-xbox-modeswitch.rules
 %config(noreplace) %{_sysconfdir}/modprobe.d/hid-logitech-dd.conf
 
 %files -n logi-wheel
@@ -301,6 +304,7 @@ ln -s logi-wheel-gui %{buildroot}%{_bindir}/logi-dd-gui
 %{_datadir}/logitech-trueforce/logi-tf-relay.exe
 %{_datadir}/logitech-trueforce/dinput8-escape.dll
 %{_bindir}/logi-rpm-bridge
+%{_bindir}/logi-wheel-modeswitch
 %{_bindir}/logi-g923-modeswitch
 %{_bindir}/logi-rebind-wheel
 %{_bindir}/logi-launch

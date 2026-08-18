@@ -5,6 +5,26 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The RS50 Xbox edition works now.** It boots as `046d:c275` speaking the
+console's own protocol, with no HID++ interface for anything here to bind,
+so it looked like a wheel that simply did not enumerate. One vendor
+message switches it to `046d:c276`, after which it is an ordinary RS50 to
+every part of this project. That switch now happens by itself on every
+plug-in, the same way the G923 Xbox edition's has since 0.20.0, and it
+needs `usb_modeswitch` installed. The product id and the switch were
+confirmed on hardware by [kangaro0](https://github.com/kangaro0) in issue
+#65, who ran the message by hand and watched the wheel come back as "RS50
+Base for PC".
+
+One helper now covers both wheels rather than one command per wheel, so
+`logi-g923-modeswitch` is called `logi-wheel-modeswitch`. The old name
+keeps working as a link, because the instructions people already have,
+in issue #52 and on the wiki, use it. Both apps' diagnostics name the
+wheel they found in console mode rather than always saying G923, and the
+doctor does the same.
+
 ## 0.37.1 - 2026-08-18
 
 **Both readers of the game's telemetry get it now.** `logi-rpm-bridge`
