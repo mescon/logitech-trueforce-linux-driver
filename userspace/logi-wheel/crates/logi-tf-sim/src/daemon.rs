@@ -457,35 +457,42 @@ fn bind(port: u16) -> Result<UdpSocket> {
     Ok(sock)
 }
 
-/// Bind a port we are willing to run without, saying loudly what a taken
-/// one costs.
+/// Join the relay stream, whether or not somebody else is already reading
+/// it.
 ///
-/// The relay port is shared with logi-rpm-bridge, which reads the very same
-/// LTFR datagrams for the kernel texture merge, and the two cannot both have
-/// them: measured on 7.1.x, a unicast datagram goes to exactly ONE socket
-/// however the port is shared. SO_REUSEADDR on both ends only makes both
-/// binds succeed while the kernel picks a single winner, which turns this
-/// into a silent loss; SO_REUSEPORT is a load balancer, so it splits or
-/// arbitrarily assigns the stream instead of duplicating it. Neither
-/// delivers to both, so the port stays exclusive and the loser says so.
+/// The relay port is wanted by logi-rpm-bridge too, which reads the very
+/// same LTFR datagrams to feed the kernel's texture merge and the rev
+/// lights, and the kernel will not deliver one datagram to two sockets
+/// (see [`relay::RelayListener`] for the measurements and the reasoning).
+/// So the port is not shared, it is relayed: whoever has it forwards to the
+/// fan-out ports, and whoever arrives second reads one of those. Neither
+/// program has to be stopped for the other to work.
 ///
-/// Unlike the bridge, this daemon has four other telemetry sockets and a
-/// wheel to drive, so it keeps running: a UDP-telemetry game still gets its
-/// simulated TrueForce, only the shared-memory relay's games do not.
-fn bind_optional(port: u16, what: &str, holder: &str, cost: &str) -> Option<UdpSocket> {
-    match bind(port) {
-        Ok(sock) => Some(sock),
+/// `None` only when the relay port and every fan-out port behind it are
+/// taken, which means more readers than the fan-out was built for. That is
+/// still not fatal here: this daemon has four other telemetry sockets and a
+/// wheel to drive, so a UDP-telemetry game keeps its simulated TrueForce
+/// and only the shared-memory titles go quiet.
+fn open_relay(port: u16) -> Option<relay::RelayListener> {
+    match relay::RelayListener::open(port) {
+        Ok(l) => Some(l),
         Err(e) => {
-            eprintln!("logi-tf-sim: cannot listen for {what} on udp/{port}: {e}");
+            eprintln!("logi-tf-sim: cannot listen for the shared-memory relay: {e}");
             eprintln!(
-                "logi-tf-sim: that port is normally held by {holder}, and only one of us can \
-                 have the datagrams"
+                "logi-tf-sim: udp/{port} and its fan-out ports ({}) are all taken, so there is \
+                 nowhere left to be fed from",
+                relay::fanout_ports(port)
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
-            eprintln!("logi-tf-sim: {cost}");
             eprintln!(
-                "logi-tf-sim: everything else keeps working. To get it back, stop the other \
-                 program and start this one again"
+                "logi-tf-sim: the games that publish only into Windows shared memory (the \
+                 Assetto family, iRacing, RaceRoom, rFactor 2, Le Mans Ultimate) drive nothing \
+                 here until one of those frees up"
             );
+            eprintln!("logi-tf-sim: everything else keeps working");
             None
         }
     }
@@ -559,14 +566,7 @@ pub fn run(cfg: &Config) -> Result<()> {
     let cm_sock = bind(cfg.codemasters_port)?;
     let pc_sock = bind(cfg.pcars_port)?;
     let bn_sock = bind(cfg.beamng_port)?;
-    let relay_sock = bind_optional(
-        cfg.relay_port,
-        "the shared-memory relay",
-        "logi-rpm-bridge (logi-launch starts it for the kernel texture merge, and it reads the \
-         same datagrams)",
-        "while it is taken, the games that publish only into Windows shared memory (the Assetto \
-         family, iRacing, RaceRoom, rFactor 2, Le Mans Ultimate) drive nothing here",
-    );
+    let mut relay_sock = open_relay(cfg.relay_port);
     // TrueForce a game produced itself, captured from its SDK calls by the
     // proxy DLL and forwarded here. Separate from the telemetry sockets
     // because it is finished haptics rather than an input to synthesis: the
@@ -576,14 +576,17 @@ pub fn run(cfg: &Config) -> Result<()> {
 
     eprintln!(
         "logi-tf-sim: listening (codemasters/F1/WRC on udp/{}, pcars2/ams2 on udp/{}, \
-         beamng on udp/{}, shared-memory relay on udp/{}{}, captured TrueForce on udp/{})",
+         beamng on udp/{}, shared-memory relay on {}, captured TrueForce on udp/{})",
         cfg.codemasters_port,
         cfg.pcars_port,
         cfg.beamng_port,
-        cfg.relay_port,
         // The line is the daemon's own account of what it is doing, so it
-        // must not claim a socket the bind above lost.
-        if relay_sock.is_some() { "" } else { " (NOT LISTENING, see above)" },
+        // must not claim a socket the bind above lost, and it names the
+        // fan-out port when that is where the datagrams are arriving.
+        match &relay_sock {
+            Some(l) => l.describe(),
+            None => format!("udp/{} (NOT LISTENING, see above)", cfg.relay_port),
+        },
         logi_wheel_core::tfstream::DEFAULT_PORT
     );
     if !cfg.enabled {
@@ -595,13 +598,16 @@ pub fn run(cfg: &Config) -> Result<()> {
     let mut next_open_attempt = Instant::now();
     let mut buf = [0u8; 2048];
 
-    // Everything poll(2) watches, built once: the relay socket is absent
-    // when its port was taken.
-    let mut polled = vec![&cm_sock, &pc_sock, &bn_sock, &tf_sock];
-    polled.extend(relay_sock.as_ref());
-
     while !STOP.load(Ordering::SeqCst) {
+        // Rebuilt per iteration rather than once: the relay listener can
+        // swap its socket underneath us when it is promoted from a fan-out
+        // port to the relay port, and a poll set built at startup would
+        // then be watching a closed file descriptor. Five borrows is not a
+        // cost worth caching against that.
+        let mut polled = vec![&cm_sock, &pc_sock, &bn_sock, &tf_sock];
+        polled.extend(relay_sock.as_ref().map(|l| l.socket()));
         poll_sockets(&polled);
+        drop(polled);
 
         // Drained first and kept separate: captured samples are the game's
         // own TrueForce and must not be mixed with, or replaced by, anything
@@ -612,11 +618,28 @@ pub fn run(cfg: &Config) -> Result<()> {
         drain(&cm_sock, &mut buf, |p| decoders.parse_codemasters_port(p), &mut latest);
         drain(&pc_sock, &mut buf, pcars::parse, &mut latest);
         drain(&bn_sock, &mut buf, |p| decoders.beamng.parse(p), &mut latest);
-        if let Some(relay_sock) = &relay_sock {
-            drain(relay_sock, &mut buf, relay::parse, &mut latest);
+        if let Some(listener) = &relay_sock {
+            listener.drain(&mut buf, |pkt| {
+                if let Some(sample) = relay::parse(pkt) {
+                    latest = Some(sample);
+                }
+            });
         }
 
         let now = Instant::now();
+
+        // A follower takes the relay port back when whoever held it exits,
+        // so a daemon left running between sessions ends up as the hub
+        // again and the next program to start is the one that gets fed.
+        if let Some(listener) = &mut relay_sock {
+            if listener.poll_promotion(now) {
+                eprintln!(
+                    "logi-tf-sim: shared-memory relay: took over udp/{} (the reader that held \
+                     it is gone)",
+                    listener.port()
+                );
+            }
+        }
 
         if let Some((id, tel)) = latest {
             if cfg.game_enabled(id) {

@@ -1,10 +1,11 @@
 #!/bin/sh -e
-# Bridge end-to-end: LTFR datagram in, sysfs-format write out, and the
-# diagnostic a second listener on the same port gets.
+# Bridge end-to-end: LTFR datagram in, sysfs-format write out, and what a
+# second reader of the same telemetry gets (fed by the first, and promoted
+# when the first exits).
 #
 # On an isolated port (LOGI_RPM_PORT), like test_bridge_leds.py: the standard
-# 20780 may already be held by a live bridge or by logi-tf-sim, and only one
-# socket can have a port's datagrams.
+# 20780 may already be held by a live bridge or by logi-tf-sim, and this test
+# needs to be the only thing arranging the ports it uses.
 cd "$(dirname "$0")"
 PORT=21880
 export PORT
@@ -25,17 +26,44 @@ socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(
 PY
 sleep 0.3
 
-# A second listener cannot share the datagrams (measured: a unicast packet
-# goes to exactly one socket however the port is shared), so it must say who
-# has them and what that costs, not sit on a live socket receiving nothing.
-conflict=$(LOGI_RPM_SYSFS="$out" LOGI_RPM_PORT="$PORT" /tmp/logi-rpm-bridge 2>&1 >/dev/null || true)
-case "$conflict" in
-*"already taken"*"logi-tf-sim"*) ;;
-*) echo "FAIL: a second bridge did not name the conflict: '$conflict'"; exit 1 ;;
-esac
-
-kill $bpid 2>/dev/null; wait $bpid 2>/dev/null || true
+# A second reader of the same telemetry. The kernel will not give one
+# unicast datagram to two sockets, so the one that holds the port forwards
+# to the fan-out ports behind it: the second reader must end up with the
+# same sample rather than an explanation of why it cannot have it.
 grep -q "^6543 14000$" "$out" || { echo "FAIL: got '$(cat "$out")'"; exit 1; }
+out2=$(mktemp)
+: > "$out2"
+LOGI_RPM_SYSFS="$out2" LOGI_RPM_PORT="$PORT" /tmp/logi-rpm-bridge 2>/tmp/logi-bridge-follower.log & fpid=$!
+trap 'kill "$bpid" "$fpid" 2>/dev/null || true' EXIT
+sleep 0.4
+grep -q "fan-out" /tmp/logi-bridge-follower.log || {
+	echo "FAIL: the second bridge did not say it was following:"
+	cat /tmp/logi-bridge-follower.log; exit 1; }
+send_to_port() {
+	RPM="$1" PORT="$PORT" python3 - <<'PY'
+import os, socket, struct
+pkt = bytearray(28)
+pkt[0:4] = b"LTFR"; pkt[4] = 2
+pkt[14:18] = struct.pack('<f', float(os.environ["RPM"]))
+pkt[18:22] = struct.pack('<f', 14000.0)
+socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(
+    bytes(pkt), ("127.0.0.1", int(os.environ["PORT"])))
+PY
+}
+send_to_port 5200
+sleep 0.4
+grep -q "^5200 14000$" "$out" || { echo "FAIL: the holder lost its own datagram: '$(cat "$out")'"; exit 1; }
+grep -q "^5200 14000$" "$out2" || { echo "FAIL: the follower was not fed: '$(cat "$out2")'"; exit 1; }
+
+# And when the holder exits, the survivor takes the port back, so telemetry
+# aimed where every producer sends it keeps arriving.
+kill $bpid 2>/dev/null; wait $bpid 2>/dev/null || true
+sleep 3
+send_to_port 4100
+sleep 0.4
+grep -q "^4100 14000$" "$out2" || {
+	echo "FAIL: the survivor did not take the port back: '$(cat "$out2")'"; exit 1; }
+kill $fpid 2>/dev/null; wait $fpid 2>/dev/null || true
 
 # A wheel that goes away and comes back. The bridge resolves its attribute
 # path once at startup and used to hold it for the process lifetime, which

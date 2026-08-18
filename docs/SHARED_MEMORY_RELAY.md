@@ -237,15 +237,37 @@ grants `texture=merge` (the registry in
 `userspace/logi-wheel/crates/logi-wheel-core/src/games.rs`; today only
 AC EVO, because grants ride hardware evidence).
 
-**One consumer at a time.** The port takes any number of producers, but a
-unicast datagram is delivered to exactly one socket, whatever socket options
-the listeners set (`SO_REUSEADDR` only lets both bind while the kernel still
-picks one winner; `SO_REUSEPORT` load-balances, which splits a stream rather
-than duplicating it). So `logi-rpm-bridge` and `logi-tf-sim` cannot both read
-20780: whichever starts second says so and names the other, the bridge by
-exiting (the socket is its whole job) and the daemon by carrying on without
-its relay games. Move one of them with `LOGI_RPM_PORT` or the daemon's
-`port.relay` if you really want both, and point your producer at both ports.
+**One socket gets the datagrams, every reader gets the telemetry.** The
+port takes any number of producers, but a unicast datagram is delivered to
+exactly one socket, whatever options the listeners set (`SO_REUSEADDR` only
+lets both bind while the kernel still picks one winner; `SO_REUSEPORT`
+load-balances, which splits a stream rather than duplicating it). The
+kernel will not deliver to both, so the readers do it themselves:
+
+- Whoever binds 20780 is the **hub**. It forwards every datagram it
+  receives, verbatim and before parsing it, to the fan-out ports 20782,
+  20783 and 20784. (20781 is skipped: that is the captured-TrueForce port,
+  where a copy of engine telemetry would be read as finished haptics.)
+- Whoever finds 20780 taken reads the first free fan-out port instead, and
+  is fed by the hub. It says so at startup, naming both ports, because a
+  program listening on 20782 with nothing configured to say so would read
+  as a misconfiguration in a bug report.
+- A follower keeps trying to take 20780, about every two seconds. When the
+  hub exits, the survivor is promoted, so telemetry aimed where every
+  producer sends it keeps arriving and the next program to start finds a
+  working hub.
+
+Forwarding only ever goes upward, from 20780 to the fan-out ports, so no
+arrangement of these programs can make a datagram circulate. Nothing needs
+to be stopped, and no port needs moving, for `logi-rpm-bridge` and
+`logi-tf-sim` to run at the same time. `LOGI_RPM_PORT` and the daemon's
+`port.relay` still move the whole block (the fan-out is derived from
+whatever the relay port is), which is what a third-party producer on a
+different port wants.
+
+The rules are implemented twice, in `logi_wheel_core::relay::RelayListener`
+and in `tools/logi-rpm-bridge.c`, because the two readers are written in
+different languages. A change to one belongs in the other.
 
 `logi-rpm-bridge` is also the rev-light feeder: besides
 `wheel_texture_rpm`, it drives `wheel_rev_level` from the same datagrams.

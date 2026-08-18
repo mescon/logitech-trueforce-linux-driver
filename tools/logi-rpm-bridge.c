@@ -158,10 +158,150 @@ static void reresolve(struct target *t, time_t *last_try)
 	resolve_target(t);
 }
 
+/*
+ * Reading the relay stream without taking it away from anyone.
+ *
+ * logi-tf-sim listens for the very same LTFR datagrams on the very same
+ * port, because it synthesizes engine haptics from what we use for the
+ * texture merge and the rev lights. Only one socket can have them:
+ * measured on 7.1.x, a unicast datagram goes to exactly ONE socket however
+ * the port is shared. SO_REUSEADDR on both ends only makes both binds
+ * succeed while the kernel picks a single winner, which turns the loss
+ * silent; SO_REUSEPORT is a load balancer, so it splits a stream rather
+ * than duplicating it. The kernel will not deliver to both, so somebody
+ * has to.
+ *
+ * Three rules, the same ones logi-wheel-core's relay::RelayListener
+ * implements in Rust. Any change here belongs there too:
+ *
+ *   1. Take the relay port if it is free. You are then the hub, and you
+ *      forward every datagram you receive, verbatim and before parsing it,
+ *      to the fan-out ports.
+ *   2. If it is taken, read the first free fan-out port instead. The hub
+ *      feeds you.
+ *   3. As a follower, keep trying to take the relay port. When the hub
+ *      exits, the survivor is promoted within a couple of seconds and the
+ *      next program to start finds a working hub again.
+ *
+ * Forwarding only ever goes upward, from the relay port to the fan-out
+ * ports, so no arrangement of these programs can make a datagram
+ * circulate. base + 1 is skipped because at the default port that is the
+ * captured-TrueForce port (20781), where a copy of engine telemetry would
+ * be read as finished haptics.
+ */
+#define FANOUT_PORTS 3
+#define PROMOTE_INTERVAL 2
+
+struct relay_in {
+	int fd;
+	int base;	/* the relay port, whoever holds it */
+	int port;	/* the port actually being read */
+	int hub;	/* holds the relay port, so forwards to the others */
+	struct sockaddr_in fanout[FANOUT_PORTS];
+	time_t next_promote;
+};
+
+/* A bound UDP socket with the bounded recv the caller needs, or -1 with
+ * errno left alone so EADDRINUSE can be told from a real failure. */
+static int bind_udp(int port)
+{
+	struct sockaddr_in addr = { 0 };
+	/* Bounded recv so a vanished producer darkens the strip: without
+	 * telemetry the game is gone and stale lights lie. It also paces
+	 * the promotion attempts, which need no timer of their own. */
+	struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+	if (fd < 0)
+		return -1;
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	addr.sin_port = htons((unsigned short)port);
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		int err = errno;
+
+		close(fd);
+		errno = err;
+		return -1;
+	}
+	return fd;
+}
+
+/* Take the relay port, or the first free fan-out port behind it. Returns 0
+ * on success, -1 when every one of them is taken. */
+static int relay_open(struct relay_in *r, int base)
+{
+	int i;
+
+	memset(r, 0, sizeof(*r));
+	r->base = base;
+	r->fd = -1;
+	for (i = 0; i < FANOUT_PORTS; i++) {
+		r->fanout[i].sin_family = AF_INET;
+		r->fanout[i].sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		r->fanout[i].sin_port = htons((unsigned short)(base + 2 + i));
+	}
+	for (i = 0; i <= FANOUT_PORTS; i++) {
+		int port = i == 0 ? base : base + 1 + i;
+		int fd = bind_udp(port);
+
+		if (fd >= 0) {
+			r->fd = fd;
+			r->port = port;
+			r->hub = i == 0;
+			r->next_promote = time(NULL) + PROMOTE_INTERVAL;
+			return 0;
+		}
+		if (errno != EADDRINUSE)
+			return -1;
+	}
+	return -1;
+}
+
+/* Pass a datagram on to the other readers. Nothing may be listening on a
+ * fan-out port, which is the ordinary one-reader case rather than a fault,
+ * so send errors are ignored instead of logged sixty times a second. */
+static void relay_forward(const struct relay_in *r, const void *pkt, size_t n)
+{
+	int i;
+
+	if (!r->hub)
+		return;
+	for (i = 0; i < FANOUT_PORTS; i++)
+		(void)!sendto(r->fd, pkt, n, MSG_DONTWAIT,
+			      (const struct sockaddr *)&r->fanout[i],
+			      sizeof(r->fanout[i]));
+}
+
+/* A follower's periodic attempt to take the relay port back. Returns 1 when
+ * it succeeded, so the caller can say so. */
+static int relay_promote(struct relay_in *r)
+{
+	time_t nowt = time(NULL);
+	int fd;
+
+	if (r->hub || nowt < r->next_promote)
+		return 0;
+	r->next_promote = nowt + PROMOTE_INTERVAL;
+	fd = bind_udp(r->base);
+	if (fd < 0)
+		return 0;
+	/* The fan-out socket goes only once the relay port is held, so this
+	 * program is never listening nowhere. It must go, though: a hub
+	 * still holding its old fan-out socket would forward every datagram
+	 * straight back into itself. */
+	close(r->fd);
+	r->fd = fd;
+	r->port = r->base;
+	r->hub = 1;
+	return 1;
+}
+
 int main(void)
 {
 	struct target t = { 0 };
-	struct sockaddr_in addr = { 0 };
+	struct relay_in relay;
 	unsigned char pkt[64];
 	struct timespec last = { 0 };
 	time_t last_warn = 0, last_rev_warn = 0, last_resolve = 0;
@@ -170,66 +310,38 @@ int main(void)
 	int shift_mode = mode && !strcmp(mode, "shift");
 	const char *port_env = getenv("LOGI_RPM_PORT");
 	int port = port_env && atoi(port_env) > 0 ? atoi(port_env) : 20780;
-	int fd;
 
 	resolve_target(&t);
 	if (!t.rpm) {
 		fprintf(stderr, "logi-rpm-bridge: no wheel_texture_rpm in sysfs\n");
 		return 1;
 	}
-	fd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (fd < 0) { perror("socket"); return 1; }
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	addr.sin_port = htons((unsigned short)port);
-	/*
-	 * Deliberately NO SO_REUSEADDR/SO_REUSEPORT here.
-	 *
-	 * logi-tf-sim listens for the same LTFR datagrams on the same port
-	 * (0.0.0.0:20780, its `port.relay`), and only one of us can have
-	 * them: measured on 7.1.x, two UDP sockets on one port deliver a
-	 * unicast datagram to exactly ONE socket. With SO_REUSEADDR on both
-	 * ends both binds succeed and the kernel hands every packet to the
-	 * more specific (or last) bind, so the loser sits on a live socket
-	 * that never receives anything. SO_REUSEPORT is worse: it is a
-	 * load balancer, so a single producer's packets all hash to one
-	 * socket anyway and a second producer would split the stream.
-	 *
-	 * Without the option the second bind fails with EADDRINUSE, which
-	 * is the point: a conflict we can name beats one that is silent.
-	 * UDP has no TIME_WAIT, so nothing else wanted the option either.
-	 */
-	{
-		/* Bounded recv so a vanished producer darkens the strip:
-		 * without telemetry the game is gone and stale lights lie. */
-		struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-
-		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	if (relay_open(&relay, port) < 0) {
+		/* Only when the relay port and every fan-out port behind it
+		 * are taken, which means more readers of this stream than
+		 * the fan-out was built for. Saying what is lost matters
+		 * because the symptom on its own (a flat texture and a dark
+		 * rev strip) looks like broken hardware or a missing
+		 * telemetry producer.
+		 *
+		 * Exiting, not idling: this socket is the whole program,
+		 * and a pid that stays up doing nothing is exactly what
+		 * made the old failure read as success in logi-launch's
+		 * log. */
+		fprintf(stderr,
+			"logi-rpm-bridge: udp/%d and its fan-out ports (%d-%d) are all taken\n"
+			"logi-rpm-bridge: without one of them the texture merge gets no rpm (the engine texture stays flat)\n"
+			"logi-rpm-bridge: and the rev lights stay dark. Stop whatever else is reading this telemetry, or\n"
+			"logi-rpm-bridge: move us apart with LOGI_RPM_PORT / the daemon's port.relay.\n",
+			port, port + 2, port + 1 + FANOUT_PORTS);
+		return 1;
 	}
-	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-		if (errno == EADDRINUSE) {
-			/* Almost always logi-tf-sim, which binds the same
-			 * port for the same datagrams and is left running
-			 * between sessions. Say what is lost and how to get
-			 * it back, because the symptom on its own (a flat
-			 * texture and a dark rev strip) looks like broken
-			 * hardware or a missing telemetry producer.
-			 *
-			 * Exiting, not idling: this socket is the whole
-			 * program, and a pid that stays up doing nothing is
-			 * exactly what made the old failure read as
-			 * success in logi-launch's log. */
-			fprintf(stderr,
-				"logi-rpm-bridge: udp/%d is already taken, almost certainly by logi-tf-sim\n"
-				"logi-rpm-bridge: it listens on the same port for the same telemetry, and only one of us can have it.\n"
-				"logi-rpm-bridge: without it the texture merge gets no rpm (the engine texture stays flat)\n"
-				"logi-rpm-bridge: and the rev lights stay dark. Stop logi-tf-sim (pkill -x logi-tf-sim) and\n"
-				"logi-rpm-bridge: start the game again, or move one of us with LOGI_RPM_PORT / the daemon's port.relay.\n",
-				port);
-			return 1;
-		}
-		perror("bind relay port"); return 1;
-	}
+	if (!relay.hub)
+		fprintf(stderr,
+			"logi-rpm-bridge: udp/%d is held by another reader of the same telemetry, so\n"
+			"logi-rpm-bridge: reading its fan-out on udp/%d instead. Nothing is lost: the holder\n"
+			"logi-rpm-bridge: forwards every datagram, and we take udp/%d back if it exits.\n",
+			relay.base, relay.port, relay.base);
 	{
 		/* sigaction without SA_RESTART: plain signal() on Linux/glibc
 		 * defaults to BSD semantics (SA_RESTART set), which makes the
@@ -244,10 +356,18 @@ int main(void)
 	}
 
 	while (!stop) {
-		ssize_t n = recv(fd, pkt, sizeof(pkt), 0);
+		ssize_t n = recv(relay.fd, pkt, sizeof(pkt), 0);
 		float rpm, max_rpm, first_led = 0.0f;
 		struct timespec now;
 
+		/* Paced by the 1 s recv timeout above, so this costs one
+		 * bind attempt every couple of seconds while somebody else
+		 * holds the relay port, and nothing at all once we hold
+		 * it. */
+		if (relay_promote(&relay))
+			fprintf(stderr,
+				"logi-rpm-bridge: took udp/%d back (the reader that held it is gone)\n",
+				relay.port);
 		if (n < 0) {
 			if ((errno == EAGAIN || errno == EWOULDBLOCK) &&
 			    t.rev && last_level > 0) {
@@ -256,6 +376,11 @@ int main(void)
 			}
 			continue;
 		}
+		/* Passed on before it is judged: a datagram this program
+		 * cannot use may be exactly what the other reader wants,
+		 * and a hub that forwarded only what it understood would be
+		 * a filter nobody asked for. */
+		relay_forward(&relay, pkt, (size_t)n);
 		if (n < 28 || memcmp(pkt, "LTFR", 4) || pkt[4] != 2)
 			continue;
 		memcpy(&rpm, pkt + 14, 4);
@@ -317,6 +442,6 @@ int main(void)
 	}
 	if (t.rev && last_level > 0)
 		write_attr(t.rev, "0", &last_rev_warn);
-	close(fd);
+	close(relay.fd);
 	return 0;
 }

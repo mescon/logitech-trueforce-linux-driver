@@ -5,6 +5,36 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**Both readers of the game's telemetry get it now.** `logi-rpm-bridge`
+(the rev lights and the kernel's engine-texture merge) and `logi-tf-sim`
+(the synthesized engine note) read the same relay port, and the kernel
+gives a datagram to exactly one socket no matter what the two of them
+ask for. 0.37.0 made that failure legible: whichever lost said so and
+named the other. Explaining a collision is not the same as removing it,
+so it is removed. Whichever program has the port now forwards every
+datagram, verbatim and before parsing it, to the fan-out ports behind it
+(20782 to 20784), and whichever arrives second reads one of those. A
+follower also keeps trying to take the relay port, so when the first one
+exits the survivor is promoted within a couple of seconds and telemetry
+aimed where every producer sends it keeps arriving. Nothing has to be
+stopped and no port has to be moved to run both, `LOGI_RPM_PORT` and the
+daemon's `port.relay` still move the whole block for a producer that
+needs a different one, and forwarding only ever goes upward, from the
+relay port to the fan-out ports, so no arrangement of these programs can
+make a datagram circulate.
+
+**Copying no longer waits for the desktop.** Both front-ends offer to copy
+a launch line to the clipboard, and the helper behind that waited for the
+clipboard tool to exit. On Wayland and X11 alike the tool is supposed to
+keep running: a selection has no storage of its own, so the program that
+owns it serves it until something else takes over. With no clipboard
+manager running, nothing ever does, so the terminal app froze on the copy
+key and the window left a thread stuck behind its copy button. The tool is
+now given a moment to fail, and left alone if it is still alive, which is
+what doing its job looks like.
+
 ## 0.37.0 - 2026-08-18
 
 **The harsh buzz is gone, and the engine note plays at its proper

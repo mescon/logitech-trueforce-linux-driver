@@ -502,12 +502,13 @@ fi
 # it idles when nothing is streaming.
 if [ "${LOGI_LAUNCH_TF_SIM:-1}" = "1" ] && [ "${want_tfsim:-1}" = "1" ]; then
 	# Both at once is a recipe only a hand-written games.conf line can
-	# ask for: the two read the same relay port and only one can have
-	# it, so say which is which before either complains on its own.
+	# ask for, and it works: the two read the same relay port, so
+	# whichever has it forwards to the other. Worth one line anyway,
+	# because the daemon's own log will name a port nobody configured.
 	if [ -n "$rpm_bridge_pid" ]; then
-		say "note: logi-rpm-bridge holds the relay port for this session, so the daemon"
-		say "note: runs without it. The bridge is feeding the texture merge and the rev"
-		say "note: lights; drop tfsim=1 from your games.conf line to keep the log quiet."
+		say "note: logi-rpm-bridge has the relay port for this session and forwards it to"
+		say "note: logi-tf-sim, so both are fed. The bridge drives the texture merge and the"
+		say "note: rev lights; the daemon adds its synthesized engine note on top."
 	fi
 	if pgrep -x logi-tf-sim >/dev/null 2>&1; then
 		say "logi-tf-sim is already running"

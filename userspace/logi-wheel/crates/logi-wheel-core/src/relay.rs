@@ -37,6 +37,8 @@
 //! would have cost a version negotiation later.
 
 use crate::telemetry::Telemetry;
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::time::{Duration, Instant};
 
 /// Fallback game id, used when a packet carries an empty or unrecognised
 /// game id. Keeps an unknown sender working (gated as `game.relay.*`)
@@ -189,6 +191,187 @@ pub fn parse(pkt: &[u8]) -> Option<(&'static str, Telemetry)> {
         return None;
     }
     Some((rt.game_id, rt.to_telemetry()))
+}
+
+/// How many fan-out ports the relay port has behind it.
+pub const FANOUT_PORTS: u16 = 3;
+
+/// How often a follower tries to take the relay port back.
+pub const PROMOTE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// The ports a hub forwards its datagrams to, derived from the relay port
+/// it holds.
+///
+/// `base + 1` is skipped on purpose: with the default relay port that is
+/// the captured-TrueForce port (20781), and a copy of engine telemetry
+/// landing there would be read as finished haptics.
+pub fn fanout_ports(base: u16) -> Vec<u16> {
+    (2..2 + FANOUT_PORTS).filter_map(|d| base.checked_add(d)).collect()
+}
+
+/// Which end of the fan-out this listener is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// Holds the relay port itself, and forwards every datagram it gets to
+    /// the fan-out ports so the other readers see them too.
+    Hub,
+    /// The relay port was taken, so this one reads a fan-out port and gets
+    /// its datagrams from the hub.
+    Follower,
+}
+
+/// A reader of the relay stream that does not have to lose.
+///
+/// The relay's datagrams are wanted by more than one program at once:
+/// `logi-tf-sim` synthesizes engine haptics from them, and
+/// `logi-rpm-bridge` feeds the same rpm to the kernel's texture merge and
+/// the rev lights. They cannot share the port. Measured on 7.1.x, a unicast
+/// datagram goes to exactly ONE socket however the port is shared:
+/// `SO_REUSEADDR` on both ends only makes both binds succeed while the
+/// kernel picks a single winner, which turns the loss silent, and
+/// `SO_REUSEPORT` is a load balancer, so it splits a stream rather than
+/// duplicating it. The kernel will not deliver to both, so somebody has to.
+///
+/// Whoever gets the relay port becomes the hub and forwards each datagram
+/// verbatim to the fan-out ports; whoever finds it taken reads a fan-out
+/// port instead and is fed by the hub. A follower keeps trying to take the
+/// relay port, so when the hub exits (a game ends, a daemon is stopped) the
+/// survivor is promoted within a couple of seconds and the next program to
+/// start finds a working hub. Forwarding only ever goes upward, from the
+/// relay port to the fan-out ports, so no arrangement of these programs can
+/// make a datagram circulate.
+///
+/// The same three rules are implemented in C in `tools/logi-rpm-bridge.c`.
+/// Any change here belongs there too.
+pub struct RelayListener {
+    sock: UdpSocket,
+    base: u16,
+    port: u16,
+    role: Role,
+    fanout: Vec<SocketAddr>,
+    next_promote: Instant,
+}
+
+impl RelayListener {
+    /// Take the relay port, or the first free fan-out port behind it.
+    ///
+    /// Fails only when the relay port and every fan-out port are taken,
+    /// which means more readers than the fan-out was built for rather than
+    /// the ordinary two.
+    pub fn open(base: u16) -> std::io::Result<Self> {
+        let mut last = None;
+        for (i, port) in std::iter::once(base).chain(fanout_ports(base)).enumerate() {
+            match UdpSocket::bind(("0.0.0.0", port)) {
+                Ok(sock) => {
+                    sock.set_nonblocking(true)?;
+                    let role = if i == 0 { Role::Hub } else { Role::Follower };
+                    return Ok(Self {
+                        sock,
+                        base,
+                        port,
+                        role,
+                        fanout: Self::fanout_addrs(base),
+                        next_promote: Instant::now() + PROMOTE_INTERVAL,
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => last = Some(e),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::AddrInUse, "no relay port free")
+        }))
+    }
+
+    fn fanout_addrs(base: u16) -> Vec<SocketAddr> {
+        fanout_ports(base)
+            .into_iter()
+            .map(|p| SocketAddr::from((Ipv4Addr::LOCALHOST, p)))
+            .collect()
+    }
+
+    /// The port actually being read.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Whether this listener holds the relay port and feeds the others.
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    /// The socket, for a caller that polls several at once.
+    pub fn socket(&self) -> &UdpSocket {
+        &self.sock
+    }
+
+    /// One line saying where the datagrams are coming from, for the
+    /// startup log. A follower says so, because "listening on 20782" alone
+    /// would look like a misconfiguration to anyone reading a bug report.
+    pub fn describe(&self) -> String {
+        match self.role {
+            Role::Hub => format!("udp/{}", self.port),
+            Role::Follower => format!(
+                "udp/{} (udp/{} is held by another reader, which forwards to us)",
+                self.port, self.base
+            ),
+        }
+    }
+
+    /// Read every pending datagram, forwarding each one to the fan-out
+    /// ports first if this listener is the hub.
+    ///
+    /// Forwarding before parsing on purpose: a datagram this reader cannot
+    /// make sense of may still be exactly what the other one wants, and a
+    /// hub that only passed on what it understood would be a filter nobody
+    /// asked for.
+    pub fn drain(&self, buf: &mut [u8], mut each: impl FnMut(&[u8])) {
+        loop {
+            match self.sock.recv_from(buf) {
+                Ok((n, _peer)) => {
+                    if self.role == Role::Hub {
+                        for addr in &self.fanout {
+                            // Nothing may be listening on a fan-out port,
+                            // and on loopback that is an error on the next
+                            // send. It is the normal case (one reader), not
+                            // a fault, so it is ignored rather than logged
+                            // sixty times a second.
+                            let _ = self.sock.send_to(&buf[..n], addr);
+                        }
+                    }
+                    each(&buf[..n]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// A follower's periodic attempt to take the relay port back.
+    ///
+    /// Returns true when the role changed, so a caller that keeps a poll
+    /// set can rebuild it and log the promotion.
+    pub fn poll_promotion(&mut self, now: Instant) -> bool {
+        if self.role == Role::Hub || now < self.next_promote {
+            return false;
+        }
+        self.next_promote = now + PROMOTE_INTERVAL;
+        let Ok(sock) = UdpSocket::bind(("0.0.0.0", self.base)) else {
+            return false;
+        };
+        if sock.set_nonblocking(true).is_err() {
+            return false;
+        }
+        // The fan-out socket is dropped only once the relay port is held,
+        // so there is no window where this reader is listening nowhere.
+        // It must be dropped, though: a hub still holding its old fan-out
+        // socket would forward every datagram straight back to itself.
+        self.sock = sock;
+        self.port = self.base;
+        self.role = Role::Hub;
+        true
+    }
 }
 
 #[cfg(test)]
@@ -453,5 +636,157 @@ mod airborne_end_to_end {
             let (_, tel) = parse(&pkt).expect("a running sample parses");
             assert_eq!(tel.airborne, airborne, "airborne must survive the wire");
         }
+    }
+}
+
+#[cfg(test)]
+mod fanout {
+    use super::*;
+
+    /// A base port whose whole fan-out range is free right now.
+    ///
+    /// Two layers, because a port is global state and these tests are not
+    /// the only thing on the machine. A counter hands each call in this
+    /// process its own block, so parallel tests cannot pick the same one
+    /// after the probe sockets are dropped; the process id offsets the
+    /// range, so two test binaries running at once do not overlap either.
+    fn free_base() -> u16 {
+        use std::sync::atomic::{AtomicU16, Ordering};
+        static NEXT: AtomicU16 = AtomicU16::new(0);
+
+        let stride = 2 + FANOUT_PORTS;
+        let start = 21000 + (std::process::id() as u16 % 100) * 40;
+        for _ in 0..40 {
+            let base = start + NEXT.fetch_add(stride, Ordering::SeqCst);
+            let ports: Vec<u16> = std::iter::once(base).chain(fanout_ports(base)).collect();
+            let socks: Vec<_> =
+                ports.iter().filter_map(|p| UdpSocket::bind(("127.0.0.1", *p)).ok()).collect();
+            if socks.len() == ports.len() {
+                return base;
+            }
+        }
+        panic!("no free port block for the test");
+    }
+
+    fn send(port: u16, rpm: f32) {
+        let out = UdpSocket::bind(("127.0.0.1", 0)).expect("ephemeral sender");
+        let pkt = encode(&RelayTelemetry {
+            game_id: "iracing",
+            rpm,
+            max_rpm: 8000.0,
+            throttle: 1.0,
+            gear: 3,
+            airborne: false,
+        });
+        out.send_to(&pkt, (Ipv4Addr::LOCALHOST, port)).expect("send to the relay port");
+    }
+
+    fn collect(l: &RelayListener) -> Vec<f32> {
+        let mut buf = [0u8; 2048];
+        let mut got = Vec::new();
+        // The forwarded copy crosses the loopback stack, so it is not
+        // necessarily there on the first read. Bounded so a real failure
+        // still fails rather than hanging.
+        for _ in 0..50 {
+            l.drain(&mut buf, |p| {
+                if let Some(rt) = decode(p) {
+                    got.push(rt.rpm);
+                }
+            });
+            if !got.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        got
+    }
+
+    #[test]
+    fn the_first_reader_takes_the_relay_port_itself() {
+        let base = free_base();
+        let l = RelayListener::open(base).expect("the relay port is free");
+        assert_eq!(l.role(), Role::Hub);
+        assert_eq!(l.port(), base);
+    }
+
+    #[test]
+    fn a_second_reader_is_fed_instead_of_turned_away() {
+        let base = free_base();
+        let hub = RelayListener::open(base).expect("hub");
+        let follower = RelayListener::open(base).expect("a taken relay port must not be fatal");
+        assert_eq!(follower.role(), Role::Follower);
+        assert_eq!(follower.port(), fanout_ports(base)[0]);
+
+        send(base, 4321.0);
+        // The hub has to read before it can forward, which is what makes
+        // this a fan-out rather than a shared socket.
+        assert_eq!(collect(&hub), vec![4321.0], "the hub reads its own port");
+        assert_eq!(collect(&follower), vec![4321.0], "and the follower gets the same datagram");
+    }
+
+    #[test]
+    fn a_third_reader_fits_too() {
+        let base = free_base();
+        let hub = RelayListener::open(base).expect("hub");
+        let a = RelayListener::open(base).expect("first follower");
+        let b = RelayListener::open(base).expect("second follower");
+        assert_ne!(a.port(), b.port(), "followers must not collide with each other");
+
+        send(base, 1234.0);
+        assert_eq!(collect(&hub), vec![1234.0]);
+        assert_eq!(collect(&a), vec![1234.0]);
+        assert_eq!(collect(&b), vec![1234.0]);
+    }
+
+    #[test]
+    fn the_survivor_takes_over_when_the_hub_goes_away() {
+        let base = free_base();
+        let hub = RelayListener::open(base).expect("hub");
+        let mut follower = RelayListener::open(base).expect("follower");
+        assert!(
+            !follower.poll_promotion(Instant::now() + PROMOTE_INTERVAL),
+            "a live hub keeps its port"
+        );
+
+        drop(hub);
+        // Past the next attempt, not the previous one: a failed attempt
+        // re-arms the interval, so asking again immediately is answered by
+        // the clock rather than by another bind.
+        assert!(
+            follower.poll_promotion(Instant::now() + 3 * PROMOTE_INTERVAL),
+            "the port is free now, so the follower takes it"
+        );
+        assert_eq!(follower.role(), Role::Hub);
+        assert_eq!(follower.port(), base);
+
+        // The point of the promotion: telemetry sent to the relay port,
+        // where every producer sends it, reaches the survivor.
+        send(base, 777.0);
+        assert_eq!(collect(&follower), vec![777.0]);
+    }
+
+    #[test]
+    fn a_promoted_follower_does_not_feed_itself() {
+        let base = free_base();
+        let hub = RelayListener::open(base).expect("hub");
+        let mut follower = RelayListener::open(base).expect("follower");
+        let taken = follower.port();
+        drop(hub);
+        assert!(follower.poll_promotion(Instant::now() + PROMOTE_INTERVAL));
+
+        // Its old fan-out port must be released, or its own forwarding
+        // would loop back into it and multiply every datagram.
+        UdpSocket::bind(("0.0.0.0", taken))
+            .expect("the fan-out port it used to hold must be free again");
+        send(base, 55.0);
+        assert_eq!(collect(&follower), vec![55.0], "exactly one copy, not a loop");
+    }
+
+    #[test]
+    fn the_captured_trueforce_port_is_never_a_fan_out_port() {
+        // A copy of engine telemetry arriving on the captured-TrueForce
+        // port would be read as finished haptics, so base + 1 stays clear.
+        assert!(!fanout_ports(DEFAULT_PORT).contains(&(DEFAULT_PORT + 1)));
+        assert!(!fanout_ports(DEFAULT_PORT).contains(&crate::tfstream::DEFAULT_PORT));
     }
 }
