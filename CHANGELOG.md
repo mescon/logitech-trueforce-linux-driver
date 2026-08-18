@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.37.1 - 2026-08-18
 
 **Both readers of the game's telemetry get it now.** `logi-rpm-bridge`
 (the rev lights and the kernel's engine-texture merge) and `logi-tf-sim`
