@@ -83,6 +83,11 @@
                         $out/share/logitech-trueforce/tf-range-proxy.dll
                 install -Dm644 tools/logi-tf-relay.exe \
                         $out/share/logitech-trueforce/logi-tf-relay.exe
+                # The recorded TrueForce init burst logi-launch replays when
+                # LOGI_TF_REARM is set. Small, and the alternative is a
+                # feature that silently cannot work on this channel only.
+                install -Dm644 tools/tf-init.bin \
+                        $out/share/logitech-trueforce/tf-init.bin
                 # The dinput8 escape proxy logi-launch stages into an SDK
                 # game's own directory: it answers the SDK's range getters
                 # and relays the game's RPM telemetry for the kernel
@@ -191,9 +196,6 @@
             chmod +x $out/bin/logi-wheel-modeswitch
             wrapProgram $out/bin/logi-wheel-modeswitch \
               --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.usb-modeswitch ]}
-            # The pre-0.38.0 name, kept working for anyone following the
-            # instructions in issue #52 or the wiki.
-            ln -s logi-wheel-modeswitch $out/bin/logi-g923-modeswitch
           '';
 
           meta = with pkgs.lib; {
@@ -264,6 +266,17 @@
                 (logitechTrueforceModule {kernel = config.boot.kernelPackages.kernel; })
                 ];
             boot.kernelModules = [ "hid-logitech-dd" ];
+            # The same two lines packaging/modprobe.d/hid-logitech-dd.conf
+            # carries on every other channel, which NixOS cannot take as a
+            # file: the load-order hint that lets this driver claim a wheel
+            # before the in-tree ones do, and the narrow blacklist that
+            # stops berarma's new-lg4ff fork racing it for the G923 ids.
+            # Without them a NixOS G923 owner depends on the udev rebind
+            # rule alone, which is meant to be the fallback.
+            boot.extraModprobeConfig = ''
+              softdep hid-logitech-dd post: hid-logitech hid-logitech-hidpp
+              blacklist hid-logitech-new
+            '';
             services.udev.packages = [ self.packages.${pkgs.system}.udev-rules ];
             environment.systemPackages = [
               self.packages.${pkgs.system}.logi-wheel 

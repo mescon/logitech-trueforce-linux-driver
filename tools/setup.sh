@@ -734,6 +734,13 @@ do_tools() {
 			echo "  installed /usr/share/logitech-trueforce/$f"
 		fi
 	done
+	# The TrueForce shim installer, under the name both apps look for
+	# first (logi_wheel_core::helpers::INSTALLER_BINS). Every distro
+	# package installs it; without it here, the apps' "Install
+	# TrueForce" action can only work while a checkout happens to be
+	# lying around, which is the same gap #60 was about.
+	install -Dm 0755 "$REPO_ROOT/tools/install-tf-shim.sh" /usr/bin/logi-shim
+	echo "  installed /usr/bin/logi-shim"
 }
 
 # Build and install the settings apps from this checkout.
@@ -779,6 +786,23 @@ do_apps() {
 	else
 		sh -lc "$build" _ "$ws" || { echo "  build failed" >&2; return 0; }
 	fi
+	# The truck sims' telemetry plugin. Built here rather than in
+	# do_tools because it is a crate in this workspace, and staged into
+	# /usr/share where do_helpers (and both apps) look for it: without
+	# this step the from-source path is the only one that can never
+	# install it into ETS2 or ATS, because there is nothing to copy.
+	local sbuild='cd "$1" && cargo build --release -p logi-tf-scs'
+	if [ -n "${SUDO_USER:-}" ]; then
+		runuser -u "$SUDO_USER" -- sh -lc "$sbuild" _ "$ws" || true
+	else
+		sh -lc "$sbuild" _ "$ws" || true
+	fi
+	if [ -f "$ws/target/release/liblogi_tf_scs.so" ]; then
+		install -Dm 0644 "$ws/target/release/liblogi_tf_scs.so" \
+			/usr/share/logitech-trueforce/liblogi_tf_scs.so
+		echo "  installed /usr/share/logitech-trueforce/liblogi_tf_scs.so"
+	fi
+
 	local bin
 	for bin in logi-wheel logi-ffb logi-tf-sim; do
 		if [ -x "$ws/target/release/$bin" ]; then
@@ -802,6 +826,14 @@ do_apps() {
 	if [ "$built_gui" -eq 1 ] && [ -x "$ws/target/release/logi-wheel-gui" ]; then
 		install -Dm 0755 "$ws/target/release/logi-wheel-gui" /usr/bin/logi-wheel-gui
 		echo "  installed /usr/bin/logi-wheel-gui"
+		# The menu entry and its icon. Every distro package ships both,
+		# so without them a from-source install is the only one where
+		# the window exists but nothing in the desktop can launch it.
+		install -Dm 0644 "$REPO_ROOT/desktop/logi-wheel-gui.desktop" \
+			/usr/share/applications/logi-wheel-gui.desktop
+		install -Dm 0644 "$REPO_ROOT/desktop/logi-wheel-gui.svg" \
+			/usr/share/icons/hicolor/scalable/apps/logi-wheel-gui.svg
+		echo "  installed the menu entry and icon"
 	else
 		echo "  skipped the window (install fontconfig's headers to get it:"
 		echo "  libfontconfig-dev on Debian/Ubuntu, fontconfig-devel on Fedora, fontconfig on Arch)"

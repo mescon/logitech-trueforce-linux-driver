@@ -122,10 +122,10 @@ Proton prefixes.
 %{_datadir}/logitech-trueforce/tf-range-proxy.dll
 %{_datadir}/logitech-trueforce/liblogi_tf_scs.so
 %{_datadir}/logitech-trueforce/logi-tf-relay.exe
+%{_datadir}/logitech-trueforce/tf-init.bin
 %{_datadir}/logitech-trueforce/dinput8-escape.dll
 %{_bindir}/logi-rpm-bridge
 %{_bindir}/logi-wheel-modeswitch
-%{_bindir}/logi-g923-modeswitch
 %{_bindir}/logi-rebind-wheel
 %{_bindir}/logi-launch
 %{_bindir}/logitech-trueforce-install-shim
@@ -257,12 +257,13 @@ install -D -m 0644 userspace/logi-wheel/target/release/liblogi_tf_scs.so \
 # Prebuilt because no distro builder ships a Rust Windows target.
 install -D -m 0644 tools/logi-tf-relay.exe \
     "%{buildroot}%{_datadir}/logitech-trueforce/logi-tf-relay.exe"
+# The recorded TrueForce init burst logi-launch replays when LOGI_TF_REARM
+# is set. Without it that recovery path silently cannot work here alone.
+install -D -m 0644 tools/tf-init.bin \
+    "%{buildroot}%{_datadir}/logitech-trueforce/tf-init.bin"
 # G923 Xbox mode-switch helper, dispatched by udev rule 73.
 install -D -m 0755 tools/xbox-modeswitch.sh \
     "%{buildroot}%{_bindir}/logi-wheel-modeswitch"
-# The pre-0.38.0 name, kept as a symlink: issue #52 and the wiki both tell
-# people to run it by hand.
-ln -sf logi-wheel-modeswitch "%{buildroot}%{_bindir}/logi-g923-modeswitch"
 # Rebinds a wheel that another driver claimed, which the settings apps'
 # diagnostics offer as a fix. Kept as a script rather than a command in the
 # app because a wheel presents several HID interfaces and all of them have

@@ -113,9 +113,6 @@ package_logitech-trueforce-dkms() {
 	# be installed without it.
 	install -Dm755 "$_src/tools/xbox-modeswitch.sh" \
 		"$pkgdir/usr/bin/logi-wheel-modeswitch"
-	# The pre-0.38.0 name, kept as a symlink: issue #52 and the wiki both
-	# tell people to run it by hand.
-	ln -sf logi-wheel-modeswitch "$pkgdir/usr/bin/logi-g923-modeswitch"
 
 	# softdep ordering hint for the G923 PIDs, plus a narrow blacklist of
 	# the standalone new-lg4ff DKMS fork (see the file for why that one
@@ -200,6 +197,11 @@ package_logi-wheel() {
 	# Prebuilt because no distro builder ships a Rust Windows target.
 	install -Dm644 "$_src/tools/logi-tf-relay.exe" \
 		"$pkgdir/usr/share/logitech-trueforce/logi-tf-relay.exe"
+	# The recorded TrueForce init burst logi-launch replays when
+	# LOGI_TF_REARM is set. Without it that recovery path silently
+	# cannot work on this channel alone.
+	install -Dm644 "$_src/tools/tf-init.bin" \
+		"$pkgdir/usr/share/logitech-trueforce/tf-init.bin"
 
 	# G923 Xbox mode-switch helper, dispatched by udev rule 73. Must not be
 	# run from the udev worker itself; see the rule's own comment.

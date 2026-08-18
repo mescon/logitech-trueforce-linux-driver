@@ -19,11 +19,37 @@ confirmed on hardware by [kangaro0](https://github.com/kangaro0) in issue
 Base for PC".
 
 One helper now covers both wheels rather than one command per wheel, so
-`logi-g923-modeswitch` is called `logi-wheel-modeswitch`. The old name
-keeps working as a link, because the instructions people already have,
-in issue #52 and on the wiki, use it. Both apps' diagnostics name the
-wheel they found in console mode rather than always saying G923, and the
-doctor does the same.
+**`logi-g923-modeswitch` is now `logi-wheel-modeswitch`**. The old name is
+gone rather than kept as a link: it was a copy of the whole script, and
+leaving it behind would leave an older mode switch on the system for
+anyone who remembers the name. Installing over an existing checkout
+removes it, and the distro packages replace it on upgrade. Both apps'
+diagnostics name the wheel they found in console mode rather than always
+saying G923, and the doctor does the same.
+
+**Every install now carries the whole project.** An audit of the six
+install paths (Debian, Arch, openSUSE, Fedora, Nix and from source)
+against everything a working setup actually loads found each of them
+short of something, and none of the gaps could be seen while reading one
+recipe on its own:
+
+- Installing from a checkout never put the shim installer on the path, so
+  the apps' "Install TrueForce" action could only work while a git
+  checkout happened to be lying around. It also never built or staged the
+  truck sims' telemetry plugin, and never installed the window's menu
+  entry or icon, so the only way to start it was by typing its name.
+- Arch, openSUSE, Fedora and Nix did not ship `tf-init.bin`, the recorded
+  init burst `logi-launch` replays when `LOGI_TF_REARM` is set, so that
+  recovery path could not work on four of the six.
+- NixOS got neither the module load-order hint nor the narrow blacklist
+  that keeps another out-of-tree fork from racing this driver for the
+  G923, because those live in a file NixOS does not take. They are set
+  declaratively now.
+
+A test now checks the whole matrix, every piece against every channel, and
+names the channel and the missing piece when one drifts. Logitech's own
+SDK files are deliberately not part of it: those are yours to install from
+G HUB, and this project never redistributes them.
 
 ## 0.37.1 - 2026-08-18
 

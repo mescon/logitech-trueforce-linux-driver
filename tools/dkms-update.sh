@@ -65,8 +65,9 @@ UDEV_XBOX_SRC="$REPO_ROOT/udev/73-logitech-xbox-modeswitch.rules"
 UDEV_XBOX_DST="/etc/udev/rules.d/73-logitech-xbox-modeswitch.rules"
 MODESWITCH_SRC="$REPO_ROOT/tools/xbox-modeswitch.sh"
 MODESWITCH_DST="/usr/bin/logi-wheel-modeswitch"
-# Pre-0.38.0 name, kept working: issue #52 and the wiki both tell people to
-# run it, and it now covers a second wheel rather than a second command.
+# The pre-0.38.0 name of the same helper, removed rather than kept: it is a
+# stale copy of a script that now covers two wheels, and leaving it means an
+# owner can run last release's version of the switch without knowing it.
 MODESWITCH_OLD_DST="/usr/bin/logi-g923-modeswitch"
 REBIND_SRC="$REPO_ROOT/tools/rebind-wheel.sh"
 REBIND_DST="/usr/bin/logi-rebind-wheel"
@@ -214,13 +215,10 @@ if [ -f "$MODESWITCH_SRC" ]; then
 	else
 		echo "mode-switch helper up to date ($MODESWITCH_DST)"
 	fi
-	# The old command name keeps working. It was published in issue #52
-	# and the wiki, and an owner following those instructions on a wheel
-	# that now has a rule of its own should not meet "command not found".
-	if [ ! -L "$MODESWITCH_OLD_DST" ]; then
-		rm -f "$MODESWITCH_OLD_DST"
-		ln -s "$(basename "$MODESWITCH_DST")" "$MODESWITCH_OLD_DST"
-	fi
+	# Drop the pre-rename copy. It is a whole script, not a link, so
+	# leaving it behind leaves an older mode switch on the system for
+	# anyone who remembers the old name.
+	rm -f "$MODESWITCH_OLD_DST"
 fi
 
 # The rebind helper, which the settings apps' diagnostics offer by name

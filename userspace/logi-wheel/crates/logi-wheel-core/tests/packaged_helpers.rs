@@ -32,6 +32,63 @@ const INSTALL_PATHS: &[&str] = &[
     "tools/dkms-update.sh",
 ];
 
+/// The same channels, but each as ALL the files that make it up, because
+/// two of them are split: Debian lists most of its payload in `.install`
+/// files rather than in `rules`, and the from-source route is `setup.sh`
+/// plus the DKMS script it calls.
+const CHANNELS: &[(&str, &[&str])] = &[
+    (
+        "Debian",
+        &[
+            "packaging/debian/rules",
+            "packaging/debian/logitech-trueforce-dkms.install",
+            "packaging/debian/logi-wheel.install",
+            "packaging/debian/logi-wheel-gui.install",
+        ],
+    ),
+    ("Arch (AUR)", &["packaging/aur/logitech-trueforce-dkms/PKGBUILD"]),
+    ("openSUSE (OBS)", &["packaging/obs/logitech-trueforce-dkms.spec"]),
+    ("Fedora (akmods)", &["packaging/akmods/logitech-trueforce-kmod.spec"]),
+    ("Nix", &["flake.nix"]),
+    ("from source", &["tools/setup.sh", "tools/dkms-update.sh"]),
+];
+
+/// Everything a working install needs, beyond the driver itself: what it
+/// is, and a string that must appear in a channel's recipe for it to be
+/// installed there.
+///
+/// Not a style check. Each of these is loaded, run or read at runtime by
+/// something else in the project, so a channel missing one ships an
+/// install where a specific feature cannot work, and the failure surfaces
+/// on a user's machine rather than here. That has happened repeatedly:
+/// `logi-rebind-wheel` was offered by the apps' diagnostics while existing
+/// only in a git checkout (#60 is the same class), and before this test
+/// grew, `tf-init.bin` was in exactly one of the six.
+///
+/// Logitech's own SDK DLLs are deliberately absent: they are the user's to
+/// install from G HUB, and this project never redistributes them.
+const PAYLOAD: &[(&str, &str)] = &[
+    ("the terminal app", "logi-wheel"),
+    ("the window", "logi-wheel-gui"),
+    ("the simulated-TrueForce daemon", "logi-tf-sim"),
+    ("the DirectInput FFB proxy", "logi-ffb"),
+    ("the rev-light and texture RPM feed", "logi-rpm-bridge"),
+    ("the Steam launch wrapper", "logi-launch"),
+    ("the rebind helper the apps offer as a fix", "logi-rebind-wheel"),
+    ("the Xbox-mode switch", "logi-wheel-modeswitch"),
+    ("the shim installer the apps run", "logi-shim"),
+    ("the shared-memory telemetry relay", "logi-tf-relay.exe"),
+    ("the range-answering proxy", "tf-range-proxy.dll"),
+    ("the dinput8 escape proxy", "dinput8-escape.dll"),
+    ("the recorded TrueForce init burst", "tf-init.bin"),
+    ("the truck sims' telemetry plugin", "logi_tf_scs"),
+    ("the desktop menu entry", "logi-wheel-gui.desktop"),
+    ("the sysfs permissions rule", "70-logitech-trueforce.rules"),
+    ("the uhid rule logi-ffb needs", "71-logi-ffb-uhid.rules"),
+    ("the G923 rebind rule", "72-logitech-g923-rebind.rules"),
+    ("the Xbox mode-switch rule", "73-logitech-xbox-modeswitch.rules"),
+];
+
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..")
 }
@@ -53,6 +110,64 @@ fn every_helper_is_installed_by_every_path() {
                  so the documented `{installed_as}` command will not exist there"
             );
         }
+    }
+}
+
+/// Every channel installs every piece, or names which one it is missing.
+///
+/// The matrix is the point: a gap is invisible when each recipe is read on
+/// its own, and only shows up as "this works on Arch but not on Fedora" in
+/// an issue months later.
+#[test]
+fn every_channel_installs_the_whole_payload() {
+    let root = repo();
+    if !root.join(INSTALL_PATHS[0]).is_file() {
+        return;
+    }
+    let mut missing = Vec::new();
+    for (channel, files) in CHANNELS {
+        let mut text = String::new();
+        for f in *files {
+            text.push_str(&std::fs::read_to_string(root.join(f)).unwrap_or_default());
+        }
+        for (what, needle) in PAYLOAD {
+            // The modprobe config is a file on every channel but NixOS,
+            // which cannot take one and writes the same two lines through
+            // boot.extraModprobeConfig instead.
+            if !text.contains(needle) {
+                missing.push(format!("{channel}: {what} ({needle})"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these installs would be incomplete:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
+/// The load-order hint and the narrow blacklist reach every channel, even
+/// the one that cannot install a file for them.
+#[test]
+fn the_modprobe_settings_reach_every_channel() {
+    let root = repo();
+    if !root.join(INSTALL_PATHS[0]).is_file() {
+        return;
+    }
+    for (channel, files) in CHANNELS {
+        let mut text = String::new();
+        for f in *files {
+            text.push_str(&std::fs::read_to_string(root.join(f)).unwrap_or_default());
+        }
+        let by_file = text.contains("hid-logitech-dd.conf");
+        // NixOS is declarative: the same softdep and blacklist go in
+        // through boot.extraModprobeConfig rather than as a file.
+        let inline = text.contains("softdep hid-logitech-dd") && text.contains("hid-logitech-new");
+        assert!(
+            by_file || inline,
+            "{channel} sets neither the softdep ordering nor the new-lg4ff blacklist, \
+             so this driver may lose the bind race there and never be noticed"
+        );
     }
 }
 
