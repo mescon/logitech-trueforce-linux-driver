@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.38.0 - 2026-08-18
 
 **The RS50 Xbox edition works now.** It boots as `046d:c275` speaking the
 console's own protocol, with no HID++ interface for anything here to bind,
