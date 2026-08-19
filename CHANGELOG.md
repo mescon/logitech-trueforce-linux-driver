@@ -27,7 +27,10 @@ today. And if you have already inverted these three axes inside your
 games, this will invert them a second time: clear that setting in the
 game, or set the `g923_pedal_invert` module parameter to `N`, which is
 documented with the others in [docs/SYSFS_API.md](docs/SYSFS_API.md).
-Verified on hardware, both directions, on a `c266`.
+Verified on hardware, both directions, on a `c266`. `combine_pedals` is
+left alone: that mode merges throttle and brake into one bidirectional
+axis, so turning it round would swap the two rather than correct
+anything.
 
 ## 0.38.0 - 2026-08-18
 

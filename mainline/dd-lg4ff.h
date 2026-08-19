@@ -12,6 +12,12 @@ void dd_lg4ff_deinit(struct hid_device *hdev);
  * dd_lg4ff_init has run) or combine == 0; always returns 0. See the
  * definition in dd-lg4ff.c for the full port note.
  */
+/*
+ * Whether combine_pedals is on, so the pedal-polarity correction can leave
+ * a merged axis alone. Safe before dd_lg4ff_init has run (returns false).
+ */
+bool dd_lg4ff_pedals_combined(struct hid_device *hdev);
+
 int dd_lg4ff_raw_event(struct hid_device *hdev, struct hid_report *report, u8 *data, int size);
 
 /*

@@ -17829,7 +17829,15 @@ static int hidpp_event(struct hid_device *hdev, struct hid_field *field,
 	if (g923_pedal_invert && field->hidinput &&
 	    (hdev->product == USB_DEVICE_ID_LOGITECH_G923_WHEEL ||
 	     hdev->product == USB_DEVICE_ID_LOGITECH_G923_PS_WHEEL) &&
-	    hidpp_g923_pedal_usage(field, usage)) {
+	    hidpp_g923_pedal_usage(field, usage) &&
+	    /*
+	     * Not while the pedals are merged. dd_lg4ff_raw_event has
+	     * already rewritten those bytes into one bidirectional axis
+	     * centred at 0x7f, with a pedal driving each direction, so
+	     * turning it round would swap throttle and brake instead of
+	     * correcting anything.
+	     */
+	    !dd_lg4ff_pedals_combined(hdev)) {
 		input_event(field->hidinput->input, usage->type, usage->code,
 			    field->logical_maximum - value);
 		return 1;

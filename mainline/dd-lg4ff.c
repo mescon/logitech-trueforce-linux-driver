@@ -1481,6 +1481,22 @@ static ssize_t dd_lg4ff_combine_store(struct device *dev, struct device_attribut
 }
 
 /*
+ * Whether the pedals are currently merged onto one axis.
+ *
+ * Asked by the pedal-polarity correction in hid-logitech-hidpp.c, which
+ * must not touch a combined axis: dd_lg4ff_raw_event() has already
+ * rewritten those bytes into a bidirectional axis centred at 0x7f, where
+ * one pedal drives each direction, so turning it round would swap
+ * throttle and brake rather than correct anything.
+ */
+bool dd_lg4ff_pedals_combined(struct hid_device *hdev)
+{
+	struct dd_lg4ff_device_entry *entry = dd_lg4ff_get_entry(hdev);
+
+	return entry && entry->wdata.combine != 0;
+}
+
+/*
  * Writing to combine_pedals only records entry->wdata.combine; the byte
  * rewrite that actually makes it take effect happens in
  * dd_lg4ff_raw_event(), called for every interface-0 input report.
