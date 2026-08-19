@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.38.1 - 2026-08-19
 
 **The G923's pedals read the right way round.** The wheel sends all three
 inverted, 255 with the pedal released and 0 with it flat to the floor, on
