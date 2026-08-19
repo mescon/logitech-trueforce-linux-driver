@@ -5,6 +5,30 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The G923's pedals read the right way round.** The wheel sends all three
+inverted, 255 with the pedal released and 0 with it flat to the floor, on
+both of its classic product ids. Nothing downstream corrected that,
+because HID has no way to mark an axis as inverted: the wheel's own
+report descriptor declares three ordinary absolute axes and every layer
+faithfully passes on what it is given. The visible result was a game
+seeing every pedal fully applied at rest, which is how it was reported
+(#67: a replay rewinding until the clutch was pressed). The driver now
+turns them the right way up, so a released pedal reads 0 and a pressed
+one reads full scale, matching the direct-drive wheels and every other
+Linux input device.
+
+Two details worth knowing. The correction is applied at the input layer
+only, leaving the raw HID reports exactly as the wheel sent them, because
+a Wine or Proton game reading the wheel over raw HID expects the Windows
+convention and correcting it underneath would break the games that work
+today. And if you have already inverted these three axes inside your
+games, this will invert them a second time: clear that setting in the
+game, or set the `g923_pedal_invert` module parameter to `N`, which is
+documented with the others in [docs/SYSFS_API.md](docs/SYSFS_API.md).
+Verified on hardware, both directions, on a `c266`.
+
 ## 0.38.0 - 2026-08-18
 
 **The RS50 Xbox edition works now.** It boots as `046d:c275` speaking the

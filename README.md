@@ -257,8 +257,14 @@ hardware:
   Logitech's own SDK cannot deliver TrueForce here (it hands the haptics to
   G HUB, which does not exist on Linux), so this driver streams them itself.
 - **Rev lights**, driven from telemetry or controllable as ordinary Linux LEDs.
-  These need the udev rules from 0.29.0 or later: before that their brightness
-  files were root-owned and every write failed silently.
+  The packaged udev rules cover their brightness files, so a normal user can
+  drive them.
+- **Pedals the right way round.** This wheel sends all three pedals inverted
+  (255 released, 0 fully pressed), and HID has no way to mark an axis as
+  inverted, so every layer passes that on and a game reads every pedal as
+  fully applied at rest. The driver turns them the right way up. Raw HID is
+  untouched, since a Wine or Proton game reading the wheel that way expects
+  the Windows convention.
 - **Settings**: rotation range, force strength, autocenter and combined pedals,
   through `logi-wheel` or Oversteer.
 

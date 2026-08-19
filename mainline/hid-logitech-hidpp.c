@@ -249,6 +249,35 @@ module_param(kf_idle_gate, bool, 0644);
 MODULE_PARM_DESC(kf_idle_gate,
 	"Stop the 1 kHz zero-force FFB keepalive after 500 ms of exact-zero force (Y, default). N restores the old always-stream behaviour.");
 
+/*
+ * The G923 sends its pedals the other way up.
+ *
+ * All three read 0xff released and 0x00 fully pressed, on both the
+ * PlayStation and the classic ids, confirmed on two units (issue #67) and
+ * on the wire: the wheel's report descriptor declares them as ordinary
+ * absolute axes (Usage Z, Rz, Y, logical 0 to 255) with nothing marking
+ * them inverted, because HID has no way to say that. So every consumer
+ * sees a released pedal as fully applied unless something turns them
+ * round, and no driver in the chain does: the in-tree driver does not
+ * claim this wheel at all, and hid-generic maps what it is given.
+ *
+ * The direct-drive wheels report the same pedals the normal way up (0 at
+ * rest), so this is the G923 alone rather than a Logitech convention.
+ *
+ * Turned round here, at the input layer only. The raw HID reports are left
+ * exactly as the wheel sent them, because a Wine or Proton game reading
+ * the wheel over raw HID expects the Windows convention, and correcting
+ * that underneath it would break the games that currently work.
+ *
+ * N leaves the axes as the wheel sends them, for anyone who has already
+ * inverted these three axes inside their games and would rather not
+ * change that.
+ */
+static bool g923_pedal_invert = true;
+module_param(g923_pedal_invert, bool, 0644);
+MODULE_PARM_DESC(g923_pedal_invert,
+	"Report the G923's pedals the way round Linux expects: 0 released, full scale pressed (Y, default). The wheel sends them inverted. N passes them through as sent.");
+
 static bool stream_yield = true;
 module_param(stream_yield, bool, 0644);
 MODULE_PARM_DESC(stream_yield,
@@ -17757,11 +17786,54 @@ static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp, u8 *data, int s
 		WRITE_ONCE(ff->wheel_pos_seen, true);
 }
 
+/*
+ * Whether this usage is one of the G923's three pedals, as opposed to
+ * another axis that happens to share a Generic Desktop usage.
+ *
+ * Keyed on the field as well as the usage: the wheel exposes several
+ * collections, and only the pedals are 8-bit absolute axes running 0 to
+ * 255. The steering axis is 16 bits and must never be touched, both
+ * because it is not inverted and because flipping it would put the wheel
+ * hard over.
+ */
+static bool hidpp_g923_pedal_usage(struct hid_field *field,
+				   struct hid_usage *usage)
+{
+	if (usage->type != EV_ABS)
+		return false;
+	if (field->report_size != 8 ||
+	    field->logical_minimum != 0 || field->logical_maximum != 255)
+		return false;
+
+	switch (usage->code) {
+	case ABS_Y:	/* brake */
+	case ABS_Z:	/* throttle */
+	case ABS_RZ:	/* clutch */
+		return true;
+	default:
+		return false;
+	}
+}
+
 static int hidpp_event(struct hid_device *hdev, struct hid_field *field,
 	struct hid_usage *usage, __s32 value)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
 	struct hidpp_scroll_counter *counter;
+
+	/*
+	 * Before the hidpp check on purpose: the pedals live on the wheel's
+	 * joystick interface, which carries no HID++ reports, so hidpp is
+	 * NULL there and everything below would be skipped.
+	 */
+	if (g923_pedal_invert && field->hidinput &&
+	    (hdev->product == USB_DEVICE_ID_LOGITECH_G923_WHEEL ||
+	     hdev->product == USB_DEVICE_ID_LOGITECH_G923_PS_WHEEL) &&
+	    hidpp_g923_pedal_usage(field, usage)) {
+		input_event(field->hidinput->input, usage->type, usage->code,
+			    field->logical_maximum - value);
+		return 1;
+	}
 
 	if (!hidpp)
 		return 0;
@@ -18860,6 +18932,15 @@ MODULE_DEVICE_TABLE(hid, hidpp_devices);
  */
 static const struct hid_usage_id hidpp_usages[] = {
 	{ HID_GD_WHEEL, EV_REL, REL_WHEEL_HI_RES },
+	/*
+	 * The G923's three pedals, so hidpp_event can turn them the right
+	 * way up. Safe to widen the surface here because this driver claims
+	 * six wheels and nothing else, and the hook returns immediately for
+	 * any product that is not a G923.
+	 */
+	{ HID_GD_Y, EV_ABS, ABS_Y },
+	{ HID_GD_Z, EV_ABS, ABS_Z },
+	{ HID_GD_RZ, EV_ABS, ABS_RZ },
 	{ HID_ANY_ID - 1, HID_ANY_ID - 1, HID_ANY_ID - 1}
 };
 
