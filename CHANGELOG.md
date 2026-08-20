@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.38.2 - 2026-08-21
 
 **The window runs on SteamOS.** A Steam Deck could install the driver and
 run the terminal app, but `logi-wheel-gui` refused to start with
