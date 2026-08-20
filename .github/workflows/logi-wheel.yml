@@ -32,6 +32,20 @@ jobs:
         run: cargo test --workspace --locked --verbose
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # A binary asks for whatever glibc symbol versions the build host
+      # offered, so one built here can refuse to start on a distribution
+      # whose glibc is older, SteamOS among them (issue #68). Checked on
+      # the release profile because that is what ships.
+      - name: Build the shipped binaries
+        run: cargo build --workspace --locked --release
+      - name: The binaries must run on an older glibc
+        working-directory: ${{ github.workspace }}
+        run: |
+          tools/check-glibc-floor.sh \
+            userspace/logi-wheel/target/release/logi-wheel-gui \
+            userspace/logi-wheel/target/release/logi-wheel \
+            userspace/logi-wheel/target/release/logi-tf-sim \
+            userspace/logi-wheel/target/release/logi-ffb
 
   # logi-tf-relay is a Windows executable that runs inside the game's Proton
   # prefix, so everything that actually talks to shared memory sits behind

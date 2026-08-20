@@ -1,6 +1,10 @@
 slint::include_modules!();
 
 mod bridge;
+// Binds two libm symbols to their oldest versions so a binary built on a
+// current distribution still starts on an older one (SteamOS, issue #68).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod glibc_compat;
 mod testio;
 mod viewmodel;
 mod worker;

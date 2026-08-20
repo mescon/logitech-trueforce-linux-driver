@@ -5,6 +5,25 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The window runs on SteamOS.** A Steam Deck could install the driver and
+run the terminal app, but `logi-wheel-gui` refused to start with
+`libm.so.6: version 'GLIBC_2.43' not found` (#68). Nothing was wrong with
+the Deck. glibc versions its symbols, a binary asks for whatever version
+its build host offered, and ours are built on a rolling distribution, so
+two drawing-stack calls (`acosf` and `atan2f`) were bound to a glibc newer
+than any frozen distribution has. Those two calls now ask for the version
+of each symbol that has existed since 2001, which every glibc still
+provides, and the window's requirement drops to the same level as the
+other programs here. Verified by running the binary on glibc 2.39, where
+the previous build reproduces the Deck's exact error and this one starts.
+
+A check now fails the build if any shipped binary needs a newer glibc than
+that floor, because a dependency can reintroduce this with a different
+symbol and the only sign would be a bug report from a machine we cannot
+test on.
+
 ## 0.38.1 - 2026-08-19
 
 **The G923's pedals read the right way round.** The wheel sends all three
