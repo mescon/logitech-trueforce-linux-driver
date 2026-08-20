@@ -90,7 +90,11 @@ impl Reader {
                         return;
                     }
                     Ok(n) => {
-                        for chunk in buf[..n].chunks_exact(EVENT_SIZE) {
+                        // as_chunks over chunks_exact: the size is a
+                        // constant, so the compiler knows each slice is a
+                        // whole event rather than checking per iteration.
+                        let (events, _partial) = buf[..n].as_chunks::<EVENT_SIZE>();
+                        for chunk in events {
                             if apply_event(&mut snapshot, chunk, &codes) {
                                 dirty = true;
                             }
