@@ -41,11 +41,18 @@ jobs:
       - name: The binaries must run on an older glibc
         working-directory: ${{ github.workspace }}
         run: |
+          # The truck-sim plugin is in this list for a reason: it is
+          # dlopened by the game, so a version it cannot satisfy would
+          # make the sim skip it in silence, with nothing for the owner
+          # to act on.
+          cc -O2 -Wall -o /tmp/logi-rpm-bridge tools/logi-rpm-bridge.c
           tools/check-glibc-floor.sh \
             userspace/logi-wheel/target/release/logi-wheel-gui \
             userspace/logi-wheel/target/release/logi-wheel \
             userspace/logi-wheel/target/release/logi-tf-sim \
-            userspace/logi-wheel/target/release/logi-ffb
+            userspace/logi-wheel/target/release/logi-ffb \
+            userspace/logi-wheel/target/release/liblogi_tf_scs.so \
+            /tmp/logi-rpm-bridge
 
   # logi-tf-relay is a Windows executable that runs inside the game's Proton
   # prefix, so everything that actually talks to shared memory sits behind

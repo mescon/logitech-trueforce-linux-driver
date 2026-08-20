@@ -385,6 +385,14 @@ and signed in public CI. If you would rather not add a third-party repository,
 the individual `.pkg.tar.zst` files are attached to every release and install
 with `sudo pacman -U <url>`.
 
+**On a Steam Deck this repository is the route**, not the AUR: SteamOS ships
+libraries without the files needed to compile against them, so an AUR build
+fails before it reaches anything of ours. It also has a read-only root
+filesystem, and a SteamOS update replaces it, so the install has to be
+repeated afterwards. The wiki's
+[SteamOS section](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Installation#steamos-steam-deck)
+has the full sequence, including the kernel headers the module needs.
+
 ## Force feedback in games
 
 **`logi-launch %command%` already does everything in this section.** It is

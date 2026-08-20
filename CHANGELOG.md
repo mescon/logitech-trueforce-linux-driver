@@ -22,7 +22,13 @@ the previous build reproduces the Deck's exact error and this one starts.
 A check now fails the build if any shipped binary needs a newer glibc than
 that floor, because a dependency can reintroduce this with a different
 symbol and the only sign would be a bug report from a machine we cannot
-test on.
+test on. It covers the truck-sim plugin too: that one is loaded by the
+game rather than run by you, so a version it could not satisfy would make
+the sim skip it in silence.
+
+The README now sends Steam Deck owners to the signed repository rather
+than the AUR, since building on SteamOS cannot work: it ships libraries
+without the files needed to compile against them.
 
 ## 0.38.1 - 2026-08-19
 
