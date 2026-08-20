@@ -99,10 +99,7 @@ impl ColorPicker {
 
     /// Paint every LED with the selected swatch.
     fn paint_all(&mut self) {
-        let c = PALETTE[self.palette].1;
-        for led in &mut self.colors {
-            *led = c;
-        }
+        self.colors.fill(PALETTE[self.palette].1);
     }
 
     /// Paint the cursor LED and its mirror-pair partner (pairs 1-10, 2-9,
