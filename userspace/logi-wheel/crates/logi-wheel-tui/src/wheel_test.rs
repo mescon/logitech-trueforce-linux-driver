@@ -261,15 +261,26 @@ impl TestView {
                     self.pressed.remove(&code);
                 }
             }
-            Some(TestEvent::Axis { code, value }) => match code {
-                evtest::ABS_HAT0X => self.hat.0 = value,
-                evtest::ABS_HAT0Y => self.hat.1 = value,
-                evtest::ABS_RX => self.axes[0] = value,
-                evtest::ABS_RY => self.axes[1] = value,
-                evtest::ABS_RZ => self.axes[2] = value,
-                evtest::ABS_Z => self.axes[3] = value,
-                _ => {}
-            },
+            Some(TestEvent::Axis { code, value }) => {
+                // Which axis is which pedal depends on the wheel, and the
+                // two G923 editions differ from each other as well as from
+                // the direct-drive wheels. Reading them by position put a
+                // G923's brake in the handbrake bar and left its throttle
+                // out entirely (issue #68).
+                let axes = evtest::pedal_axes_for_name(
+                    self.model,
+                    self.dev.as_ref().map(|d| d.name.as_str()).unwrap_or(""),
+                );
+                match code {
+                    evtest::ABS_HAT0X => self.hat.0 = value,
+                    evtest::ABS_HAT0Y => self.hat.1 = value,
+                    c if c == axes.throttle => self.axes[0] = value,
+                    c if c == axes.brake => self.axes[1] = value,
+                    c if c == axes.clutch => self.axes[2] = value,
+                    c if Some(c) == axes.handbrake => self.axes[3] = value,
+                    _ => {}
+                }
+            }
             None => {}
         }
     }

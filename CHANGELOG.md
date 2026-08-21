@@ -5,6 +5,20 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The apps name a G923's pedals correctly.** The Test view read the
+pedals off fixed axes, which are the direct-drive wheels' axes, and a
+G923 does not use them: its brake appeared as the accessory handbrake and
+its throttle did not appear at all (#68). Each wheel now has its own
+layout. The two G923 editions are not the same either, which is why this
+took a second wheel to see: the PlayStation edition sends throttle,
+brake and clutch as `ABS_Z`, `ABS_RZ`, `ABS_Y`, the Xbox edition as
+`ABS_Y`, `ABS_Z`, `ABS_RZ`. Both orders are read from those wheels' own
+report descriptors, and the PlayStation one is confirmed on hardware
+through `combine_pedals`, which merges the first two pedal bytes and so
+says which they are.
+
 ## 0.38.2 - 2026-08-21
 
 **The window runs on SteamOS.** A Steam Deck could install the driver and

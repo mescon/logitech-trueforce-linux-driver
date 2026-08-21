@@ -58,6 +58,7 @@ impl Reader {
     pub fn start(
         path: &str,
         codes: Vec<u16>,
+        axes: evtest::PedalAxes,
         on_snapshot: impl Fn(Snapshot) + Send + 'static,
         on_gone: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Reader> {
@@ -95,7 +96,7 @@ impl Reader {
                         // whole event rather than checking per iteration.
                         let (events, _partial) = buf[..n].as_chunks::<EVENT_SIZE>();
                         for chunk in events {
-                            if apply_event(&mut snapshot, chunk, &codes) {
+                            if apply_event(&mut snapshot, chunk, &codes, axes) {
                                 dirty = true;
                             }
                         }
@@ -139,7 +140,12 @@ impl Drop for Reader {
 /// Fold one raw event into `snapshot`; true if anything shown changed.
 /// `codes` is the same list `snapshot.buttons` is parallel to (see
 /// `Reader::start`).
-fn apply_event(snapshot: &mut Snapshot, chunk: &[u8], codes: &[u16]) -> bool {
+fn apply_event(
+    snapshot: &mut Snapshot,
+    chunk: &[u8],
+    codes: &[u16],
+    axes: evtest::PedalAxes,
+) -> bool {
     match evtest::parse_event(chunk) {
         Some(TestEvent::Steering(raw)) => {
             snapshot.steering_raw = raw;
@@ -161,19 +167,23 @@ fn apply_event(snapshot: &mut Snapshot, chunk: &[u8], codes: &[u16]) -> bool {
                 snapshot.hat.1 = value;
                 true
             }
-            evtest::ABS_RX => {
+            // By wheel, not by position: the two G923 editions put their
+            // pedals on different axes from each other and from the
+            // direct-drive wheels, so a fixed list showed a G923's brake
+            // as a handbrake and dropped its throttle (issue #68).
+            c if c == axes.throttle => {
                 snapshot.axes[0] = value;
                 true
             }
-            evtest::ABS_RY => {
+            c if c == axes.brake => {
                 snapshot.axes[1] = value;
                 true
             }
-            evtest::ABS_RZ => {
+            c if c == axes.clutch => {
                 snapshot.axes[2] = value;
                 true
             }
-            evtest::ABS_Z => {
+            c if Some(c) == axes.handbrake => {
                 snapshot.axes[3] = value;
                 true
             }
@@ -323,8 +333,33 @@ pub fn run_test_sequence(
 }
 
 #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use logi_wheel_core::device::WheelModel;
+
+    /// The direct-drive layout, which these tests were written against.
+    fn apply_event_dd(snapshot: &mut Snapshot, chunk: &[u8], codes: &[u16]) -> bool {
+        apply_event(snapshot, chunk, codes, evtest::pedal_axes(WheelModel::Rs50, None))
+    }
+
+    /// A G923's brake reaches the brake bar rather than the handbrake one.
+    #[test]
+    fn a_g923_pedal_lands_in_the_right_bar() {
+        fn ev(type_: u16, code: u16, value: i32) -> [u8; EVENT_SIZE] {
+            let mut b = [0u8; EVENT_SIZE];
+            b[16..18].copy_from_slice(&type_.to_le_bytes());
+            b[18..20].copy_from_slice(&code.to_le_bytes());
+            b[20..24].copy_from_slice(&value.to_le_bytes());
+            b
+        }
+        let codes = evtest::button_codes_for_model(WheelModel::G923);
+        let mut s = Snapshot { buttons: vec![false; codes.len()], ..Default::default() };
+        let xbox = evtest::pedal_axes(WheelModel::G923, Some(0xc26e));
+        assert!(apply_event(&mut s, &ev(3, evtest::ABS_Z, 200), &codes, xbox), "brake moved");
+        assert_eq!(s.axes[1], 200, "ABS_Z is the brake on this wheel, not the handbrake");
+        assert_eq!(s.axes[3], 0, "and nothing should reach the handbrake bar");
+    }
 
     #[test]
     fn ioctl_request_numbers_match_linux_headers() {
@@ -363,16 +398,16 @@ mod tests {
         let codes: Vec<u16> =
             logi_wheel_core::evtest::button_codes_for_model(logi_wheel_core::WheelModel::Rs50);
         let mut s = Snapshot { buttons: vec![false; codes.len()], ..Snapshot::default() };
-        assert!(apply_event(&mut s, &ev(1, 0x120, 1), &codes), "button A press");
+        assert!(apply_event_dd(&mut s, &ev(1, 0x120, 1), &codes), "button A press");
         assert!(s.buttons[0]);
-        assert!(apply_event(&mut s, &ev(3, 0, 50000), &codes), "steering");
+        assert!(apply_event_dd(&mut s, &ev(3, 0, 50000), &codes), "steering");
         assert_eq!(s.steering_raw, 50000);
-        assert!(apply_event(&mut s, &ev(3, evtest::ABS_RY, 12345), &codes), "brake");
+        assert!(apply_event_dd(&mut s, &ev(3, evtest::ABS_RY, 12345), &codes), "brake");
         assert_eq!(s.axes[1], 12345);
-        assert!(apply_event(&mut s, &ev(3, evtest::ABS_HAT0Y, -1), &codes), "hat up");
+        assert!(apply_event_dd(&mut s, &ev(3, evtest::ABS_HAT0Y, -1), &codes), "hat up");
         assert_eq!(s.hat, (0, -1));
-        assert!(!apply_event(&mut s, &ev(0, 0, 0), &codes), "SYN is not shown state");
-        assert!(!apply_event(&mut s, &ev(1, 0x12c, 1), &codes), "phantom button ignored (RS50)");
+        assert!(!apply_event_dd(&mut s, &ev(0, 0, 0), &codes), "SYN is not shown state");
+        assert!(!apply_event_dd(&mut s, &ev(1, 0x12c, 1), &codes), "phantom button ignored (RS50)");
     }
 
     #[test]
@@ -391,11 +426,11 @@ mod tests {
         let codes: Vec<u16> =
             logi_wheel_core::evtest::button_codes_for_model(logi_wheel_core::WheelModel::G923);
         let mut s = Snapshot { buttons: vec![false; codes.len()], ..Snapshot::default() };
-        assert!(apply_event(&mut s, &ev(1, 0x2c3, 1), &codes), "tracked on a G923");
-        assert!(apply_event(&mut s, &ev(1, 0x2c4, 1), &codes), "tracked on a G923");
+        assert!(apply_event_dd(&mut s, &ev(1, 0x2c3, 1), &codes), "tracked on a G923");
+        assert!(apply_event_dd(&mut s, &ev(1, 0x2c4, 1), &codes), "tracked on a G923");
         // A descriptor-gap code the live G923 never actually sends is now
         // correctly absent from its own code list, so it is ignored - the
         // same as any code neither the wheel nor the code list knows.
-        assert!(!apply_event(&mut s, &ev(1, 0x12c, 1), &codes), "gap code not tracked");
+        assert!(!apply_event_dd(&mut s, &ev(1, 0x12c, 1), &codes), "gap code not tracked");
     }
 }

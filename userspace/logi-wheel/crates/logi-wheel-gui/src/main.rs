@@ -959,6 +959,9 @@ fn start_test_monitor(
             match testio::Reader::start(
                 &wheel.event_path,
                 evtest::button_codes_for_model(model),
+                // The wheel's own pedal layout, from the name its input
+                // node reports (issue #68).
+                evtest::pedal_axes_for_name(model, &wheel.name),
                 move |snap| {
                     // Reader thread -> UI thread, at most ~30 Hz (the
                     // reader throttles before calling this).

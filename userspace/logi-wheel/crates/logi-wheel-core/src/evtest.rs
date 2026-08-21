@@ -22,6 +22,9 @@ pub const EV_ABS: u16 = 0x03;
 /// (see docs/SYSFS_API.md, "RS Shifter & Handbrake input mapping" and
 /// `wheel_combined_pedals`).
 pub const ABS_X: u16 = 0x00;
+/// A G923 pedal. The direct-drive wheels never use this axis, which is why
+/// it was absent until a G923 owner's pedals turned up unlabelled.
+pub const ABS_Y: u16 = 0x01;
 pub const ABS_Z: u16 = 0x02;
 pub const ABS_RX: u16 = 0x03;
 pub const ABS_RY: u16 = 0x04;
@@ -330,15 +333,99 @@ pub fn button_label_for_model(model: WheelModel, code: u16) -> Option<String> {
     }
 }
 
+/// Which absolute axis each pedal arrives on, for one wheel.
+///
+/// Not a constant, because the wheels disagree and two of them disagree
+/// with each other. The direct-drive wheels put the pedals on RX, RY and
+/// RZ and leave Z for the accessory handbrake. The G923 has no handbrake
+/// input and puts its three pedals on Y, Z and RZ, in an order that
+/// differs between its two editions:
+///
+/// | wheel | throttle | brake | clutch |
+/// |---|---|---|---|
+/// | RS50, G PRO | `ABS_RX` | `ABS_RY` | `ABS_RZ` |
+/// | G923 PlayStation (`c266`/`c267`) | `ABS_Z` | `ABS_RZ` | `ABS_Y` |
+/// | G923 Xbox (`c26e`) | `ABS_Y` | `ABS_Z` | `ABS_RZ` |
+///
+/// Both G923 rows are read off that wheel's own report descriptor, whose
+/// usage order is the byte order. The PlayStation row is confirmed on
+/// hardware: with `combine_pedals` on, the merged axis appears on `ABS_Z`
+/// and the throttle drives it one way while the brake drives it the
+/// other, which is only true if those two are the first two pedal bytes.
+/// The Xbox row is confirmed by its owner in issue #68, who saw the brake
+/// labelled as a handbrake, which is exactly what `ABS_Z` was called
+/// before this existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PedalAxes {
+    /// The accelerator.
+    pub throttle: u16,
+    /// The brake.
+    pub brake: u16,
+    /// The clutch.
+    pub clutch: u16,
+    /// The accessory handbrake, on wheels that can have one.
+    pub handbrake: Option<u16>,
+}
+
+/// The pedal layout for a wheel. `pid` picks between the G923 editions;
+/// without one, the PlayStation edition is assumed, since it is the one
+/// this project is developed against.
+pub fn pedal_axes(model: WheelModel, pid: Option<u16>) -> PedalAxes {
+    match model {
+        WheelModel::G923 if pid == Some(0xc26e) => PedalAxes {
+            throttle: ABS_Y,
+            brake: ABS_Z,
+            clutch: ABS_RZ,
+            handbrake: None,
+        },
+        WheelModel::G923 => {
+            PedalAxes { throttle: ABS_Z, brake: ABS_RZ, clutch: ABS_Y, handbrake: None }
+        }
+        _ => PedalAxes {
+            throttle: ABS_RX,
+            brake: ABS_RY,
+            clutch: ABS_RZ,
+            handbrake: Some(ABS_Z),
+        },
+    }
+}
+
+/// The pedal layout for the wheel behind an input node, chosen from the
+/// name that node reports.
+///
+/// The apps have the name to hand and not always the product id, and the
+/// name distinguishes the two G923 editions ("for Xbox One and PC" versus
+/// "for PlayStation 4 and PC"), which is the only distinction that matters
+/// here.
+pub fn pedal_axes_for_name(model: WheelModel, name: &str) -> PedalAxes {
+    let pid = if name.to_uppercase().contains("XBOX") { Some(0xc26e) } else { None };
+    pedal_axes(model, pid)
+}
+
 /// A short label for the non-steering axes the Test view bars show.
+///
+/// Prefer [`axis_label_for`]: this one assumes the direct-drive layout and
+/// mislabels a G923's pedals, calling its brake a handbrake.
 pub fn axis_label(code: u16) -> Option<&'static str> {
-    match code {
-        ABS_X => Some("Steering"),
-        ABS_RX => Some("Throttle"),
-        ABS_RY => Some("Brake"),
-        ABS_RZ => Some("Clutch"),
-        ABS_Z => Some("Handbrake"),
-        _ => None,
+    axis_label_for(WheelModel::Rs50, None, code)
+}
+
+/// A short label for the non-steering axes of a particular wheel.
+pub fn axis_label_for(model: WheelModel, pid: Option<u16>, code: u16) -> Option<&'static str> {
+    if code == ABS_X {
+        return Some("Steering");
+    }
+    let axes = pedal_axes(model, pid);
+    if code == axes.throttle {
+        Some("Throttle")
+    } else if code == axes.brake {
+        Some("Brake")
+    } else if code == axes.clutch {
+        Some("Clutch")
+    } else if Some(code) == axes.handbrake {
+        Some("Handbrake")
+    } else {
+        None
     }
 }
 
@@ -745,5 +832,48 @@ mod tests {
     #[test]
     fn scan_of_a_missing_dir_finds_nothing() {
         assert_eq!(scan_wheel_input(Path::new("/nonexistent-evtest-dir")), None);
+    }
+}
+
+#[cfg(test)]
+mod pedal_axis_tests {
+    use super::*;
+
+    /// Each wheel's pedals are named correctly, and in particular a G923's
+    /// brake is not called a handbrake.
+    ///
+    /// That was the visible fault (issue #68): the labels were the
+    /// direct-drive layout applied to every wheel, so on a G923 Xbox the
+    /// brake arrived on `ABS_Z`, which those labels call the accessory
+    /// handbrake, while the throttle arrived on an axis with no label at
+    /// all.
+    #[test]
+    fn each_wheel_names_its_own_pedals() {
+        let dd = pedal_axes(WheelModel::Rs50, Some(0xc276));
+        assert_eq!((dd.throttle, dd.brake, dd.clutch), (ABS_RX, ABS_RY, ABS_RZ));
+        assert_eq!(dd.handbrake, Some(ABS_Z), "only the DD wheels take the handbrake accessory");
+
+        let ps = pedal_axes(WheelModel::G923, Some(0xc266));
+        assert_eq!((ps.throttle, ps.brake, ps.clutch), (ABS_Z, ABS_RZ, ABS_Y));
+        assert_eq!(ps.handbrake, None);
+
+        let xbox = pedal_axes(WheelModel::G923, Some(0xc26e));
+        assert_eq!((xbox.throttle, xbox.brake, xbox.clutch), (ABS_Y, ABS_Z, ABS_RZ));
+        assert_eq!(xbox.handbrake, None);
+
+        // The two editions really do differ; if they ever stop differing,
+        // this is the assertion that should be deleted deliberately rather
+        // than the mapping quietly collapsing to one.
+        assert_ne!(ps.throttle, xbox.throttle, "the editions order their pedals differently");
+    }
+
+    #[test]
+    fn a_g923_brake_is_not_called_a_handbrake() {
+        assert_eq!(axis_label_for(WheelModel::G923, Some(0xc26e), ABS_Z), Some("Brake"));
+        assert_eq!(axis_label_for(WheelModel::G923, Some(0xc26e), ABS_Y), Some("Throttle"));
+        assert_eq!(axis_label_for(WheelModel::G923, Some(0xc26e), ABS_RZ), Some("Clutch"));
+        // And the direct-drive wheels keep theirs, handbrake included.
+        assert_eq!(axis_label_for(WheelModel::Rs50, Some(0xc276), ABS_Z), Some("Handbrake"));
+        assert_eq!(axis_label_for(WheelModel::Rs50, Some(0xc276), ABS_RX), Some("Throttle"));
     }
 }

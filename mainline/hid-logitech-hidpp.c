@@ -17805,10 +17805,19 @@ static bool hidpp_g923_pedal_usage(struct hid_field *field,
 	    field->logical_minimum != 0 || field->logical_maximum != 255)
 		return false;
 
+	/*
+	 * All three of this wheel's pedals, whichever is which. The
+	 * PlayStation edition orders them throttle, brake, clutch as
+	 * ABS_Z, ABS_RZ, ABS_Y (its descriptor's usage order, confirmed on
+	 * hardware with combine_pedals on, where the merged axis appears on
+	 * ABS_Z); the Xbox edition uses ABS_Y, ABS_Z, ABS_RZ instead. The
+	 * correction is the same for each, so this does not care, but the
+	 * apps do: see evtest::pedal_axes.
+	 */
 	switch (usage->code) {
-	case ABS_Y:	/* brake */
-	case ABS_Z:	/* throttle */
-	case ABS_RZ:	/* clutch */
+	case ABS_Y:
+	case ABS_Z:
+	case ABS_RZ:
 		return true;
 	default:
 		return false;
