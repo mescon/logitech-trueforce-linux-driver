@@ -26,6 +26,14 @@ until the last round.
   calls, which left the wheel looking dead, and produced the Wine log that
   root-caused the 90 degree steering lock: the TrueForce SDK looking for a
   G HUB that does not exist under Proton.
+- **[pokesl0w](https://github.com/pokesl0w)** - the first confirmed Steam
+  Deck install, and the G923 Xbox edition's button and pedal layouts,
+  captured button by button from his own wheel ([#68](../../issues/68)).
+  Both of those layouts differ from the PlayStation edition's, which is
+  something no amount of reading could have established here.
+- **[Maanikko81](https://github.com/Maanikko81)** - found that the G923
+  reports its pedals inverted, with the evtest reading that made it
+  provable rather than anecdotal ([#67](../../issues/67)).
 - **[adnanmur](https://github.com/adnanmur)** - reported the G923 Xbox
   mode-switch rule hard enough to stop a machine booting, with a diagnosis
   better than the bug deserved ([#52](../../issues/52)).

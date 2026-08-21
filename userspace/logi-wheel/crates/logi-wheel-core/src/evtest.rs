@@ -310,6 +310,80 @@ pub fn button_codes_for_model(model: WheelModel) -> Vec<u16> {
     }
 }
 
+/// The Xbox edition's buttons, captured from the hardware by its owner in
+/// issue #68.
+///
+/// A different wheel from the PlayStation edition, not a relabelling of
+/// it. The paddles, the plus and minus, and the dial sit on the same codes
+/// in both, but the face buttons and the whole middle cluster do not, so
+/// applying [`G923_BUTTONS`] here named an Xbox wheel's buttons Square,
+/// Circle and Triangle.
+///
+/// The last seven are the H-shifter accessory rather than the wheel, and
+/// appear only when one is attached. They are listed because the wheel
+/// reports them on its own button page, so leaving them out would show an
+/// owner an unlabelled code for every gear.
+///
+/// The capture is unambiguous: each press also carried an `MSC_SCAN`
+/// value, and those run in one unbroken sequence (`0x90001` upward) that
+/// matches this order exactly.
+pub const G923_XBOX_BUTTONS: &[(u16, &str)] = &[
+    (0x120, "A"),
+    (0x121, "B"),
+    (0x122, "X"),
+    (0x123, "Y"),
+    (0x124, "Right Paddle"),
+    (0x125, "Left Paddle"),
+    (0x126, "Start"),
+    (0x127, "Select"),
+    (0x128, "RSB"),
+    (0x129, "LSB"),
+    (0x12a, "Xbox"),
+    // The H-shifter accessory, which reports on the wheel's own button
+    // page and therefore sits between the wheel's buttons and the rim
+    // cluster below. This is why the two editions' plus, minus and dial
+    // codes differ: the Xbox wheel has one fewer button of its own, so
+    // everything after the shifter shifts down by one.
+    (0x12b, "Shifter R"),
+    (0x12c, "Shifter 1"),
+    (0x12d, "Shifter 2"),
+    (0x12e, "Shifter 3"),
+    (0x12f, "Shifter 4"),
+    (0x2c0, "Shifter 5"),
+    (0x2c1, "Shifter 6"),
+    (0x2c2, "Plus (Up)"),
+    (0x2c3, "Minus (Down)"),
+    (0x2c4, "Dial Right"),
+    (0x2c5, "Dial Left"),
+    (0x2c6, "Dial Push"),
+];
+/// Which G923 button table a wheel uses, from the name its input node
+/// reports. Same reasoning as [`pedal_axes_for_name`].
+pub fn is_xbox_edition(name: &str) -> bool {
+    name.to_uppercase().contains("XBOX")
+}
+
+/// The button label for `code` on a named wheel, which is the only form
+/// that can tell the two G923 editions apart.
+pub fn button_label_for_name(model: WheelModel, name: &str, code: u16) -> Option<String> {
+    if model == WheelModel::G923 && is_xbox_edition(name) {
+        return G923_XBOX_BUTTONS
+            .iter()
+            .find(|(c, _)| *c == code)
+            .map(|(_, l)| (*l).to_string())
+            .or_else(|| generic_button_label(code));
+    }
+    button_label_for_model(model, code)
+}
+
+/// The codes to show for a named wheel, in the order they are listed.
+pub fn button_codes_for_name(model: WheelModel, name: &str) -> Vec<u16> {
+    if model == WheelModel::G923 && is_xbox_edition(name) {
+        return G923_XBOX_BUTTONS.iter().map(|(c, _)| *c).collect();
+    }
+    button_codes_for_model(model)
+}
+
 /// [`button_label_for_model`] with the "BTN <code>" fallback, mirroring
 /// [`button_name`] but per-model.
 pub fn button_name_for_model(model: WheelModel, code: u16) -> String {
@@ -875,5 +949,67 @@ mod pedal_axis_tests {
         // And the direct-drive wheels keep theirs, handbrake included.
         assert_eq!(axis_label_for(WheelModel::Rs50, Some(0xc276), ABS_Z), Some("Handbrake"));
         assert_eq!(axis_label_for(WheelModel::Rs50, Some(0xc276), ABS_RX), Some("Throttle"));
+    }
+}
+
+#[cfg(test)]
+mod xbox_button_tests {
+    use super::*;
+
+    /// The codes an Xbox G923 owner captured, against the labels he gave
+    /// each press (issue #68). Kept as the raw pairing rather than a
+    /// restatement of the table, so a future edit to the table has to
+    /// disagree with the hardware to fail.
+    const CAPTURED: &[(u16, &str)] = &[
+        (288, "A"),
+        (289, "B"),
+        (290, "X"),
+        (291, "Y"),
+        (292, "Right Paddle"),
+        (293, "Left Paddle"),
+        (294, "Start"),
+        (295, "Select"),
+        (296, "RSB"),
+        (297, "LSB"),
+        (298, "Xbox"),
+        (706, "Plus (Up)"),
+        (707, "Minus (Down)"),
+        (708, "Dial Right"),
+        (709, "Dial Left"),
+        (710, "Dial Push"),
+    ];
+
+    #[test]
+    fn the_xbox_edition_gets_its_own_names() {
+        for (code, label) in CAPTURED {
+            assert_eq!(
+                button_label_for_name(WheelModel::G923, "Logitech G923 Racing Wheel for Xbox One and PC", *code)
+                    .as_deref(),
+                Some(*label),
+                "code {code} should be {label} on the Xbox edition"
+            );
+        }
+    }
+
+    /// And the PlayStation edition keeps its own, which is the half that
+    /// was already right and must not move.
+    #[test]
+    fn the_playstation_edition_is_unchanged() {
+        let ps = "Logitech G923 Racing Wheel for PlayStation 4 and PC";
+        assert_eq!(button_label_for_name(WheelModel::G923, ps, 0x121).as_deref(), Some("Square"));
+        assert_eq!(button_label_for_name(WheelModel::G923, ps, 0x12a).as_deref(), Some("R3"));
+        // The codes the two editions share, so a mix-up here would be
+        // invisible in the tables above.
+        assert_eq!(button_label_for_name(WheelModel::G923, ps, 0x124).as_deref(), Some("Right Paddle"));
+    }
+
+    /// A direct-drive wheel is not affected by any of this.
+    #[test]
+    fn a_direct_drive_wheel_keeps_its_diagram_labels() {
+        let rs50 = "Logitech RS50 Base for PlayStation/PC";
+        assert_eq!(
+            button_label_for_name(WheelModel::Rs50, rs50, 0x120),
+            button_label_for_model(WheelModel::Rs50, 0x120)
+        );
     }
 }

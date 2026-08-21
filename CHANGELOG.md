@@ -7,6 +7,17 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**The Xbox edition of the G923 gets its own button names.** Its owner saw
+PlayStation labels, Square and Circle and Triangle, on an Xbox wheel,
+because the G923 button table was captured from a PlayStation one and
+applied to both. They are different wheels: the face buttons and the
+whole middle cluster differ, and so do the codes for the plus, minus and
+dial, because the H-shifter's buttons sit between the wheel's own and
+that cluster, so one fewer face button shifts everything after it. The
+Xbox layout is now its own table, captured button by button from the
+hardware by [pokesl0w](https://github.com/pokesl0w) in #68, including
+the shifter's gears.
+
 **The apps name a G923's pedals correctly.** The Test view read the
 pedals off fixed axes, which are the direct-drive wheels' axes, and a
 G923 does not use them: its brake appeared as the accessory handbrake and

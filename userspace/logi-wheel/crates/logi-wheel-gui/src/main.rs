@@ -834,7 +834,7 @@ fn overlay_debug_from(new: Option<String>, old: Option<String>) -> Option<f32> {
 /// button it does not have (e.g. a G923 has no left encoder at all, but
 /// its own 0x2c8 - the RS50's "L Encoder CW" - is a real, different
 /// button on it: the G923's PS button).
-fn apply_test_snapshot(app: &App, snap: &testio::Snapshot, model: WheelModel) {
+fn apply_test_snapshot(app: &App, snap: &testio::Snapshot, model: WheelModel, wheel_name: &str) {
     let range = app.get_test_range().max(1) as u32;
     let debug = overlay_debug();
     let deg = debug
@@ -842,13 +842,18 @@ fn apply_test_snapshot(app: &App, snap: &testio::Snapshot, model: WheelModel) {
     app.set_test_degrees(deg);
     app.set_test_degrees_text(format!("{deg:+.1} deg").into());
     app.set_test_hat(evtest::hat_label(snap.hat.0, snap.hat.1).into());
-    let codes = evtest::button_codes_for_model(model);
+    // By name, not just model: the two G923 editions have different
+    // buttons, so an Xbox wheel was being shown a PlayStation wheel's
+    // Square, Circle and Triangle (issue #68).
+    let codes = evtest::button_codes_for_name(model, wheel_name);
     let buttons: Vec<TestButton> = codes
         .iter()
         .zip(&snap.buttons)
         .map(|(code, pressed)| TestButton {
             code: i32::from(*code),
-            label: evtest::button_name_for_model(model, *code).into(),
+            label: evtest::button_label_for_name(model, wheel_name, *code)
+                .unwrap_or_else(|| format!("BTN {code}"))
+                .into(),
             pressed: *pressed,
         })
         .collect();
@@ -956,9 +961,12 @@ fn start_test_monitor(
             }
             let snap_weak = app.as_weak();
             let gone_weak = app.as_weak();
+            // Moved into the snapshot closure, which needs it to pick the
+            // right edition's button names.
+            let wheel_name = wheel.name.clone();
             match testio::Reader::start(
                 &wheel.event_path,
-                evtest::button_codes_for_model(model),
+                evtest::button_codes_for_name(model, &wheel.name),
                 // The wheel's own pedal layout, from the name its input
                 // node reports (issue #68).
                 evtest::pedal_axes_for_name(model, &wheel.name),
@@ -966,9 +974,10 @@ fn start_test_monitor(
                     // Reader thread -> UI thread, at most ~30 Hz (the
                     // reader throttles before calling this).
                     let weak = snap_weak.clone();
+                    let name = wheel_name.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(app) = weak.upgrade() {
-                            apply_test_snapshot(&app, &snap, model);
+                            apply_test_snapshot(&app, &snap, model, &name);
                         }
                     });
                 },

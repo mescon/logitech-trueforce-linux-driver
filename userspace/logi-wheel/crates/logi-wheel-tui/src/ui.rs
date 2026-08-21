@@ -1342,19 +1342,23 @@ fn draw_monitor<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
         .render(rows[0], buf);
 
     // The button tester: every wheel button, reverse-video while held,
-    // with the recent-press history on top. The code list and labels are
-    // model-aware (see `evtest::button_codes_for_model`/
-    // `button_name_for_model`): RS50/G PRO keep their captured diagram
-    // labels, a G923 gets its own captured `G923_BUTTONS` labels instead
-    // of the RS50's - wrong for it - labels (e.g. its own 0x2c8 is its PS
-    // button, not the RS50's left encoder, which the G923 does not have).
+    // with the recent-press history on top. The code list and labels come
+    // from the wheel's own name, not just its model
+    // (`evtest::button_codes_for_name`), because the two G923 editions do
+    // not share a button layout: an Xbox wheel was being shown a
+    // PlayStation wheel's Square, Circle and Triangle (issue #68), and
+    // neither shares the RS50's diagram labels.
     let model = app.device.model();
+    let wheel_name = t.dev.as_ref().map(|d| d.name.clone()).unwrap_or_default();
     let recent = if t.recent.is_empty() {
         "-".to_string()
     } else {
         t.recent
             .iter()
-            .map(|c| evtest::button_name_for_model(model, *c))
+            .map(|c| {
+                evtest::button_label_for_name(model, &wheel_name, *c)
+                    .unwrap_or_else(|| format!("BTN {c}"))
+            })
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -1362,8 +1366,9 @@ fn draw_monitor<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
         Span::styled("Last pressed: ", Style::default().fg(Color::Gray)),
         Span::raw(recent),
     ]))];
-    items.extend(evtest::button_codes_for_model(model).into_iter().map(|code| {
-        let label = evtest::button_name_for_model(model, code);
+    items.extend(evtest::button_codes_for_name(model, &wheel_name).into_iter().map(|code| {
+        let label = evtest::button_label_for_name(model, &wheel_name, code)
+            .unwrap_or_else(|| format!("BTN {code}"));
         let held = t.pressed.contains(&code);
         let mut item = ListItem::new(format!("  {label:<18}"));
         if held {
