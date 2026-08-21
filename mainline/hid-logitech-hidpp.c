@@ -252,11 +252,14 @@ MODULE_PARM_DESC(kf_idle_gate,
 /*
  * The G923 sends its pedals the other way up.
  *
- * All three read 0xff released and 0x00 fully pressed, on both the
- * PlayStation and the classic ids, confirmed on two units (issue #67) and
- * on the wire: the wheel's report descriptor declares them as ordinary
- * absolute axes (Usage Z, Rz, Y, logical 0 to 255) with nothing marking
- * them inverted, because HID has no way to say that. So every consumer
+ * All three read 0xff released and 0x00 fully pressed, on every id this
+ * wheel has: the PlayStation and classic ones confirmed on two units
+ * (issue #67), and the Xbox one by its owner (issue #68). The report
+ * descriptor declares them as ordinary absolute axes with nothing marking
+ * them inverted, because HID has no way to say that. The two editions
+ * order the three axes differently (the PlayStation sends Z, Rz, Y and
+ * the Xbox Y, Z, Rz), which matters to whoever labels them but not here:
+ * all three get the same correction. So every consumer
  * sees a released pedal as fully applied unless something turns them
  * round, and no driver in the chain does: the in-tree driver does not
  * claim this wheel at all, and hid-generic maps what it is given.
@@ -17837,7 +17840,8 @@ static int hidpp_event(struct hid_device *hdev, struct hid_field *field,
 	 */
 	if (g923_pedal_invert && field->hidinput &&
 	    (hdev->product == USB_DEVICE_ID_LOGITECH_G923_WHEEL ||
-	     hdev->product == USB_DEVICE_ID_LOGITECH_G923_PS_WHEEL) &&
+	     hdev->product == USB_DEVICE_ID_LOGITECH_G923_PS_WHEEL ||
+	     hdev->product == USB_DEVICE_ID_LOGITECH_G923_XBOX_WHEEL) &&
 	    hidpp_g923_pedal_usage(field, usage) &&
 	    /*
 	     * Not while the pedals are merged. dd_lg4ff_raw_event has

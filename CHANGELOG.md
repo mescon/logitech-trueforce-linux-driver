@@ -5,6 +5,16 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The G923 Xbox edition's pedals are turned the right way up too.** The
+correction shipped in 0.38.1 for the PlayStation edition only, because
+that was where the evidence was. Its owner has now confirmed the Xbox
+edition does the same thing, 255 released and 0 fully pressed, so it gets
+the same treatment (#68). Nothing else changes: the two editions order
+their pedal axes differently, which matters to whichever label goes on
+each bar, but all three axes take the same correction either way.
+
 ## 0.38.3 - 2026-08-21
 
 **The Xbox edition of the G923 gets its own button names.** Its owner saw
