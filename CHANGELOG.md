@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.38.4 - 2026-08-21
 
 **The G923 Xbox edition's pedals are turned the right way up too.** The
 correction shipped in 0.38.1 for the PlayStation edition only, because
