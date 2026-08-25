@@ -340,6 +340,23 @@ mod tests {
     use super::*;
     use std::ffi::CString;
 
+    /// The telemetry state is one global, because the game owns exactly
+    /// one truck and writes into it from its own thread. Tests share it,
+    /// and the test harness runs them in parallel, so two of them setting
+    /// it at once read each other's values: the clamping test's rpm
+    /// arrived in the redline test's assertion on a CI runner while
+    /// passing here for weeks. Every test that touches the global takes
+    /// this first.
+    ///
+    /// Poison is ignored deliberately: if another test panicked while
+    /// holding it, that test's failure is the thing to read, not a
+    /// cascade of others failing to lock.
+    static STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_state() -> std::sync::MutexGuard<'static, ()> {
+        STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn set_state(rpm: f32, max_rpm: f32, throttle: f32, gear: i32) {
         store_f32(&STATE.rpm, rpm);
         store_f32(&STATE.max_rpm, max_rpm);
@@ -349,6 +366,7 @@ mod tests {
 
     #[test]
     fn sample_requires_a_known_redline() {
+        let _state = lock_state();
         set_state(1200.0, 0.0, 0.5, 3);
         assert!(sample().is_none(), "without rpm.limit there is nothing to scale the engine note against");
         set_state(1200.0, 2500.0, 0.5, 3);
@@ -361,6 +379,7 @@ mod tests {
 
     #[test]
     fn sample_clamps_out_of_range_inputs() {
+        let _state = lock_state();
         set_state(-50.0, 2500.0, 1.7, -1);
         let t = sample().unwrap();
         assert_eq!(t.rpm, 0.0, "a negative rpm is clamped to 0");
