@@ -5,6 +5,21 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The launcher finds its own files on a distribution that has no
+`/usr/share`.** It staged the dinput8 escape proxy, the telemetry relay
+and the recorded init burst from two fixed places, neither of which
+exists on NixOS, where a package keeps everything together under its own
+prefix. The apps reported "proxy master copy missing" on a machine whose
+package had just installed it, and worse, the launcher silently staged
+nothing: no engine texture, no relay telemetry, and on a title where it
+also turns raw HID on, no force feedback either, because the game then
+has neither the SDK path nor the DirectInput one (#70). All three
+lookups, and the apps' matching one, now work out the prefix from where
+they are installed. Nothing changes on a normal install, where that
+resolves to the same `/usr/share` as before.
+
 ## 0.38.4 - 2026-08-21
 
 **The G923 Xbox edition's pedals are turned the right way up too.** The

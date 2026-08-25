@@ -115,13 +115,15 @@
                 # The Steam launch-options wrapper. The whole feature is
                 # that a user types `logi-launch %command%` and nothing
                 # else, so it must be on PATH beside the helpers it
-                # starts. It looks for the dinput8 proxy under /usr/share,
-                # which does not exist on NixOS; point it at this
-                # package's share directory.
+                # starts.
+                #
+                # No path rewriting here any more: the wrapper works out
+                # its own <prefix>/share/logitech-trueforce from where it
+                # is installed, so the relay and the recorded init burst
+                # are found as well as the proxy. Rewriting only the proxy
+                # path is what left this channel staging no relay at all
+                # (issue #70).
                 install -Dm755 tools/logi-launch.sh $out/bin/logi-launch
-                substituteInPlace $out/bin/logi-launch \
-                  --replace-fail "/usr/share/logitech-trueforce/dinput8-escape.dll" \
-                                 "$out/share/logitech-trueforce/dinput8-escape.dll"
                 # Rebinds a wheel that another driver claimed, which the
                 # settings apps' diagnostics offer as the fix.
                 install -Dm755 tools/rebind-wheel.sh $out/bin/logi-rebind-wheel

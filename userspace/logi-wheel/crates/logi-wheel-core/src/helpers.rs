@@ -146,6 +146,21 @@ pub fn resolve_proxy_master(packaged: &Path, exe: Option<&Path>) -> Option<PathB
     if packaged.is_file() {
         return Some(packaged.to_path_buf());
     }
+    // `<prefix>/bin/<exe>` -> `<prefix>/share/logitech-trueforce/<name>`,
+    // the same relocatable step `telemetry_helpers` already makes for the
+    // relay and the truck-sim plugin. Without it a distribution that puts
+    // nothing under `/usr` reports the proxy missing on a machine where
+    // its own package installed it: on NixOS everything lives at
+    // `/nix/store/<hash>-logi-wheel/{bin,share}`, so the absolute path
+    // above matches nothing (issue #70).
+    if let Some(prefix) = exe.and_then(Path::parent).and_then(Path::parent) {
+        let candidate = prefix
+            .join("share/logitech-trueforce")
+            .join(Path::new(PROXY_MASTER_PACKAGED).file_name()?);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
     walk_up_for(REPO_PROXY_MASTER, exe)
 }
 
@@ -500,5 +515,64 @@ mod tests {
         touch(&exe);
         assert_eq!(resolve_installer(Some(&path_var(&[&empty])), Some(&exe)), None);
         assert_eq!(resolve_installer(None, None), None);
+    }
+}
+
+#[cfg(test)]
+mod proxy_master_prefix_tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Same throwaway-tree helper the sibling module uses; no dev
+    /// dependency for two tests.
+    fn tempdir() -> PathBuf {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "proxy-master-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn touch(path: &Path, body: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    /// A package that installs nothing under `/usr` still finds its own
+    /// proxy.
+    ///
+    /// This is the NixOS layout from issue #70, where the app reported
+    /// "proxy master copy missing" on a machine whose package had just
+    /// installed it, and the launcher then had nothing to stage: no
+    /// engine texture, and with raw HID forced on for that title, no
+    /// force feedback either.
+    #[test]
+    fn a_prefix_install_finds_its_own_proxy() {
+        let root = tempdir();
+        let prefix = root.join("nix/store/abc123-logi-wheel");
+        let exe = prefix.join("bin/logi-wheel-gui");
+        touch(&exe, "");
+        let staged = prefix.join("share/logitech-trueforce/dinput8-escape.dll");
+        touch(&staged, "proxy");
+
+        // The packaged absolute path deliberately points at nothing, as
+        // it does on such a system.
+        let missing = root.join("usr/share/logitech-trueforce/dinput8-escape.dll");
+        assert_eq!(resolve_proxy_master(&missing, Some(&exe)), Some(staged));
+    }
+
+    /// And an ordinary install still prefers the packaged path, so this
+    /// changes nothing on a normal system.
+    #[test]
+    fn the_packaged_path_still_wins_when_it_exists() {
+        let root = tempdir();
+        let packaged = root.join("usr/share/logitech-trueforce/dinput8-escape.dll");
+        touch(&packaged, "proxy");
+        assert_eq!(resolve_proxy_master(&packaged, None), Some(packaged));
     }
 }

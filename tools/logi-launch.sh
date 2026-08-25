@@ -74,6 +74,31 @@ WAIT_SECONDS="${LOGI_LAUNCH_WAIT:-120}"
 SETTLE_SECONDS="${LOGI_LAUNCH_SETTLE:-15}"
 LOG="${LOGI_LAUNCH_LOG:-/tmp/logi-launch.log}"
 
+# Where the Windows-side pieces we stage into games live: the dinput8
+# escape proxy, the telemetry relay, the recorded init burst.
+#
+# Three candidates, in order, because there are three kinds of install and
+# only the middle one is a fixed path. A distribution that puts nothing
+# under /usr, NixOS being the one that found this, keeps the whole package
+# together at <prefix>/{bin,share}, so deriving the prefix from this
+# script's own location is what makes those installs work; without it the
+# proxy is never staged, and on a title where this wrapper also turns raw
+# HID on, that costs the game its force feedback as well as its engine
+# texture (issue #70). The last candidate is a repo checkout, where these
+# files sit beside the script in tools/.
+share_file() {
+	_sf_self=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+	for _sf_c in "$_sf_self/../share/logitech-trueforce/$1" \
+		     "/usr/share/logitech-trueforce/$1" \
+		     "$_sf_self/$1"; do
+		if [ -r "$_sf_c" ]; then
+			printf '%s\n' "$_sf_c"
+			return 0
+		fi
+	done
+	return 1
+}
+
 say() { printf '[logi-launch] %s\n' "$*" >>"$LOG"; }
 
 # `logi-launch --game <name> %command%` names the title explicitly, for when
@@ -387,8 +412,7 @@ if [ "$want_texture" = "merge" ] && \
 	game_exe=$(printf '%s\n' "$@" | grep -m1 -e '\.exe$' || true)
 	game_dir=""
 	[ -n "$game_exe" ] && game_dir=$(dirname "$game_exe")
-	proxy_src="/usr/share/logitech-trueforce/dinput8-escape.dll"
-	[ -r "$proxy_src" ] || proxy_src="$(dirname "$0")/dinput8-escape.dll"
+	proxy_src=$(share_file dinput8-escape.dll || true)
 	if [ -n "$game_dir" ] && [ -d "$game_dir" ] && [ -r "$proxy_src" ]; then
 		# cmp, not a timestamp: Steam validation rewrites files and a
 		# stale proxy looks exactly like a missing one.
@@ -471,8 +495,7 @@ if [ -z "$HELPER_EXE" ] && [ -n "$prefix_root" ] && [ -n "$wine_bin" ]; then
 		# old build exits instead of waiting for the game, or does not
 		# know the game id at all (#59). cmp, not a timestamp, same
 		# reason as the dinput8 proxy above.
-		relay_src="/usr/share/logitech-trueforce/logi-tf-relay.exe"
-		[ -r "$relay_src" ] || relay_src="$(dirname "$0")/logi-tf-relay.exe"
+		relay_src=$(share_file logi-tf-relay.exe || true)
 		relay_dst="$prefix_root/pfx/drive_c/logi-tf-relay.exe"
 		if [ -r "$relay_src" ] && \
 		   ! cmp -s "$relay_src" "$relay_dst" 2>/dev/null; then
@@ -760,10 +783,7 @@ PYEOF
 # real session start sends.
 send_tf_rearm() {
 	rearm_blob=""
-	for c in /usr/share/logitech-trueforce/tf-init.bin \
-		 "$(dirname "$0")/tf-init.bin"; do
-		[ -r "$c" ] && rearm_blob="$c" && break
-	done
+	rearm_blob=$(share_file tf-init.bin || true)
 	if [ -z "$rearm_blob" ] || ! command -v python3 >/dev/null 2>&1; then
 		say "TF re-arm requested but tf-init.bin or python3 missing; skipped"
 		return 0
