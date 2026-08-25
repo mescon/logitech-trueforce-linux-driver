@@ -77,8 +77,9 @@ LOG="${LOGI_LAUNCH_LOG:-/tmp/logi-launch.log}"
 # Where the Windows-side pieces we stage into games live: the dinput8
 # escape proxy, the telemetry relay, the recorded init burst.
 #
-# Three candidates, in order, because there are three kinds of install and
-# only the middle one is a fixed path. A distribution that puts nothing
+# Candidates in order, because there are several kinds of install and only
+# the fixed paths are obvious. LOGI_SHARE_DIR overrides the lot, for a
+# layout nobody here has thought of. A distribution that puts nothing
 # under /usr, NixOS being the one that found this, keeps the whole package
 # together at <prefix>/{bin,share}, so deriving the prefix from this
 # script's own location is what makes those installs work; without it the
@@ -88,8 +89,10 @@ LOG="${LOGI_LAUNCH_LOG:-/tmp/logi-launch.log}"
 # files sit beside the script in tools/.
 share_file() {
 	_sf_self=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
-	for _sf_c in "$_sf_self/../share/logitech-trueforce/$1" \
+	for _sf_c in "${LOGI_SHARE_DIR:-/nonexistent}/$1" \
+		     "$_sf_self/../share/logitech-trueforce/$1" \
 		     "/usr/share/logitech-trueforce/$1" \
+		     "/usr/local/share/logitech-trueforce/$1" \
 		     "$_sf_self/$1"; do
 		if [ -r "$_sf_c" ]; then
 			printf '%s\n' "$_sf_c"

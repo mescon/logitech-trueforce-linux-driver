@@ -20,6 +20,13 @@ lookups, and the apps' matching one, now work out the prefix from where
 they are installed. Nothing changes on a normal install, where that
 resolves to the same `/usr/share` as before.
 
+Auditing the rest turned up a fourth: the shim installer's range proxy,
+the fix for the 90 degree steering clamp, was unreachable the same way.
+A check now fails the build if anything looks for these files by fixed
+path alone, because each of the four was written separately and each had
+to remember the same thing. `LOGI_SHARE_DIR` overrides the search for a
+layout nobody here has thought of.
+
 ## 0.38.4 - 2026-08-21
 
 **The G923 Xbox edition's pedals are turned the right way up too.** The

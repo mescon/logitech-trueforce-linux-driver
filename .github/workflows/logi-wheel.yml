@@ -38,6 +38,9 @@ jobs:
       # the release profile because that is what ships.
       - name: Build the shipped binaries
         run: cargo build --workspace --locked --release
+      - name: Every lookup of our staged files must survive a prefix install
+        working-directory: ${{ github.workspace }}
+        run: tools/check-share-lookups.sh
       - name: The binaries must run on an older glibc
         working-directory: ${{ github.workspace }}
         run: |

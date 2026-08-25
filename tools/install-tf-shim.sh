@@ -357,7 +357,17 @@ install_in_prefix() {
 		# do not have, with a cross-compiler they have no reason to own.
 		local proxy=""
 		local cand
+		# The prefix-relative candidate is first among the installed
+		# ones and exists for the same reason logi-launch has it: a
+		# distribution that puts nothing under /usr keeps the package
+		# together at <prefix>/{bin,share}, so neither absolute path
+		# below matches and the range proxy silently cannot be
+		# installed (issue #70 found this for the other files).
+		local self_dir
+		self_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
 		for cand in "$REPO_ROOT/tools/tf-range-proxy.dll" \
+			    "${LOGI_SHARE_DIR:-/nonexistent}/tf-range-proxy.dll" \
+			    "$self_dir/../share/logitech-trueforce/tf-range-proxy.dll" \
 			    "/usr/share/logitech-trueforce/tf-range-proxy.dll" \
 			    "/usr/local/share/logitech-trueforce/tf-range-proxy.dll"; do
 			[ -f "$cand" ] && { proxy="$cand"; break; }
