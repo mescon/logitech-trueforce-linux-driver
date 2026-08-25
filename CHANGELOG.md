@@ -27,6 +27,24 @@ path alone, because each of the four was written separately and each had
 to remember the same thing. `LOGI_SHARE_DIR` overrides the search for a
 layout nobody here has thought of.
 
+## Unreleased
+
+**A game's force-feedback slider now governs the synthesized haptics
+too.** In a title with no TrueForce of its own, everything the wheel does
+comes from `logi-tf-sim`, and it obeyed only its own strength setting: a
+driver who turned force feedback down in the game still felt a
+full-strength engine note, which reads as the setting being ignored
+(#59). The driver publishes what the game asked for as
+`wheel_ffb_game_gain`, and the daemon scales itself by it, so the slider
+that quietens the forces quietens the engine note with them and zero is
+silence. `follow_game_gain=0` in `tf-sim.conf` restores the old
+behaviour.
+
+Worth knowing which slider is which. A game's **TrueForce** setting
+reaches its own TrueForce, which a title like Assetto Corsa (Original)
+does not have; its **force feedback** setting is the one that reaches
+this.
+
 ## 0.38.4 - 2026-08-21
 
 **The G923 Xbox edition's pedals are turned the right way up too.** The

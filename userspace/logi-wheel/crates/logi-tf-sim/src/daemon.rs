@@ -418,6 +418,10 @@ pub(crate) fn captured_has_precedence(age: Option<Duration>) -> bool {
 
 struct Active {
     stream: WheelStream,
+    /// The running game's own force-feedback strength, polled from the
+    /// wheel, so its slider governs these haptics as well as its forces
+    /// (issue #59).
+    game_gain: crate::game_gain::GameGain,
     mixer: Mixer,
     game: &'static str,
     tel: Telemetry,
@@ -681,6 +685,10 @@ pub fn run(cfg: &Config) -> Result<()> {
                             }
                             active = Some(Active {
                                 stream,
+                                game_gain: crate::game_gain::GameGain::new(
+                                    led_owner.as_deref(),
+                                    cfg.follow_game_gain,
+                                ),
                                 mixer: if cfg.effects {
                                     Mixer::new(
                                         cfg.cylinders,
@@ -773,6 +781,11 @@ pub fn run(cfg: &Config) -> Result<()> {
                         // something nobody asked for.
                         active = Some(Active {
                             stream,
+                            // The captured path carries the game's own
+                            // finished haptics, which the game has already
+                            // scaled by its own slider; scaling again here
+                            // would apply it twice.
+                            game_gain: crate::game_gain::GameGain::new(None, false),
                             mixer: Mixer::engine_only(
                                 cfg.cylinders,
                                 f32::from(cfg.pitch_pct) / 100.0,
@@ -818,7 +831,12 @@ pub fn run(cfg: &Config) -> Result<()> {
                     } else {
                         a.last_gen + Duration::from_millis(plan.audio_ms)
                     };
-                    let intensity = cfg.effective_intensity(a.game);
+                    // The configured strength AND the running game's own,
+                    // so a game's force-feedback slider governs the engine
+                    // note it never asked for as well as the forces it did
+                    // (issue #59). A game at zero goes fully silent, which
+                    // the gate below then parks, releasing the wheel.
+                    let intensity = cfg.effective_intensity(a.game) * a.game_gain.scale(now);
                     // The mixer owns the engine layer along with the rest,
                     // including the over-redline cap the synth call used to
                     // apply here: an effect's reading of the sample is the

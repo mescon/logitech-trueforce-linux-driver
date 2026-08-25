@@ -130,6 +130,16 @@ pub struct Config {
     pub beamng_port: u16,
     /// Shared-memory telemetry relay listen port (see [`crate::relay`]).
     pub relay_port: u16,
+    /// Whether the synthesized haptics follow the running game's own
+    /// force-feedback strength, which reaches the wheel as `FF_GAIN` and
+    /// the driver publishes as `wheel_ffb_game_gain`.
+    ///
+    /// On by default: a game's slider should govern everything the wheel
+    /// does for that game, and a driver who turns force feedback down and
+    /// still feels a full-strength engine note has been ignored (issue
+    /// #59). Off restores the older behaviour, where only this file's own
+    /// intensity applied.
+    pub follow_game_gain: bool,
     /// The G923 FFB-mirror sign flag, persisted; see
     /// [`crate::g923::Sign::resolve`] for how this combines with the
     /// environment override.
@@ -180,6 +190,7 @@ impl Default for Config {
             pcars_port: pcars::DEFAULT_PORT,
             beamng_port: beamng::DEFAULT_PORT,
             relay_port: relay::DEFAULT_PORT,
+            follow_game_gain: true,
             g923_ffb_invert: true,
             games: BTreeMap::new(),
         }
@@ -364,6 +375,10 @@ fn apply_line(cfg: &mut Config, key: &str, raw: &str) -> bool {
             let Some(v) = parse_bool(raw) else { return false };
             cfg.effects = v;
         }
+        "follow_game_gain" => {
+            let Some(v) = parse_bool(raw) else { return false };
+            cfg.follow_game_gain = v;
+        }
         "g923.ffb_invert" => {
             let Some(v) = parse_bool(raw) else { return false };
             cfg.g923_ffb_invert = v;
@@ -467,6 +482,7 @@ impl Config {
         for id in crate::effects::EffectId::ALL {
             out.push_str(&format!("effect_{}={}\n", id.key(), self.effect_gains.get(id)));
         }
+        out.push_str(&format!("follow_game_gain={}\n", u8::from(self.follow_game_gain)));
         out.push_str(&format!("g923.ffb_invert={}\n", u8::from(self.g923_ffb_invert)));
         for (id, game) in &self.games {
             out.push_str(&format!("game.{id}.enabled={}\n", u8::from(game.enabled)));
@@ -548,6 +564,7 @@ mod tests {
             pcars_port: 5607,
             beamng_port: 4445,
             relay_port: 20781,
+            follow_game_gain: true,
             g923_ffb_invert: true,
             games: BTreeMap::new(),
         };

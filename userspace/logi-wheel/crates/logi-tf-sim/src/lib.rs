@@ -41,6 +41,9 @@ pub mod error;
 pub mod f1;
 pub mod ffb_keepalive;
 pub mod g923;
+/// The running game's own force-feedback strength, so the synthesized
+/// haptics obey the same slider its forces do.
+pub mod game_gain;
 pub mod lease;
 pub mod leds;
 pub mod pcars;

@@ -12891,6 +12891,48 @@ static ssize_t wheel_ffb_constant_sign_show(struct device *dev,
 			  READ_ONCE(ff->ffb_constant_sign) ? 1U : 0U);
 }
 
+/*
+ * wheel_ffb_game_gain: the force-feedback gain the running game has asked
+ * for, as a percentage.
+ *
+ * Read-only, and not a setting: this is FF_GAIN, what a game writes when
+ * its own force-feedback strength slider moves, arriving through evdev.
+ * It starts at 100% and a game scales down from there.
+ *
+ * Exposed because a game's slider should govern everything the wheel does
+ * on that game's behalf, including the haptics this project synthesizes
+ * for titles that have none of their own. Without this, turning force
+ * feedback down in a game quietened its forces while the engine note
+ * carried on at full strength, which reads as the setting being ignored
+ * (issue #59). logi-tf-sim reads this and scales itself by it.
+ *
+ * Distinct from the wheel's own strength, which the user sets and which
+ * lives in the wheel rather than in the running game.
+ */
+static ssize_t wheel_ffb_game_gain_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	struct hidpp_device *hidpp = hid_get_drvdata(hid);
+	struct hidpp_dd_ff_data *ff;
+
+	if (!hidpp)
+		return -ENODEV;
+	ff = READ_ONCE(hidpp->private_data);
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping))
+		return -ENODEV;
+	/* Rounded to the nearest percent: the raw 0..0xffff is an evdev
+	 * detail, and a reader that wants to scale by it wants a percentage.
+	 */
+	return sysfs_emit(buf, "%u\n",
+			  ((u32)READ_ONCE(ff->gain) * 100 + 0x7fff) / 0xffff);
+}
+
+static DEVICE_ATTR(wheel_ffb_game_gain, 0444, wheel_ffb_game_gain_show, NULL);
+
 static ssize_t wheel_ffb_constant_sign_store(struct device *dev,
 					     struct device_attribute *attr,
 					     const char *buf, size_t count)
@@ -14535,6 +14577,7 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_calibrate.attr,
 	&dev_attr_wheel_calibrate_here.attr,
 	&dev_attr_wheel_ffb_constant_sign.attr,
+	&dev_attr_wheel_ffb_game_gain.attr,
 	&dev_attr_wheel_spring_damping.attr,
 	&dev_attr_wheel_texture_route.attr,
 	&dev_attr_wheel_tf_merge.attr,

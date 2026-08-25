@@ -348,6 +348,22 @@ echo 1 > wheel_ffb_filter_auto
 echo 0 > wheel_ffb_filter_auto
 ```
 
+### wheel_ffb_game_gain
+
+Read-only. The force-feedback strength the running game has asked for, as
+a percentage, which is `FF_GAIN` arriving through evdev when a game's own
+force-feedback slider moves. 100 until a game lowers it.
+
+Not a setting, and not the wheel's own strength: this is the game's, and
+it is published so that everything the wheel does on that game's behalf
+can follow it. `logi-tf-sim` scales its synthesized haptics by this, so a
+title with no TrueForce of its own still obeys the slider a driver
+reaches for (`follow_game_gain` in `tf-sim.conf` turns that off).
+
+```bash
+cat "$H/wheel_ffb_game_gain"     # 100 with nothing running
+```
+
 ### wheel_ffb_constant_sign
 **Access**: Read/Write
 **Values**: `0` or `1`
