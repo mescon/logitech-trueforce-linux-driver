@@ -5,6 +5,31 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**A way to give the G923 Xbox edition force feedback and TrueForce at
+once.** 0.38.5 stopped the daemon silencing that wheel, but the honest
+position it left was force feedback or synthesized haptics, not both,
+because the wheel's own firmware sums the effects and the driver cannot
+carry a force it cannot see (#72). `g923_xbox_dd_engine=1` moves that
+wheel onto the engine the direct-drive wheels use, which sums the effects
+here and puts them in the stream alongside the texture. The daemon
+recognises a wheel driven that way and streams to it without an override.
+
+Off by default, load-time only, and untested: it swaps a working force
+path for one nobody here can try, since no such wheel is available. What
+it does on that hardware is the open question, and the parameter exists
+so its owners can answer it. Condition effects stay silent under it until
+that edition's steering reports reach the engine, which is the next piece
+of work.
+
+A wheel this engine drives now reads as centred and still until a
+steering report actually arrives, rather than as fully deflected to one
+side, which is where a fresh allocation leaves it. The autocenter spring
+already refused to run before the first report; a spring uploaded by a
+game had nothing stopping it, and would have answered that reading with
+everything the wheel has, in one direction, before anyone touched it.
+
 ## 0.38.5 - 2026-08-26
 
 **The launcher finds its own files on a distribution that has no

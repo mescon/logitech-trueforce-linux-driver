@@ -281,6 +281,28 @@ module_param(g923_pedal_invert, bool, 0644);
 MODULE_PARM_DESC(g923_pedal_invert,
 	"Report the G923's pedals the way round Linux expects: 0 released, full scale pressed (Y, default). The wheel sends them inverted. N passes them through as sent.");
 
+/*
+ * Give the gear-driven G923 Xbox edition our own force engine instead of
+ * the HID++ 0x8123 path, which downloads effects into the wheel's
+ * firmware and lets the firmware sum them.
+ *
+ * That summation is why a TrueForce stream silences the wheel (issue
+ * #72): the stream's torque field takes the motor, and the driver has no
+ * idea what force the firmware was producing, so it can only stream a
+ * zero. Our engine sums the effects here, which is what lets every
+ * direct-drive wheel carry force and texture in one packet. The report
+ * that found the fault is also the evidence this can work, because a
+ * motor that went quiet is a motor obeying the stream.
+ *
+ * Load-time only and off by default: it swaps a working force-feedback
+ * path for an untested one, on a wheel with a fraction of a direct-drive
+ * wheel's torque and none here to try it on.
+ */
+static bool g923_xbox_dd_engine;
+module_param(g923_xbox_dd_engine, bool, 0444);
+MODULE_PARM_DESC(g923_xbox_dd_engine,
+	"Experimental: drive the G923 Xbox edition's force feedback from this driver's own engine, so simulated TrueForce can carry the force instead of silencing it (N, default).");
+
 static bool stream_yield = true;
 module_param(stream_yield, bool, 0644);
 MODULE_PARM_DESC(stream_yield,
@@ -6456,6 +6478,28 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 	wheel_pos_signed = (s32)cur_pos - 0x8000;
 	wheel_vel = ff->wheel_vel;
 	wheel_accel = ff->wheel_accel;
+
+	/*
+	 * Until interface 0 has delivered a position, report the wheel as
+	 * centred and still rather than where kzalloc left it, which reads
+	 * as hard left at full deflection. A game's SPRING would answer
+	 * that with everything it has, in one direction, on a wheel nobody
+	 * has touched. The autocenter spring already refused to run in this
+	 * state (wheel_pos_seen, further down); an uploaded condition
+	 * effect had nothing stopping it.
+	 *
+	 * Rare on a direct-drive wheel, where a report arrives within
+	 * milliseconds of probe, and permanent on any wheel this engine
+	 * drives whose steering reports do not reach the raw-event hook,
+	 * which is the G923 Xbox edition's position under
+	 * g923_xbox_dd_engine: the condition effects go quiet instead of
+	 * going hard over.
+	 */
+	if (!READ_ONCE(ff->wheel_pos_seen)) {
+		wheel_pos_signed = 0;
+		wheel_vel = 0;
+		wheel_accel = 0;
+	}
 
 	now = jiffies;
 	any_playing = false;
@@ -18377,6 +18421,24 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	if (hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_WHEEL ||
 	    hdev->product == USB_DEVICE_ID_LOGITECH_G_PRO_PS_WHEEL)
 		dd_info(hdev, "using direct-drive FFB path\n");
+
+	/*
+	 * The G923 Xbox edition, when its owner has asked for it. Same
+	 * switch, opposite direction: the id table gives that wheel the
+	 * G920 path, and this takes it off it. See g923_xbox_dd_engine.
+	 *
+	 * Its rev lights are untouched by this. They are registered further
+	 * down as an LED class device and speak the classic command that
+	 * wheel actually obeys, which is not the one the direct-drive strip
+	 * uses, so they stay where they are and the direct-drive
+	 * wheel_rev_level does nothing on this wheel.
+	 */
+	if (g923_xbox_dd_engine &&
+	    hdev->product == USB_DEVICE_ID_LOGITECH_G923_XBOX_WHEEL) {
+		hidpp->quirks |= HIDPP_QUIRK_DD_FFB;
+		hid_info(hdev,
+			 "G923 (Xbox): using this driver's force engine (experimental, g923_xbox_dd_engine=1)\n");
+	}
 
 	hid_set_drvdata(hdev, hidpp);
 

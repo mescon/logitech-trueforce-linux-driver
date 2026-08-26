@@ -112,6 +112,11 @@ const HID_BUS_ROOT: &str = "/sys/bus/hid/devices";
 /// The kernel driver's read-only classic-FFB mirror attribute (interface 0).
 const FFB_OUTPUT_ATTR: &str = "ffb_output";
 
+/// Marker for "the driver's own engine is producing this wheel's force":
+/// one attribute from the direct-drive sysfs group, which only exists
+/// where that engine is running.
+const DD_ENGINE_ATTR: &str = "wheel_strength";
+
 /// Samples per packet's rolling window (13 slots, oldest first).
 pub const WINDOW: usize = 13;
 /// New samples appended per emitted packet.
@@ -238,6 +243,16 @@ fn is_g923_pid(pid: u16) -> bool {
 pub struct G923Paths {
     pub hidraw: PathBuf,
     pub ffb_output: Option<PathBuf>,
+    /// True when this wheel's force feedback runs on the driver's own
+    /// direct-drive engine, which splices the live force into whatever
+    /// the stream owner writes. Nothing to mirror here, and nothing to
+    /// lose by streaming: the kernel carries the force itself.
+    ///
+    /// Recognised by the direct-drive sysfs group being present on a
+    /// sibling interface, so it follows whatever the driver actually did
+    /// rather than a product id. On the G923 Xbox edition that group
+    /// appears only under the `g923_xbox_dd_engine` module parameter.
+    pub kernel_carries_force: bool,
 }
 
 /// Scan the real sysfs (`/sys/class/hidraw`, `/sys/bus/hid/devices`) for a
@@ -258,8 +273,9 @@ pub fn discover() -> Option<G923Paths> {
 /// 2. Confirm it via `device/report_descriptor`'s vendor-page prefix, the
 ///    same signal `ffb-proxy` uses to pick its own hidraw node.
 /// 3. Correlate the resolved USB device root against every entry under
-///    `hid_bus_root` to find the sibling interface-0 HID device exposing
-///    `ffb_output`, if any.
+///    `hid_bus_root` to find the sibling interface-0 HID device, for
+///    `ffb_output` if it has one and for the direct-drive engine's own
+///    attributes if that engine is what drives this wheel.
 pub fn discover_at(hidraw_root: &Path, hid_bus_root: &Path) -> Option<G923Paths> {
     let entries = std::fs::read_dir(hidraw_root).ok()?;
     for entry in entries.flatten() {
@@ -278,7 +294,9 @@ pub fn discover_at(hidraw_root: &Path, hid_bus_root: &Path) -> Option<G923Paths>
         }
         return Some(G923Paths {
             hidraw: PathBuf::from("/dev").join(&*name),
-            ffb_output: find_ffb_output(&hid_device_dir, hid_bus_root),
+            ffb_output: find_sibling_attr(&hid_device_dir, hid_bus_root, FFB_OUTPUT_ATTR),
+            kernel_carries_force: find_sibling_attr(&hid_device_dir, hid_bus_root, DD_ENGINE_ATTR)
+                .is_some(),
         });
     }
     None
@@ -328,7 +346,7 @@ fn report_descriptor_matches(device_link: &Path) -> bool {
 /// Find the sibling HID device (same physical USB device as
 /// `hid_device_dir`, i.e. same wheel) exposing [`FFB_OUTPUT_ATTR`], by
 /// scanning `hid_bus_root`.
-fn find_ffb_output(hid_device_dir: &Path, hid_bus_root: &Path) -> Option<PathBuf> {
+fn find_sibling_attr(hid_device_dir: &Path, hid_bus_root: &Path, attr: &str) -> Option<PathBuf> {
     // Two levels up from the HID device dir: past the USB interface dir,
     // to the USB device dir shared by every interface of this one wheel.
     let usb_root = hid_device_dir.parent()?.parent()?;
@@ -338,9 +356,9 @@ fn find_ffb_output(hid_device_dir: &Path, hid_bus_root: &Path) -> Option<PathBuf
         if !candidate.starts_with(usb_root) {
             continue;
         }
-        let attr = entry.path().join(FFB_OUTPUT_ATTR);
-        if attr.exists() {
-            return Some(attr);
+        let path = entry.path().join(attr);
+        if path.exists() {
+            return Some(path);
         }
     }
     None
@@ -1133,6 +1151,22 @@ mod tests {
     }
 
     #[test]
+    fn the_direct_drive_engine_is_recognised_by_its_own_attributes() {
+        let fs = FakeSysfs::build("046d", "c26e", &vendor_page_descriptor());
+        let iface0 = fs.root.join("devices/usb1/1-1/1-1:1.0/0003:046D:C266.0003");
+        std::fs::remove_file(iface0.join(FFB_OUTPUT_ATTR)).unwrap();
+
+        let paths = discover_at(&fs.hidraw_root, &fs.hid_bus_root).expect("discovered");
+        assert!(!paths.kernel_carries_force, "no direct-drive attributes, no claim");
+
+        // What the g923_xbox_dd_engine module parameter leaves behind.
+        std::fs::write(iface0.join(DD_ENGINE_ATTR), "100\n").unwrap();
+        let paths = discover_at(&fs.hidraw_root, &fs.hid_bus_root).expect("discovered");
+        assert!(paths.kernel_carries_force, "the driver's engine has this wheel");
+        assert_eq!(paths.ffb_output, None, "and it publishes no mirror either way");
+    }
+
+    #[test]
     fn missing_hidraw_root_is_not_a_wheel() {
         assert!(discover_at(Path::new("/nonexistent-hidraw-root"), Path::new("/nonexistent-bus-root")).is_none());
     }
@@ -1402,7 +1436,11 @@ mod tests {
         let dir = tempdir();
         let hidraw = dir.join("hidraw");
         std::fs::write(&hidraw, []).unwrap();
-        let paths = G923Paths { hidraw: hidraw.clone(), ffb_output: None };
+        let paths = G923Paths {
+            hidraw: hidraw.clone(),
+            ffb_output: None,
+            kernel_carries_force: false,
+        };
         (hidraw, paths)
     }
 

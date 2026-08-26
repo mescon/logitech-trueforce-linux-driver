@@ -321,7 +321,16 @@ fn open_g923(cfg: &Config, paths: &g923::G923Paths) -> Result<OpenWheel> {
     // hard fault to attribute (issue #72, found on hardware nobody here
     // has). Refusing is the honest outcome: on that wheel it is force
     // feedback or synthesized haptics, not both.
-    if paths.ffb_output.is_none() && !cfg.g923_stream_without_ffb_mirror {
+    //
+    // `kernel_carries_force` is the way out that is not a config key: when
+    // the driver's own engine has that wheel (the `g923_xbox_dd_engine`
+    // module parameter), it splices the live force into the packets this
+    // daemon writes, so there is a force in the stream and nothing to
+    // mirror.
+    if paths.ffb_output.is_none()
+        && !paths.kernel_carries_force
+        && !cfg.g923_stream_without_ffb_mirror
+    {
         return Err(Error::Io(
             "this G923 publishes no live force to mirror (the Xbox edition), and streaming \
              would silence its force feedback; set g923.stream_without_ffb_mirror=1 to \
@@ -1153,11 +1162,36 @@ mod ffb_mirror_guard_tests {
         let paths = g923::G923Paths {
             hidraw: std::path::PathBuf::from("/dev/null"),
             ffb_output: None,
+            kernel_carries_force: false,
         };
         let Err(err) = open_g923(&cfg, &paths) else { panic!("must refuse") };
         let text = err.to_string();
         assert!(text.contains("silence its force feedback"), "says what it protects: {text}");
         assert!(text.contains("g923.stream_without_ffb_mirror"), "names the override: {text}");
+    }
+
+    /// A wheel the driver's own engine drives needs no override and no
+    /// mirror: the kernel puts the live force into the packets this
+    /// daemon writes.
+    #[test]
+    fn the_drivers_own_engine_needs_no_override() {
+        let dir = std::env::temp_dir().join(format!("tfsim-dd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: single-threaded at this point in the test.
+        unsafe { std::env::set_var(crate::lease::DIR_ENV, &dir) };
+
+        let cfg = Config::default();
+        let paths = g923::G923Paths {
+            hidraw: std::path::PathBuf::from("/dev/null"),
+            ffb_output: None,
+            kernel_carries_force: true,
+        };
+        let opened = open_g923(&cfg, &paths);
+        assert!(opened.is_ok(), "no refusal for a wheel we drive: {:?}", opened.err());
+        drop(opened);
+
+        unsafe { std::env::remove_var(crate::lease::DIR_ENV) };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// And the override really overrides: the same call goes through.
@@ -1178,6 +1212,7 @@ mod ffb_mirror_guard_tests {
         let paths = g923::G923Paths {
             hidraw: std::path::PathBuf::from("/dev/null"),
             ffb_output: None,
+            kernel_carries_force: false,
         };
         let opened = open_g923(&cfg, &paths);
         assert!(opened.is_ok(), "the guard was the only thing in the way: {:?}", opened.err());
