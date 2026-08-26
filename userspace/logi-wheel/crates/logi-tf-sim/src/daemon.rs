@@ -303,6 +303,33 @@ pub(crate) fn open_wheel_stream(cfg: &Config) -> Result<OpenWheel> {
 /// the wheel alone when somebody else has it, and a stream opened and
 /// dropped again has already touched the device.
 fn open_g923(cfg: &Config, paths: &g923::G923Paths) -> Result<OpenWheel> {
+    // No force to mirror means streaming would take the wheel's force
+    // feedback away, so do not stream.
+    //
+    // Once a type-0x01 stream runs, this wheel's motor follows the
+    // stream's `cur` field and stops reacting to the classic force
+    // commands. That is why the stream carries the live force alongside
+    // the texture, read from `ffb_output`. The Xbox edition has no such
+    // attribute, because its force feedback is downloaded into the
+    // wheel's own firmware slots (HID++ 0x8123) and summed there, so
+    // nothing in the kernel knows the net force to publish.
+    //
+    // Treating that as "no merge, carry on" is what shipped, and it is
+    // wrong in the one way that matters: the mirror then feeds a constant
+    // zero, so starting the daemon silently zeroed the steering force
+    // while the rev lights and engine texture kept working, which is a
+    // hard fault to attribute (issue #72, found on hardware nobody here
+    // has). Refusing is the honest outcome: on that wheel it is force
+    // feedback or synthesized haptics, not both.
+    if paths.ffb_output.is_none() && !cfg.g923_stream_without_ffb_mirror {
+        return Err(Error::Io(
+            "this G923 publishes no live force to mirror (the Xbox edition), and streaming \
+             would silence its force feedback; set g923.stream_without_ffb_mirror=1 to \
+             stream anyway and lose force while it runs"
+                .into(),
+            std::io::Error::from(std::io::ErrorKind::Unsupported),
+        ));
+    }
     // Discovery already correlated the TrueForce interface with its
     // interface-0 sibling to find `ffb_output`; that sibling is the device
     // carrying the rev LEDs, so the identity comes free here.
@@ -1108,5 +1135,55 @@ mod silence_gate_tests {
             assert_eq!(gate.observe(true, ZERO_FORCE_STANDBY_MS), GateAction::EnterStandby);
             assert_eq!(gate.observe(false, 10), GateAction::Resume);
         }
+    }
+}
+
+#[cfg(test)]
+mod ffb_mirror_guard_tests {
+    use super::*;
+
+    /// A wheel with no live force to mirror is refused, because streaming
+    /// to it takes its force feedback away for as long as the stream runs
+    /// (issue #72). The refusal names the way out.
+    #[test]
+    fn a_wheel_without_a_force_mirror_is_refused() {
+        let cfg = Config::default();
+        assert!(!cfg.g923_stream_without_ffb_mirror, "refusing is the default");
+
+        let paths = g923::G923Paths {
+            hidraw: std::path::PathBuf::from("/dev/null"),
+            ffb_output: None,
+        };
+        let Err(err) = open_g923(&cfg, &paths) else { panic!("must refuse") };
+        let text = err.to_string();
+        assert!(text.contains("silence its force feedback"), "says what it protects: {text}");
+        assert!(text.contains("g923.stream_without_ffb_mirror"), "names the override: {text}");
+    }
+
+    /// And the override really overrides: the same call goes through.
+    ///
+    /// `/dev/null` stands in for the wheel, since it accepts the writes a
+    /// stream makes; the point here is only that the guard is what
+    /// stopped the first call and nothing else does.
+    #[test]
+    fn the_override_gets_past_the_guard() {
+        // Somewhere private for the lease, so a developer's running daemon
+        // is not disturbed by a test taking the real one.
+        let dir = std::env::temp_dir().join(format!("tfsim-guard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: single-threaded at this point in the test.
+        unsafe { std::env::set_var(crate::lease::DIR_ENV, &dir) };
+
+        let cfg = Config { g923_stream_without_ffb_mirror: true, ..Config::default() };
+        let paths = g923::G923Paths {
+            hidraw: std::path::PathBuf::from("/dev/null"),
+            ffb_output: None,
+        };
+        let opened = open_g923(&cfg, &paths);
+        assert!(opened.is_ok(), "the guard was the only thing in the way: {:?}", opened.err());
+        drop(opened);
+
+        unsafe { std::env::remove_var(crate::lease::DIR_ENV) };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

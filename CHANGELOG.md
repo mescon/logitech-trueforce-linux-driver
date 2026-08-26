@@ -29,6 +29,20 @@ layout nobody here has thought of.
 
 ## Unreleased
 
+**The G923 Xbox edition keeps its force feedback.** Starting
+`logi-tf-sim` on that wheel silently zeroed its steering force while the
+rev lights and engine texture carried on, which is a hard fault to
+attribute (#72). The cause is structural rather than a slip: once a
+sample stream runs, this wheel's motor follows the stream's force field
+and stops obeying the classic force commands, so the stream carries the
+live force alongside the texture. The PlayStation edition publishes that
+force for us to carry; the Xbox edition's is summed inside the wheel's
+own firmware, so nothing in the kernel knows it, and we were carrying a
+constant zero. The daemon now refuses that wheel and says why, because on
+it the honest position is force feedback or synthesized haptics, not
+both. `g923.stream_without_ffb_mirror=1` streams anyway for anyone who
+wants the haptics and not the force.
+
 **Fedora: a kernel update no longer needs a Rust toolchain.** The akmod
 rebuilds the driver on your machine when a new kernel arrives, and it was
 asking for `cargo`, `rust` and fontconfig's headers to do it, because one

@@ -499,9 +499,12 @@ impl Config {
 /// against each other.
 fn daemon_recognises(key: &str, raw: &str) -> bool {
     match key {
-        "enabled" | "leds" | "effects" | "follow_game_gain" | "g923.ffb_invert" => {
-            parse_bool(raw).is_some()
-        }
+        "enabled"
+        | "leds"
+        | "effects"
+        | "follow_game_gain"
+        | "g923.ffb_invert"
+        | "g923.stream_without_ffb_mirror" => parse_bool(raw).is_some(),
         "intensity" => parse_percent(raw).is_some(),
         "wheel" => WheelChoice::parse(raw).is_some(),
         "pitch" => raw.parse::<u8>().is_ok_and(|v| (10..=200u16).contains(&u16::from(v))),

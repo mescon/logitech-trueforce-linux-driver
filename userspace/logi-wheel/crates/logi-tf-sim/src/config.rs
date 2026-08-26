@@ -140,6 +140,16 @@ pub struct Config {
     /// #59). Off restores the older behaviour, where only this file's own
     /// intensity applied.
     pub follow_game_gain: bool,
+    /// Stream to a G923 that publishes no live force to mirror, knowing
+    /// it costs that wheel its force feedback for as long as the stream
+    /// runs.
+    ///
+    /// Off by default. Only the Xbox edition is affected: its force is
+    /// summed in the wheel's own firmware, so nothing here knows the value
+    /// the stream would have to carry, and streaming a constant zero
+    /// silences the motor (issue #72). Someone who wants haptics on that
+    /// wheel and does not mind losing force can turn this on.
+    pub g923_stream_without_ffb_mirror: bool,
     /// The G923 FFB-mirror sign flag, persisted; see
     /// [`crate::g923::Sign::resolve`] for how this combines with the
     /// environment override.
@@ -191,6 +201,7 @@ impl Default for Config {
             beamng_port: beamng::DEFAULT_PORT,
             relay_port: relay::DEFAULT_PORT,
             follow_game_gain: true,
+            g923_stream_without_ffb_mirror: false,
             g923_ffb_invert: true,
             games: BTreeMap::new(),
         }
@@ -379,6 +390,10 @@ fn apply_line(cfg: &mut Config, key: &str, raw: &str) -> bool {
             let Some(v) = parse_bool(raw) else { return false };
             cfg.follow_game_gain = v;
         }
+        "g923.stream_without_ffb_mirror" => {
+            let Some(v) = parse_bool(raw) else { return false };
+            cfg.g923_stream_without_ffb_mirror = v;
+        }
         "g923.ffb_invert" => {
             let Some(v) = parse_bool(raw) else { return false };
             cfg.g923_ffb_invert = v;
@@ -483,6 +498,10 @@ impl Config {
             out.push_str(&format!("effect_{}={}\n", id.key(), self.effect_gains.get(id)));
         }
         out.push_str(&format!("follow_game_gain={}\n", u8::from(self.follow_game_gain)));
+        out.push_str(&format!(
+            "g923.stream_without_ffb_mirror={}\n",
+            u8::from(self.g923_stream_without_ffb_mirror)
+        ));
         out.push_str(&format!("g923.ffb_invert={}\n", u8::from(self.g923_ffb_invert)));
         for (id, game) in &self.games {
             out.push_str(&format!("game.{id}.enabled={}\n", u8::from(game.enabled)));
@@ -564,6 +583,7 @@ mod tests {
             pcars_port: 5607,
             beamng_port: 4445,
             relay_port: 20781,
+            g923_stream_without_ffb_mirror: false,
             follow_game_gain: true,
             g923_ffb_invert: true,
             games: BTreeMap::new(),
