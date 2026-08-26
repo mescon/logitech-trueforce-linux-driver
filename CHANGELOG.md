@@ -29,6 +29,16 @@ layout nobody here has thought of.
 
 ## Unreleased
 
+**Fedora: a kernel update no longer needs a Rust toolchain.** The akmod
+rebuilds the driver on your machine when a new kernel arrives, and it was
+asking for `cargo`, `rust` and fontconfig's headers to do it, because one
+spec builds both the kernel module and the apps. Without them the rebuild
+failed outright with four unmet dependencies, leaving no driver for the
+new kernel (#71). None of it was ever needed: the module is C, built by
+the kernel's own build system. The userspace half is now built only when
+the release packages are built, so an on-machine rebuild wants a C
+compiler and nothing else.
+
 **A game's force-feedback slider now governs the synthesized haptics
 too.** In a title with no TrueForce of its own, everything the wheel does
 comes from `logi-tf-sim`, and it obeyed only its own strength setting: a

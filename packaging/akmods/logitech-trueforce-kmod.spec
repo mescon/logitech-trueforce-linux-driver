@@ -33,13 +33,27 @@ Source0:        %{url}/archive/refs/tags/v%{upstream_ver}.tar.gz#/%{name}-%{upst
 
 BuildRequires:  kmodtool
 BuildRequires:  gcc, make, kernel-rpm-macros
-# Userspace companions (logi-ffb, logi-wheel) built alongside the module.
+
+# The userspace half's build dependencies, and ONLY when that half is
+# being built.
+#
+# `kernels` is defined exactly when somebody wants a kernel module for a
+# named kernel: the toolbox path, and, more importantly, the akmods
+# service rebuilding on a user's machine after a kernel update. Requiring
+# a Rust toolchain and fontconfig's headers there asked every Fedora user
+# to install a compiler to get a driver rebuilt, and if they had not, the
+# rebuild failed outright with four unmet dependencies (issue #71).
+#
+# Nothing in the kernel module needs any of this: it is C, built by the
+# kernel's own build system.
+%if %{undefined kernels}
 BuildRequires:  cargo, rust
 # logi-wheel-gui's yeslogic-fontconfig-sys dependency links fontconfig/freetype
 # at build time (build.rs calls pkg_config::find_library, no dlopen), so the
 # devel package and pkg-config must be present or `cargo build` panics and
 # aborts the whole %build. pkgconfig(fontconfig) pulls both on Fedora.
 BuildRequires:  pkgconfig(fontconfig)
+%endif
 
 # Two build modes from one spec, selected by whether `kernels` is defined:
 #   * kernels defined      -> compile per-kernel kmod-%%{kmod_name}-<kver>
@@ -92,6 +106,9 @@ force-feedback device).
 # joining the noarch -common package or the per-kernel kmod packages.
 # logi-wheel is the complete headless install: driver <- logi-wheel <-
 # logi-wheel-gui.
+# Userspace packages: only when the kernel module is not the whole job
+# (see the BuildRequires note above).
+%if %{undefined kernels}
 %package -n logi-wheel
 Summary:        Terminal tools for the %{kmod_name} racing wheel driver
 License:        GPL-2.0-only
@@ -177,6 +194,7 @@ LIGHTSYNC, response curves, game-helper setup pages, and a test section.
 %{_datadir}/applications/logi-wheel-gui.desktop
 %{_datadir}/icons/hicolor/scalable/apps/logi-wheel-gui.svg
 
+%endif
 %prep
 %setup -q -n logitech-trueforce-linux-driver-%{upstream_ver}
 # One build tree per target kernel (kmodtool convention).
@@ -189,8 +207,10 @@ done
 for kver in %{?kernel_versions}; do
     make -C "${kver##*___}" M="$PWD/_kmod_build_${kver%%___*}" modules
 done
-# Userspace companions: not kernel-specific, built once regardless of the
-# akmod-vs-static-kmod mode selected above. This also builds logi-wheel-gui
+%if %{undefined kernels}
+# Userspace companions: not kernel-specific, and skipped entirely when a
+# named kernel is being built for, which is the akmods rebuild on a user's
+# machine (issue #71). This also builds logi-wheel-gui
 # (the Slint GUI): Fedora's rustc is always new enough for its MSRV, so
 # unlike packaging/debian/rules no version guard is needed here.
 # cargo fetches crate dependencies over the network at build time (nothing
@@ -200,6 +220,7 @@ cargo build --release --manifest-path userspace/logi-wheel/Cargo.toml
 # driver's kernel texture merge; logi-launch starts and stops it around a
 # game session.
 gcc %{optflags} -o tools/logi-rpm-bridge tools/logi-rpm-bridge.c
+%endif
 
 %install
 for kver in %{?kernel_versions}; do
@@ -223,6 +244,9 @@ install -D -m 0644 udev/73-logitech-xbox-modeswitch.rules \
 install -D -m 0644 packaging/modprobe.d/hid-logitech-dd.conf \
     "%{buildroot}%{_sysconfdir}/modprobe.d/hid-logitech-dd.conf"
 
+# Everything below belongs to the userspace packages, which are not built
+# when a named kernel is the job (issue #71).
+%if %{undefined kernels}
 # Headless toolset (the logi-wheel package).
 install -D -m 0755 userspace/logi-wheel/target/release/logi-wheel \
     "%{buildroot}%{_bindir}/logi-wheel"
@@ -289,6 +313,8 @@ install -D -m 0644 desktop/logi-wheel-gui.svg \
 # Transitional symlink: scripts and habits built around the old
 # logi-dd-gui binary name keep working.
 ln -s logi-wheel-gui "%{buildroot}%{_bindir}/logi-dd-gui"
+%endif
+
 
 %changelog
 * Sun Jul 26 2026 mescon <5875228+mescon@users.noreply.github.com> - 0.20.0-1
