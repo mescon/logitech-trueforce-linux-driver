@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.38.5 - 2026-08-26
 
 **The launcher finds its own files on a distribution that has no
 `/usr/share`.** It staged the dinput8 escape proxy, the telemetry relay
@@ -26,8 +26,6 @@ A check now fails the build if anything looks for these files by fixed
 path alone, because each of the four was written separately and each had
 to remember the same thing. `LOGI_SHARE_DIR` overrides the search for a
 layout nobody here has thought of.
-
-## Unreleased
 
 **The G923 Xbox edition keeps its force feedback.** Starting
 `logi-tf-sim` on that wheel silently zeroed its steering force while the

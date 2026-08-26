@@ -5,7 +5,7 @@ members = ["crates/logi-wheel-core", "crates/logi-wheel-tui", "crates/logi-ffb",
 [workspace.package]
 edition = "2021"
 rust-version = "1.74"
-version = "0.38.4"
+version = "0.38.5"
 license = "GPL-2.0"
 
 # The shipped build of logi-tf-relay.
