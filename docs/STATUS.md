@@ -14,7 +14,7 @@ measured, which are argued, and which are hoped.
 | RS50 (`c276`, both editions) | yes, native path | yes, the game's own and simulated | full `wheel_*` surface | yes, and LIGHTSYNC colours |
 | G PRO (`c272`/`c268`) | yes, same path | yes | full surface | level-based, see below |
 | G923 PS (`c266`/`c267`) | yes, classic path | simulated only | **none** | yes, classic command |
-| G923 Xbox (`c26e`) | on a branch, untested | simulated only | **none** | **no** |
+| G923 Xbox (`c26e`) | yes, HID++ 0x8123, when its HID++ answers in time | simulated, but not alongside force | **none** | registered, unconfirmed |
 
 The Xbox editions of the RS50 (`c275`) and the G923 (`c26d`) boot speaking
 the console's own protocol, with no HID++ interface to bind. Both are
@@ -22,8 +22,26 @@ switched to their PC id automatically on every plug-in, which needs
 `usb_modeswitch` installed; `sudo logi-wheel-modeswitch` does it by hand.
 After the switch each is the wheel in its row above.
 
-The G923 Xbox force-feedback work lives on `g923-xbox-ffb-retry` and is
-unmerged, because no `c26e` is available here to test it on.
+The G923 Xbox edition is the one wheel here whose force this driver does
+not compute. Its effects are downloaded into the wheel's own firmware over
+HID++ 0x8123 and summed there, so nothing in the kernel knows the force
+being produced, and a TrueForce stream, whose torque field takes the
+motor, can only carry a zero. `logi-tf-sim` therefore refuses that wheel
+rather than silencing it (#72), and its own `g923.stream_without_ffb_mirror`
+streams anyway for anyone who wants the haptics and not the force.
+
+The way to have both is `g923_xbox_dd_engine=1`, which moves that wheel
+onto the engine the direct-drive wheels use, summing the effects here and
+carrying force and texture in one packet. It is off by default and has
+never run on the hardware, since no `c26e` is available here. Under it the
+condition effects stay silent, because that edition's steering reports do
+not reach the engine yet, and the rev lights stay on their own LED device,
+which speaks the command that wheel obeys rather than the direct-drive one.
+
+Whether force feedback comes up at all on that wheel depends on its HID++
+answering while this driver is still in probe. A fix that keeps waiting
+instead of giving up lives on `g923-xbox-ffb-retry`, unmerged for the same
+reason (#52).
 
 Two things about the RS50's light strip that are not faults. It only
 displays on some onboard profiles: a profile can keep it dark, and writes
@@ -130,7 +148,10 @@ live force.
 - **#27**, Xbox G923 rev lights. The driver reports which features that
   wheel has; no owner has run it. Even a positive answer is not sufficient,
   because that wheel's force rides HID++ and 12.5 applies.
-- **#52**, Xbox G923 force feedback, on the branch named above.
+- **#52**, Xbox G923 force feedback coming up reliably, on the branch
+  named above.
+- **#72**, whether that wheel can be driven by this driver's own engine,
+  which is what would give it force feedback and TrueForce together.
 - **#8**, a G PRO capture, which is what would let the real-G-PRO rev-light
   work start.
 - **#20** and **#62**, an OLED descriptor readback (`0x8130` fn1) offered by
