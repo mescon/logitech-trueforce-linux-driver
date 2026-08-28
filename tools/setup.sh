@@ -278,6 +278,22 @@ doctor() {
 	else
 		wrn "no DKMS install found - a manually insmod'ed module will not survive a reboot or kernel update (run: sudo ./tools/setup.sh)"
 	fi
+	# Two registrations of this package under different versions is the
+	# quiet one. Both build hid-logitech-dd.ko to the same path, so a
+	# kernel upgrade rebuilds each and the one that finishes last is the
+	# module that ends up loaded. Nothing fails, nothing is logged, and
+	# the driver simply behaves like a version you are not running.
+	# Happens when a package is installed on a machine that already has a
+	# from-source install (which registers the fixed 1.0 development
+	# slot), an order dkms-update.sh cannot warn about because it is not
+	# the thing running.
+	local dkms_vers dkms_n
+	dkms_vers="$(dkms status 2>/dev/null \
+		| sed -n 's|^logitech-trueforce[/,] *\([^,: ]*\).*|\1|p' | sort -u)"
+	dkms_n="$(printf '%s\n' "$dkms_vers" | grep -c . || true)"
+	if [ "${dkms_n:-0}" -gt 1 ]; then
+		wrn "two DKMS registrations of this driver ($(printf '%s ' $dkms_vers)) - both build the same module to the same path, so a kernel upgrade leaves whichever finished last, and 1.0 is the from-source development slot. Keep one: sudo dkms remove -m logitech-trueforce -v <version> --all"
+	fi
 	if [ -f "$OLD_BLACKLIST_FILE" ]; then
 		wrn "stale blacklist from the old full-fork install present ($OLD_BLACKLIST_FILE) - it strips the in-tree driver from your other Logitech devices; remove it (run: sudo ./tools/setup.sh)"
 	fi
