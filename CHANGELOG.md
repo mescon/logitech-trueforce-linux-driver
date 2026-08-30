@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.39.0 - 2026-08-30
 
 **Strength zero now means the rev lights alone, not a quiet engine.**
 Setting simulated TrueForce to 0% left the daemon opening a TrueForce
