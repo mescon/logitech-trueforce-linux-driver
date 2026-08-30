@@ -905,6 +905,66 @@ static const char *const g_tracked[TRACKED_CALLS] = {
 	"dllOpen",
 };
 
+// Whether `mod` is one of Logitech's SDK modules, answered once per module.
+//
+// This decides almost nothing and runs constantly: the hook below sees every
+// symbol the game resolves, and the answer for a given HMODULE never
+// changes. Working it out per call meant a GetModuleFileNameW, which is a
+// call into the loader rather than a lookup, plus four substring scans over
+// a full path, on a code path a game engine walks while it is drawing.
+// Assetto Corsa EVO lost its frame rate to exactly that, and only with the
+// launcher's proxy staged, which is what made it look like TrueForce was
+// expensive (issue #74).
+//
+// A one-entry cache in front of the table, because resolutions arrive in
+// runs from the same module. Races here cost at worst a duplicate entry or
+// a recomputation, never a wrong answer, so it stays lock-free.
+//
+// One stale case is possible in principle: a module unloaded and another
+// loaded at the same base address would inherit its answer. Everything
+// downstream still matches the symbol name exactly before wrapping
+// anything, so the cost of being wrong is a misattributed log line.
+static bool module_is_logitech(HMODULE mod)
+{
+	struct Memo {
+		HMODULE mod;
+		bool logi;
+	};
+	static Memo memo[64];
+	static volatile LONG published;
+	static Memo last;
+
+	if (last.mod == mod)
+		return last.logi;
+
+	LONG n = published;
+	for (LONG i = 0; i < n; i++) {
+		if (memo[i].mod == mod) {
+			last = memo[i];
+			return memo[i].logi;
+		}
+	}
+
+	wchar_t path[MAX_PATH];
+	path[0] = L'\0';
+	GetModuleFileNameW(mod, path, MAX_PATH);
+	bool logi = wcsstr(path, L"trueforce") || wcsstr(path, L"Trueforce") ||
+		    wcsstr(path, L"logi_steering") || wcsstr(path, L"wheel_sdk");
+
+	// Fill the slot BEFORE publishing it, so a concurrent reader never
+	// sees an entry that is not written yet. Past 64 modules the cache
+	// stops growing and the rest pay the lookup, which is the right way
+	// round: the modules a game resolves from are few and early.
+	if (n < (LONG)(sizeof(memo) / sizeof(memo[0]))) {
+		memo[n].mod = mod;
+		memo[n].logi = logi;
+		InterlockedCompareExchange(&published, n + 1, n);
+	}
+	last.mod = mod;
+	last.logi = logi;
+	return logi;
+}
+
 static FARPROC WINAPI getprocaddress_hook(HMODULE mod, LPCSTR name)
 {
 	FARPROC p = real_getprocaddress(mod, name);
@@ -912,17 +972,19 @@ static FARPROC WINAPI getprocaddress_hook(HMODULE mod, LPCSTR name)
 	// An ordinal import arrives as a small integer rather than a pointer.
 	bool by_name = name && (ULONG_PTR)name > 0xffff;
 
-	wchar_t path[MAX_PATH] = L"";
-	GetModuleFileNameW(mod, path, MAX_PATH);
-	const wchar_t *base = wcsrchr(path, L'\\');
-	base = base ? base + 1 : path;
 	// Log anything resolved out of a Logitech module as well as anything
 	// with a Logitech-looking name: an earlier run logged only the latter
 	// and could not distinguish "nothing was resolved" from "the hook
 	// never ran", which are opposite conclusions.
-	bool logi_module = wcsstr(path, L"trueforce") || wcsstr(path, L"Trueforce") ||
-			   wcsstr(path, L"logi_steering") || wcsstr(path, L"wheel_sdk");
+	bool logi_module = module_is_logitech(mod);
 	if (logi_module || (by_name && !strncmp(name, "logi", 4))) {
+		// The module's file name, needed only to say where a symbol
+		// came from, so it is worked out here rather than per call.
+		wchar_t path[MAX_PATH];
+		path[0] = L'\0';
+		GetModuleFileNameW(mod, path, MAX_PATH);
+		const wchar_t *base = wcsrchr(path, L'\\');
+		base = base ? base + 1 : path;
 		if (by_name)
 			say("resolve %ls!%s -> %s", base, name, p ? "found" : "NOT FOUND");
 		else
