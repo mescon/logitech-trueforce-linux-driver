@@ -452,8 +452,27 @@ pub(crate) fn captured_has_precedence(age: Option<Duration>) -> bool {
     age.is_some_and(|age| age < Duration::from_millis(CAPTURED_PRECEDENCE_MS))
 }
 
+/// Whether a session for `id` has any haptics to stream.
+///
+/// Zero is a real setting, not a very quiet one: master strength zero, or
+/// this game's own zero, means every sample would be exactly zero, and a
+/// stream of zeroes is worth less than no stream at all (it arms the
+/// wheel's engine and holds the lease). The rev display is unaffected,
+/// which is the combination issue #59 asked for.
+fn wants_haptics(cfg: &Config, id: &str) -> bool {
+    cfg.effective_intensity(id) > 0.0
+}
+
 struct Active {
-    stream: WheelStream,
+    /// The wheel's TrueForce stream, or `None` for a lights-only session.
+    ///
+    /// Intensity zero means the haptics are switched off, and an open
+    /// session at zero is not the same thing as no session: it arms the
+    /// wheel's engine, holds the one-writer lease, and leaves a wheel that
+    /// somebody wanted quiet doing something. The rev display is driven
+    /// from the same telemetry and has no reason to stop, so zero opens
+    /// the lights and nothing else (requested in issue #59).
+    stream: Option<WheelStream>,
     /// The running game's own force-feedback strength, polled from the
     /// wheel, so its slider governs these haptics as well as its forces
     /// (issue #59).
@@ -692,6 +711,47 @@ pub fn run(cfg: &Config) -> Result<()> {
                         a.tel = tel;
                         a.last_telemetry = now;
                     }
+                    // Haptics off for this game: drive the rev display and
+                    // leave the wheel's TrueForce engine alone entirely. The
+                    // silence gate would park an opened session within a
+                    // second or two anyway, but "opened, then parked" still
+                    // arms the engine and takes the lease, and neither is
+                    // something a driver who set the strength to zero asked
+                    // for. Nothing to do at all when the lights are off too.
+                    None if now >= next_open_attempt
+                        && !wants_haptics(cfg, id)
+                        && cfg.leds
+                        && crate::leds::other_owner().is_none() =>
+                    {
+                        if let Some(leds) = RevLeds::discover() {
+                            eprintln!(
+                                "logi-tf-sim: rev display only ({id}): strength is zero, so the \
+                                 TrueForce stream stays closed"
+                            );
+                            active = Some(Active {
+                                stream: None,
+                                game_gain: crate::game_gain::GameGain::new(None, false),
+                                mixer: Mixer::engine_only(
+                                    cfg.cylinders,
+                                    f32::from(cfg.pitch_pct) / 100.0,
+                                    cfg.effect_gains,
+                                ),
+                                game: id,
+                                tel,
+                                last_telemetry: now,
+                                last_gen: now,
+                                samples: Vec::new(),
+                                last_captured: None,
+                                leds: Some(leds),
+                                gate: SilenceGate::default(),
+                                lease: None,
+                                lease_key: String::new(),
+                                warned_busy: false,
+                            });
+                        } else {
+                            next_open_attempt = now + OPEN_RETRY;
+                        }
+                    }
                     None if now >= next_open_attempt => match open_wheel_stream_with_leds(cfg) {
                         Ok(OpenWheel { stream, led_owner, lease, lease_key }) => {
                             eprintln!(
@@ -720,7 +780,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                                 eprintln!("logi-tf-sim: driving the wheel's rev display");
                             }
                             active = Some(Active {
-                                stream,
+                                stream: Some(stream),
                                 game_gain: crate::game_gain::GameGain::new(
                                     led_owner.as_deref(),
                                     cfg.follow_game_gain,
@@ -788,7 +848,9 @@ pub fn run(cfg: &Config) -> Result<()> {
                             // The DD path's standby sent the teardown pair,
                             // so the stream is parked; samples pushed into a
                             // parked stream go nowhere.
-                            a.stream.resume();
+                            if let Some(stream) = a.stream.as_mut() {
+                                stream.resume();
+                            }
                             a.gate = SilenceGate::default();
                         }
                         Err(e) => {
@@ -800,7 +862,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                     }
                 }
                 if a.lease.is_some() {
-                    if let Err(e) = a.stream.push(&captured) {
+                    if let Err(e) = a.stream.as_mut().map_or(Ok(()), |s| s.push(&captured)) {
                         eprintln!("logi-tf-sim: captured TrueForce push failed: {e}");
                     }
                 }
@@ -816,7 +878,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                         // talking to. Synthesizing either would be adding
                         // something nobody asked for.
                         active = Some(Active {
-                            stream,
+                            stream: Some(stream),
                             // The captured path carries the game's own
                             // finished haptics, which the game has already
                             // scaled by its own slider; scaling again here
@@ -887,7 +949,9 @@ pub fn run(cfg: &Config) -> Result<()> {
                     let silent = a.samples.iter().all(|&s| s == 0.0);
                     match a.gate.observe(silent, plan.audio_ms) {
                         GateAction::EnterStandby => {
-                            a.stream.standby();
+                            if let Some(stream) = a.stream.as_mut() {
+                                stream.standby();
+                            }
                             // The wheel is not being driven while parked,
                             // so it is not ours to hold: a test sweep
                             // fired from the app between sessions should
@@ -903,7 +967,9 @@ pub fn run(cfg: &Config) -> Result<()> {
                             Ok(lease) => {
                                 a.lease = Some(lease);
                                 a.warned_busy = false;
-                                a.stream.resume();
+                                if let Some(stream) = a.stream.as_mut() {
+                                    stream.resume();
+                                }
                                 eprintln!("logi-tf-sim: resume ({}): force returned", a.game);
                             }
                             Err(e) => {
@@ -922,7 +988,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                         GateAction::Stay => {}
                     }
                     if !a.gate.in_standby() {
-                        if let Err(e) = a.stream.push(&a.samples) {
+                        if let Err(e) = a.stream.as_mut().map_or(Ok(()), |s| s.push(&a.samples)) {
                             stop_reason = Some(format!("stream push failed: {e}"));
                         }
                     }
@@ -1220,5 +1286,29 @@ mod ffb_mirror_guard_tests {
 
         unsafe { std::env::remove_var(crate::lease::DIR_ENV) };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod lights_only_tests {
+    use super::*;
+
+    /// Zero at either level means no stream. Both levels matter: a driver
+    /// who zeroes the master expects silence everywhere, and one who zeroes
+    /// a single game expects it there.
+    #[test]
+    fn zero_strength_wants_no_stream() {
+        let quiet = Config { intensity: 0, ..Config::default() };
+        assert!(!wants_haptics(&quiet, "assetto"), "master zero is silence");
+
+        let mut per_game = Config::default();
+        per_game.games.insert(
+            "assetto".into(),
+            crate::config::GameConfig { enabled: true, intensity: 0 },
+        );
+        assert!(!wants_haptics(&per_game, "assetto"), "this game is silenced");
+        assert!(wants_haptics(&per_game, "dirt-rally-2"), "and only this game");
+
+        assert!(wants_haptics(&Config::default(), "assetto"), "the default plays");
     }
 }

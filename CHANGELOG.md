@@ -7,6 +7,14 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**Strength zero now means the rev lights alone, not a quiet engine.**
+Setting simulated TrueForce to 0% left the daemon opening a TrueForce
+session anyway and streaming silence into it, which arms the wheel's
+engine and takes the one-writer lease for a wheel somebody had just asked
+to be quiet (#59). Zero now drives the rev display and leaves the stream
+closed, which is the combination that was asked for: telemetry lights, no
+haptics. Any non-zero strength behaves exactly as before.
+
 **The light strip comes back on the setting a profile saved.** Choosing
 one of the four built-in sweeps, saving a profile and loading it landed on
 CUSTOM 1 every time (#73). The value was never lost: the snapshot records
