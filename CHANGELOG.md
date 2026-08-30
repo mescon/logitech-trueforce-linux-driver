@@ -7,6 +7,22 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**The light strip comes back on the setting a profile saved.** Choosing
+one of the four built-in sweeps, saving a profile and loading it landed on
+CUSTOM 1 every time (#73). The value was never lost: the snapshot records
+it and apply writes it without error, but three attributes written
+afterwards are custom-slot content, and writing any of them moves the
+display onto that slot, which is what makes an edited colour appear at
+all. The selection is now replayed last. Verified on an RS50 across both
+built-in sweeps and custom slots.
+
+**Two of the light-strip sweeps had their names the wrong way round.**
+"Right to left" filled the strip from the left. Reported in #73 and then
+watched here on an RS50, so both sweep names and the direction setting's
+own labels now say what the strip does, seen from the driver's seat. A
+test ties the two lists together, since naming the same sweep differently
+in each place is how this survived.
+
 **A way to give the G923 Xbox edition force feedback and TrueForce at
 once.** 0.38.5 stopped the daemon silencing that wheel, but the honest
 position it left was force feedback or synthesized haptics, not both,

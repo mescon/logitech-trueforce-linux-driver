@@ -16,7 +16,16 @@
 
 /// Labels for `wheel_led_effect` values 1..=4, in value order: value `n`
 /// is `EFFECT_LABELS[n - 1]`.
-pub const EFFECT_LABELS: [&str; 4] = ["Inside out", "Outside in", "Right to left", "Left to right"];
+///
+/// Effects 3 and 4 name the direction seen from the driver's seat, which
+/// is the opposite of what they said until an RS50 was watched doing it
+/// (issue #73, reported and then confirmed here 2026-08-30): effect 3
+/// fills the strip from the left. `wheel_led_direction`'s own labels moved
+/// with them, since effect 3 maps to direction 1 and the two must name the
+/// same sweep; `each_sweep_effect_maps_to_its_own_direction_name` is what
+/// holds them together, so changing one list alone fails the build rather
+/// than shipping a preview that animates the wrong way.
+pub const EFFECT_LABELS: [&str; 4] = ["Inside out", "Outside in", "Left to right", "Right to left"];
 
 /// How many custom slots the wheel stores (`wheel_led_slot` 0..=4). A slot
 /// is a saved lighting preset: colors, direction, name and brightness.
@@ -116,8 +125,8 @@ pub fn dropdown_labels(slot_names: &[String], current_effect: u8) -> Vec<String>
 /// |--------|---------------|-----------|
 /// | 1      | Inside out    | 2         |
 /// | 2      | Outside in    | 3         |
-/// | 3      | Right to left | 1         |
-/// | 4      | Left to right | 0         |
+/// | 3      | Left to right | 1         |
+/// | 4      | Right to left | 0         |
 pub fn effect_direction(effect: u8) -> Option<u8> {
     match effect {
         1 => Some(2),
@@ -156,8 +165,8 @@ mod tests {
     fn effect_labels_cover_values_1_to_4_in_order() {
         assert_eq!(EFFECT_LABELS[0], "Inside out"); // wheel_led_effect 1
         assert_eq!(EFFECT_LABELS[1], "Outside in"); // 2
-        assert_eq!(EFFECT_LABELS[2], "Right to left"); // 3
-        assert_eq!(EFFECT_LABELS[3], "Left to right"); // 4
+        assert_eq!(EFFECT_LABELS[2], "Left to right"); // 3
+        assert_eq!(EFFECT_LABELS[3], "Right to left"); // 4
     }
 
     #[test]
@@ -226,7 +235,7 @@ mod tests {
         let labels = dropdown_labels(&[], 1);
         assert_eq!(labels.len(), SELECTION_COUNT, "no raw entry while a labeled effect is active");
         assert_eq!(labels[0], "Inside out");
-        assert_eq!(labels[3], "Left to right");
+        assert_eq!(labels[3], "Right to left");
         assert_eq!(labels[4], "CUSTOM 1");
         assert_eq!(labels[8], "CUSTOM 5");
         assert!(!labels.iter().any(|l| l.starts_with("Effect ")), "no unlabeled effects offered");
@@ -331,7 +340,7 @@ mod effect_direction_tests {
         // EFFECT_LABELS[n - 1] must name the same sweep the mapped
         // direction does, or the preview animates the wrong way round.
         const DIRECTION_NAMES: [&str; 4] =
-            ["Left to right", "Right to left", "Inside out", "Outside in"];
+            ["Right to left", "Left to right", "Inside out", "Outside in"];
         for effect in 1..=4u8 {
             let dir = effect_direction(effect).expect("sweep effect maps");
             assert_eq!(

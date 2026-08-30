@@ -4590,7 +4590,7 @@ mod tests {
         let a = leds_app("5", "0");
         assert_eq!(a.lightsync_effect_label(), "CUSTOM 1: RACE");
         let b = leds_app("4", "0");
-        assert_eq!(b.lightsync_effect_label(), "Left to right");
+        assert_eq!(b.lightsync_effect_label(), "Right to left");
     }
 
     // --- advanced shaping toggle ---

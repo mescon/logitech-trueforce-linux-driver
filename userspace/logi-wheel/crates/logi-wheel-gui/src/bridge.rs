@@ -2327,11 +2327,11 @@ mod tests {
         let out = compose_lightsync(leds_setting_rows("3", "0"), &names);
         let effect = out.iter().find(|r| r.attr == "wheel_led_effect").unwrap();
         assert_eq!(effect.kind, KIND_LIGHT_EFFECT);
-        // effect 3 = "Right to left" = selector index 2
+        // effect 3 = "Left to right" = selector index 2
         assert_eq!(effect.int_value, 2);
         let choices: Vec<String> = effect.choices.iter().map(|s| s.to_string()).collect();
         assert_eq!(choices.len(), 9, "4 sweeps + 5 custom slots, no unlabeled effects");
-        assert_eq!(choices[2], "Right to left");
+        assert_eq!(choices[2], "Left to right");
         assert_eq!(choices[4], "CUSTOM 1: GT7");
         assert_eq!(choices[5], "CUSTOM 2");
         assert!(!choices.iter().any(|c| c.starts_with("Effect ")));

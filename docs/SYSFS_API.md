@@ -789,7 +789,7 @@ echo 5 > wheel_led_effect
 # Render CUSTOM 3 (slot 2) directly
 echo 7 > wheel_led_effect
 
-# Animate right to left
+# Animate left to right
 echo 3 > wheel_led_effect
 ```
 
