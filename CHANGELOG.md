@@ -5,6 +5,19 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.39.1 - 2026-08-30
+
+**Assetto Corsa EVO keeps its frame rate with the launcher.** Launching
+with `logi-launch %command%` made the game stutter badly, while blank
+launch options ran perfectly with force feedback intact, which is the
+signature of a cost paid per call rather than per force (#74). The escape
+proxy staged into the game hooks symbol resolution so it can answer the
+range getters the SDK faults on, and it decided whether each symbol
+belonged to Logitech by asking the loader for the owning module's full
+path and scanning it, on every symbol the game resolved, including while
+drawing. That answer never changes for a module, so it is now worked out
+once per module. Which symbols get wrapped is unchanged.
+
 ## 0.39.0 - 2026-08-30
 
 **Strength zero now means the rev lights alone, not a quiet engine.**
