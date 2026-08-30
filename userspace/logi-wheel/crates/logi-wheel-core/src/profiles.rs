@@ -199,6 +199,26 @@ pub fn save_in<S: SysfsIo>(dir: &Path, name: &str, dev: &Device<S>) -> Result<()
 /// write) are collected as `(attr, message)` pairs and returned, so one
 /// bad line never aborts the rest. `Err` is reserved for the profile
 /// itself being unreadable.
+///
+/// [`LAST_WRITES`] go after everything else. See its own comment: the
+/// light strip has attributes that select what it shows and attributes
+/// that fill a custom slot, and writing the second kind moves the
+/// selection onto that slot.
+/// Attributes that must be replayed after all the others.
+///
+/// `wheel_led_effect` picks what the strip displays: 1-4 are the built-in
+/// sweeps, 5-9 the custom slots. Three of the attributes saved alongside it
+/// (`wheel_led_slot`, `wheel_led_colors`, `wheel_led_direction`) are custom
+/// slot content, and writing any of them moves the display onto that slot,
+/// because that activation is what makes an edited colour appear at all.
+///
+/// In registry order the selection is written first, so a profile saved on
+/// a built-in sweep came back on a custom slot every time: choose "right to
+/// left", save, load, and the strip is on CUSTOM 1 (issue #73, confirmed on
+/// an RS50). Writing the selection last replays the same values and ends on
+/// the one the profile actually recorded.
+const LAST_WRITES: [&str; 1] = ["wheel_led_effect"];
+
 pub fn apply_in<S: SysfsIo>(
     dir: &Path,
     name: &str,
@@ -207,25 +227,35 @@ pub fn apply_in<S: SysfsIo>(
     let path = profile_path(dir, name)?;
     let text = fs::read_to_string(path).map_err(|e| Error::Io(e.to_string()))?;
     let mut errors = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((attr, raw)) = line.split_once('=') else {
-            errors.push((line.to_string(), "not an attr=value line".to_string()));
-            continue;
-        };
-        let Some(spec) = Device::<S>::spec(attr) else {
-            errors.push((attr.to_string(), "unknown setting".to_string()));
-            continue;
-        };
-        let result = spec.kind.parse(raw).and_then(|v| dev.write(attr, &v));
-        if let Err(e) = result {
-            errors.push((attr.to_string(), e.to_string()));
-        }
+
+    let lines = || {
+        text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'))
+    };
+    let deferred = |line: &str| {
+        line.split_once('=').is_some_and(|(attr, _)| LAST_WRITES.contains(&attr.trim()))
+    };
+    for line in lines().filter(|l| !deferred(l)) {
+        apply_line(line, dev, &mut errors);
+    }
+    for line in lines().filter(|l| deferred(l)) {
+        apply_line(line, dev, &mut errors);
     }
     Ok(errors)
+}
+
+/// One `attr=value` line, written or recorded as a failure.
+fn apply_line<S: SysfsIo>(line: &str, dev: &Device<S>, errors: &mut Vec<(String, String)>) {
+    let Some((attr, raw)) = line.split_once('=') else {
+        errors.push((line.to_string(), "not an attr=value line".to_string()));
+        return;
+    };
+    let Some(spec) = Device::<S>::spec(attr) else {
+        errors.push((attr.to_string(), "unknown setting".to_string()));
+        return;
+    };
+    if let Err(e) = spec.kind.parse(raw).and_then(|v| dev.write(attr, &v)) {
+        errors.push((attr.to_string(), e.to_string()));
+    }
 }
 
 /// Delete `<dir>/<name>.profile`.
@@ -300,6 +330,39 @@ mod tests {
         fs.set("wheel_response_curve", "reset");
         fs.set("wheel_profile", "0");
         Device::with_io(fs)
+    }
+
+    /// The strip's selection is replayed after the slot content that would
+    /// otherwise steal it. On hardware, writing `wheel_led_slot`,
+    /// `wheel_led_colors` or `wheel_led_direction` moves the display onto
+    /// the custom slot, so a profile saved on a built-in sweep came back on
+    /// CUSTOM 1 (issue #73). A fake wheel cannot reproduce that side
+    /// effect, so this pins the order instead, which is the thing the fix
+    /// controls.
+    #[test]
+    fn the_light_strips_selection_is_written_after_the_slot_content() {
+        let dir = tempdir();
+        // `Rc<FakeSysfs>` so the test keeps its handle to the write log
+        // after handing a clone to `Device`.
+        let fs = std::rc::Rc::new(FakeSysfs::new());
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_profile", "0");
+        fs.set("wheel_led_effect", "3");
+        fs.set("wheel_led_slot", "0");
+        fs.set("wheel_led_direction", "L to R");
+        fs.set("wheel_led_colors", "ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000 ff0000");
+        let dev = Device::with_io(fs.clone());
+        save_in(&dir, "sweep", &dev).unwrap();
+
+        let dev = Device::with_io(fs.clone());
+        apply_in(&dir, "sweep", &dev).unwrap();
+
+        let order: Vec<String> = fs.writes().into_iter().map(|(a, _)| a).collect();
+        let effect = order.iter().position(|a| a == "wheel_led_effect").expect("selection written");
+        for content in ["wheel_led_slot", "wheel_led_direction", "wheel_led_colors"] {
+            let at = order.iter().position(|a| a == content).unwrap_or_else(|| panic!("{content} written"));
+            assert!(at < effect, "{content} must be written before wheel_led_effect, got {order:?}");
+        }
     }
 
     #[test]
