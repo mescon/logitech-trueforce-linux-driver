@@ -1,0 +1,60 @@
+name: nix
+
+# NixOS is the one channel nothing here compiles.
+#
+# Every other packaging channel builds something in CI, so a broken recipe
+# fails a job before anyone installs it. The flake is evaluated only on a
+# user's own machine, at install time, against their kernel, which means a
+# flake that stopped working would ship silently and be found by a NixOS
+# user hitting an error. That is not hypothetical: issue #70 was a NixOS
+# install that had been broken for who knows how long before someone said
+# so.
+#
+# Evaluation catches the cheap class (a renamed attribute, a syntax error,
+# a package that no longer exists). Building catches the rest, which is
+# why the userspace package is built rather than only evaluated: it is the
+# one whose inputs move, every time a dependency is added to the Rust
+# workspace.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "userspace/logi-wheel/**"
+      - "mainline/**"
+      - "udev/**"
+      - "tools/**"
+      - ".github/workflows/nix.yml"
+  pull_request:
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "userspace/logi-wheel/**"
+      - "mainline/**"
+      - "udev/**"
+      - "tools/**"
+
+jobs:
+  flake:
+    runs-on: ubuntu-latest
+    # The userspace build compiles the Rust workspace from scratch inside
+    # the container, with no shared cache between runs.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      # The official Nix container rather than a third-party action: this
+      # is the same command that verifies the flake by hand on a machine
+      # without NixOS, so what CI checks and what a maintainer can
+      # reproduce locally stay the same thing.
+      - name: Evaluate and build the flake
+        run: |
+          docker run --rm -v "$PWD":/src:ro nixos/nix bash -c '
+            set -e
+            # Copied out of the mount: flakes refuse to work inside
+            # another user'"'"'s git repository, and the checkout is one.
+            cp -r /src /work && cd /work && rm -rf .git
+            nix --extra-experimental-features "nix-command flakes" flake show
+            nix --extra-experimental-features "nix-command flakes" build \
+                .#udev-rules .#logi-wheel-modeswitch .#logi-wheel --no-link
+          '
