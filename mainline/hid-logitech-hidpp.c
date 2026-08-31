@@ -507,6 +507,12 @@ struct hidpp_device {
 	struct hidpp_scroll_counter vertical_wheel_counter;
 
 	u8 wireless_feature_index;
+	/*
+	 * Whether IFeatureSet can be used to confirm a discovered feature
+	 * index: 0 not asked yet, 1 usable, 2 unusable. See
+	 * hidpp_index_holds_feature().
+	 */
+	u8 feature_set_state;
 
 	bool connected_once;
 
@@ -1516,7 +1522,79 @@ static int hidpp_unifying_init(struct hidpp_device *hidpp)
 #define CMD_ROOT_GET_FEATURE				0x00
 #define CMD_ROOT_GET_PROTOCOL_VERSION			0x10
 
-static int hidpp_root_get_feature(struct hidpp_device *hidpp, u16 feature,
+/* -------------------------------------------------------------------------- */
+/* 0x0001: IFeatureSet, used here only to check Root's answers                 */
+/* -------------------------------------------------------------------------- */
+
+#define HIDPP_PAGE_FEATURE_SET				0x0001
+#define HIDPP_PAGE_FEATURE_SET_IDX			0x01
+
+#define CMD_FEATURE_SET_GET_FEATURE_ID			0x10
+
+#define HIDPP_FEATURE_SET_UNASKED			0
+#define HIDPP_FEATURE_SET_USABLE			1
+#define HIDPP_FEATURE_SET_UNUSABLE			2
+
+/*
+ * The feature ID the device says lives at `index`, per IFeatureSet fn1.
+ */
+static int hidpp_feature_id_at(struct hidpp_device *hidpp, u8 index, u16 *out)
+{
+	struct hidpp_report response;
+	u8 params[1] = { index };
+	int ret;
+
+	ret = hidpp_send_fap_command_sync(hidpp, HIDPP_PAGE_FEATURE_SET_IDX,
+					  CMD_FEATURE_SET_GET_FEATURE_ID,
+					  params, 1, &response);
+	if (ret)
+		return ret < 0 ? ret : -EIO;
+
+	*out = get_unaligned_be16(response.fap.params);
+	return 0;
+}
+
+/*
+ * Does `index` really hold `feature`?
+ *
+ * Root's answer to "where is feature X" carries the index and nothing
+ * identifying X, so every discovery looks identical on the wire. A late
+ * answer to one query is therefore indistinguishable from the answer to the
+ * next, and the driver would believe a feature sits where another one does.
+ * Reported against a third-party implementation, where an OLED discovery
+ * answer was latched as the rev-light index, and consistent with this
+ * project's own note about 0x8130 appearing only after a "collision retry"
+ * (PROTOCOL_SPECIFICATION.md 12.3).
+ *
+ * IFeatureSet answers the other direction, index to feature ID, so it can
+ * settle it. It has the same problem itself, so it is asked about itself
+ * first: index 1 must answer 0x0001. A device that fails that self-check
+ * cannot confirm anything, and the caller is told nothing is wrong rather
+ * than having its discovery refused over a check this driver could not run.
+ */
+static bool hidpp_index_holds_feature(struct hidpp_device *hidpp, u8 index,
+				      u16 feature)
+{
+	u16 id;
+
+	if (hidpp->feature_set_state == HIDPP_FEATURE_SET_UNASKED) {
+		hidpp->feature_set_state =
+			(!hidpp_feature_id_at(hidpp, HIDPP_PAGE_FEATURE_SET_IDX,
+					      &id) &&
+			 id == HIDPP_PAGE_FEATURE_SET) ?
+				HIDPP_FEATURE_SET_USABLE :
+				HIDPP_FEATURE_SET_UNUSABLE;
+	}
+	if (hidpp->feature_set_state != HIDPP_FEATURE_SET_USABLE)
+		return true;
+
+	if (hidpp_feature_id_at(hidpp, index, &id))
+		return true;
+
+	return id == feature;
+}
+
+static int hidpp_root_get_feature_once(struct hidpp_device *hidpp, u16 feature,
 	u8 *feature_index)
 {
 	struct hidpp_report response;
@@ -1536,6 +1614,48 @@ static int hidpp_root_get_feature(struct hidpp_device *hidpp, u16 feature,
 	*feature_index = response.fap.params[0];
 
 	return ret;
+}
+
+/*
+ * Ask where a feature lives, and on the direct-drive wheels check the
+ * answer before believing it (see hidpp_index_holds_feature).
+ *
+ * One retry, because the failure this guards against is a stale answer
+ * being matched to this question: the answer that displaced it has been
+ * consumed by then, so asking again lands on the right one. A second
+ * mismatch is not a race any more and the feature is reported missing,
+ * which every caller already handles, rather than handing back an index
+ * that belongs to something else and writing to it.
+ *
+ * Only the direct-drive wheels, matching the device-index and software-id
+ * gates in hidpp_match_answer: they are the devices whose sub-devices
+ * share one pipe, and a mouse pays nothing for a hazard it does not have.
+ */
+static int hidpp_root_get_feature(struct hidpp_device *hidpp, u16 feature,
+	u8 *feature_index)
+{
+	int ret = hidpp_root_get_feature_once(hidpp, feature, feature_index);
+
+	if (ret || !(hidpp->quirks & HIDPP_QUIRK_DD_FFB) ||
+	    feature == HIDPP_PAGE_FEATURE_SET)
+		return ret;
+
+	if (hidpp_index_holds_feature(hidpp, *feature_index, feature))
+		return 0;
+
+	dbg_hid("%s: index 0x%02x is not feature 0x%04x, asking again\n",
+		__func__, *feature_index, feature);
+
+	ret = hidpp_root_get_feature_once(hidpp, feature, feature_index);
+	if (ret)
+		return ret;
+	if (hidpp_index_holds_feature(hidpp, *feature_index, feature))
+		return 0;
+
+	hid_warn(hidpp->hid_dev,
+		 "feature 0x%04x: discovery keeps answering with index 0x%02x, which holds something else; treating it as absent\n",
+		 feature, *feature_index);
+	return -ENOENT;
 }
 
 /*
