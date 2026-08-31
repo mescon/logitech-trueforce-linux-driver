@@ -2048,15 +2048,28 @@ requesting the descriptor for layout index 9 answers
 12 FF 12 1A  09 0A 13 0A 13 0A 00 ...
 ```
 
-payload `[layout index][capacity bytes]`: `0x0A`/`0x13` are the literal
-field widths 10 and 19, so a client can build frames from the descriptor
-instead of hardcoding per-layout widths. One open question from that
-readback: it carries **five** capacity entries (10/19/10/19/10) against
-the four documented text fields, an unidentified fifth element. The fn3
-frame byte order (layout byte first, field order, space padding) remains
-unvalidated on hardware. Feature-index note from the same run: 0x8130
-resolved at index 0x12 only after one collision retry, so resolve it
-dynamically, never assume the index.
+payload `[requested layout index][one-based layout ID][four capability
+bytes]`. So `09` is the index asked for, `0A` is layout ID 10 (layout J),
+and `13 0A 13 0A` are the four field widths 19 / 10 / 19 / 10. A client
+can build frames from the descriptor instead of hardcoding per-layout
+widths.
+
+The apparent fifth capacity entry was the layout ID being read as a
+width: decoded by @PeposCJ from the RS50's own firmware handler and
+confirmed against the same readback (issue #20, 2026-08-31). There are
+four text fields, not five. The fn3 frame byte order (layout byte first,
+field order, space padding) remains unvalidated on hardware.
+
+**Read that run's "collision retry" carefully.** 0x8130 appeared at index
+0x12 only on a second attempt, which looks like the wheel handing out a
+colliding index and is more likely to be a mismatched answer. A Root
+getFeature response does not echo the feature ID it was asked about, so
+every such query looks identical on the wire, and a late answer to one
+query is indistinguishable from the answer to the next. @PeposCJ reports
+that exact failure being reproduced elsewhere, an OLED discovery answer
+latched as the rev-light index. Resolve the index dynamically, never
+assume it, and treat a discovery answer as suspect unless the request it
+belongs to is still the one outstanding.
 
 **It is a typed renderer, not a framebuffer.** The firmware holds a 128x64
 monochrome buffer, but no `0x8130` command accepts framebuffer bytes,
