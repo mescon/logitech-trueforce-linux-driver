@@ -97,7 +97,27 @@ static void say(const char *fmt, ...)
 		vfprintf(g_log, fmt, ap);
 		va_end(ap);
 		fputc('\n', g_log);
-		fflush(g_log);
+		/*
+		 * Flushed on a clock rather than per line. Every line used to
+		 * reach the disk before the caller continued, and the caller
+		 * is the game: the Escape stream logs about ten times a second
+		 * for as long as anyone is driving, and that is a synchronous
+		 * write inside a running title, paid by everyone, forever.
+		 *
+		 * The startup lines keep flushing individually. That is where
+		 * a log earns its keep, because the failures worth catching
+		 * there (a DLL that will not initialise, a driver that will
+		 * not bind) end the process before any later flush, and they
+		 * are far too few to cost anything.
+		 */
+		static unsigned long lines;
+		static ULONGLONG last_flush;
+		ULONGLONG now = GetTickCount64();
+
+		if (++lines <= 200 || now - last_flush >= 500) {
+			last_flush = now;
+			fflush(g_log);
+		}
 	}
 	LeaveCriticalSection(&g_log_lock);
 }

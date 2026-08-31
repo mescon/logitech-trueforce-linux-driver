@@ -5,6 +5,17 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The escape proxy stops writing to disk inside the game ten times a
+second.** It logs what a title's TrueForce SDK is doing, and every line
+was flushed before the game was allowed to continue. At the Escape stream
+rate that is a synchronous write on the game's own thread for as long as
+anyone is driving, paid by every user of a title that uses the merge. The
+flush now happens at most twice a second, except during startup, where
+individual lines still reach the disk because that is where a log has to
+survive the process dying.
+
 ## 0.39.1 - 2026-08-30
 
 **Assetto Corsa EVO keeps its frame rate with the launcher.** Launching
