@@ -9177,6 +9177,7 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	bool ff_hdev_bound;
 	int ret;
 	int total_wait_ms;
+	int stream_ifnum;
 
 	dd_dbg(hid, "FFB init attempt %d/%d\n",
 		ff->init_retries + 1, HIDPP_DD_FF_MAX_INIT_RETRIES);
@@ -9188,14 +9189,35 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	}
 
 	/*
-	 * Check if FFB endpoint (interface 2) is ready.
-	 * This interface handles force feedback USB transfers.
+	 * The interface that carries the force stream, which is the one
+	 * after the HID++ interface this init runs on.
+	 *
+	 * It used to be interface 2 outright, because that is where the
+	 * direct-drive wheels put it: 0 joystick, 1 HID++, 2 stream. The
+	 * G923 Xbox edition has two interfaces rather than three, with HID++
+	 * sharing interface 0 with the joystick and the stream's vendor page
+	 * on interface 1, so init refused to run and g923_xbox_dd_engine
+	 * could never drive that wheel. Found, diagnosed and tested by its
+	 * owner in issue #72, who also confirmed the engine drives the motor
+	 * in the right direction once past this.
+	 *
+	 * Relative rather than per-model: it is the same rule on both
+	 * topologies, and a wheel that arranges its interfaces some third
+	 * way is more likely to keep this relationship than to land on 2.
 	 */
-	iface2 = usb_ifnum_to_if(hid_to_usb_dev(hid), 2);
-	if (!iface2) {
-		dd_err(hid, "FFB init failed - USB device structure invalid\n");
+	if (!hid_is_usb(hid)) {
+		dd_err(hid, "FFB init failed - not a USB device\n");
 		return;
 	}
+	stream_ifnum = to_usb_interface(hid->dev.parent)
+			       ->cur_altsetting->desc.bInterfaceNumber + 1;
+	iface2 = usb_ifnum_to_if(hid_to_usb_dev(hid), stream_ifnum);
+	if (!iface2) {
+		dd_err(hid, "FFB init failed - no interface %d to stream on\n",
+		       stream_ifnum);
+		return;
+	}
+	dd_dbg(hid, "FFB stream interface is %d\n", stream_ifnum);
 
 	ff_hdev = usb_get_intfdata(iface2);
 	if (!ff_hdev) {
