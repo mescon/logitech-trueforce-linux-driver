@@ -2037,9 +2037,28 @@ static text and live iRacing telemetry on it.
 | 2 | clear pending Dynamic data |
 | 3 | set layout / data |
 
-The wheel reports **10 layouts, A to J**. Layout J (index 9) exposes four
-text fields with capacities 19 / 10 / 19 / 10. Static and repeated writes
-are both hardware-confirmed.
+The wheel reports **10 layouts, A to J**. Static and repeated writes are
+both hardware-confirmed (@PeposCJ). Every layout's descriptor, read
+first-hand from an RS50 here (2026-09-02, read-only fn1 sweep, feature at
+index `0x12`, confirmed as `0x8130` through IFeatureSet):
+
+| index | layout | text fields (widths) |
+|---|---|---|
+| 0 | A | none |
+| 1 | B | none |
+| 2 | C | none |
+| 3 | D | 11 |
+| 4 | E | 7, 3 |
+| 5 | F | 1, 3 |
+| 6 | G | 1, 3 |
+| 7 | H | 21, 10 |
+| 8 | I | 19, 10, 19, 10 |
+| 9 | J | 19, 10, 19, 10 |
+
+A to C report no text capacities at all, so whatever they draw is not text
+fed through fn3's text fields; what they show, and what the single-width
+fields of F and G hold (a gear, plausibly, next to a three-character
+value), needs a write to find out. fn0 answered `0x0a`, ten, matching.
 
 **fn1 is self-describing** (@WnDTech's tester, RS50 hardware, 2026-08-15):
 requesting the descriptor for layout index 9 answers
