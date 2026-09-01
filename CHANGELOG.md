@@ -5,6 +5,18 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The doctor notices a module that was updated but never reloaded, and
+there is a `report` mode.** DKMS installs a new driver build and leaves
+the old one running; every version number on disk then says one thing
+while the kernel executes another, and nothing reported it. `setup.sh
+doctor` now compares the module in memory with the one installed for the
+running kernel, and lists driver source trees left behind by old
+packages. `setup.sh report` prints one paste-ready block with everything
+a bug report keeps being asked for: what is really running, the wheel's
+firmware, what the launcher decided and set, and what DKMS believes.
+
 ## 0.39.2 - 2026-09-01
 
 **A profile no longer undoes itself on apply.** Setting TrueForce intensity

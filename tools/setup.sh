@@ -217,6 +217,21 @@ doctor() {
 		local loaded_ver repo_ver
 		loaded_ver="$(cat /sys/module/hid_logitech_dd/version 2>/dev/null || echo unknown)"
 		ok "hid_logitech_dd is loaded (version: $loaded_ver)"
+		# The module on disk against the module in memory. DKMS installs
+		# a new build and never reloads the running one, so after a
+		# package update the kernel keeps executing the old driver while
+		# every version number on disk says otherwise. Found on the
+		# maintainer's own machine, twice in one week, and nothing
+		# anywhere reported it. srcversion is a hash of the source the
+		# object was built from, so it cannot agree by coincidence.
+		local loaded_src disk_src
+		loaded_src="$(cat /sys/module/hid_logitech_dd/srcversion 2>/dev/null)"
+		disk_src="$(modinfo -F srcversion hid-logitech-dd 2>/dev/null)"
+		if [ -n "$loaded_src" ] && [ -n "$disk_src" ] && [ "$loaded_src" != "$disk_src" ]; then
+			wrn "the module installed for this kernel is not the one running: an update landed on disk but the old driver is still loaded (run: sudo modprobe -r hid-logitech-dd && sudo modprobe hid-logitech-dd, or reboot)"
+		elif [ -n "$loaded_src" ] && [ -n "$disk_src" ]; then
+			ok "the running module is the one installed on disk"
+		fi
 		# Running module vs the source it came from. Pulling without
 		# rebuilding leaves an old driver in memory and every symptom
 		# belongs to code nobody is reading any more, which is a
@@ -291,6 +306,17 @@ doctor() {
 	dkms_vers="$(dkms status 2>/dev/null \
 		| sed -n 's|^logitech-trueforce[/,] *\([^,: ]*\).*|\1|p' | sort -u)"
 	dkms_n="$(printf '%s\n' "$dkms_vers" | grep -c . || true)"
+	# Source trees left behind by old package versions. Unregistered with
+	# DKMS, so inert, but they are the raw material for exactly the
+	# duplicate-registration mistake above and they accumulate for ever.
+	local stale=""
+	local tree ver
+	for tree in /usr/src/logitech-trueforce-*; do
+		[ -d "$tree" ] || continue
+		ver="${tree##*/logitech-trueforce-}"
+		printf '%s\n' "$dkms_vers" | grep -qx "$ver" || stale="$stale $tree"
+	done
+	[ -n "$stale" ] && wrn "old driver source trees no DKMS registration uses:${stale} (safe to remove: sudo rm -rf${stale})"
 	if [ "${dkms_n:-0}" -gt 1 ]; then
 		wrn "two DKMS registrations of this driver ($(printf '%s ' $dkms_vers)) - both build the same module to the same path, so a kernel upgrade leaves whichever finished last, and 1.0 is the from-source development slot. Keep one: sudo dkms remove -m logitech-trueforce -v <version> --all"
 	fi
@@ -991,9 +1017,50 @@ setup() {
 	echo "  (per-game recipes: docs/GAME_SETUP.md, or the app's Setup page)"
 }
 
+# Everything a bug report keeps being asked for, in one paste-ready block.
+# Each line here is something a reporter was asked to go and find during
+# issues #59, #73 and #74, one round trip each: which version is really
+# running, the wheel's firmware, what the launcher decided and set, and
+# what DKMS believes. Read-only, needs no root, and says when a thing is
+# absent rather than skipping it, because "not there" is often the answer.
+report() {
+	echo '```'
+	echo "logitech-trueforce report $(date -u +%Y-%m-%dT%H:%MZ)"
+	echo "kernel:        $(uname -r)"
+	echo "module loaded: $(cat /sys/module/hid_logitech_dd/version 2>/dev/null || echo 'NOT LOADED') srcversion=$(cat /sys/module/hid_logitech_dd/srcversion 2>/dev/null || echo -)"
+	echo "module on disk: srcversion=$(modinfo -F srcversion hid-logitech-dd 2>/dev/null || echo 'not installed for this kernel')"
+	echo "dkms:          $(dkms status 2>/dev/null | grep '^logitech-trueforce' | tr '\n' ';' || true)"
+	local tool
+	for tool in logi-wheel logi-wheel-gui logi-tf-sim logi-ffb logi-launch; do
+		if command -v "$tool" >/dev/null 2>&1; then
+			printf '%-14s %s\n' "$tool:" "$("$tool" --version 2>/dev/null | tail -1 || echo 'present')"
+		else
+			printf '%-14s %s\n' "$tool:" "not installed"
+		fi
+	done
+	local W
+	W="$(find_wheel_sysfs)"
+	if [ -n "$W" ]; then
+		echo "wheel:         $(basename "$(readlink -f "$W")")"
+		echo "firmware:      $(cat "$W/wheel_firmware" 2>/dev/null | tr '\n' ' ')"
+		echo "mode/profile:  $(cat "$W/wheel_mode" 2>/dev/null)/$(cat "$W/wheel_profile" 2>/dev/null)  range=$(cat "$W/wheel_range" 2>/dev/null) strength=$(cat "$W/wheel_strength" 2>/dev/null) trueforce=$(cat "$W/wheel_trueforce" 2>/dev/null) texture_route=$(cat "$W/wheel_texture_route" 2>/dev/null)"
+	else
+		echo "wheel:         no direct-drive wheel bound"
+	fi
+	echo "usb:           $(lsusb 2>/dev/null | grep -iE '046d:(c2[67][0-9a-f])' | sed 's/.*ID //' | tr '\n' ';' || echo none)"
+	if [ -r /tmp/logi-launch.log ]; then
+		echo "launcher:      (last plan and settings from /tmp/logi-launch.log)"
+		grep -E 'plan:|PROTON_ENABLE_HIDRAW|staged|started|not staging|cannot' /tmp/logi-launch.log | tail -8 | sed 's/^/  /'
+	else
+		echo "launcher:      /tmp/logi-launch.log absent (logi-launch has not run)"
+	fi
+	echo '```'
+}
+
 case "${1:-setup}" in
 	doctor) doctor ;;
+	report) report ;;
 	shim)   do_shim ;;
 	setup)  setup ;;
-	*) echo "usage: sudo $0 [setup] | $0 doctor | $0 shim" >&2; exit 2 ;;
+	*) echo "usage: sudo $0 [setup] | $0 doctor | $0 report | $0 shim" >&2; exit 2 ;;
 esac
