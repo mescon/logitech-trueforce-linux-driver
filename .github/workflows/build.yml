@@ -87,6 +87,22 @@ jobs:
         run: |
           modinfo hid-logitech-dd.ko
 
+  pure-code:
+    name: Pure-code tests (no kernel)
+    runs-on: ubuntu-latest
+    # The driver's arithmetic that decides what torque the motor gets, and
+    # the texture synthesis, live in header-only files that compile without
+    # a kernel. These run them as ordinary userspace binaries. The
+    # texture-merge harness existed for months and was never run here;
+    # the effect-math one was written the day a torque-to-the-stop bug in
+    # that code shipped and could have been a five-line test.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Texture synthesis
+        run: make -C tests/texture-merge run
+      - name: Effect maths
+        run: make -C tests/effect-math run
+
   sparse:
     name: Sparse Analysis
     runs-on: ubuntu-latest
