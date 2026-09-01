@@ -194,6 +194,7 @@ install -d %{buildroot}%{_usrsrc}/%{module}-%{modver}
 install -m 0644 mainline/hid-logitech-hidpp.c mainline/dd-lg4ff.c \
     mainline/dd-lg4ff.h mainline/hid-ids.h \
     mainline/hidpp_dd_texture_merge.h \
+    mainline/hidpp_dd_effect_math.h \
     mainline/hidpp_dd_tf_init.h mainline/Kbuild mainline/Makefile \
     %{buildroot}%{_usrsrc}/%{module}-%{modver}/
 sed 's/@PKGVER@/%{modver}/' packaging/aur/logitech-trueforce-dkms/dkms.conf \

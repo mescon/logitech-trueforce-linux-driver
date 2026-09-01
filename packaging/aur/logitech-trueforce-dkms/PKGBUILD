@@ -85,6 +85,7 @@ package_logitech-trueforce-dkms() {
 		"$_src/mainline/hid-ids.h" \
 		"$_src/mainline/hidpp_dd_tf_init.h" \
 		"$_src/mainline/hidpp_dd_texture_merge.h" \
+		"$_src/mainline/hidpp_dd_effect_math.h" \
 		"$_src/mainline/Kbuild" \
 		"$_src/mainline/Makefile"
 
