@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.39.2 - 2026-09-01
 
 **A profile no longer undoes itself on apply.** Setting TrueForce intensity
 to 0, saving and applying the profile brought it back to whatever the
