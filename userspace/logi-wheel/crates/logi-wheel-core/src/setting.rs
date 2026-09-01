@@ -57,6 +57,35 @@ pub enum ModeReq {
     OnboardOnly,
 }
 
+/// What writing an attribute does to the others.
+///
+/// Most attributes are independent, and a snapshot can replay them in any
+/// order. Four are not, and both of the profile bugs in issue #73 were the
+/// same mistake about them: an attribute that selects a store written
+/// after the values it overwrites. The light-strip selector had to move
+/// last; the onboard-slot selector had to stop being replayed at all. Each
+/// was fixed by hand with its own list. This is that knowledge as data, so
+/// the replay order follows from the registry and a third case is a
+/// one-line classification rather than a bug report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// Independent of every other attribute. Replayed in file order.
+    Setting,
+    /// Chooses which store the wheel runs from (`wheel_mode`,
+    /// `wheel_profile`). Writing it makes the wheel reload that store's
+    /// values over everything live, so a snapshot neither saves nor
+    /// replays it: these snapshots are desktop-mode state, and moving the
+    /// wheel onto an onboard slot is the wrong side effect in any order.
+    StoreSelector,
+    /// Content of a custom light slot. Writing it activates that slot on
+    /// the strip, so it must be replayed before the display selector or
+    /// it steals the selection.
+    SlotContent,
+    /// Chooses what the strip displays (`wheel_led_effect`). Replayed
+    /// after every [`Role::SlotContent`] write.
+    DisplaySelector,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SettingSpec {
     pub attr: &'static str,
@@ -66,4 +95,12 @@ pub struct SettingSpec {
     pub kind: Kind,
     pub access: Access,
     pub mode_req: ModeReq,
+}
+
+impl SettingSpec {
+    /// This attribute's [`Role`]. The classification lives in the registry
+    /// (`registry::role_of`), next to the table it describes.
+    pub fn role(&self) -> Role {
+        crate::registry::role_of(self.attr)
+    }
 }

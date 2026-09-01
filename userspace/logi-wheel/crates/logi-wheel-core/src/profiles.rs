@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use crate::device::Device;
 use crate::error::Error;
 use crate::kind::Kind;
-use crate::setting::{Access, ModeReq, SettingSpec};
+use crate::setting::{Access, ModeReq, Role, SettingSpec};
 use crate::sysfs::SysfsIo;
 
 /// The first line of every profile file.
@@ -150,7 +150,7 @@ fn snapshotted(spec: &SettingSpec) -> bool {
     spec.access == Access::ReadWrite
         && !matches!(spec.kind, Kind::SlotText { .. })
         && !matches!(spec.mode_req, ModeReq::OnboardOnly)
-        && !SELECTORS.contains(&spec.attr)
+        && spec.role() != Role::StoreSelector
 }
 
 /// The saved profiles in `dir`, sorted by name. A missing directory is an
@@ -201,46 +201,12 @@ pub fn save_in<S: SysfsIo>(dir: &Path, name: &str, dev: &Device<S>) -> Result<()
 /// bad line never aborts the rest. `Err` is reserved for the profile
 /// itself being unreadable.
 ///
-/// [`LAST_WRITES`] go after everything else. See its own comment: the
-/// light strip has attributes that select what it shows and attributes
-/// that fill a custom slot, and writing the second kind moves the
-/// selection onto that slot.
-/// Attributes that must be replayed after all the others.
-///
-/// `wheel_led_effect` picks what the strip displays: 1-4 are the built-in
-/// sweeps, 5-9 the custom slots. Three of the attributes saved alongside it
-/// (`wheel_led_slot`, `wheel_led_colors`, `wheel_led_direction`) are custom
-/// slot content, and writing any of them moves the display onto that slot,
-/// because that activation is what makes an edited colour appear at all.
-///
-/// In registry order the selection is written first, so a profile saved on
-/// a built-in sweep came back on a custom slot every time: choose "right to
-/// left", save, load, and the strip is on CUSTOM 1 (issue #73, confirmed on
-/// an RS50). Writing the selection last replays the same values and ends on
-/// the one the profile actually recorded.
-const LAST_WRITES: [&str; 1] = ["wheel_led_effect"];
-
-/// Attributes that choose which store the wheel is running from, and are
-/// therefore neither saved nor replayed.
-///
-/// Writing `wheel_profile` makes the wheel load that slot's stored settings,
-/// every one of them, over whatever is currently applied. A snapshot used
-/// to record it (and `wheel_mode`) last, so applying a profile wrote all
-/// the settings and then, as its final act, told the wheel to reload the
-/// slot: TrueForce intensity set to 0 and saved came back as the slot's
-/// stored 30 on every apply, and so did everything else, silently (issue
-/// #73, reproduced on an RS50 with three writes). Same defect as the
-/// light-strip one above, in the other direction: that selector had to
-/// move last, this one must not run at all.
-///
-/// Not run at all rather than run first, because these snapshots are
-/// desktop-mode state by the module's own definition. Moving the wheel
-/// onto an onboard slot as a side effect of applying computer-side
-/// settings is the wrong thing even when it is done in the right order.
-/// Files written before this still carry the two lines; they are skipped
-/// on apply rather than reported, since nothing was wrong with the file.
-const SELECTORS: [&str; 2] = ["wheel_mode", "wheel_profile"];
-
+/// Order follows each attribute's [`Role`]: settings and slot content in
+/// file order, the display selector after all of them, and store
+/// selectors not at all. Both halves of that came from issue #73, where a
+/// selector written after the values it governs undid them; the roles are
+/// the registry's record of which attributes do that, so this function
+/// does not need its own list.
 pub fn apply_in<S: SysfsIo>(
     dir: &Path,
     name: &str,
@@ -253,13 +219,13 @@ pub fn apply_in<S: SysfsIo>(
     let lines = || {
         text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'))
     };
-    let deferred = |line: &str| {
-        line.split_once('=').is_some_and(|(attr, _)| LAST_WRITES.contains(&attr.trim()))
+    let role = |line: &str| -> Option<Role> {
+        line.split_once('=').map(|(attr, _)| crate::registry::role_of(attr.trim()))
     };
-    for line in lines().filter(|l| !deferred(l)) {
+    for line in lines().filter(|l| role(l) != Some(Role::DisplaySelector)) {
         apply_line(line, dev, &mut errors);
     }
-    for line in lines().filter(|l| deferred(l)) {
+    for line in lines().filter(|l| role(l) == Some(Role::DisplaySelector)) {
         apply_line(line, dev, &mut errors);
     }
     Ok(errors)
@@ -271,7 +237,9 @@ fn apply_line<S: SysfsIo>(line: &str, dev: &Device<S>, errors: &mut Vec<(String,
         errors.push((line.to_string(), "not an attr=value line".to_string()));
         return;
     };
-    if SELECTORS.contains(&attr.trim()) {
+    // A store selector reloads the wheel's stored values over everything
+    // else; never replayed, and not reported, since older files carry it.
+    if crate::registry::role_of(attr.trim()) == Role::StoreSelector {
         return;
     }
     let Some(spec) = Device::<S>::spec(attr) else {

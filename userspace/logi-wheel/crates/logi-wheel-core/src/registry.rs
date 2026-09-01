@@ -476,3 +476,58 @@ mod classic_registry_tests {
         assert_eq!(cat("combine_pedals"), Category::Pedals);
     }
 }
+
+/// The [`Role`](crate::setting::Role) of `attr`: which attributes are
+/// selectors or slot content, and therefore constrain replay order. Every
+/// attribute not named here is an independent setting.
+///
+/// Kept as one table rather than a field on each of the fifty-odd specs,
+/// because the exceptions are few and the point is to see them together.
+/// `roles_name_real_attributes` below fails the build if an entry stops
+/// matching a registry attribute, so a rename cannot silently strip an
+/// attribute of its role.
+pub fn role_of(attr: &str) -> crate::setting::Role {
+    use crate::setting::Role;
+    match attr {
+        "wheel_mode" | "wheel_profile" => Role::StoreSelector,
+        "wheel_led_slot" | "wheel_led_colors" | "wheel_led_direction"
+        | "wheel_led_slot_brightness" | "wheel_led_slot_name" => Role::SlotContent,
+        "wheel_led_effect" => Role::DisplaySelector,
+        _ => Role::Setting,
+    }
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+    use crate::setting::Role;
+
+    /// Every attribute given a role must exist, or a rename would quietly
+    /// turn a selector back into an ordinary setting.
+    #[test]
+    fn roles_name_real_attributes() {
+        let named = [
+            "wheel_mode", "wheel_profile", "wheel_led_slot", "wheel_led_colors",
+            "wheel_led_direction", "wheel_led_slot_brightness", "wheel_led_slot_name",
+            "wheel_led_effect",
+        ];
+        for attr in named {
+            assert!(
+                REGISTRY.iter().any(|s| s.attr == attr),
+                "{attr} has a role but is not a registry attribute"
+            );
+            assert_ne!(role_of(attr), Role::Setting, "{attr} is listed but classified as plain");
+        }
+    }
+
+    /// The two profile bugs, as the classification that would have
+    /// prevented them.
+    #[test]
+    fn the_known_selectors_are_classified() {
+        assert_eq!(role_of("wheel_profile"), Role::StoreSelector);
+        assert_eq!(role_of("wheel_mode"), Role::StoreSelector);
+        assert_eq!(role_of("wheel_led_effect"), Role::DisplaySelector);
+        assert_eq!(role_of("wheel_led_colors"), Role::SlotContent);
+        assert_eq!(role_of("wheel_strength"), Role::Setting);
+    }
+}
