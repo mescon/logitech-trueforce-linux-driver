@@ -150,6 +150,7 @@ fn snapshotted(spec: &SettingSpec) -> bool {
     spec.access == Access::ReadWrite
         && !matches!(spec.kind, Kind::SlotText { .. })
         && !matches!(spec.mode_req, ModeReq::OnboardOnly)
+        && !SELECTORS.contains(&spec.attr)
 }
 
 /// The saved profiles in `dir`, sorted by name. A missing directory is an
@@ -219,6 +220,27 @@ pub fn save_in<S: SysfsIo>(dir: &Path, name: &str, dev: &Device<S>) -> Result<()
 /// the one the profile actually recorded.
 const LAST_WRITES: [&str; 1] = ["wheel_led_effect"];
 
+/// Attributes that choose which store the wheel is running from, and are
+/// therefore neither saved nor replayed.
+///
+/// Writing `wheel_profile` makes the wheel load that slot's stored settings,
+/// every one of them, over whatever is currently applied. A snapshot used
+/// to record it (and `wheel_mode`) last, so applying a profile wrote all
+/// the settings and then, as its final act, told the wheel to reload the
+/// slot: TrueForce intensity set to 0 and saved came back as the slot's
+/// stored 30 on every apply, and so did everything else, silently (issue
+/// #73, reproduced on an RS50 with three writes). Same defect as the
+/// light-strip one above, in the other direction: that selector had to
+/// move last, this one must not run at all.
+///
+/// Not run at all rather than run first, because these snapshots are
+/// desktop-mode state by the module's own definition. Moving the wheel
+/// onto an onboard slot as a side effect of applying computer-side
+/// settings is the wrong thing even when it is done in the right order.
+/// Files written before this still carry the two lines; they are skipped
+/// on apply rather than reported, since nothing was wrong with the file.
+const SELECTORS: [&str; 2] = ["wheel_mode", "wheel_profile"];
+
 pub fn apply_in<S: SysfsIo>(
     dir: &Path,
     name: &str,
@@ -249,6 +271,9 @@ fn apply_line<S: SysfsIo>(line: &str, dev: &Device<S>, errors: &mut Vec<(String,
         errors.push((line.to_string(), "not an attr=value line".to_string()));
         return;
     };
+    if SELECTORS.contains(&attr.trim()) {
+        return;
+    }
     let Some(spec) = Device::<S>::spec(attr) else {
         errors.push((attr.to_string(), "unknown setting".to_string()));
         return;
@@ -363,6 +388,46 @@ mod tests {
             let at = order.iter().position(|a| a == content).unwrap_or_else(|| panic!("{content} written"));
             assert!(at < effect, "{content} must be written before wheel_led_effect, got {order:?}");
         }
+    }
+
+    /// The mode and slot selectors are neither saved nor replayed. Replaying
+    /// `wheel_profile` makes the wheel reload the slot's stored settings
+    /// over everything the same apply just wrote (issue #73).
+    #[test]
+    fn the_selectors_are_not_saved() {
+        let dir = tempdir();
+        let dev = wheel();
+        save_in(&dir, "s", &dev).unwrap();
+        let text = fs::read_to_string(dir.join("s.profile")).unwrap();
+        assert!(!text.contains("wheel_mode="), "mode is a selector, not a setting: {text}");
+        assert!(!text.contains("wheel_profile="), "slot is a selector, not a setting: {text}");
+        assert!(text.contains("wheel_strength=62"), "the settings themselves are still there");
+    }
+
+    /// A file written before the selectors were dropped still applies
+    /// cleanly: its settings land, its selector lines are skipped, and
+    /// nothing is reported, because nothing about that file is wrong.
+    #[test]
+    fn an_older_file_with_selectors_applies_without_replaying_them() {
+        let dir = tempdir();
+        fs::write(
+            dir.join("old.profile"),
+            "# logi-wheel profile\nwheel_strength=33\nwheel_trueforce=0\nwheel_mode=1\nwheel_profile=2\n",
+        )
+        .unwrap();
+        let fs = std::rc::Rc::new(FakeSysfs::new());
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_profile", "0");
+        fs.set("wheel_strength", "100");
+        fs.set("wheel_trueforce", "30");
+        let dev = Device::with_io(fs.clone());
+
+        let errors = apply_in(&dir, "old", &dev).unwrap();
+        assert_eq!(errors, Vec::new(), "{errors:?}");
+        assert_eq!(dev.read("wheel_trueforce").unwrap(), Value::Percent(0));
+        let written: Vec<String> = fs.writes().into_iter().map(|(a, _)| a).collect();
+        assert!(!written.iter().any(|a| a == "wheel_profile"), "slot must not be replayed: {written:?}");
+        assert!(!written.iter().any(|a| a == "wheel_mode"), "mode must not be replayed: {written:?}");
     }
 
     #[test]

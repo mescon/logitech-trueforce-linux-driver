@@ -7,6 +7,16 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**A profile no longer undoes itself on apply.** Setting TrueForce intensity
+to 0, saving and applying the profile brought it back to whatever the
+wheel's onboard slot had stored, and the same happened silently to every
+other setting (#73). The snapshot recorded the mode and slot selectors
+last, so applying it wrote every setting and then, as its final act, told
+the wheel to reload the slot over all of them. Those two are selectors
+rather than settings and are no longer saved or replayed; files written
+before this still apply, with their selector lines skipped. Verified on
+an RS50 against the wheel's slot reload.
+
 **The escape proxy stops writing to disk inside the game ten times a
 second.** It logs what a title's TrueForce SDK is doing, and every line
 was flushed before the game was allowed to continue. At the Escape stream
