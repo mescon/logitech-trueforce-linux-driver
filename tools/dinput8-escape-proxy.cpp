@@ -1644,7 +1644,19 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(inst);
 		InitializeCriticalSection(&g_log_lock);
-		g_log_ready = true;
+		/*
+		 * LOGI_ESCAPE_LOG=0 switches the log off entirely. On by
+		 * default, because it is the one record of what a title's SDK
+		 * did that exists when a report comes in, and since the flush
+		 * was taken off the per-line path its cost is a buffered write.
+		 * GetEnvironmentVariableA is kernel32, not the CRT, so it is
+		 * safe under the loader lock where this runs.
+		 */
+		char off[4];
+		bool silenced = GetEnvironmentVariableA("LOGI_ESCAPE_LOG", off,
+							sizeof(off)) == 1 &&
+				off[0] == '0';
+		g_log_ready = !silenced;
 		// Only memory reads and VirtualProtect: no CRT, no file, no
 		// loader call, so it is safe under the loader lock.
 		watch_sdk_handshake();

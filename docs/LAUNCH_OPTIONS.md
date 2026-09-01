@@ -307,6 +307,7 @@ app's Setup page, **Install relay**.
 | `LOGI_FFB_DEVICE` | the wheel `--wheel` resolved | Which evdev node `logi-ffb` drives (`eventN` or a full path). `logi-launch` sets it from the wheel it set the session up for; set it yourself only to override that |
 | `LOGI_TF_CAPTURE` | worked out from the wheels attached | `1` makes the TrueForce SDK shim relay the game's own TrueForce to `logi-tf-sim`, `0` stops it. Only a G923 wants it: on a direct-drive wheel Logitech's library streams those samples itself, and a second writer on the wheel's one-packet-per-millisecond endpoint takes turns with it rather than sharing, which buzzes. `logi-launch` sets it from `--wheel` when you name one |
 | `LOGI_TF_REARM` | `0` | **Experimental.** `1` makes `logi-launch` re-arm the TrueForce session before the game starts (the stop/start pair plus the 68-packet init, twice, from `tools/tf-init.bin`), for recovering from a previous session that died without teardown. Off by default pending hardware validation; a power cycle of the base remains the proven recovery |
+| `LOGI_ESCAPE_LOG` | `1` | The escape proxy staged into a game writes what the title's TrueForce SDK did to `dinput8-escape.log` beside itself. `0` switches that off. On by default because it is the one record that exists when a report comes in; since 0.39.2 its cost is a buffered write, flushed at most twice a second. |
 
 `LOGI_LAUNCH_EXE` replaces the relay, so simulated TrueForce and the rev
 lights lose their telemetry. That is the right choice only when you want

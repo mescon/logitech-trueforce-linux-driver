@@ -678,7 +678,16 @@ Contributions are welcome: code, testing on hardware this project cannot reach
 variants that are not yet fully supported. The kernel driver is a fork of
 [JacKeTUs/hid-logitech-hidpp](https://github.com/JacKeTUs/hid-logitech-hidpp);
 changes that apply to other Logitech devices are worth contributing upstream too.
-Open an issue with your kernel version, distribution, and relevant `dmesg` output.
+Open an issue with your kernel version, distribution, and relevant `dmesg` output;
+`tools/setup.sh report` prints all of that in one block.
+
+Most of the project can be checked without a wheel. The Rust workspace has its
+own tests (`cargo test --workspace` in `userspace/logi-wheel`), and the parts
+of the kernel driver that are pure arithmetic, the force maths and the texture
+synthesis, are header-only files with userspace harnesses under
+[`tests/`](tests/README.md) that build with nothing but a C compiler. CI runs
+all of it on every push. What needs hardware is listed in
+[docs/STATUS.md](docs/STATUS.md).
 
 ## License
 
