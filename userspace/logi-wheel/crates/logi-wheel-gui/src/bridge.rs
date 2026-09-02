@@ -145,6 +145,7 @@ pub fn attr_group(attr: &str) -> &'static str {
         "wheel_range" | "wheel_range_restore" => "ROTATION",
         "wheel_sensitivity" | "wheel_response_curve" | "wheel_calibrate_here" => "RESPONSE",
         "wheel_rev_level" => "REV LIGHTS",
+        "wheel_oled" | "wheel_oled_layouts" => "SCREEN",
         "wheel_combined_pedals" | "wheel_brake_force" => "GENERAL",
         "wheel_throttle_sensitivity" | "wheel_throttle_curve" | "wheel_throttle_deadzone" => {
             "THROTTLE"
