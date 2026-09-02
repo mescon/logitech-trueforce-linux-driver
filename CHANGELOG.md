@@ -7,6 +7,15 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**The base's OLED can be written to.** `wheel_oled` puts a frame on the
+RS50's (and G PRO's) Dynamic OLED, `wheel_oled_layouts` lists the ten
+layouts and what each takes, and `off` hands the screen back at once.
+Gear and speed, a gauge with a label, or four rows of text, from a shell
+or from anything that reads telemetry. The protocol came from three
+people over a month and was watched on an RS50 here before this was
+written (#75); the driver resends a frame every 50 ms because the panel
+returns to its own menu after under two seconds of silence.
+
 **A wheel that stops answering is reported instead of pretended.** A G923
 Xbox edition can wedge so that every HID++ command times out while force
 feedback still reports as loaded; only a power cycle of the wheel recovers

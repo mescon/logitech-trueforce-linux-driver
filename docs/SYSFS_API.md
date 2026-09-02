@@ -793,6 +793,78 @@ echo 7 > wheel_led_effect
 echo 3 > wheel_led_effect
 ```
 
+### wheel_oled
+**Access**: Read/Write
+**Availability**: wheels with feature `0x8130` (the RS50 and G PRO base OLED); reads `unsupported` elsewhere
+
+Puts a frame on the base's Dynamic OLED, or hands the screen back. Write
+`<layout>|<field>|<field>...`, where the layout is a letter `A` to `J` (or
+`0` to `9`) and the fields follow in **payload order**, which for layouts D
+and E is not the order the screen draws them. `wheel_oled_layouts` lists
+what each layout takes. Text fields are space-padded to their width and
+must not exceed it (`EMSGSIZE`); number fields take `0` to `255`; more
+fields than the layout has is `E2BIG`. Fewer leaves the rest blank. Write
+`off` to hand the screen back to the wheel's own menu immediately.
+
+| layout | fields, in write order | draws |
+|---|---|---|
+| A | none | black frame |
+| B | none | the firmware's own test composition |
+| C | fill | a gauge |
+| D | fill, mark, text(11) | gauge with a label |
+| E | fill, mark, text(3), text(7) | gauge; the 3-char draws right, the 7-char left |
+| F | text(1), text(3) | medium gear, very large value |
+| G | text(1), text(3) | very large gear, medium value |
+| H | text(21), text(10) | small row over a larger row |
+| I | text(19), text(10), text(19), text(10) | four rows, 2 and 4 larger, right-aligned |
+| J | same as I | four rows, every row centred |
+
+The panel does not hold a frame: the firmware returns to its own menu
+after under two seconds of silence, so the driver resends the current
+frame every 50 ms for as long as one is up. Reading back gives the last
+write, or `off`. Two renderer rules worth knowing, both watched on an
+RS50: a value on a wide large row (H's lower row, I's large rows) draws its
+first character pinned left and the rest right-aligned, so `112%` shows as
+`1` and `12%` with a gap, and a leading space gives a clean right-aligned
+value instead; and no large-font layout centres, so J's rows are the
+largest centred text the panel has. Full protocol in
+`PROTOCOL_SPECIFICATION.md` 12.3.
+
+```bash
+echo 'G|3|142' > wheel_oled          # gear and speed
+echo 'J|Lap 12|1:42.7|Best|1:41.9' > wheel_oled
+echo off > wheel_oled
+```
+
+These are non-force writes to the HID++ endpoint during play, the same
+class as the rev lights, which have run alongside force and texture on
+these wheels since 0.35.0. On a title that pushes DirectInput force to
+HID++ next to its own TrueForce stream they can cut that force (12.5);
+the rev lights carry the identical caveat.
+
+### wheel_oled_layouts
+**Access**: Read-only
+**Availability**: as `wheel_oled`
+
+One line per layout the wheel reports: index, letter, the field kinds in
+write order, then the text widths as the wheel's own descriptor lists them,
+which is drawn order. E is the one layout where that differs from write
+order (its 3-character field is written first and drawn on the right). On
+an RS50:
+
+```
+0 A
+1 B
+2 C num
+3 D num num text 11
+4 E num num text text 7,3
+5 F text text 1,3
+6 G text text 1,3
+7 H text text 21,10
+8 I text text text text 19,10,19,10
+9 J text text text text 19,10,19,10
+```
+
 ### wheel_response_curve
 **Access**: Read/Write
 **Availability**: all direct-drive wheels (feature `0x80A4`)

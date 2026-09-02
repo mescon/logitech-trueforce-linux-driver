@@ -166,6 +166,7 @@ static bool dd_is_real_gpro(struct hid_device *hdev)
 #include "hidpp_dd_tf_init.h"
 #include "hidpp_dd_texture_merge.h"
 #include "hidpp_dd_effect_math.h"
+#include <linux/sort.h>
 
 /*
  * Build-time identifier supplied by Kbuild (-DHIDPP_DD_GIT_HASH=...). Falls
@@ -5174,6 +5175,7 @@ static void hidpp_ff_retry_work(struct work_struct *work)
  * identified correctly. Three of our names are misleading enough to be
  * worth the annotation.
  */
+#define HIDPP_DD_PAGE_DISPLAY		0x8130	/* DisplayGameData: the Dynamic OLED on the base */
 #define HIDPP_DD_PAGE_LIGHTSYNC		0x807A	/* LED Effects; Logitech: RPM_INDICATOR - it is the rev display specifically, not general LIGHTSYNC RGB (which is 0x8070 COLOR_LED_EFFECTS / 0x8071 RGB_EFFECTS, unused here) */
 #define HIDPP_DD_PAGE_RGB_CONFIG		0x807B	/* LED colour data; Logitech: RPM_LED_PATTERN */
 #define HIDPP_DD_PAGE_PROFILE_NOTIFY	0x80D0	/* Logitech: COMBINED_PEDALS. Named for the profile-change broadcast we found first, which the official name explains: changing combined-pedals mode IS a profile change, hence the event (see idx_profile_notify) */
@@ -5416,6 +5418,10 @@ struct hidpp_dd_lightsync_slot {
 
 /* Marker for features that weren't discovered (not supported by device) */
 #define HIDPP_DD_FEATURE_NOT_FOUND		0xFF
+#define HIDPP_DD_OLED_MAX_LAYOUTS	10
+#define HIDPP_DD_OLED_FRAME		60	/* fn3 params in a 64-byte report: bytes 4..63 */
+#define HIDPP_DD_OLED_TEXT		96	/* longest accepted write, with separators */
+#define HIDPP_DD_OLED_REFRESH_MS	50	/* the panel drops the frame under 2 s of silence */
 
 /* Direct-drive FFB constants */
 /*
@@ -5765,6 +5771,30 @@ struct hidpp_dd_ff_data {
 	u8 rev_level;			/* last successfully commanded level 0-10 (reported by _show) */
 	u8 rev_target;			/* newest requested level, WRITE_ONCE/READ_ONCE */
 	unsigned long rev_last_write;	/* jiffies of last level-pair attempt (rev_lock) */
+
+	/*
+	 * Dynamic OLED, feature 0x8130 (PROTOCOL_SPECIFICATION.md 12.3).
+	 * The panel is a typed renderer: each of its ten layouts takes a
+	 * fixed set of fields, and the firmware draws them. It does not
+	 * hold a frame: under two seconds of host silence hands the screen
+	 * back to the wheel's own menu, so while a frame is up oled_work
+	 * resends it on a tick, and fn2 hands the screen back at once when
+	 * the frame is cleared. Serialised by oled_lock; sends run under
+	 * send_mutex like the rev lights, on the same endpoint, for the
+	 * same reason.
+	 */
+	u8 idx_display;			/* Feature index for 0x8130, or NOT_FOUND */
+	u8 oled_count;			/* fn0 layout count, 0 until discovery answers */
+	struct {
+		u8 id;			/* one-based layout ID as fn1 reports it */
+		u8 cap[4];		/* text field widths as fn1 reports them */
+	} oled_layout[HIDPP_DD_OLED_MAX_LAYOUTS];
+	struct mutex oled_lock;
+	struct delayed_work oled_work;	/* refresh tick while a frame is up */
+	u8 oled_frame[HIDPP_DD_OLED_FRAME];	/* fn3 params: layout, then payload */
+	bool oled_active;		/* a frame is being held (oled_lock) */
+	bool oled_err_logged;		/* send-fail warned once this streak (oled_lock) */
+	char oled_text[HIDPP_DD_OLED_TEXT];	/* what was written, for _show (oled_lock) */
 	u8 idx_profile;			/* Feature index for Profile switching */
 	u8 idx_profile_notify;		/* Feature index for 0x80D0 (dual-purpose: fn1 profile-change broadcasts AND the combined-pedals get/set fn0/fn1, whose changes the wheel echoes as fn0 sw0 events carrying the VALUE, not a profile) */
 	u8 idx_sync;			/* Feature index for sync/prepare (0x1BC0) */
@@ -5987,6 +6017,8 @@ static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff);
 static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range);
 static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t);
 static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp, u8 *data, int size);
+static void hidpp_dd_oled_read_layouts(struct hidpp_device *hidpp,
+				       struct hidpp_dd_ff_data *ff);
 static struct hidpp_dd_ff_data *hidpp_dd_find_ff_data(struct hid_device *hdev);
 static void hidpp_dd_texmerge_install(struct hidpp_dd_ff_data *ff,
 				      struct hid_device *ff_hdev);
@@ -8695,6 +8727,13 @@ static void hidpp_dd_discover_lightsync_features(struct hidpp_dd_ff_data *ff)
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_RGB_CONFIG, &ff->idx_rgb_config);
 	if (ret == 0)
 		dd_dbg(hid, "RGB config feature at index 0x%02x\n", ff->idx_rgb_config);
+
+	ff->idx_display = HIDPP_DD_FEATURE_NOT_FOUND;
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_DISPLAY, &ff->idx_display);
+	if (ret == 0) {
+		dd_dbg(hid, "Display feature at index 0x%02x\n", ff->idx_display);
+		hidpp_dd_oled_read_layouts(hidpp, ff);
+	}
 
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_SYNC, &ff->idx_sync);
 	if (ret == 0)
@@ -11867,6 +11906,334 @@ static ssize_t wheel_led_effect_store(struct device *dev, struct device_attribut
 
 static DEVICE_ATTR(wheel_led_effect, 0664, wheel_led_effect_show, wheel_led_effect_store);
 
+/* -------------------------------------------------------------------------- */
+/* Dynamic OLED (0x8130): wheel_oled and wheel_oled_layouts                    */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * What each layout's fn3 payload holds, in PAYLOAD order, which is not
+ * always the order fn1 lists the fields (E draws its 3-character field on
+ * the right but takes it first) and which fn1 cannot express at all for
+ * the two gauge bytes D and E take before their text. Widths from
+ * PROTOCOL_SPECIFICATION.md 12.3: F to J driven on a G PRO by @Mhytee, A
+ * to E from @PeposCJ's writer, G, H and J watched on an RS50 here.
+ *
+ * A width of 0 ends the field list; a negative width is a single byte
+ * taking a number 0..255 rather than text.
+ */
+#define HIDPP_DD_OLED_NUM	(-1)
+static const struct {
+	char letter;
+	s8 field[4];
+} hidpp_dd_oled_schema[HIDPP_DD_OLED_MAX_LAYOUTS] = {
+	{ 'A', { 0 } },				/* black frame */
+	{ 'B', { 0 } },				/* the firmware's own test composition */
+	{ 'C', { HIDPP_DD_OLED_NUM } },		/* gauge fill */
+	{ 'D', { HIDPP_DD_OLED_NUM, HIDPP_DD_OLED_NUM, 11 } },
+	{ 'E', { HIDPP_DD_OLED_NUM, HIDPP_DD_OLED_NUM, 3, 7 } },
+	{ 'F', { 1, 3 } },			/* medium gear, very large value */
+	{ 'G', { 1, 3 } },			/* very large gear, medium value */
+	{ 'H', { 21, 10 } },			/* small row, larger row */
+	{ 'I', { 19, 10, 19, 10 } },		/* rows 2 and 4 larger, right-aligned */
+	{ 'J', { 19, 10, 19, 10 } },		/* same, every row centred */
+};
+
+/*
+ * fn0 then fn1 for every layout, once, at bring-up: the count and the
+ * text widths the wheel itself reports. Kept for wheel_oled_layouts and
+ * checked against the schema above, so a firmware that ever differs from
+ * what this was written against says so in dmesg rather than drawing
+ * garbage.
+ */
+static int hidpp_dd_oled_cmp_u8(const void *a, const void *b)
+{
+	return (int)*(const u8 *)a - (int)*(const u8 *)b;
+}
+
+static void hidpp_dd_oled_read_layouts(struct hidpp_device *hidpp,
+				       struct hidpp_dd_ff_data *ff)
+{
+	struct hidpp_report response;
+	u8 params[1];
+	int i, ret;
+
+	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_display, 0x00, NULL, 0,
+					  &response);
+	if (ret) {
+		dd_warn(hidpp->hid_dev, "OLED: layout count unreadable (%d)\n", ret);
+		return;
+	}
+	ff->oled_count = min_t(u8, response.fap.params[0], HIDPP_DD_OLED_MAX_LAYOUTS);
+
+	for (i = 0; i < ff->oled_count; i++) {
+		int f, n = 0;
+
+		params[0] = i;
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_display, 0x10,
+						  params, 1, &response);
+		if (ret)
+			continue;
+		/* [requested index][one-based layout ID][four capability bytes] */
+		ff->oled_layout[i].id = response.fap.params[1];
+		memcpy(ff->oled_layout[i].cap, &response.fap.params[2], 4);
+
+		/*
+		 * Compare the widths as a set, not by position: the descriptor
+		 * lists fields as drawn, the schema in payload order, and E is
+		 * the layout where those differ (7 then 3 on screen, 3 then 7
+		 * on the wire). A positional check flagged exactly that, on an
+		 * RS50 here, the first time this ran.
+		 */
+		{
+			u8 want[4] = { 0 }, have[4] = { 0 };
+			int w = 0;
+
+			for (f = 0; f < 4 && hidpp_dd_oled_schema[i].field[f]; f++)
+				if (hidpp_dd_oled_schema[i].field[f] > 0)
+					want[w++] = hidpp_dd_oled_schema[i].field[f];
+			memcpy(have, ff->oled_layout[i].cap, 4);
+			sort(want, 4, 1, hidpp_dd_oled_cmp_u8, NULL);
+			sort(have, 4, 1, hidpp_dd_oled_cmp_u8, NULL);
+			if (memcmp(want, have, 4))
+				dd_warn(hidpp->hid_dev,
+					"OLED: layout %c reports widths %u/%u/%u/%u here, schema expects %u/%u/%u/%u\n",
+					hidpp_dd_oled_schema[i].letter,
+					have[0], have[1], have[2], have[3],
+					want[0], want[1], want[2], want[3]);
+		}
+		(void)n;
+	}
+	dd_info(hidpp->hid_dev, "OLED: %u layouts (wheel_oled)\n", ff->oled_count);
+}
+
+/*
+ * One fire-and-forget 64-byte report to the display feature. Same shape
+ * as the rev-light sends: a DMA-safe buffer, our own software id, and the
+ * caller holding send_mutex so no sync question is pending while a reply
+ * the wheel may send could be mistaken for its answer.
+ */
+#define HIDPP_DD_OLED_SWID	0x0c	/* the software id G HUB uses on this wheel */
+
+static int hidpp_dd_oled_send(struct hidpp_device *hidpp, u8 idx, u8 fn,
+			      const u8 *params, size_t len)
+{
+	struct hidpp_report *report;
+	int ret;
+
+	report = kzalloc(sizeof(*report), GFP_KERNEL);
+	if (!report)
+		return -ENOMEM;
+	report->report_id = REPORT_ID_HIDPP_VERY_LONG;
+	report->device_index = 0xff;
+	report->fap.feature_index = idx;
+	report->fap.funcindex_clientid = (fn << 4) | HIDPP_DD_OLED_SWID;
+	if (params && len)
+		memcpy(report->fap.params, params, min_t(size_t, len, HIDPP_DD_OLED_FRAME));
+	ret = __hidpp_send_report(hidpp->hid_dev, report);
+	kfree(report);
+	return ret;
+}
+
+/*
+ * The refresh tick. While a frame is up it is resent every
+ * HIDPP_DD_OLED_REFRESH_MS, because the panel returns to the wheel's menu
+ * after under two seconds without one; a cleared frame stops the tick.
+ */
+static void hidpp_dd_oled_work_handler(struct work_struct *work)
+{
+	struct hidpp_dd_ff_data *ff = container_of(work, struct hidpp_dd_ff_data,
+						   oled_work.work);
+	struct hidpp_device *hidpp = ff->hidpp;
+	int ret;
+
+	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
+		return;
+
+	mutex_lock(&ff->oled_lock);
+	if (!ff->oled_active || atomic_read_acquire(&ff->stopping) ||
+	    ff->idx_display == HIDPP_DD_FEATURE_NOT_FOUND) {
+		mutex_unlock(&ff->oled_lock);
+		return;
+	}
+
+	mutex_lock(&hidpp->send_mutex);
+	ret = hidpp_dd_oled_send(hidpp, ff->idx_display, 0x3, ff->oled_frame,
+				 HIDPP_DD_OLED_FRAME);
+	mutex_unlock(&hidpp->send_mutex);
+
+	if (ret < 0) {
+		if (!ff->oled_err_logged) {
+			dd_warn(hidpp->hid_dev, "OLED: frame send failed: %d\n", -EIO);
+			ff->oled_err_logged = true;
+		}
+	} else {
+		ff->oled_err_logged = false;
+	}
+
+	if (ff->oled_active && !atomic_read_acquire(&ff->stopping))
+		queue_delayed_work(ff->wq, &ff->oled_work,
+				   msecs_to_jiffies(HIDPP_DD_OLED_REFRESH_MS));
+	mutex_unlock(&ff->oled_lock);
+}
+
+/* Hand the screen back to the wheel now rather than after its timeout. oled_lock held. */
+static void hidpp_dd_oled_handback(struct hidpp_device *hidpp, struct hidpp_dd_ff_data *ff)
+{
+	ff->oled_active = false;
+	ff->oled_text[0] = '\0';
+	if (ff->idx_display == HIDPP_DD_FEATURE_NOT_FOUND)
+		return;
+	mutex_lock(&hidpp->send_mutex);
+	hidpp_dd_oled_send(hidpp, ff->idx_display, 0x2, NULL, 0);
+	mutex_unlock(&hidpp->send_mutex);
+}
+
+/*
+ * Parse "<layout>|<field>|<field>..." into an fn3 payload. The layout is
+ * a letter A..J or an index 0..9; fields follow in payload order per the
+ * schema. A number field takes 0..255; a text field takes up to its width
+ * and is space-padded, since spaces are content on this panel. Fewer
+ * fields than the layout has leaves the rest blank; more is an error, as
+ * is text wider than its field, because silently truncating a value on a
+ * screen the driver is meant to be trusted with would be worse than
+ * refusing.
+ */
+static int hidpp_dd_oled_parse(const char *buf, size_t count, u8 *frame,
+			       u8 count_max)
+{
+	char text[HIDPP_DD_OLED_TEXT];
+	char *cur, *tok;
+	int layout, f = 0, pos = 1;
+
+	if (count >= sizeof(text))
+		return -EMSGSIZE;
+	memcpy(text, buf, count);
+	text[count] = '\0';
+	strim(text);
+
+	cur = text;
+	tok = strsep(&cur, "|");
+	if (!tok || !*tok)
+		return -EINVAL;
+	if (strlen(tok) == 1 && ((*tok >= 'A' && *tok <= 'J') || (*tok >= 'a' && *tok <= 'j')))
+		layout = (*tok | 0x20) - 'a';
+	else if (kstrtoint(tok, 10, &layout) || layout < 0 || layout > 9)
+		return -EINVAL;
+	if (layout >= count_max)
+		return -ENOENT;
+
+	memset(frame, 0, HIDPP_DD_OLED_FRAME);
+	frame[0] = layout;
+
+	while ((tok = strsep(&cur, "|")) != NULL) {
+		s8 width = f < 4 ? hidpp_dd_oled_schema[layout].field[f] : 0;
+
+		if (!width)
+			return -E2BIG;
+		if (width == HIDPP_DD_OLED_NUM) {
+			unsigned int v;
+
+			if (kstrtouint(tok, 10, &v) || v > 255)
+				return -EINVAL;
+			frame[pos++] = v;
+		} else {
+			size_t n = strlen(tok);
+
+			if (n > (size_t)width)
+				return -EMSGSIZE;
+			memset(&frame[pos], ' ', width);
+			memcpy(&frame[pos], tok, n);
+			pos += width;
+		}
+		f++;
+	}
+	return 0;
+}
+
+static ssize_t wheel_oled_show(struct device *dev, struct device_attribute *attr,
+			       char *buf)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(to_hid_device(dev));
+	struct hidpp_dd_ff_data *ff = hidpp ? hidpp->private_data : NULL;
+	ssize_t n;
+
+	if (!ff)
+		return -ENODEV;
+	if (ff->idx_display == HIDPP_DD_FEATURE_NOT_FOUND)
+		return sysfs_emit(buf, "unsupported\n");
+	mutex_lock(&ff->oled_lock);
+	n = sysfs_emit(buf, "%s\n", ff->oled_active ? ff->oled_text : "off");
+	mutex_unlock(&ff->oled_lock);
+	return n;
+}
+
+static ssize_t wheel_oled_store(struct device *dev, struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(to_hid_device(dev));
+	struct hidpp_dd_ff_data *ff = hidpp ? hidpp->private_data : NULL;
+	u8 frame[HIDPP_DD_OLED_FRAME];
+	int ret;
+
+	if (!ff)
+		return -ENODEV;
+	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
+		return -ENODEV;
+	if (ff->idx_display == HIDPP_DD_FEATURE_NOT_FOUND)
+		return -EOPNOTSUPP;
+
+	if (sysfs_streq(buf, "off") || sysfs_streq(buf, "")) {
+		mutex_lock(&ff->oled_lock);
+		hidpp_dd_oled_handback(hidpp, ff);
+		mutex_unlock(&ff->oled_lock);
+		cancel_delayed_work_sync(&ff->oled_work);
+		return count;
+	}
+
+	ret = hidpp_dd_oled_parse(buf, count, frame, ff->oled_count);
+	if (ret)
+		return ret;
+
+	mutex_lock(&ff->oled_lock);
+	memcpy(ff->oled_frame, frame, sizeof(frame));
+	strscpy(ff->oled_text, buf, sizeof(ff->oled_text));
+	strim(ff->oled_text);
+	ff->oled_active = true;
+	mutex_unlock(&ff->oled_lock);
+	/* Now, not on the next tick: the first frame is what the user is waiting for. */
+	mod_delayed_work(ff->wq, &ff->oled_work, 0);
+	return count;
+}
+
+/* The layouts the wheel reports, one per line: index, letter, text widths. */
+static ssize_t wheel_oled_layouts_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct hidpp_device *hidpp = hid_get_drvdata(to_hid_device(dev));
+	struct hidpp_dd_ff_data *ff = hidpp ? hidpp->private_data : NULL;
+	ssize_t n = 0;
+	int i, f;
+
+	if (!ff)
+		return -ENODEV;
+	if (ff->idx_display == HIDPP_DD_FEATURE_NOT_FOUND)
+		return sysfs_emit(buf, "unsupported\n");
+	for (i = 0; i < ff->oled_count; i++) {
+		n += sysfs_emit_at(buf, n, "%d %c", i, hidpp_dd_oled_schema[i].letter);
+		for (f = 0; f < 4 && hidpp_dd_oled_schema[i].field[f]; f++)
+			n += sysfs_emit_at(buf, n, " %s",
+				hidpp_dd_oled_schema[i].field[f] == HIDPP_DD_OLED_NUM ?
+					"num" : "text");
+		for (f = 0; f < 4 && ff->oled_layout[i].cap[f]; f++)
+			n += sysfs_emit_at(buf, n, "%s%u", f ? "," : " ", ff->oled_layout[i].cap[f]);
+		n += sysfs_emit_at(buf, n, "\n");
+	}
+	return n;
+}
+
+static DEVICE_ATTR(wheel_oled, 0664, wheel_oled_show, wheel_oled_store);
+static DEVICE_ATTR(wheel_oled_layouts, 0444, wheel_oled_layouts_show, NULL);
+
 /*
  * wheel_rev_level: rev-light level (0-10 = how many LEDs lit) on the
  * level-based 0x807A dialect. Originally documented from a real G PRO
@@ -14665,6 +15032,8 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_led_brightness.attr,
 	&dev_attr_wheel_led_effect.attr,
 	&dev_attr_wheel_rev_level.attr,
+	&dev_attr_wheel_oled.attr,
+	&dev_attr_wheel_oled_layouts.attr,
 #ifdef CONFIG_HID_LOGITECH_HIDPP_DEBUG
 	&dev_attr_wheel_hidpp_debug.attr,
 #endif
@@ -14912,6 +15281,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->kf_idle_ticks = 0;
 	ff->kf_gated = false;
 	mutex_init(&ff->rev_lock);
+	mutex_init(&ff->oled_lock);
 	memset16(ff->tf_window, 0x8000, HIDPP_DD_TF_WINDOW); /* offset-binary centre */
 	spin_lock_init(&ff->effects_lock);
 	atomic_set(&ff->sequence, 0);
@@ -15000,6 +15370,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	INIT_DELAYED_WORK(&ff->refresh_work, hidpp_dd_ff_refresh_work);
 	INIT_DELAYED_WORK(&ff->range_poll_work, hidpp_dd_ff_range_poll_work);
 	INIT_DELAYED_WORK(&ff->rev_work, hidpp_dd_rev_work_handler);
+	INIT_DELAYED_WORK(&ff->oled_work, hidpp_dd_oled_work_handler);
 	INIT_WORK(&ff->settings_refresh_work, hidpp_dd_ff_settings_refresh_work);
 	INIT_WORK(&ff->accessory_rescan_work, hidpp_dd_accessory_rescan_work);
 	INIT_WORK(&ff->tf_init_work, hidpp_dd_tf_init_work_handler);
@@ -15146,6 +15517,16 @@ static void hidpp_dd_ff_destroy(struct hidpp_device *hidpp)
 	 * stopping is already set, so a running instance can't self-requeue.
 	 */
 	cancel_delayed_work_sync(&ff->rev_work);
+	/*
+	 * Give the screen back on the way out. Best effort: the wheel may
+	 * already be gone, and its own timeout covers that case.
+	 */
+	cancel_delayed_work_sync(&ff->oled_work);
+	if (ff->oled_active) {
+		mutex_lock(&ff->oled_lock);
+		hidpp_dd_oled_handback(ff->hidpp, ff);
+		mutex_unlock(&ff->oled_lock);
+	}
 	cancel_work_sync(&ff->settings_refresh_work);
 	cancel_work_sync(&ff->accessory_rescan_work);
 	cancel_work_sync(&ff->tf_init_work);

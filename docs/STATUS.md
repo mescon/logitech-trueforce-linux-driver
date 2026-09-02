@@ -145,9 +145,9 @@ changing it changes which effects route where.
 TrueForce session opens fine and never streams. Power-cycling the base
 clears it.
 
-**Four features the wheels have and this driver does not use.**
-`DUAL_CLUTCH`, `GAMING_ATTACHMENTS`, `DISPLAY_GAME_DATA` (the RS50's OLED,
-largely decoded in the specification but unimplemented) and `AXIS_MAPPING`.
+**Three features the wheels have and this driver does not use.**
+`DUAL_CLUTCH`, `GAMING_ATTACHMENTS` and `AXIS_MAPPING`. (`DISPLAY_GAME_DATA`,
+the base OLED, is driven through `wheel_oled` as of this release.)
 Each needs a capture of G HUB exercising the control, and each would be a
 non-force write to the HID++ endpoint, which specification 12.5 says cuts
 live force.
