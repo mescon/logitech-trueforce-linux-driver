@@ -2126,6 +2126,15 @@ without it the wheel reclaims its screen only after that timeout.
 **The feature ends at fn3.** fn4 through fn15 answer HID++ error `0x07`
 INVALID_FUNCTION_ID on a G PRO; there is no claim-the-display call.
 
+**Verified here, first-hand** (RS50, base firmware U1 65.04.B0039,
+2026-09-03, watched): the fn3 frame above is accepted at the dynamically
+resolved index; layout J drew four rows, the second and fourth larger, all
+centred; layout G drew the very large gear digit with the three-character
+value beside it; layout H drew `112%` on its lower row as `1` pinned left
+and `12%` right with a gap, which is the two-zone rule; and fn2 returned
+the wheel's own menu immediately each time. Held at 20 Hz for the viewing,
+and stable at that rate.
+
 A cheaper first-hand probe than a watched write: fill bytes 5..63 with
 distinct printable characters (a ruler frame) and the panel labels its
 own offsets, one frame per layout. A full-width ruler masks the two-zone
