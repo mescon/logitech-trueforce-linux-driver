@@ -488,6 +488,12 @@ struct hidpp_device {
 	wait_queue_head_t wait;
 	int very_long_report_length;
 	bool answer_available;
+	/*
+	 * Consecutive synchronous commands that got no answer at all, and
+	 * whether the user has been told. See hidpp_note_sync_result().
+	 */
+	unsigned int sync_timeouts;
+	bool unresponsive_warned;
 	u8 protocol_major;
 	u8 protocol_minor;
 
@@ -750,6 +756,50 @@ static int __do_hidpp_send_message_sync(struct hidpp_device *hidpp,
  * hidpp_send_message_sync(), which is unchanged and always uses
  * HIDPP_SEND_TIMEOUT.
  */
+/*
+ * How many commands in a row may go unanswered before the driver says so.
+ * One or two is a busy wheel; this many is a wheel that has stopped.
+ */
+#define HIDPP_UNRESPONSIVE_AFTER	5
+
+/*
+ * Notice a wheel that has stopped answering, and say so once.
+ *
+ * A G923 Xbox edition can wedge in a way that leaves every HID++ command
+ * timing out while the driver still believes force feedback is loaded:
+ * init reported success, every later command silently expired, and the
+ * user saw a driver that had quietly stopped applying force. Reloading
+ * the module and re-enumerating USB do not recover it; only a power cycle
+ * of the wheel does, which is precisely the one thing a user who has been
+ * told nothing will not try (issue #72, reproduced twice by its reporter).
+ *
+ * This cannot unwedge the firmware. It can stop the driver lying about
+ * it. Timeouts are counted only when they are consecutive, since a single
+ * one is ordinary on a busy wheel, and the warning fires once per run so
+ * a wedged wheel does not fill the log. Any answered command, error
+ * replies included, resets it: the wheel is talking again.
+ *
+ * Called with send_mutex held, which is what makes the counter safe.
+ */
+static void hidpp_note_sync_result(struct hidpp_device *hidpp, int ret)
+{
+	if (ret != -ETIMEDOUT) {
+		if (hidpp->unresponsive_warned)
+			hid_info(hidpp->hid_dev,
+				 "wheel is answering commands again\n");
+		hidpp->sync_timeouts = 0;
+		hidpp->unresponsive_warned = false;
+		return;
+	}
+	if (++hidpp->sync_timeouts < HIDPP_UNRESPONSIVE_AFTER ||
+	    hidpp->unresponsive_warned)
+		return;
+	hidpp->unresponsive_warned = true;
+	hid_warn(hidpp->hid_dev,
+		 "wheel has not answered the last %u commands: it has stopped responding. Reloading the driver or replugging USB will not recover it; power-cycle the wheel\n",
+		 hidpp->sync_timeouts);
+}
+
 static int hidpp_send_message_sync_timeout(struct hidpp_device *hidpp,
 	struct hidpp_report *message,
 	struct hidpp_report *response,
@@ -785,6 +835,7 @@ static int hidpp_send_message_sync_timeout(struct hidpp_device *hidpp,
 		dbg_hid("%s:got busy hidpp error %02X, retrying\n", __func__, ret);
 	} while (--max_retries);
 
+	hidpp_note_sync_result(hidpp, ret);
 	mutex_unlock(&hidpp->send_mutex);
 	return ret;
 

@@ -14,7 +14,7 @@ measured, which are argued, and which are hoped.
 | RS50 (`c276`, both editions) | yes, native path | yes, the game's own and simulated | full `wheel_*` surface | yes, and LIGHTSYNC colours |
 | G PRO (`c272`/`c268`) | yes, same path | yes | full surface | level-based, see below |
 | G923 PS (`c266`/`c267`) | yes, classic path | simulated only | **none** | yes, classic command |
-| G923 Xbox (`c26e`) | yes, HID++ 0x8123, when its HID++ answers in time | simulated, but not alongside force | **none** | registered, unconfirmed |
+| G923 Xbox (`c26e`) | yes, HID++ 0x8123 by default; this driver's own engine with `g923_xbox_dd_engine=1` | simulated; alongside force only on the driver's engine | **none** | registered, unconfirmed |
 
 The Xbox editions of the RS50 (`c275`) and the G923 (`c26d`) boot speaking
 the console's own protocol, with no HID++ interface to bind. Both are
@@ -32,11 +32,20 @@ streams anyway for anyone who wants the haptics and not the force.
 
 The way to have both is `g923_xbox_dd_engine=1`, which moves that wheel
 onto the engine the direct-drive wheels use, summing the effects here and
-carrying force and texture in one packet. It is off by default and has
-never run on the hardware, since no `c26e` is available here. Under it the
+carrying force and texture in one packet. Off by default, and now measured
+on the hardware by its owner (issue #72, 2026-09-02): force is linear in
+the commanded level above a static-friction floor of about 3.6% of full
+scale, and the engine's gain matches the firmware path to within the
+measurement's own noise, so the scaling needed no change. Under it the
 condition effects stay silent, because that edition's steering reports do
 not reach the engine yet, and the rev lights stay on their own LED device,
 which speaks the command that wheel obeys rather than the direct-drive one.
+
+That wheel can also wedge: every HID++ command times out while init has
+already reported success, and only a power cycle of the wheel recovers it,
+not a module reload or a USB replug. The driver now notices a run of
+unanswered commands and says so, once, in dmesg, since the natural response
+to force quietly stopping is exactly the pair of things that do not work.
 
 Whether force feedback comes up at all on that wheel depends on its HID++
 answering while this driver is still in probe. A fix that keeps waiting

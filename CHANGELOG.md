@@ -7,6 +7,13 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**A wheel that stops answering is reported instead of pretended.** A G923
+Xbox edition can wedge so that every HID++ command times out while force
+feedback still reports as loaded; only a power cycle of the wheel recovers
+it, and the two things a user naturally tries, reloading the driver and
+replugging USB, do not (#72). The driver now notices a run of unanswered
+commands and says so once in dmesg, with the one recovery that works.
+
 **The doctor notices a module that was updated but never reloaded, and
 there is a `report` mode.** DKMS installs a new driver build and leaves
 the old one running; every version number on disk then says one thing
