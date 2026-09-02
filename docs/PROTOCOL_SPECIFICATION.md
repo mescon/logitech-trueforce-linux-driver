@@ -2055,10 +2055,85 @@ index `0x12`, confirmed as `0x8130` through IFeatureSet):
 | 8 | I | 19, 10, 19, 10 |
 | 9 | J | 19, 10, 19, 10 |
 
-A to C report no text capacities at all, so whatever they draw is not text
-fed through fn3's text fields; what they show, and what the single-width
-fields of F and G hold (a gear, plausibly, next to a three-character
-value), needs a write to find out. fn0 answered `0x0a`, ten, matching.
+fn0 answered `0x0a`, ten, matching. A G PRO fn1 sweep (@Mhytee, 2026-08-06)
+matches this table on all ten layouts, counts and widths identical.
+
+**fn3, validated on hardware** (@Mhytee on a G PRO, layouts F to J driven
+since 2026-08-06 and shipped in TF4ALL; A to E from @PeposCJ's working
+writer and gallery record; both sources corroborate each other's numbers
+wherever they overlap. Posted in issue #75, 2026-09-02). Every setter is
+the 64-byte VERY_LONG report, layout byte first:
+
+```
+12 ff <featureIdx> 3<swid> <layout 0..9> <layout payload, zero padded to 64>
+```
+
+Text is ASCII, left aligned, fixed width, packed back to back; spaces are
+content; zero padding after the last field is fine. Firmware behaviour on
+non-printable bytes is uncharacterised (TF4ALL clamps to space). Payload
+offsets count the report ID as byte 0:
+
+| layout | payload |
+|---|---|
+| A (0) | none accepted; renders a black frame |
+| B (1) | none accepted; the firmware's own four-bar test composition |
+| C (2) | byte 5 = gauge fill `0..255` |
+| D (3) | byte 5 = gauge fill, byte 6 = thin indicator mark, bytes 7-17 = 11-char label |
+| E (4) | byte 5 = gauge fill, byte 6 = thin indicator, bytes 7-9 = 3-char (draws RIGHT), bytes 10-16 = 7-char (draws LEFT) |
+| F (5) | byte 5 = 1-char (medium), bytes 6-8 = 3-char (very large) |
+| G (6) | byte 5 = 1-char (very large), bytes 6-8 = 3-char (medium) |
+| H (7) | bytes 5-25 = 21-char small row, bytes 26-35 = 10-char larger row |
+| I (8) | bytes 5-23, 24-33, 34-52, 53-62 = 19/10/19/10; rows 2 and 4 larger, right-aligned |
+| J (9) | same offsets as I; every row centred |
+
+The gauge's unfilled remainder is a diagonal-stripe background that the
+fill replaces left to right. G is the classic gear-and-speed screen: a
+very large one-character slot, a firmware-drawn separator, a medium
+three-character value; F is its mirror. Those two carry the panel's
+largest font (37 px), which exists nowhere else.
+
+**Two traps in "build frames from the descriptor".** fn1's capability
+bytes describe text fields only: D and E also take two normalised value
+bytes, and those come *first* in the payload, so a writer that starts
+text at byte 5 with the descriptor's widths corrupts D's gauge with the
+label's first two characters. And the descriptor lists fields left to
+right *as drawn*, not in payload order; E is the one layout where the two
+differ. Descriptor widths are trustworthy, descriptor order is not, and
+D/E need their value bytes prepended.
+
+**I versus J** have identical descriptors and different rendering: I
+right-aligns its two large rows, J centres every row. Only a write tells
+them apart.
+
+**Two-zone rule.** The wide large rows (H's lower row, I's large rows)
+draw the first character pinned to the left edge and the remainder
+right-aligned: "112%" draws "1" left and "12%" right with a gap, on a
+correctly described single field. Spaces steer it: a leading space skips
+the left zone for a clean right-aligned value, trailing spaces pull it
+back, character-exact. Used deliberately that is a one-character value
+left and a longer one right on one row. In F and G padding moves nothing.
+No large-font layout centres, so J's 18 px rows are the largest centred
+text the panel produces.
+
+**The panel does not hold a frame.** When the host goes quiet the
+firmware drops the Dynamic surface back to the wheel's own menu; the
+timeout is under two seconds (a 2 s refresh visibly flickered back to the
+menu between frames). An unchanged frame must still be resent; TF4ALL
+resends at 50 Hz and the panel is stable. A driver therefore needs a
+refresh tick, not only write coalescing. **fn2 is the immediate handback**:
+without it the wheel reclaims its screen only after that timeout.
+
+**The feature ends at fn3.** fn4 through fn15 answer HID++ error `0x07`
+INVALID_FUNCTION_ID on a G PRO; there is no claim-the-display call.
+
+A cheaper first-hand probe than a watched write: fill bytes 5..63 with
+distinct printable characters (a ruler frame) and the panel labels its
+own offsets, one frame per layout. A full-width ruler masks the two-zone
+rule, which needed a short real value such as "112%" to expose.
+
+Still unknown, at both ends: the 12.5 mechanism, the exact hold timeout,
+firmware behaviour on non-printable bytes, and features 0x18A2, 0x18B1
+and 0x9315.
 
 **fn1 is self-describing** (@WnDTech's tester, RS50 hardware, 2026-08-15):
 requesting the descriptor for layout index 9 answers
