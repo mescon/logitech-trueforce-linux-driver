@@ -62,6 +62,8 @@ pub const REGISTRY: &[SettingSpec] = &[
     // one that lost would look like a broken slider. The wheel itself takes
     // the write (`Device::write_test_pattern` is how the LED test borrows the
     // strip); this flag is about who owns it, not what the hardware accepts.
+    SettingSpec { attr: "wheel_oled", label: "Screen", help: "What the base's screen shows. Write a layout letter and its fields separated by bars, in the order wheel_oled_layouts lists them: G|3|142 is gear 3 at 142, J|Lap 12|1:42.7|Best|1:41.9 is four rows of text. Text wider than its field is refused rather than cut. Write off to give the screen back to the wheel's own menu. Not part of a profile: it is what is on the screen now, not a setting.", category: Leds, kind: Kind::TextField { max_len: 96 }, access: ReadWrite, mode_req: Any },
+    SettingSpec { attr: "wheel_oled_layouts", label: "Screen layouts", help: "The screen's ten layouts as the wheel reports them: index, letter, the fields each takes in write order, and the text widths. E's widths are listed as drawn, which is the reverse of its write order.", category: Leds, kind: Kind::TextField { max_len: 512 }, access: ReadOnly, mode_req: Any },
     SettingSpec { attr: "wheel_rev_level", label: "Rev lights", help: "How many of the 10 rev LEDs are lit right now (0-10), in the active colour set. Driven live by logi-rpm-bridge during a game, or by logi-tf-sim from telemetry. Two mappings: by default the bar fills across the whole rev range, and LOGI_REV_MODE=shift keeps it dark until the car's first shift light, like the dashboard.", category: Steering, kind: Kind::IntRange { min: 0, max: 10, step: 1, unit: "" }, access: ReadOnly, mode_req: Any },
     // --- Pedals ---
     // Each pedal has three generators that all write the one 0x80A4 curve the
@@ -493,6 +495,7 @@ pub fn role_of(attr: &str) -> crate::setting::Role {
         "wheel_led_slot" | "wheel_led_colors" | "wheel_led_direction"
         | "wheel_led_slot_brightness" | "wheel_led_slot_name" => Role::SlotContent,
         "wheel_led_effect" => Role::DisplaySelector,
+        "wheel_oled" => Role::Transient,
         _ => Role::Setting,
     }
 }
@@ -509,7 +512,7 @@ mod role_tests {
         let named = [
             "wheel_mode", "wheel_profile", "wheel_led_slot", "wheel_led_colors",
             "wheel_led_direction", "wheel_led_slot_brightness", "wheel_led_slot_name",
-            "wheel_led_effect",
+            "wheel_led_effect", "wheel_oled",
         ];
         for attr in named {
             assert!(
@@ -528,6 +531,7 @@ mod role_tests {
         assert_eq!(role_of("wheel_mode"), Role::StoreSelector);
         assert_eq!(role_of("wheel_led_effect"), Role::DisplaySelector);
         assert_eq!(role_of("wheel_led_colors"), Role::SlotContent);
+        assert_eq!(role_of("wheel_oled"), Role::Transient, "a frame is not a setting");
         assert_eq!(role_of("wheel_strength"), Role::Setting);
     }
 }

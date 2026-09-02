@@ -107,7 +107,7 @@ app's Setup page afterwards.
 | American Truck Simulator | supported today |
 | Assetto Corsa (original) | supported today |
 | Assetto Corsa Competizione | the game's own TrueForce is the route to use; simulated is the fallback for a wheel that cannot receive it |
-| Assetto Corsa EVO (early access) | the game's own TrueForce is the route to use; simulated is the fallback for a wheel that cannot receive it. Native TrueForce needs the game to see the wheel over raw HID, and on one CachyOS machine every Proton build tried (Valve's hotfix branch, GE-Proton 11) paid a constant frame-time cost for that, wheel moving or not, while an identical wheel on `proton-cachyos` here does not. If AC EVO stutters only with the launcher, empty launch options give full force feedback without TrueForce, and the cost is in Proton's raw HID layer rather than anything here (issue #74) |
+| Assetto Corsa EVO (early access) | the game's own TrueForce is the route to use; simulated is the fallback for a wheel that cannot receive it |
 | Assetto Corsa Rally (early access) | no usable telemetry |
 | Automobilista 2 | supported today |
 | BeamNG.drive | supported today |

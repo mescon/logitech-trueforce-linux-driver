@@ -84,6 +84,11 @@ pub enum Role {
     /// Chooses what the strip displays (`wheel_led_effect`). Replayed
     /// after every [`Role::SlotContent`] write.
     DisplaySelector,
+    /// Live content rather than a setting: what the base's screen is
+    /// showing this moment (`wheel_oled`). Editable, but a snapshot has no
+    /// business capturing or replaying it, any more than it would the
+    /// rev-light level.
+    Transient,
 }
 
 #[derive(Debug, Clone, Copy)]

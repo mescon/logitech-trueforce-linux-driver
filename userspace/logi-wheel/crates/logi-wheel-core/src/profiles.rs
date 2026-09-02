@@ -150,7 +150,7 @@ fn snapshotted(spec: &SettingSpec) -> bool {
     spec.access == Access::ReadWrite
         && !matches!(spec.kind, Kind::SlotText { .. })
         && !matches!(spec.mode_req, ModeReq::OnboardOnly)
-        && spec.role() != Role::StoreSelector
+        && !matches!(spec.role(), Role::StoreSelector | Role::Transient)
 }
 
 /// The saved profiles in `dir`, sorted by name. A missing directory is an
@@ -239,7 +239,7 @@ fn apply_line<S: SysfsIo>(line: &str, dev: &Device<S>, errors: &mut Vec<(String,
     };
     // A store selector reloads the wheel's stored values over everything
     // else; never replayed, and not reported, since older files carry it.
-    if crate::registry::role_of(attr.trim()) == Role::StoreSelector {
+    if matches!(crate::registry::role_of(attr.trim()), Role::StoreSelector | Role::Transient) {
         return;
     }
     let Some(spec) = Device::<S>::spec(attr) else {
@@ -361,6 +361,23 @@ mod tests {
     /// The mode and slot selectors are neither saved nor replayed. Replaying
     /// `wheel_profile` makes the wheel reload the slot's stored settings
     /// over everything the same apply just wrote (issue #73).
+    /// What the screen shows right now is not a setting; a profile must
+    /// not capture it and must not put it back.
+    #[test]
+    fn the_screen_content_is_not_saved() {
+        let dir = tempdir();
+        let fs = FakeSysfs::new();
+        fs.set("wheel_mode", "desktop");
+        fs.set("wheel_profile", "0");
+        fs.set("wheel_strength", "62");
+        fs.set("wheel_oled", "G|3|142");
+        let dev = Device::with_io(fs);
+        save_in(&dir, "s", &dev).unwrap();
+        let text = fs::read_to_string(dir.join("s.profile")).unwrap();
+        assert!(!text.contains("wheel_oled="), "the screen is live content: {text}");
+        assert!(text.contains("wheel_strength=62"));
+    }
+
     #[test]
     fn the_selectors_are_not_saved() {
         let dir = tempdir();
