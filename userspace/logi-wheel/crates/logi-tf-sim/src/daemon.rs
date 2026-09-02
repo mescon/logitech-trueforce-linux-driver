@@ -1217,6 +1217,17 @@ mod silence_gate_tests {
 mod ffb_mirror_guard_tests {
     use super::*;
 
+    /// The lease directory is a process-global environment variable, and
+    /// cargo runs tests in parallel: two tests each setting it, opening a
+    /// lease, and unsetting it raced, and one refused the other with its
+    /// own pid in the message. Held for the whole of any test that touches
+    /// the variable, so they take turns.
+    static LEASE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lease_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        LEASE_ENV.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// A wheel with no live force to mirror is refused, because streaming
     /// to it takes its force feedback away for as long as the stream runs
     /// (issue #72). The refusal names the way out.
@@ -1241,6 +1252,7 @@ mod ffb_mirror_guard_tests {
     /// daemon writes.
     #[test]
     fn the_drivers_own_engine_needs_no_override() {
+        let _serial = lease_env_guard();
         let dir = std::env::temp_dir().join(format!("tfsim-dd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: single-threaded at this point in the test.
@@ -1267,6 +1279,7 @@ mod ffb_mirror_guard_tests {
     /// stopped the first call and nothing else does.
     #[test]
     fn the_override_gets_past_the_guard() {
+        let _serial = lease_env_guard();
         // Somewhere private for the lease, so a developer's running daemon
         // is not disturbed by a test taking the real one.
         let dir = std::env::temp_dir().join(format!("tfsim-guard-{}", std::process::id()));
