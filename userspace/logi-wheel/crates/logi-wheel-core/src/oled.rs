@@ -352,13 +352,16 @@ pub fn preview(layout: &Layout, values: &[String]) -> Vec<PreviewRow> {
         'A' => vec![],
         'B' => vec![PreviewRow { text: "(firmware test pattern)".into(), size: Size::Small, align: Align::Centre }],
         'C' => vec![PreviewRow { text: bar(n(0)), size: Size::Medium, align: Align::Centre }],
+        // The label sits above the bar, watched on an RS50 ("Throttle" on
+        // the top line, the half-full bar below it). E is assumed to put
+        // its two texts the same way; that one has not been watched.
         'D' => vec![
-            PreviewRow { text: bar(n(0)), size: Size::Medium, align: Align::Centre },
             PreviewRow { text: v(2), size: Size::Small, align: Align::Centre },
+            PreviewRow { text: bar(n(0)), size: Size::Medium, align: Align::Centre },
         ],
         'E' => vec![
-            PreviewRow { text: bar(n(0)), size: Size::Medium, align: Align::Centre },
             PreviewRow { text: format!("{:<7} {:>3}", v(3), v(2)), size: Size::Small, align: Align::Centre },
+            PreviewRow { text: bar(n(0)), size: Size::Medium, align: Align::Centre },
         ],
         'F' => vec![PreviewRow { text: format!("{} {}", v(0), v(1)), size: Size::VeryLarge, align: Align::Centre }],
         'G' => vec![PreviewRow { text: format!("{} {}", v(0), v(1)), size: Size::VeryLarge, align: Align::Centre }],
