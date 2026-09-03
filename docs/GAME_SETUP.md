@@ -106,8 +106,8 @@ app's Setup page afterwards.
 |---|---|
 | American Truck Simulator | supported today |
 | Assetto Corsa (original) | supported today |
-| Assetto Corsa Competizione | the game's own TrueForce is the route to use; simulated is the fallback for a wheel that cannot receive it |
-| Assetto Corsa EVO (early access) | the game's own TrueForce is the route to use; simulated is the fallback for a wheel that cannot receive it |
+| Assetto Corsa Competizione | the game's own TrueForce is the route to use; on a direct-drive wheel the helper never adds haptics of its own, and where it runs beside the game it drives the rev lights and the screen only; simulated haptics are the fallback for a wheel that cannot receive the real thing |
+| Assetto Corsa EVO (early access) | the game's own TrueForce is the route to use; on a direct-drive wheel the helper never adds haptics of its own, and where it runs beside the game it drives the rev lights and the screen only; simulated haptics are the fallback for a wheel that cannot receive the real thing |
 | Assetto Corsa Rally (early access) | no usable telemetry |
 | Automobilista 2 | supported today |
 | BeamNG.drive | supported today |

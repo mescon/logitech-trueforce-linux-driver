@@ -463,6 +463,36 @@ fn wants_haptics(cfg: &Config, id: &str) -> bool {
     cfg.effective_intensity(id) > 0.0
 }
 
+/// Whether the wheel this daemon would drive is a direct-drive one: the
+/// configured choice, or with `auto`, whichever `open_wheel_stream_with_leds`
+/// would pick, which is a G923 whenever one is present.
+fn targets_direct_drive(cfg: &Config) -> bool {
+    use logi_wheel_core::tfsim::WheelChoice;
+    let choice = match std::env::var("LOGI_TF_SIM_WHEEL") {
+        Ok(v) if !v.trim().is_empty() => WheelChoice::parse(&v).unwrap_or(cfg.wheel),
+        _ => cfg.wheel,
+    };
+    match choice {
+        WheelChoice::DirectDrive => true,
+        WheelChoice::G923 => false,
+        WheelChoice::Auto => g923::discover().is_none(),
+    }
+}
+
+/// Whether `id`'s own TrueForce reaches the wheel this daemon drives, so
+/// that synthesising haptics for it would double the real thing. The
+/// launcher keeps the daemon off such titles on such wheels unless the
+/// relay can feed it, and then it runs for the rev lights and the screen
+/// only; this is the daemon's own half of that rule, so it holds even when
+/// the daemon was started by hand or for another game.
+fn native_trueforce_here(cfg: &Config, id: &str) -> bool {
+    use logi_wheel_core::games::{by_live_id, WheelCaps};
+    if !targets_direct_drive(cfg) {
+        return false;
+    }
+    by_live_id(id).is_some_and(|g| g.native_trueforce_reaches(WheelCaps { sdk_trueforce: true }))
+}
+
 struct Active {
     /// The wheel's TrueForce stream, or `None` for a lights-only session.
     ///
@@ -721,15 +751,22 @@ pub fn run(cfg: &Config) -> Result<()> {
                     // something a driver who set the strength to zero asked
                     // for. Nothing to do at all when the lights are off too.
                     None if now >= next_open_attempt
-                        && !wants_haptics(cfg, id)
+                        && (!wants_haptics(cfg, id) || native_trueforce_here(cfg, id))
                         && cfg.leds
                         && crate::leds::other_owner().is_none() =>
                     {
                         if let Some(leds) = RevLeds::discover() {
-                            eprintln!(
-                                "logi-tf-sim: rev display only ({id}): strength is zero, so the \
-                                 TrueForce stream stays closed"
-                            );
+                            if wants_haptics(cfg, id) {
+                                eprintln!(
+                                    "logi-tf-sim: rev display only ({id}): this game's own TrueForce \
+                                     reaches this wheel, so the TrueForce stream stays closed"
+                                );
+                            } else {
+                                eprintln!(
+                                    "logi-tf-sim: rev display only ({id}): strength is zero, so the \
+                                     TrueForce stream stays closed"
+                                );
+                            }
                             active = Some(Active {
                                 stream: None,
                                 game_gain: crate::game_gain::GameGain::new(None, false),
@@ -754,6 +791,13 @@ pub fn run(cfg: &Config) -> Result<()> {
                         } else {
                             next_open_attempt = now + OPEN_RETRY;
                         }
+                    }
+                    // A native-TrueForce title on a direct-drive wheel never
+                    // gets a stream, whatever the strength says; with the
+                    // lights off too (or owned elsewhere) there is nothing
+                    // for this daemon to do for it.
+                    None if now >= next_open_attempt && native_trueforce_here(cfg, id) => {
+                        next_open_attempt = now + OPEN_RETRY;
                     }
                     None if now >= next_open_attempt => match open_wheel_stream_with_leds(cfg) {
                         Ok(OpenWheel { stream, led_owner, lease, lease_key }) => {
@@ -1337,5 +1381,13 @@ mod lights_only_tests {
         assert!(wants_haptics(&per_game, "dirt-rally-2"), "and only this game");
 
         assert!(wants_haptics(&Config::default(), "assetto"), "the default plays");
+        // A native-TrueForce title on a direct-drive wheel: never haptics,
+        // whatever the strength; the same title on a G923 gets them.
+        let dd = Config { wheel: logi_wheel_core::tfsim::WheelChoice::DirectDrive, ..Config::default() };
+        assert!(native_trueforce_here(&dd, "acc"));
+        assert!(native_trueforce_here(&dd, "ac-evo"));
+        assert!(!native_trueforce_here(&dd, "assetto"), "the original AC has no TrueForce of its own");
+        let g923 = Config { wheel: logi_wheel_core::tfsim::WheelChoice::G923, ..Config::default() };
+        assert!(!native_trueforce_here(&g923, "acc"));
     }
 }

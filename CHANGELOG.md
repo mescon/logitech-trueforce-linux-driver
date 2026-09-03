@@ -26,6 +26,18 @@ not fit is refused with a reason before anything is sent. The window
 also drew the pedal Sensitivity/Curve toggle on the screen row, a
 widget-kind collision; fixed, and a test now keeps the kinds distinct.
 
+**Rev lights and the screen in ACC on a direct-drive wheel.** The
+launcher used to keep `logi-tf-sim` off for a title whose own TrueForce
+reaches the wheel (ACC, AC EVO on an RS50 or G PRO), so nothing fed the
+rev lights or the screen in those games. Now, where the relay can read
+the game's shared memory (ACC today), the plan stages the relay and runs
+the helper for the lights and the screen only. The helper enforces the
+haptics-off half of that itself, from the same registry rule the launcher
+uses, so it holds even when it was started by hand or for another game:
+a native-TrueForce title on a direct-drive wheel never gets a synthesised
+engine note, whatever the strength says. AC EVO with the texture merge
+keeps its rev lights from the bridge as before.
+
 **The screen is a dashboard during a game.** With `screen=1` in
 `tf-sim.conf`, `logi-tf-sim` writes the base's OLED from the same
 telemetry that drives the rev lights: by default layout G with the gear

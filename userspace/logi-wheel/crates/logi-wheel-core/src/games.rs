@@ -409,6 +409,13 @@ impl GameCompat {
     /// title logi-tf-sim can drive today wants its simulated-TrueForce
     /// switch; a DirectInput title wants the logi-ffb helper; everything
     /// else already works with plain force feedback.
+    /// Whether this game's own TrueForce reaches a wheel with `caps`, in
+    /// which case nothing may synthesise haptics for it on that wheel.
+    /// The daemon consults this for every session it is about to open.
+    pub fn native_trueforce_reaches(&self, caps: WheelCaps) -> bool {
+        self.setup_action(caps) == SetupAction::InstallShim
+    }
+
     pub fn setup_action(&self, caps: WheelCaps) -> SetupAction {
         if self.ffb == Ffb::TrueForceShim {
             // The shim is only worth installing on a wheel that answers the
@@ -998,6 +1005,17 @@ pub struct LaunchPlan {
     pub hidraw_scope: Option<String>,
 }
 
+/// Whether `logi-tf-relay` has a decoder for this game's shared memory,
+/// so the relay belongs in its prefix. The UDP titles need nothing there.
+fn has_relay_decoder(id: &str) -> bool {
+    matches!(id, "acc" | "ac-evo" | "assetto" | "iracing" | "raceroom" | "rf2" | "lmu")
+}
+
+/// The registry entry whose live telemetry id is `id`, if any.
+pub fn by_live_id(id: &str) -> Option<&'static GameCompat> {
+    GAMES.iter().find(|g| g.simulated_tf.live_id() == Some(id))
+}
+
 impl LaunchPlan {
     /// The plan for a title the registry does not know.
     ///
@@ -1040,12 +1058,14 @@ impl LaunchPlan {
         }
 
         // A title whose own TrueForce reaches this wheel must NOT also get
-        // the simulated kind. The daemon treats an unlisted game as
-        // enabled, so running it for ACC or AC EVO on a direct-drive wheel
-        // would layer a synthesised engine note over the real haptics the
-        // game is already sending.
+        // the simulated kind: a synthesised engine note over the real
+        // haptics the game is already sending. The daemon knows this rule
+        // too (`GameCompat::native_trueforce_reaches`) and keeps its
+        // TrueForce stream closed for such a title on such a wheel, which
+        // is what makes it safe to run it here at all: with the relay in
+        // the prefix it drives the rev lights and the screen from the
+        // game's telemetry, which nothing else does for these titles.
         if game.setup_action(caps) == SetupAction::InstallShim {
-            plan.notes.push("simulated TrueForce stays off, so it does not double the real thing".into());
             // The kernel texture merge rides the native stream, so it is
             // granted exactly as widely as hidraw: withheld on an ambiguous
             // rig for the same reason, and gated per title because the
@@ -1056,18 +1076,36 @@ impl LaunchPlan {
             // merge (docs/SHARED_MEMORY_RELAY.md, "The relay datagram is
             // a generic RPM contract"), so widening this gate to another
             // title needs only a validated producer for it.
-            if plan.hidraw == Some(true)
-                && game.simulated_tf.live_id() == Some("ac-evo")
-            {
+            if plan.hidraw == Some(true) && game.simulated_tf.live_id() == Some("ac-evo") {
                 plan.texture_merge = true;
+            }
+            // With the merge, the bridge already drives the rev lights, so
+            // the daemon has nothing to add. Without it, and where the
+            // relay can read the game, the daemon runs for the lights and
+            // the screen only.
+            let lights_only = if plan.texture_merge {
+                None
+            } else {
+                game.simulated_tf.live_id().filter(|id| has_relay_decoder(id))
+            };
+            match lights_only {
+                Some(id) => {
+                    plan.tfsim = true;
+                    plan.relay = Some(id);
+                    plan.notes.push(
+                        "simulated TrueForce drives only the rev lights and the screen here, its \
+                         haptics off, so it does not double the real thing"
+                            .into(),
+                    );
+                }
+                None => plan.notes.push("simulated TrueForce stays off, so it does not double the real thing".into()),
             }
             return plan;
         }
 
         if let SimTf::LiveNow(id) = game.simulated_tf {
             plan.tfsim = true;
-            plan.relay = matches!(id, "acc" | "ac-evo" | "assetto" | "iracing" | "raceroom" | "rf2" | "lmu")
-                .then_some(id);
+            plan.relay = has_relay_decoder(id).then_some(id);
         }
         plan
     }
@@ -1254,10 +1292,12 @@ mod tests {
         let classic = LaunchPlan::for_game(acc(), G923, false);
         assert_ne!(dd, classic, "ACC must not plan identically on both wheels");
 
-        // Direct drive: the game's own TrueForce, and NOT the simulated
-        // kind on top of it.
+        // Direct drive: the game's own TrueForce, and the daemon only for
+        // the rev lights and the screen, fed by the relay, its haptics off
+        // by the rule the daemon enforces itself.
         assert_eq!(dd.hidraw, Some(true));
-        assert!(!dd.tfsim, "simulated TrueForce would double the real thing");
+        assert!(dd.tfsim && dd.relay == Some("acc"), "lights and screen from the relay");
+        assert!(dd.describe().contains("haptics off"), "{}", dd.describe());
 
         // A G923 must never be told to set this: it costs that wheel force
         // feedback, and the owner has no way to tell that is what happened.
@@ -1313,15 +1353,26 @@ mod tests {
             }
             for caps in [DD, G923] {
                 let plan = LaunchPlan::for_game(game, caps, false);
-                let native_here = game.setup_action(caps) == SetupAction::InstallShim;
+                let native_here = game.native_trueforce_reaches(caps);
                 if native_here {
-                    assert!(
-                        !plan.tfsim,
-                        "{}: native TrueForce reaches this wheel, so the simulated kind \
-                         must stay off or both play at once",
-                        game.name
-                    );
-                    assert_eq!(plan.relay, None, "{}: no relay is needed when native works", game.name);
+                    // The daemon runs for the lights and the screen where
+                    // the relay can feed it, and it keeps its haptics off
+                    // by the same rule (`native_trueforce_reaches`); with
+                    // no relay decoder it has nothing to run on.
+                    let relay = if plan.texture_merge {
+                        None
+                    } else {
+                        game.simulated_tf.live_id().filter(|id| has_relay_decoder(id))
+                    };
+                    assert_eq!(plan.tfsim, relay.is_some(), "{}: lights-only daemon iff a relay feeds it", game.name);
+                    assert_eq!(plan.relay, relay, "{}", game.name);
+                    if relay.is_some() {
+                        assert!(
+                            plan.describe().contains("haptics off"),
+                            "{}: the plan must say the haptics stay off",
+                            game.name
+                        );
+                    }
                 } else if game.simulated_tf.live_id().is_some() {
                     assert!(
                         plan.tfsim,
@@ -1428,6 +1479,22 @@ mod tests {
 
     /// A title that does not run on Linux gets no recipe rather than an
     /// untested one.
+    #[test]
+    fn acc_on_a_direct_drive_wheel_gets_the_relay_and_a_lights_only_daemon() {
+        let acc = by_live_id("acc").expect("ACC is live");
+        assert!(acc.native_trueforce_reaches(DD));
+        assert!(!acc.native_trueforce_reaches(G923));
+        let plan = LaunchPlan::for_game(acc, DD, false);
+        assert!(plan.tfsim);
+        assert_eq!(plan.relay, Some("acc"));
+        assert!(plan.lines().contains(&"relay=acc".to_string()));
+        assert!(by_live_id("no-such-game").is_none());
+        // AC EVO with the merge: the bridge has the lights, the daemon stays off.
+        let evo = by_live_id("ac-evo").expect("AC EVO is live");
+        let plan = LaunchPlan::for_game(evo, DD, false);
+        assert!(plan.texture_merge && !plan.tfsim && plan.relay.is_none(), "{plan:?}");
+    }
+
     #[test]
     fn an_unsupported_title_is_described_as_such_and_gets_no_recipe() {
         let Some(game) = GAMES.iter().find(|g| g.linux == Linux::Unsupported) else {

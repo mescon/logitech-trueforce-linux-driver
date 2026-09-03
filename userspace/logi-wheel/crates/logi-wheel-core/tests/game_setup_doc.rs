@@ -167,8 +167,10 @@ fn render() -> String {
             // something. It does not. Simulated TrueForce is the fallback
             // for the wheels that cannot receive the real thing.
             SimTf::LiveNow(_) if g.ffb == Ffb::TrueForceShim => {
-                "the game's own TrueForce is the route to use; \
-                 simulated is the fallback for a wheel that cannot receive it"
+                "the game's own TrueForce is the route to use; on a direct-drive wheel the helper \
+                 never adds haptics of its own, and where it runs beside the game it drives the \
+                 rev lights and the screen only; simulated haptics are the fallback for a wheel \
+                 that cannot receive the real thing"
             }
             SimTf::LiveNow(_) => "supported today",
             SimTf::PossibleWithParser => "possible, needs a telemetry parser first",
