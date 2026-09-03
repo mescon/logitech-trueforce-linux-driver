@@ -548,6 +548,18 @@ in [docs/LAUNCH_OPTIONS.md](docs/LAUNCH_OPTIONS.md).
   Only the engine layer is hardware-validated so far, so if something feels
   wrong, turn that one layer down and please say so in an issue.
 
+  The base's screen can show the car while a session runs, from the same
+  telemetry as the rev lights: turn on the screen switch on the Setup page
+  (`screen=1` in `tf-sim.conf`) and it shows the gear and the speed by
+  default. The template (`screen.template`) is any `wheel_oled` frame with
+  `{gear}`, `{speed}`, `{speed_mph}`, `{rpm}` and the gauge values
+  `{rpm_pct}`, `{throttle_pct}`, `{brake_pct}` filled in, so
+  `J|Lap {gear}|{speed}|{rpm}|km/h` is four rows of text and `G|{gear}|{speed}`
+  is the gear-and-speed screen. The screen goes back to the wheel's own menu
+  when the session ends. It works in the lights-only mode too, so a strength
+  of zero gives rev lights and a dashboard with no haptics at all. Direct-drive
+  wheels only; the G923 has no screen.
+
   With a G923 and a direct-drive wheel plugged in together, say which one
   simulated TrueForce should drive: the Setup page has a picker, or set
   `wheel=dd` or `wheel=g923` in `tf-sim.conf`. Left on `auto` it takes a G923
