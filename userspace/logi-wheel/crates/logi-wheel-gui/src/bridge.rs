@@ -60,7 +60,7 @@ pub const KIND_LIGHT_EFFECT: i32 = 12;
 pub const KIND_LIGHT_SLOT: i32 = 13;
 /// The "Edit screen..." button row: opens the OLED editor overlay
 /// (`oled_editor.slint`). Synthetic, like the slot editor's row.
-pub const KIND_OLED_EDIT: i32 = 14;
+pub const KIND_OLED_EDIT: i32 = 15;
 /// A per-axis shaping toggle row `compose_shaping` inserts: a Switch whose
 /// own label reads "Sensitivity" (off) or "Curve" (on). Never produced by
 /// `kind_tag`; the row does not exist in the registry (its attr is
@@ -505,26 +505,29 @@ pub fn compose_lightsync(items: Vec<SettingRow>, slot_names: &[String]) -> Vec<S
         }
     }
     out.push(light_slot_row(effect, available, mode_ok));
+    // The raw frame row stays in the registry for the terminal app, the
+    // CLI and profiles; the window shows one row that says what is on the
+    // screen and opens the editor. Typing a frame by hand is the editor's
+    // custom section.
     if let Some(row) = screen {
-        let (available, mode_ok) = (row.available, row.mode_ok);
-        out.push(row);
-        out.push(oled_edit_row(available, mode_ok));
+        out.push(oled_edit_row(row.available, row.mode_ok, &row.text_value));
     }
     out
 }
 
-/// The "Edit screen..." button, after the raw frame row. Greys out with it.
-fn oled_edit_row(available: bool, mode_ok: bool) -> SettingRow {
+/// The screen row: what the panel shows now, and the button that opens the
+/// editor. Greys out with the raw row it stands in for.
+fn oled_edit_row(available: bool, mode_ok: bool, frame: &str) -> SettingRow {
     SettingRow {
         attr: OLED_EDIT_ATTR.into(),
-        label: "Screen editor".into(),
-        help: "Pick a layout, fill its fields, see a preview, and send it to the base's screen. Screen off gives the wheel its menu back.".into(),
+        label: "Screen".into(),
+        help: "What the base's screen shows: a dashboard fed by the game, a gauge, or a message of your own. Choosing nothing leaves the wheel its own menu.".into(),
         kind: KIND_OLED_EDIT,
         int_value: 0,
         int_value2: 0,
         bool_value: true,
         text_value: slint::SharedString::new(),
-        display: slint::SharedString::new(),
+        display: format!("Now: {}", oled::describe(frame)).into(),
         choices: slint::ModelRc::new(slint::VecModel::<slint::SharedString>::default()),
         min: 0,
         max: 0,
@@ -540,6 +543,17 @@ fn oled_edit_row(available: bool, mode_ok: bool) -> SettingRow {
 }
 
 /// The editor's field model for `layout` with the staged `values`.
+/// The presets, for the editor's "what to show" list.
+pub fn oled_presets_model() -> slint::ModelRc<crate::OledPreset> {
+    let rows: Vec<crate::OledPreset> = oled::PRESETS
+        .iter()
+        .map(|p| crate::OledPreset { name: p.name.into(), what: p.what.into() })
+        .collect();
+    slint::ModelRc::new(slint::VecModel::from(rows))
+}
+
+/// The layout's fields with their staged values, each with a hint on what
+/// fits: a character budget for text, the 0 to 255 range for a gauge.
 pub fn oled_fields_model(layout: &oled::Layout, values: &[String]) -> slint::ModelRc<crate::OledField> {
     let rows: Vec<crate::OledField> = layout
         .fields
@@ -547,8 +561,10 @@ pub fn oled_fields_model(layout: &oled::Layout, values: &[String]) -> slint::Mod
         .enumerate()
         .map(|(i, f)| crate::OledField {
             label: f.label().into(),
-            is_number: matches!(f, oled::Field::Number { .. }),
-            width: match f { oled::Field::Text { width, .. } => *width as i32, _ => 0 },
+            hint: match f {
+                oled::Field::Text { width, .. } => format!("up to {width} characters").into(),
+                oled::Field::Number { .. } => "0 to 255".into(),
+            },
             value: values.get(i).cloned().unwrap_or_default().into(),
         })
         .collect();
@@ -559,7 +575,7 @@ pub fn oled_fields_model(layout: &oled::Layout, values: &[String]) -> slint::Mod
 /// monospace face: first character, then the rest right-aligned in the
 /// field's width, which is how the panel places them.
 pub fn oled_preview_model(layout: &oled::Layout, values: &[String]) -> slint::ModelRc<crate::OledRow> {
-    let rows: Vec<crate::OledRow> = oled::preview(layout, values)
+    let rows: Vec<crate::OledRow> = oled::preview(layout, &oled::sample_values(values))
         .into_iter()
         .map(|r| {
             let (text, align) = match r.align {
@@ -1239,6 +1255,22 @@ pub fn games_summary(games: &[SetupGame]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_widget_kind_has_its_own_number() {
+        // The screen editor's button once shared 14 with the pedal
+        // sensitivity toggle, and the row drew both.
+        let kinds = [
+            super::KIND_PERCENT, super::KIND_INT_RANGE, super::KIND_ENUM, super::KIND_TOGGLE, super::KIND_TEXT,
+            super::KIND_ACTION, super::KIND_READONLY, super::KIND_CURVE, super::KIND_RGB, super::KIND_SLOTTEXT,
+            super::KIND_PAIR, super::KIND_PROFILE, super::KIND_LIGHT_EFFECT, super::KIND_LIGHT_SLOT,
+            super::KIND_SHAPING, super::KIND_OLED_EDIT,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for k in kinds {
+            assert!(seen.insert(k), "widget kind {k} is used twice");
+        }
+    }
+
     use super::*;
     use logi_wheel_core::launchers::{GameKind, Source};
     use logi_wheel_core::sysfs::FakeSysfs;
@@ -2422,7 +2454,7 @@ mod tests {
         let attrs: Vec<String> = out.iter().map(|r| r.attr.to_string()).collect();
         assert_eq!(
             attrs,
-            vec!["wheel_led_effect", "wheel_led_brightness", LIGHT_EDIT_SLOT_ATTR, "wheel_oled", OLED_EDIT_ATTR],
+            vec!["wheel_led_effect", "wheel_led_brightness", LIGHT_EDIT_SLOT_ATTR, OLED_EDIT_ATTR],
             "the screen's frame row and editor button ride along; its layouts listing does not"
         );
     }

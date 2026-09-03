@@ -3,7 +3,7 @@ import { Theme } from "theme.slint";
 import { SettingRow, SettingsList } from "widgets.slint";
 import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
-import { OledEditor, OledField, OledRow } from "oled_editor.slint";
+import { OledEditor, OledField, OledPreset, OledRow } from "oled_editor.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
 import { Setup, SetupGame, SetupEffect, AddableGame } from "setup.slint";
 import { InfoPage, TestButton, TestAxis, TestCallout, TestPlanRow } from "info_page.slint";
@@ -376,12 +376,19 @@ export component App inherits Window {
     // The screen editor overlay (see oled_editor.slint); Rust stages the
     // values and recomposes the preview.
     in property <bool> oled-editor-open: false;
+    in property <[OledPreset]> oled-presets: [];
+    in property <int> oled-preset-index: -1;
+    in property <bool> oled-live: false;
+    in property <string> oled-status: "";
+    in property <string> oled-hint: "";
     in property <[string]> oled-layouts: [];
     in property <int> oled-layout-index: 6;
     in property <[OledField]> oled-fields: [];
     in property <[OledRow]> oled-preview: [];
     in property <string> oled-error: "";
     in property <string> oled-frame: "";
+    callback oled-set-preset(int);
+    callback oled-use-in-games();
     callback oled-set-layout(int);
     callback oled-set-field(int, string);
     callback oled-send();
@@ -991,12 +998,19 @@ export component App inherits Window {
     if root.oled-editor-open: OledEditor {
         width: root.width;
         height: root.height;
+        presets: root.oled-presets;
+        preset-index: root.oled-preset-index;
+        live: root.oled-live;
+        status: root.oled-status;
+        hint: root.oled-hint;
         layouts: root.oled-layouts;
         layout-index: root.oled-layout-index;
         fields: root.oled-fields;
         preview: root.oled-preview;
         error: root.oled-error;
         frame: root.oled-frame;
+        set-preset(i) => { root.oled-set-preset(i); }
+        use-in-games() => { root.oled-use-in-games(); }
         set-layout(i) => { root.oled-set-layout(i); }
         set-field(i, t) => { root.oled-set-field(i, t); }
         send() => { root.oled-send(); }

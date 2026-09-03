@@ -1,13 +1,17 @@
-import { Button, ComboBox, LineEdit, SpinBox } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
+// A ready-made screen, by name and by what it shows.
+export struct OledPreset {
+    name: string,
+    what: string,
+}
+
 // One field of the chosen layout, in write order. `value` is the staged
-// text; `is-number` selects a 0-255 spinner over a text box; `width` is the
-// text field's capacity, shown so the user knows the budget.
+// text; `hint` says what fits (a character budget, or 0 to 255).
 export struct OledField {
     label: string,
-    is-number: bool,
-    width: int,
+    hint: string,
     value: string,
 }
 
@@ -20,21 +24,31 @@ export struct OledRow {
     align: int,
 }
 
-// The screen editor overlay: pick a layout, fill its fields, watch the
-// preview, send it to the wheel or hand the screen back. Rust owns the
-// staged values and recomposes the preview on every edit; this only renders
-// what it is given and reports what was typed.
+// The screen editor overlay. Left: the preview and the presets, which is
+// where most people stop. Right: the design behind the preview, open for
+// changes: the layout, its fields and the game placeholders. Rust owns the
+// staged values and recomposes the preview on every edit; this only
+// renders what it is given and reports what was picked or typed.
 export component OledEditor inherits Rectangle {
+    in property <[OledPreset]> presets: [];
+    // -1 while the design matches no preset.
+    in property <int> preset-index: -1;
     in property <[string]> layouts: [];
     in property <int> layout-index: 6;
     in property <[OledField]> fields: [];
     in property <[OledRow]> preview: [];
+    // Whether a field is fed from the game, so the preview is sample data.
+    in property <bool> live: false;
     in property <string> error: "";
+    in property <string> status: "";
+    in property <string> hint: "";
     in property <string> frame: "";
 
+    callback set-preset(int);
     callback set-layout(int);
     callback set-field(int, string);
     callback send();
+    callback use-in-games();
     callback off();
     callback close();
 
@@ -45,8 +59,8 @@ export component OledEditor inherits Rectangle {
     }
 
     Rectangle {
-        width: 480px;
-        height: min(640px, root.height - 16px);
+        width: min(720px, root.width - 16px);
+        height: min(600px, root.height - 16px);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.panel-background;
@@ -58,88 +72,198 @@ export component OledEditor inherits Rectangle {
             padding: 16px;
             spacing: 10px;
 
-            Text {
-                text: "Screen";
-                font-size: 16px;
-                font-weight: 700;
-                color: Theme.text-color;
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: "Screen";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: Theme.text-color;
+                    vertical-alignment: center;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Pick what the base's small screen shows. A dashboard follows the game; a message stays until you change it.";
+                    font-size: 12px;
+                    color: Theme.muted-text-color;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
             }
 
-            ComboBox {
-                model: root.layouts;
-                current-index: root.layout-index;
-                selected => { root.set-layout(self.current-index); }
-            }
+            HorizontalLayout {
+                spacing: 16px;
+                vertical-stretch: 1;
 
-            // The panel: 128x64, drawn at 3x. Black, white text, monospace
-            // so the two-zone rows Rust pre-spaces land where the wheel puts
-            // them. An approximation of the fonts, not the fonts.
-            Rectangle {
-                width: 384px;
-                height: 192px;
-                x: (parent.width - self.width) / 2;
-                background: black;
-                border-radius: 4px;
-                border-width: 1px;
-                border-color: Theme.panel-border;
+                // Left: the preview and the presets.
                 VerticalLayout {
-                    padding: 8px;
-                    spacing: 2px;
-                    alignment: center;
-                    for row in root.preview: Text {
-                        text: row.text;
-                        color: white;
-                        font-family: "monospace";
-                        font-size: row.size == 3 ? 40px : row.size == 2 ? 22px : row.size == 1 ? 16px : 12px;
-                        horizontal-alignment: row.align == 2 ? right : row.align == 1 ? center : left;
-                        overflow: elide;
+                    width: 300px;
+                    spacing: 8px;
+
+                    // The panel: 128x64, drawn at 2x. Black, white text,
+                    // monospace so the two-zone rows Rust pre-spaces land
+                    // where the wheel puts them. An approximation of the
+                    // fonts, not the fonts.
+                    Rectangle {
+                        width: 256px;
+                        height: 128px;
+                        x: (parent.width - self.width) / 2;
+                        background: black;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: Theme.panel-border;
+                        VerticalLayout {
+                            padding: 6px;
+                            spacing: 1px;
+                            alignment: center;
+                            for row in root.preview: Text {
+                                text: row.text;
+                                color: white;
+                                font-family: "monospace";
+                                font-size: row.size == 3 ? 28px : row.size == 2 ? 16px : row.size == 1 ? 12px : 9px;
+                                horizontal-alignment: row.align == 2 ? right : row.align == 1 ? center : left;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                    Text {
+                        text: root.live
+                            ? "Shown with sample values: third gear, 142 km/h, revs three quarters up, half throttle, full brake."
+                            : "What the screen will show.";
+                        font-size: 11px;
+                        color: Theme.muted-text-color;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    Text {
+                        text: "WHAT TO SHOW";
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: Theme.muted-text-color;
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: Theme.control-background;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: Theme.panel-border;
+                        clip: true;
+                        ListView {
+                            for p[i] in root.presets: Rectangle {
+                                height: 40px;
+                                background: i == root.preset-index ? Theme.selected-background : transparent;
+                                VerticalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    alignment: center;
+                                    spacing: 1px;
+                                    Text {
+                                        text: p.name;
+                                        font-size: 13px;
+                                        color: i == root.preset-index ? Theme.selected-foreground : Theme.text-color;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: p.what;
+                                        font-size: 10px;
+                                        color: i == root.preset-index ? Theme.selected-foreground : Theme.muted-text-color;
+                                        overflow: elide;
+                                    }
+                                }
+                                TouchArea {
+                                    clicked => { root.set-preset(i); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Right: the design, open for changes.
+                VerticalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text {
+                        text: root.preset-index >= 0 ? "MAKE IT YOUR OWN" : "YOUR OWN DESIGN";
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: Theme.muted-text-color;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            width: 96px;
+                            text: "Layout";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            color: Theme.text-color;
+                        }
+                        ComboBox {
+                            horizontal-stretch: 1;
+                            model: root.layouts;
+                            current-index: root.layout-index;
+                            selected => { root.set-layout(self.current-index); }
+                        }
+                    }
+                    for f[i] in root.fields: HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            width: 96px;
+                            text: f.label;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            color: Theme.text-color;
+                            overflow: elide;
+                        }
+                        LineEdit {
+                            horizontal-stretch: 1;
+                            text: f.value;
+                            edited(t) => { root.set-field(i, t); }
+                        }
+                        Text {
+                            width: 118px;
+                            text: f.hint;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            color: Theme.muted-text-color;
+                        }
+                    }
+                    if root.fields.length == 0: Text {
+                        text: "This layout has nothing to type into.";
+                        font-size: 12px;
+                        color: Theme.muted-text-color;
+                    }
+                    Text {
+                        text: root.hint;
+                        font-size: 11px;
+                        color: Theme.muted-text-color;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.error != "" ? root.error : root.status;
+                        font-size: 12px;
+                        color: root.error != "" ? Theme.error-color : Theme.ok-color;
+                        wrap: word-wrap;
                     }
                 }
             }
 
-            for f[i] in root.fields: HorizontalLayout {
-                spacing: 8px;
-                Text {
-                    width: 120px;
-                    text: f.is-number ? f.label : f.label + " (" + f.width + ")";
-                    font-size: 12px;
-                    vertical-alignment: center;
-                    color: Theme.text-color;
-                }
-                if f.is-number: SpinBox {
-                    minimum: 0;
-                    maximum: 255;
-                    value: f.value.to-float();
-                    edited(v) => { root.set-field(i, v); }
-                }
-                if !f.is-number: LineEdit {
-                    horizontal-stretch: 1;
-                    text: f.value;
-                    edited(t) => { root.set-field(i, t); }
-                }
-            }
-
-            if root.fields.length == 0: Text {
-                text: "This layout takes no fields.";
-                font-size: 12px;
-                color: Theme.muted-text-color;
-            }
-
-            Text {
-                text: root.error != "" ? root.error : "Sends as: " + root.frame;
-                font-size: 11px;
-                color: root.error != "" ? Theme.error-color : Theme.muted-text-color;
-                wrap: word-wrap;
-            }
-
-            Rectangle { vertical-stretch: 1; }
-
             HorizontalLayout {
-                alignment: end;
                 spacing: 8px;
-                Button { text: "Screen off"; clicked => { root.off(); } }
+                Button { text: "Give the wheel its menu back"; clicked => { root.off(); } }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.frame != "" ? "Sends: " + root.frame : "";
+                    font-size: 10px;
+                    color: Theme.faint-text-color;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                }
                 Button { text: "Close"; clicked => { root.close(); } }
-                Button { text: "Send to wheel"; primary: true; clicked => { root.send(); } }
+                Button { text: "Use during games"; clicked => { root.use-in-games(); } }
+                Button { text: "Show now"; primary: true; clicked => { root.send(); } }
             }
         }
     }

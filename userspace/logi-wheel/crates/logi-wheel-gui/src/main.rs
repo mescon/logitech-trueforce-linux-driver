@@ -41,19 +41,34 @@ struct CurveEditorState {
 /// their display state lives in the `rgb-slot-name`/`rgb-slot-brightness`
 /// Slint properties.
 /// The screen editor's staged state: which layout, and one value per field.
+/// A value may hold the daemon's placeholders; the preview and "show now"
+/// substitute samples for them, "use during games" sends them as written.
 struct OledEditorState {
     layout: usize,
     values: Vec<String>,
 }
 
+impl OledEditorState {
+    fn from_preset(i: usize) -> OledEditorState {
+        let p = &logi_wheel_core::oled::PRESETS[i];
+        OledEditorState { layout: p.layout().index as usize, values: p.values() }
+    }
+    fn layout(&self) -> &'static logi_wheel_core::oled::Layout {
+        &logi_wheel_core::oled::LAYOUTS[self.layout]
+    }
+}
+
 /// Push the editor's models for its current state, recomposing the frame
 /// so the overlay shows what would be sent, or why it would be refused.
 fn push_oled_editor(app: &App, state: &OledEditorState) {
-    let layout = &logi_wheel_core::oled::LAYOUTS[state.layout];
+    use logi_wheel_core::oled;
+    let layout = state.layout();
     app.set_oled_layout_index(state.layout as i32);
+    app.set_oled_preset_index(oled::preset_index(layout, &state.values).map_or(-1, |i| i as i32));
+    app.set_oled_live(oled::is_live(&state.values));
     app.set_oled_fields(bridge::oled_fields_model(layout, &state.values));
     app.set_oled_preview(bridge::oled_preview_model(layout, &state.values));
-    match logi_wheel_core::oled::compose(layout, &state.values) {
+    match oled::compose(layout, &state.values) {
         Ok(frame) => {
             app.set_oled_frame(frame.into());
             app.set_oled_error("".into());
@@ -1408,6 +1423,8 @@ fn main() -> Result<(), slint::PlatformError> {
     // `curve_editor` (see `RgbEditorState`'s own doc comment).
     let rgb_editor: Arc<Mutex<Option<RgbEditorState>>> = Arc::new(Mutex::new(None));
     let oled_editor: Arc<Mutex<Option<OledEditorState>>> = Arc::new(Mutex::new(None));
+    app.set_oled_presets(bridge::oled_presets_model());
+    app.set_oled_hint(logi_wheel_core::oled::PLACEHOLDER_HINT.into());
     app.set_oled_layouts(slint::ModelRc::new(slint::VecModel::from(
         logi_wheel_core::oled::picker_labels()
             .into_iter()
@@ -2234,8 +2251,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     {
         // Opens the screen editor, seeded from what the panel is showing
-        // when that is a frame, or on the gear-and-speed layout when it is
-        // off.
+        // when that is a frame, or on the first preset when it is off.
         let known_values = known_values.clone();
         let oled_editor = oled_editor.clone();
         let app_weak = app.as_weak();
@@ -2247,11 +2263,25 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             let state = match logi_wheel_core::oled::parse(&current) {
                 Some((layout, values)) => OledEditorState { layout: layout.index as usize, values },
-                None => OledEditorState { layout: 6, values: vec![String::new(), String::new()] },
+                None => OledEditorState::from_preset(0),
             };
             push_oled_editor(&app, &state);
+            app.set_oled_status("".into());
             app.set_oled_editor_open(true);
             *oled_editor.lock().unwrap() = Some(state);
+        });
+    }
+    {
+        let oled_editor = oled_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_oled_set_preset(move |i| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let mut guard = oled_editor.lock().unwrap();
+            let Some(state) = guard.as_mut() else { return };
+            let i = (i.max(0) as usize).min(logi_wheel_core::oled::PRESETS.len() - 1);
+            *state = OledEditorState::from_preset(i);
+            app.set_oled_status("".into());
+            push_oled_editor(&app, state);
         });
     }
     {
@@ -2262,8 +2292,12 @@ fn main() -> Result<(), slint::PlatformError> {
             let mut guard = oled_editor.lock().unwrap();
             let Some(state) = guard.as_mut() else { return };
             let i = (i.max(0) as usize).min(logi_wheel_core::oled::LAYOUTS.len() - 1);
+            if i == state.layout {
+                return;
+            }
             state.layout = i;
-            state.values.resize(logi_wheel_core::oled::LAYOUTS[i].fields.len(), String::new());
+            state.values = vec![String::new(); state.layout().fields.len()];
+            app.set_oled_status("".into());
             push_oled_editor(&app, state);
         });
     }
@@ -2277,39 +2311,84 @@ fn main() -> Result<(), slint::PlatformError> {
             let i = i.max(0) as usize;
             if i < state.values.len() {
                 state.values[i] = text.to_string();
+                app.set_oled_status("".into());
                 push_oled_editor(&app, state);
             }
         });
     }
     {
+        // "Show on the screen now": a live design goes out with its sample
+        // values, since the panel cannot show a placeholder.
         let worker = worker.clone();
         let oled_editor = oled_editor.clone();
         let current_category = current_category.clone();
         let app_weak = app.as_weak();
         app.on_oled_send(move || {
+            use logi_wheel_core::oled;
             let Some(app) = app_weak.upgrade() else { return };
             let guard = oled_editor.lock().unwrap();
             let Some(state) = guard.as_ref() else { return };
-            let layout = &logi_wheel_core::oled::LAYOUTS[state.layout];
-            match logi_wheel_core::oled::compose(layout, &state.values) {
-                Ok(frame) => worker.request(Request::Edit {
-                    category: get(&current_category),
-                    attr: "wheel_oled".to_string(),
-                    input: WidgetInput::Text(frame),
-                }),
+            match oled::compose(state.layout(), &oled::sample_values(&state.values)) {
+                Ok(frame) => {
+                    worker.request(Request::Edit {
+                        category: get(&current_category),
+                        attr: "wheel_oled".to_string(),
+                        input: WidgetInput::Text(frame),
+                    });
+                    app.set_oled_status(
+                        if oled::is_live(&state.values) {
+                            "Sent with the sample values. Use during games fills it from the game."
+                        } else {
+                            "Sent to the screen."
+                        }
+                        .into(),
+                    );
+                }
                 Err(e) => app.set_oled_error(e.to_string().into()),
             }
         });
     }
     {
+        // "Use during games": the design becomes the simulated-TrueForce
+        // daemon's dashboard template, and the dashboard is switched on.
+        // Both go through the Setup page's own handlers so the config file
+        // and the Setup view stay in step.
+        let oled_editor = oled_editor.clone();
+        let app_weak = app.as_weak();
+        app.on_oled_use_in_games(move || {
+            use logi_wheel_core::oled;
+            let Some(app) = app_weak.upgrade() else { return };
+            let frame = {
+                let guard = oled_editor.lock().unwrap();
+                let Some(state) = guard.as_ref() else { return };
+                match oled::compose(state.layout(), &state.values) {
+                    Ok(frame) => frame,
+                    Err(e) => {
+                        app.set_oled_error(e.to_string().into());
+                        return;
+                    }
+                }
+            };
+            app.invoke_setup_tf_set_screen_template(frame.into());
+            app.invoke_setup_tf_set_screen(true);
+            app.set_oled_status(
+                "Set as the dashboard: shown while a simulated-TrueForce game runs. The switch is on the Setup page.".into(),
+            );
+        });
+    }
+    {
         let worker = worker.clone();
         let current_category = current_category.clone();
+        let app_weak = app.as_weak();
         app.on_oled_off(move || {
             worker.request(Request::Edit {
                 category: get(&current_category),
                 attr: "wheel_oled".to_string(),
                 input: WidgetInput::Text("off".to_string()),
             });
+            if let Some(app) = app_weak.upgrade() {
+                app.set_oled_status("The wheel has its own menu back.".into());
+            }
         });
     }
     {
@@ -2320,6 +2399,12 @@ fn main() -> Result<(), slint::PlatformError> {
             app.set_oled_editor_open(false);
             *oled_editor.lock().unwrap() = None;
         });
+    }
+    // A development aid for looking at an overlay without a wheel or a
+    // mouse: LOGI_WHEEL_GUI_OPEN=oled opens the screen editor at startup,
+    // which is how it gets screenshotted headlessly.
+    if std::env::var("LOGI_WHEEL_GUI_OPEN").as_deref() == Ok("oled") {
+        app.invoke_edit_oled("".into());
     }
     {
         let known_values = known_values.clone();

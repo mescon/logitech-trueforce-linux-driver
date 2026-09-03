@@ -2228,6 +2228,21 @@ impl<S: SysfsIo> App<S> {
         self.reload();
     }
 
+    /// The screen editor's `g`: the design becomes the simulated-TrueForce
+    /// daemon's dashboard template and the dashboard is switched on, the
+    /// same two writes the Setup view makes. The editor stays open so the
+    /// status line is read in context.
+    pub fn use_screen_in_games(&mut self, template: String) {
+        let outcome = tfsim::set_screen_template_in(&self.tf_conf, &template);
+        let ok = outcome.is_ok();
+        self.tf_report(&format!("screen template {template}"), outcome);
+        if ok {
+            let outcome = tfsim::set_screen_in(&self.tf_conf, true);
+            self.tf_report("screen on", outcome);
+            self.status = "Dashboard set: shown while a simulated-TrueForce game runs".to_string();
+        }
+    }
+
     pub fn commit_color_picker(&mut self) {
         let Some(picker) = self.color_picker.take() else { return };
         let v = self.mirror_colors_if_needed("wheel_led_colors", Value::Rgb(picker.colors));
@@ -2485,6 +2500,7 @@ impl<S: SysfsIo> App<S> {
             match ed.on_key(key) {
                 ScreenOutcome::Open => {}
                 ScreenOutcome::Commit(frame) => self.commit_screen_editor(frame),
+                ScreenOutcome::UseInGames(template) => self.use_screen_in_games(template),
                 ScreenOutcome::Off => self.commit_screen_editor("off".to_string()),
                 ScreenOutcome::Cancel => self.screen_editor = None,
             }
@@ -4608,8 +4624,11 @@ mod tests {
         assert!(a.screen_editor.is_some(), "the editor opens");
         assert!(a.edit.is_none(), "not the raw text editor");
 
-        a.on_key(KeyCode::Char('3'));
-        a.on_key(KeyCode::Down);
+        // Tab into the design, Right then Left to a blank gear-and-speed
+        // layout, Down into its first field, and type.
+        for k in [KeyCode::Tab, KeyCode::Right, KeyCode::Left, KeyCode::Down, KeyCode::Char('3'), KeyCode::Down] {
+            a.on_key(k);
+        }
         for c in "142".chars() {
             a.on_key(KeyCode::Char(c));
         }

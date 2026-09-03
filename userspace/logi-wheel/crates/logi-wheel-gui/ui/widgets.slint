@@ -27,6 +27,8 @@ import { SettingGroup, ValueSlider, Segmented, RotationDial, CurveThumb, SlotCar
 //                 effect is active)
 //   14 = per-axis shaping toggle (a Sensitivity/Curve Segmented; commits via
 //                 edit-switch, intercepted as view state on the Rust side)
+//   15 = screen (Button that opens the screen editor overlay, fires
+//                 edit-oled; `display` says what the panel shows now)
 export struct SettingRow {
     attr: string,
     label: string,
@@ -339,11 +341,22 @@ export component SettingsList inherits ScrollView {
                             clicked => { edit-rgb(row.attr); }
                         }
 
-                        // The screen editor: layout picker, fields, preview.
-                        if row.kind == 14: Button {
-                            text: "Edit screen...";
-                            enabled: row.available && row.mode-ok;
-                            clicked => { edit-oled(row.attr); }
+                        // The screen: what it shows now, and the editor.
+                        if row.kind == 15: VerticalLayout {
+                            spacing: 4px;
+                            alignment: center;
+                            Text {
+                                text: row.display;
+                                font-size: 12px;
+                                color: Theme.muted-text-color;
+                                horizontal-alignment: right;
+                                overflow: elide;
+                            }
+                            Button {
+                                text: "Choose what to show...";
+                                enabled: row.available && row.mode-ok;
+                                clicked => { edit-oled(row.attr); }
+                            }
                         }
 
                         // Onboard profile slots: a 5-card grid; the active

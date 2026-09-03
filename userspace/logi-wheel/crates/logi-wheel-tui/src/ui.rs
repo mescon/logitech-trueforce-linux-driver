@@ -1769,67 +1769,102 @@ fn status_colour(s: &str) -> Color {
 /// line per field with the focused one accented, the reason a send was
 /// refused, and the keys. Same Clear + bordered block as the colour picker.
 fn draw_screen_editor(f: &mut Frame, ed: &crate::screen_editor::ScreenEditor, area: Rect) {
-    use logi_wheel_core::oled::Field;
+    use crate::screen_editor::Focus;
+    use logi_wheel_core::oled::{Field, PRESETS};
 
     let focus_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(Color::DarkGray);
     let layout = ed.current();
-    let mut lines: Vec<Line> = Vec::new();
+    let matched = ed.matches_preset();
 
-    lines.push(Line::from(vec![
-        Span::styled(if ed.focus == 0 { "> " } else { "  " }, focus_style),
-        Span::styled(
-            format!("< {}  {} >", layout.letter, layout.name),
-            if ed.focus == 0 { focus_style } else { Style::default() },
-        ),
-    ]));
-    lines.push(Line::from(Span::styled("  Left/Right change the layout; x here hands the screen back", dim)));
-    lines.push(Line::from(""));
+    // Left pane: the presets. The highlighted one is what the preview
+    // shows unless the design has been changed since.
+    const LEFT: usize = 30;
+    let mut left: Vec<Line> = vec![Line::from(Span::styled("WHAT TO SHOW", dim))];
+    for (i, p) in PRESETS.iter().enumerate() {
+        let here = ed.focus == Focus::Presets && ed.preset == i;
+        let style = if here {
+            focus_style
+        } else if matched == Some(i) {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let name: String = p.name.chars().take(LEFT - 2).collect();
+        left.push(Line::from(vec![Span::styled(if here { "> " } else { "  " }, focus_style), Span::styled(name, style)]));
+    }
+    left.push(Line::from(""));
+    left.push(Line::from(Span::styled(
+        PRESETS[ed.preset].what.to_string(),
+        dim,
+    )));
 
-    lines.push(Line::from(Span::styled("  +----------------------------+", dim)));
+    // Right pane: the preview and the design.
+    let mut right: Vec<Line> = Vec::new();
+    right.push(Line::from(Span::styled("+----------------------------+", dim)));
     let rows = ed.preview();
     for i in 0..4 {
         let text = rows.get(i).cloned().unwrap_or_default();
         let shown: String = text.chars().take(26).collect();
-        lines.push(Line::from(vec![
-            Span::styled("  | ", dim),
+        right.push(Line::from(vec![
+            Span::styled("| ", dim),
             Span::raw(format!("{shown:^26}")),
             Span::styled(" |", dim),
         ]));
     }
-    lines.push(Line::from(Span::styled("  +----------------------------+", dim)));
-    lines.push(Line::from(""));
-
+    right.push(Line::from(Span::styled("+----------------------------+", dim)));
+    right.push(Line::from(Span::styled(
+        if ed.live() { "with sample values from a car in third at 142 km/h" } else { "what the screen will show" },
+        dim,
+    )));
+    right.push(Line::from(""));
+    right.push(Line::from(Span::styled(
+        if matched.is_some() { "MAKE IT YOUR OWN" } else { "YOUR OWN DESIGN" },
+        dim,
+    )));
+    let on_layout = ed.focus == Focus::Layout;
+    right.push(Line::from(vec![
+        Span::styled(if on_layout { "> " } else { "  " }, focus_style),
+        Span::styled("Layout            ", if on_layout { focus_style } else { Style::default() }),
+        Span::styled(format!("< {} >", layout.name), if on_layout { focus_style } else { Style::default() }),
+    ]));
     if layout.fields.is_empty() {
-        lines.push(Line::from(Span::styled("  This layout takes no fields.", dim)));
+        right.push(Line::from(Span::styled("  This layout has nothing to type into.", dim)));
     }
     for (i, field) in layout.fields.iter().enumerate() {
-        let focused = ed.focus == i + 1;
-        let label = match field {
-            Field::Number { label } => format!("{label} (0-255)"),
-            Field::Text { label, width } => format!("{label} ({width})"),
+        let focused = ed.focus == Focus::Field(i);
+        let (label, hint) = match field {
+            Field::Number { label } => (label.to_string(), "0 to 255".to_string()),
+            Field::Text { label, width } => (label.to_string(), format!("up to {width} characters")),
         };
         let value = ed.values.get(i).cloned().unwrap_or_default();
-        lines.push(Line::from(vec![
+        right.push(Line::from(vec![
             Span::styled(if focused { "> " } else { "  " }, focus_style),
             Span::styled(format!("{label:<18}"), if focused { focus_style } else { Style::default() }),
             Span::raw(value),
             Span::styled(if focused { "_" } else { "" }, focus_style),
+            Span::styled(format!("  {hint}"), dim),
         ]));
     }
-    lines.push(Line::from(""));
-    match (&ed.error, ed.frame()) {
-        (Some(e), _) => lines.push(Line::from(Span::styled(format!("  {e}"), Style::default().fg(Color::Red)))),
-        (None, Ok(frame)) => lines.push(Line::from(Span::styled(format!("  sends: {frame}"), dim))),
-        (None, Err(e)) => lines.push(Line::from(Span::styled(format!("  {e}"), dim))),
+    right.push(Line::from(""));
+    right.push(Line::from(Span::styled("  Type {gear}, {speed}, {rpm_pct}, {throttle_pct} or", dim)));
+    right.push(Line::from(Span::styled("  {brake_pct} in a field to fill it from the game.", dim)));
+    right.push(Line::from(""));
+    match (&ed.error, ed.template()) {
+        (Some(e), _) => right.push(Line::from(Span::styled(format!("  {e}"), Style::default().fg(Color::Red)))),
+        (None, Ok(frame)) => right.push(Line::from(Span::styled(format!("  sends: {frame}"), dim))),
+        (None, Err(e)) => right.push(Line::from(Span::styled(format!("  {e}"), dim))),
     }
-    lines.push(Line::from(Span::styled(
-        "  [Up/Down field  type to edit  Enter send  x screen off  Esc close]",
-        dim,
-    )));
 
-    let width = area.width.saturating_sub(4).clamp(30, 76).min(area.width);
-    let height = (lines.len() as u16).saturating_add(2).min(area.height);
+    let help = match ed.focus {
+        Focus::Presets => "[Up/Down pick  Enter show now  g use during games  x wheel menu  Tab design  Esc close]",
+        Focus::Layout => "[Left/Right layout  Down fields  Enter show now  g use during games  x wheel menu  Tab presets]",
+        Focus::Field(_) => "[type to edit  Up/Down field  Enter show now  Tab presets  Esc close]",
+    };
+
+    let inner_h = left.len().max(right.len()) as u16 + 2;
+    let width = area.width.saturating_sub(4).clamp(40, 100).min(area.width);
+    let height = inner_h.saturating_add(2).min(area.height);
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -1837,10 +1872,17 @@ fn draw_screen_editor(f: &mut Frame, ed: &crate::screen_editor::ScreenEditor, ar
         height,
     };
     f.render_widget(Clear, rect);
-    f.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Screen ")),
-        rect,
-    );
+    let block = Block::default().borders(Borders::ALL).title(" Screen ");
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(LEFT as u16 + 2), Constraint::Min(10)])
+        .split(Rect { height: inner.height.saturating_sub(1), ..inner });
+    f.render_widget(Paragraph::new(left).wrap(Wrap { trim: true }), columns[0]);
+    f.render_widget(Paragraph::new(right), columns[1]);
+    let help_rect = Rect { y: inner.y + inner.height.saturating_sub(1), height: 1.min(inner.height), ..inner };
+    f.render_widget(Paragraph::new(Line::from(Span::styled(help, dim))), help_rect);
 }
 
 #[cfg(test)]
@@ -2360,3 +2402,4 @@ mod tests {
         );
     }
 }
+

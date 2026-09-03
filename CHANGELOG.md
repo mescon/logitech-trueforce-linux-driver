@@ -7,15 +7,24 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
-**A screen editor in both apps.** On the lights page, the window's
-"Edit screen..." opens a picker of the ten layouts, one input per field
-sized to its width, a preview drawn from the renderer's rules, and Send
-and Screen off buttons; the terminal app opens the same editor with Enter
-on the Screen row, Left and Right to pick a layout, Up and Down between
-fields, Enter to send and `x` to hand the screen back. Both compose the
-frame through one shared schema, so what they send is what the driver
-takes, and an over-wide field is refused with the reason before anything
-is written.
+**A screen editor in both apps, presets first.** On the lights page the
+window's "Choose what to show..." opens a preview of the base's screen
+and a list of ready-made screens: gear and speed, a big speed, a rev bar,
+a rev bar with gear and speed, a four-row race board, a throttle and
+brake readout, throttle and brake gauges, two static messages and blank.
+Picking one fills the preview, with sample values where a field is fed
+from the game. "Show now" puts it on the screen, "Use during games"
+makes it the simulated-TrueForce dashboard and switches that on, and
+"Give the wheel its menu back" is what it says. The design behind any
+preset is open for changes: a layout picker by plain name, one input per
+field with what fits beside it, and the game placeholders spelled out.
+The terminal app opens the same editor with Enter on the Screen row: Up
+and Down pick a preset, Enter shows it, `g` uses it during games, `x`
+hands the screen back and Tab opens the design. Both compose the frame
+through the shared `logi_wheel_core::oled` module, so a field that will
+not fit is refused with a reason before anything is sent. The window
+also drew the pedal Sensitivity/Curve toggle on the screen row, a
+widget-kind collision; fixed, and a test now keeps the kinds distinct.
 
 **The screen is a dashboard during a game.** With `screen=1` in
 `tf-sim.conf`, `logi-tf-sim` writes the base's OLED from the same
