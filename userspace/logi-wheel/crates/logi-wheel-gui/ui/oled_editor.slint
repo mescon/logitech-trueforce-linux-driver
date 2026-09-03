@@ -1,0 +1,146 @@
+import { Button, ComboBox, LineEdit, SpinBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// One field of the chosen layout, in write order. `value` is the staged
+// text; `is-number` selects a 0-255 spinner over a text box; `width` is the
+// text field's capacity, shown so the user knows the budget.
+export struct OledField {
+    label: string,
+    is-number: bool,
+    width: int,
+    value: string,
+}
+
+// One row of the preview as Rust laid it out from the renderer's rules:
+// size 0 small, 1 medium, 2 large, 3 very large; align 0 left, 1 centre,
+// 2 right. Two-zone rows arrive pre-spaced for a monospace face.
+export struct OledRow {
+    text: string,
+    size: int,
+    align: int,
+}
+
+// The screen editor overlay: pick a layout, fill its fields, watch the
+// preview, send it to the wheel or hand the screen back. Rust owns the
+// staged values and recomposes the preview on every edit; this only renders
+// what it is given and reports what was typed.
+export component OledEditor inherits Rectangle {
+    in property <[string]> layouts: [];
+    in property <int> layout-index: 6;
+    in property <[OledField]> fields: [];
+    in property <[OledRow]> preview: [];
+    in property <string> error: "";
+    in property <string> frame: "";
+
+    callback set-layout(int);
+    callback set-field(int, string);
+    callback send();
+    callback off();
+    callback close();
+
+    background: Theme.scrim;
+
+    TouchArea {
+        scroll-event(event) => { EventResult.accept }
+    }
+
+    Rectangle {
+        width: 480px;
+        height: min(640px, root.height - 16px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.panel-background;
+        border-radius: Theme.panel-radius;
+        border-width: 1px;
+        border-color: Theme.panel-border;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: "Screen";
+                font-size: 16px;
+                font-weight: 700;
+                color: Theme.text-color;
+            }
+
+            ComboBox {
+                model: root.layouts;
+                current-index: root.layout-index;
+                selected => { root.set-layout(self.current-index); }
+            }
+
+            // The panel: 128x64, drawn at 3x. Black, white text, monospace
+            // so the two-zone rows Rust pre-spaces land where the wheel puts
+            // them. An approximation of the fonts, not the fonts.
+            Rectangle {
+                width: 384px;
+                height: 192px;
+                x: (parent.width - self.width) / 2;
+                background: black;
+                border-radius: 4px;
+                border-width: 1px;
+                border-color: Theme.panel-border;
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 2px;
+                    alignment: center;
+                    for row in root.preview: Text {
+                        text: row.text;
+                        color: white;
+                        font-family: "monospace";
+                        font-size: row.size == 3 ? 40px : row.size == 2 ? 22px : row.size == 1 ? 16px : 12px;
+                        horizontal-alignment: row.align == 2 ? right : row.align == 1 ? center : left;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            for f[i] in root.fields: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    width: 120px;
+                    text: f.is-number ? f.label : f.label + " (" + f.width + ")";
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    color: Theme.text-color;
+                }
+                if f.is-number: SpinBox {
+                    minimum: 0;
+                    maximum: 255;
+                    value: f.value.to-float();
+                    edited(v) => { root.set-field(i, v); }
+                }
+                if !f.is-number: LineEdit {
+                    horizontal-stretch: 1;
+                    text: f.value;
+                    edited(t) => { root.set-field(i, t); }
+                }
+            }
+
+            if root.fields.length == 0: Text {
+                text: "This layout takes no fields.";
+                font-size: 12px;
+                color: Theme.muted-text-color;
+            }
+
+            Text {
+                text: root.error != "" ? root.error : "Sends as: " + root.frame;
+                font-size: 11px;
+                color: root.error != "" ? Theme.error-color : Theme.muted-text-color;
+                wrap: word-wrap;
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button { text: "Screen off"; clicked => { root.off(); } }
+                Button { text: "Close"; clicked => { root.close(); } }
+                Button { text: "Send to wheel"; primary: true; clicked => { root.send(); } }
+            }
+        }
+    }
+}

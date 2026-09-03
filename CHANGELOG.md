@@ -7,6 +7,16 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**A screen editor in both apps.** On the lights page, the window's
+"Edit screen..." opens a picker of the ten layouts, one input per field
+sized to its width, a preview drawn from the renderer's rules, and Send
+and Screen off buttons; the terminal app opens the same editor with Enter
+on the Screen row, Left and Right to pick a layout, Up and Down between
+fields, Enter to send and `x` to hand the screen back. Both compose the
+frame through one shared schema, so what they send is what the driver
+takes, and an over-wide field is refused with the reason before anything
+is written.
+
 **The screen is a dashboard during a game.** With `screen=1` in
 `tf-sim.conf`, `logi-tf-sim` writes the base's OLED from the same
 telemetry that drives the rev lights: by default layout G with the gear

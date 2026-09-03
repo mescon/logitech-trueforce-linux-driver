@@ -87,6 +87,7 @@ export component SettingsList inherits ScrollView {
     callback trigger(string);
     callback edit-curve(string);
     callback edit-rgb(string);
+    callback edit-oled(string);
     callback edit-slot-text(string);
     callback edit-light-effect(int);
     callback edit-pair(string, bool, int);
@@ -336,6 +337,13 @@ export component SettingsList inherits ScrollView {
                             text: "Edit slot...";
                             enabled: row.available && row.mode-ok && row.bool-value;
                             clicked => { edit-rgb(row.attr); }
+                        }
+
+                        // The screen editor: layout picker, fields, preview.
+                        if row.kind == 14: Button {
+                            text: "Edit screen...";
+                            enabled: row.available && row.mode-ok;
+                            clicked => { edit-oled(row.attr); }
                         }
 
                         // Onboard profile slots: a 5-card grid; the active

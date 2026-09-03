@@ -6,7 +6,7 @@
 
 use logi_wheel_core::curve::{Curve, FULL};
 use logi_wheel_core::shaping::{self, ShapingRole};
-use logi_wheel_core::{lightsync, Access, Category, Color, Error, Kind, Value, WheelModel, REGISTRY};
+use logi_wheel_core::{lightsync, oled, Access, Category, Color, Error, Kind, Value, WheelModel, REGISTRY};
 
 use logi_wheel_core::games::{self, SetupAction};
 use logi_wheel_core::helpers;
@@ -58,6 +58,9 @@ pub const KIND_LIGHT_EFFECT: i32 = 12;
 /// opens the slot editor overlay. Never produced by `kind_tag`; the row
 /// does not exist in the registry.
 pub const KIND_LIGHT_SLOT: i32 = 13;
+/// The "Edit screen..." button row: opens the OLED editor overlay
+/// (`oled_editor.slint`). Synthetic, like the slot editor's row.
+pub const KIND_OLED_EDIT: i32 = 14;
 /// A per-axis shaping toggle row `compose_shaping` inserts: a Switch whose
 /// own label reads "Sensitivity" (off) or "Curve" (on). Never produced by
 /// `kind_tag`; the row does not exist in the registry (its attr is
@@ -68,6 +71,8 @@ pub const KIND_SHAPING: i32 = 14;
 /// exists so the row can be found in the model (`update_row`'s
 /// find-by-attr) and so its button callback has something to report.
 pub const LIGHT_EDIT_SLOT_ATTR: &str = "lightsync_edit_slot";
+/// The synthetic attr the screen editor button reports.
+pub const OLED_EDIT_ATTR: &str = "oled_edit";
 
 // --- Info/Testing page wheel photo ---
 //
@@ -134,6 +139,9 @@ pub fn attr_group(attr: &str) -> &'static str {
     }
     if attr == LIGHT_EDIT_SLOT_ATTR {
         return "CUSTOM SLOT";
+    }
+    if attr == OLED_EDIT_ATTR {
+        return "SCREEN";
     }
     match attr {
         "wheel_strength" | "wheel_ffb_filter" | "wheel_ffb_filter_auto" => "STRENGTH",
@@ -479,6 +487,7 @@ pub fn compose_lightsync(items: Vec<SettingRow>, slot_names: &[String]) -> Vec<S
     let (available, mode_ok) = (effect_row.available, effect_row.mode_ok);
     let slot = items.iter().find(|r| r.attr == "wheel_led_slot").map(|r| r.int_value).unwrap_or(0);
     let mut out = Vec::with_capacity(3);
+    let mut screen: Option<SettingRow> = None;
     for mut item in items {
         match item.attr.as_str() {
             "wheel_led_effect" => {
@@ -486,11 +495,101 @@ pub fn compose_lightsync(items: Vec<SettingRow>, slot_names: &[String]) -> Vec<S
                 out.push(item);
             }
             "wheel_led_brightness" => out.push(item),
+            // The screen: its raw frame row stays (it is the truth of what
+            // is on the panel, and a shell-syntax escape hatch), the layout
+            // listing is the editor's job, and the editor button follows.
+            // Held back so the strip's rows come first regardless of where
+            // the registry happens to list the screen.
+            "wheel_oled" => screen = Some(item),
             _ => {}
         }
     }
     out.push(light_slot_row(effect, available, mode_ok));
+    if let Some(row) = screen {
+        let (available, mode_ok) = (row.available, row.mode_ok);
+        out.push(row);
+        out.push(oled_edit_row(available, mode_ok));
+    }
     out
+}
+
+/// The "Edit screen..." button, after the raw frame row. Greys out with it.
+fn oled_edit_row(available: bool, mode_ok: bool) -> SettingRow {
+    SettingRow {
+        attr: OLED_EDIT_ATTR.into(),
+        label: "Screen editor".into(),
+        help: "Pick a layout, fill its fields, see a preview, and send it to the base's screen. Screen off gives the wheel its menu back.".into(),
+        kind: KIND_OLED_EDIT,
+        int_value: 0,
+        int_value2: 0,
+        bool_value: true,
+        text_value: slint::SharedString::new(),
+        display: slint::SharedString::new(),
+        choices: slint::ModelRc::new(slint::VecModel::<slint::SharedString>::default()),
+        min: 0,
+        max: 0,
+        step: 0,
+        unit: slint::SharedString::new(),
+        available,
+        mode_ok,
+        error: slint::SharedString::new(),
+        group: attr_group(OLED_EDIT_ATTR).into(),
+        plot: slint::SharedString::new(),
+        revision: 0,
+    }
+}
+
+/// The editor's field model for `layout` with the staged `values`.
+pub fn oled_fields_model(layout: &oled::Layout, values: &[String]) -> slint::ModelRc<crate::OledField> {
+    let rows: Vec<crate::OledField> = layout
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| crate::OledField {
+            label: f.label().into(),
+            is_number: matches!(f, oled::Field::Number { .. }),
+            width: match f { oled::Field::Text { width, .. } => *width as i32, _ => 0 },
+            value: values.get(i).cloned().unwrap_or_default().into(),
+        })
+        .collect();
+    slint::ModelRc::new(slint::VecModel::from(rows))
+}
+
+/// The preview rows for the overlay. Two-zone rows are pre-spaced for a
+/// monospace face: first character, then the rest right-aligned in the
+/// field's width, which is how the panel places them.
+pub fn oled_preview_model(layout: &oled::Layout, values: &[String]) -> slint::ModelRc<crate::OledRow> {
+    let rows: Vec<crate::OledRow> = oled::preview(layout, values)
+        .into_iter()
+        .map(|r| {
+            let (text, align) = match r.align {
+                oled::Align::TwoZone => {
+                    let mut chars = r.text.chars();
+                    match chars.next() {
+                        Some(first) if !r.text.starts_with(' ') => {
+                            let rest: String = chars.collect();
+                            (format!("{first}{rest:>9}"), 0)
+                        }
+                        _ => (r.text.trim_start().to_string(), 2),
+                    }
+                }
+                oled::Align::Left => (r.text, 0),
+                oled::Align::Centre => (r.text, 1),
+                oled::Align::Right => (r.text, 2),
+            };
+            crate::OledRow {
+                text: text.into(),
+                size: match r.size {
+                    oled::Size::Small => 0,
+                    oled::Size::Medium => 1,
+                    oled::Size::Large => 2,
+                    oled::Size::VeryLarge => 3,
+                },
+                align,
+            }
+        })
+        .collect();
+    slint::ModelRc::new(slint::VecModel::from(rows))
 }
 
 /// Build one synthetic per-axis shaping toggle row `compose_shaping`
@@ -2311,6 +2410,8 @@ mod tests {
         let ten = "ff0000 00ff00 0000ff 000000 000000 000000 000000 000000 000000 000000";
         fs.set("wheel_led_colors", ten);
         fs.set("wheel_rev_level", "3");
+        fs.set("wheel_oled", "off");
+        fs.set("wheel_oled_layouts", "6 G text text 1,3");
         let vm = crate::viewmodel::ViewModel::with_io(fs);
         setting_rows(&vm.rows_for(Category::Leds))
     }
@@ -2319,7 +2420,11 @@ mod tests {
     fn compose_lightsync_keeps_only_the_composed_rows_in_order() {
         let out = compose_lightsync(leds_setting_rows("3", "0"), &[]);
         let attrs: Vec<String> = out.iter().map(|r| r.attr.to_string()).collect();
-        assert_eq!(attrs, vec!["wheel_led_effect", "wheel_led_brightness", LIGHT_EDIT_SLOT_ATTR]);
+        assert_eq!(
+            attrs,
+            vec!["wheel_led_effect", "wheel_led_brightness", LIGHT_EDIT_SLOT_ATTR, "wheel_oled", OLED_EDIT_ATTR],
+            "the screen's frame row and editor button ride along; its layouts listing does not"
+        );
     }
 
     #[test]

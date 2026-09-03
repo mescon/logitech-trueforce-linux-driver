@@ -16,6 +16,7 @@ pub mod evtest;
 pub mod fftest;
 pub mod hidpp;
 pub mod lightsync;
+pub mod oled;
 pub mod setting;
 pub use setting::{Access, Category, ModeReq, SettingSpec};
 pub mod registry;

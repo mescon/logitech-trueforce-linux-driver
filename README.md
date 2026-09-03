@@ -560,6 +560,9 @@ in [docs/LAUNCH_OPTIONS.md](docs/LAUNCH_OPTIONS.md).
   of zero gives rev lights and a dashboard with no haptics at all. Direct-drive
   wheels only; the G923 has no screen.
 
+  To put something on the screen by hand, both apps have an editor on the
+  lights page: pick a layout, fill its fields, watch the preview, send.
+
   With a G923 and a direct-drive wheel plugged in together, say which one
   simulated TrueForce should drive: the Setup page has a picker, or set
   `wheel=dd` or `wheel=g923` in `tf-sim.conf`. Left on `auto` it takes a G923

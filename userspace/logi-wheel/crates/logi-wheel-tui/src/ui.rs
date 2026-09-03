@@ -138,6 +138,9 @@ pub fn draw<S: SysfsIo>(f: &mut Frame, app: &App<S>) {
     }
 
     // The LED color picker floats centered over the body when active.
+    if let Some(ed) = &app.screen_editor {
+        draw_screen_editor(f, ed, root[1]);
+    }
     if let Some(picker) = &app.color_picker {
         draw_color_picker(f, picker, root[1]);
     }
@@ -1760,6 +1763,84 @@ fn status_colour(s: &str) -> Color {
     } else {
         Color::Green
     }
+}
+
+/// The screen editor modal: the layout row, a preview of the panel, one
+/// line per field with the focused one accented, the reason a send was
+/// refused, and the keys. Same Clear + bordered block as the colour picker.
+fn draw_screen_editor(f: &mut Frame, ed: &crate::screen_editor::ScreenEditor, area: Rect) {
+    use logi_wheel_core::oled::Field;
+
+    let focus_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(Color::DarkGray);
+    let layout = ed.current();
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled(if ed.focus == 0 { "> " } else { "  " }, focus_style),
+        Span::styled(
+            format!("< {}  {} >", layout.letter, layout.name),
+            if ed.focus == 0 { focus_style } else { Style::default() },
+        ),
+    ]));
+    lines.push(Line::from(Span::styled("  Left/Right change the layout; x here hands the screen back", dim)));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("  +----------------------------+", dim)));
+    let rows = ed.preview();
+    for i in 0..4 {
+        let text = rows.get(i).cloned().unwrap_or_default();
+        let shown: String = text.chars().take(26).collect();
+        lines.push(Line::from(vec![
+            Span::styled("  | ", dim),
+            Span::raw(format!("{shown:^26}")),
+            Span::styled(" |", dim),
+        ]));
+    }
+    lines.push(Line::from(Span::styled("  +----------------------------+", dim)));
+    lines.push(Line::from(""));
+
+    if layout.fields.is_empty() {
+        lines.push(Line::from(Span::styled("  This layout takes no fields.", dim)));
+    }
+    for (i, field) in layout.fields.iter().enumerate() {
+        let focused = ed.focus == i + 1;
+        let label = match field {
+            Field::Number { label } => format!("{label} (0-255)"),
+            Field::Text { label, width } => format!("{label} ({width})"),
+        };
+        let value = ed.values.get(i).cloned().unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::styled(if focused { "> " } else { "  " }, focus_style),
+            Span::styled(format!("{label:<18}"), if focused { focus_style } else { Style::default() }),
+            Span::raw(value),
+            Span::styled(if focused { "_" } else { "" }, focus_style),
+        ]));
+    }
+    lines.push(Line::from(""));
+    match (&ed.error, ed.frame()) {
+        (Some(e), _) => lines.push(Line::from(Span::styled(format!("  {e}"), Style::default().fg(Color::Red)))),
+        (None, Ok(frame)) => lines.push(Line::from(Span::styled(format!("  sends: {frame}"), dim))),
+        (None, Err(e)) => lines.push(Line::from(Span::styled(format!("  {e}"), dim))),
+    }
+    lines.push(Line::from(Span::styled(
+        "  [Up/Down field  type to edit  Enter send  x screen off  Esc close]",
+        dim,
+    )));
+
+    let width = area.width.saturating_sub(4).clamp(30, 76).min(area.width);
+    let height = (lines.len() as u16).saturating_add(2).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Screen ")),
+        rect,
+    );
 }
 
 #[cfg(test)]

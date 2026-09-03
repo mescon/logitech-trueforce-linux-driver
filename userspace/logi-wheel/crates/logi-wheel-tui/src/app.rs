@@ -1,4 +1,5 @@
 use crate::color_picker::{ColorPicker, PickerOutcome};
+use crate::screen_editor::{ScreenEditor, ScreenOutcome};
 use crate::curve_editor::CurveEditor;
 use crate::edit;
 use crate::wheel_test::{SimKind, TestView};
@@ -235,6 +236,8 @@ pub struct App<S: SysfsIo> {
     /// The modal LED color picker, active while `wheel_led_colors` (the
     /// only `Kind::RgbStrip` attribute) is being edited.
     pub color_picker: Option<ColorPicker>,
+    /// The screen editor modal, over the `wheel_oled` row.
+    pub screen_editor: Option<ScreenEditor>,
     /// The LIGHTSYNC effect selector, active while the Effect row is being
     /// cycled.
     pub effect_edit: Option<EffectEdit>,
@@ -471,6 +474,7 @@ impl<S: SysfsIo> App<S> {
             edit: None,
             curve_edit: None,
             color_picker: None,
+            screen_editor: None,
             effect_edit: None,
             info_popup: None,
             add_game: None,
@@ -730,6 +734,7 @@ impl<S: SysfsIo> App<S> {
             || self.edit.is_some()
             || self.curve_edit.is_some()
             || self.color_picker.is_some()
+            || self.screen_editor.is_some()
             || self.effect_edit.is_some()
             || self.info_popup.is_some()
             || self.add_game.is_some()
@@ -1201,6 +1206,12 @@ impl<S: SysfsIo> App<S> {
             rows.push(self.led_row("wheel_led_direction", "  Direction"));
             rows.push(self.led_row("wheel_led_colors", "  Colors"));
             rows.push(self.led_row("wheel_led_apply", "  Apply slot"));
+        }
+        // The base's screen, on the wheels that have one. Enter on the
+        // frame row opens the screen editor (see screen_editor.rs).
+        if self.device.read("wheel_oled").is_ok() {
+            rows.push(self.led_row("wheel_oled", "Screen"));
+            rows.push(self.led_row("wheel_oled_layouts", "  Layouts"));
         }
         rows
     }
@@ -2124,6 +2135,13 @@ impl<S: SysfsIo> App<S> {
             self.curve_edit = Some(CurveEditor::from_value(spec.attr, &cur));
             return;
         }
+        if spec.attr == "wheel_oled" {
+            match ScreenEditor::from_value(&cur) {
+                Some(ed) => self.screen_editor = Some(ed),
+                None => self.status = "cannot edit (value unreadable)".into(),
+            }
+            return;
+        }
         if matches!(spec.kind, Kind::RgbStrip { .. }) {
             match ColorPicker::from_value(&cur) {
                 Some(picker) => self.color_picker = Some(picker),
@@ -2196,6 +2214,20 @@ impl<S: SysfsIo> App<S> {
     /// Commit the color picker's working strip: the same write path the
     /// old raw hex editor used, so a mirrored direction still mirrors the
     /// left half before the write.
+    /// Send a composed frame (or `off`) to the base's screen and close the
+    /// editor. The driver validates widths again and refuses rather than
+    /// truncates, so an error here is reported in its words.
+    pub fn commit_screen_editor(&mut self, frame: String) {
+        self.screen_editor = None;
+        self.status = match self.device.write("wheel_oled", &Value::Text(frame.clone())) {
+            Ok(()) => {
+                if frame == "off" { "Screen handed back".to_string() } else { format!("Screen: {frame}") }
+            }
+            Err(e) => format!("Screen: {e}"),
+        };
+        self.reload();
+    }
+
     pub fn commit_color_picker(&mut self) {
         let Some(picker) = self.color_picker.take() else { return };
         let v = self.mirror_colors_if_needed("wheel_led_colors", Value::Rgb(picker.colors));
@@ -2446,6 +2478,15 @@ impl<S: SysfsIo> App<S> {
                 Char('-') => ce.delete_point(),
                 Char('?') => self.help = true,
                 _ => {}
+            }
+            return;
+        }
+        if let Some(ed) = self.screen_editor.as_mut() {
+            match ed.on_key(key) {
+                ScreenOutcome::Open => {}
+                ScreenOutcome::Commit(frame) => self.commit_screen_editor(frame),
+                ScreenOutcome::Off => self.commit_screen_editor("off".to_string()),
+                ScreenOutcome::Cancel => self.screen_editor = None,
             }
             return;
         }
@@ -4304,6 +4345,8 @@ mod tests {
         fs.set("wheel_led_direction", direction);
         fs.set("wheel_led_colors", TEN_COLORS);
         fs.set("wheel_rev_level", "0");
+        fs.set("wheel_oled", "off");
+        fs.set("wheel_oled_layouts", "6 G text text 1,3");
         let mut a = App::new(logi_wheel_core::Device::with_io(fs));
         a.focus = Focus::Content;
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Leds).unwrap();
@@ -4443,7 +4486,7 @@ mod tests {
     fn lightsync_page_hides_the_slot_group_for_builtin_effects() {
         let a = leds_app("3", "0");
         let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
-        assert_eq!(attrs, vec!["wheel_led_effect", "wheel_led_brightness"]);
+        assert_eq!(attrs, vec!["wheel_led_effect", "wheel_led_brightness", "wheel_oled", "wheel_oled_layouts"]);
     }
 
     #[test]
@@ -4460,6 +4503,8 @@ mod tests {
                 "wheel_led_direction",
                 "wheel_led_colors",
                 "wheel_led_apply",
+                "wheel_oled",
+                "wheel_oled_layouts",
             ]
         );
         let name_row = a.rows.iter().find(|r| r.attr == "wheel_led_slot_name").unwrap();
@@ -4547,6 +4592,41 @@ mod tests {
         a.on_key(KeyCode::Enter);
         assert_eq!(a.device.read("wheel_led_effect").unwrap(), Value::Int(2));
         assert_eq!(a.device.read("wheel_led_slot").unwrap(), Value::Int(0), "slot untouched");
+    }
+
+    /// Enter on the screen row opens the editor; typing a gear and a value
+    /// then Enter writes the composed frame; `x` on the layout row hands
+    /// the screen back; Esc writes nothing.
+    #[test]
+    fn enter_on_the_screen_row_opens_the_editor_and_sends_a_frame() {
+        use crossterm::event::KeyCode;
+        let mut a = leds_app("5", "0");
+        a.device.write("wheel_oled", &Value::Text("off".into())).ok();
+        a.reload();
+        a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_oled").expect("the screen row is listed");
+        a.on_key(KeyCode::Enter);
+        assert!(a.screen_editor.is_some(), "the editor opens");
+        assert!(a.edit.is_none(), "not the raw text editor");
+
+        a.on_key(KeyCode::Char('3'));
+        a.on_key(KeyCode::Down);
+        for c in "142".chars() {
+            a.on_key(KeyCode::Char(c));
+        }
+        a.on_key(KeyCode::Enter);
+        assert!(a.screen_editor.is_none());
+        assert_eq!(a.device.read("wheel_oled").unwrap(), Value::Text("G|3|142".into()));
+
+        // Reopened, it is seeded from the frame on the panel.
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.screen_editor.as_ref().unwrap().values, vec!["3", "142"]);
+        a.on_key(KeyCode::Esc);
+        assert_eq!(a.device.read("wheel_oled").unwrap(), Value::Text("G|3|142".into()), "Esc never writes");
+
+        a.on_key(KeyCode::Enter);
+        a.on_key(KeyCode::Up);
+        a.on_key(KeyCode::Char('x'));
+        assert_eq!(a.device.read("wheel_oled").unwrap(), Value::Text("off".into()), "x hands the screen back");
     }
 
     #[test]

@@ -3,6 +3,7 @@ import { Theme } from "theme.slint";
 import { SettingRow, SettingsList } from "widgets.slint";
 import { CurveEditor, CurvePoint } from "curve_editor.slint";
 import { RgbStrip, LedColor } from "rgb_strip.slint";
+import { OledEditor, OledField, OledRow } from "oled_editor.slint";
 import { SlotTextEditor, SlotNameRow } from "slot_text.slint";
 import { Setup, SetupGame, SetupEffect, AddableGame } from "setup.slint";
 import { InfoPage, TestButton, TestAxis, TestCallout, TestPlanRow } from "info_page.slint";
@@ -371,6 +372,21 @@ export component App inherits Window {
     in property <int> rgb-slot-brightness: 100;
     in property <int> rgb-direction: 0;
     callback edit-rgb(string);
+    callback edit-oled(string);
+    // The screen editor overlay (see oled_editor.slint); Rust stages the
+    // values and recomposes the preview.
+    in property <bool> oled-editor-open: false;
+    in property <[string]> oled-layouts: [];
+    in property <int> oled-layout-index: 6;
+    in property <[OledField]> oled-fields: [];
+    in property <[OledRow]> oled-preview: [];
+    in property <string> oled-error: "";
+    in property <string> oled-frame: "";
+    callback oled-set-layout(int);
+    callback oled-set-field(int, string);
+    callback oled-send();
+    callback oled-off();
+    callback oled-close();
     callback rgb-select-led(int);
     callback rgb-set-color(int, int, int, int);
     callback rgb-set-hex(int, string);
@@ -866,6 +882,7 @@ export component App inherits Window {
                         edit-light-effect(idx) => { root.edit-light-effect(idx); }
                         edit-curve(attr) => { root.edit-curve(attr); }
                         edit-rgb(attr) => { root.edit-rgb(attr); }
+                        edit-oled(attr) => { root.edit-oled(attr); }
                         edit-slot-text(attr) => { root.edit-slot-text(attr); }
                         switch-mode() => { root.toggle-mode(); }
                     }
@@ -915,6 +932,7 @@ export component App inherits Window {
                     edit-light-effect(idx) => { root.edit-light-effect(idx); }
                     edit-curve(attr) => { root.edit-curve(attr); }
                     edit-rgb(attr) => { root.edit-rgb(attr); }
+                    edit-oled(attr) => { root.edit-oled(attr); }
                     edit-slot-text(attr) => { root.edit-slot-text(attr); }
                     switch-mode() => { root.toggle-mode(); }
                 }
@@ -970,6 +988,22 @@ export component App inherits Window {
     // Painted last of all: none of the overlays above open at the same time
     // as this one in practice, but if they somehow did, the most-recently-
     // opened overlay should win.
+    if root.oled-editor-open: OledEditor {
+        width: root.width;
+        height: root.height;
+        layouts: root.oled-layouts;
+        layout-index: root.oled-layout-index;
+        fields: root.oled-fields;
+        preview: root.oled-preview;
+        error: root.oled-error;
+        frame: root.oled-frame;
+        set-layout(i) => { root.oled-set-layout(i); }
+        set-field(i, t) => { root.oled-set-field(i, t); }
+        send() => { root.oled-send(); }
+        off() => { root.oled-off(); }
+        close() => { root.oled-close(); }
+    }
+
     if root.slot-text-editor-open: SlotTextEditor {
         width: root.width;
         height: root.height;

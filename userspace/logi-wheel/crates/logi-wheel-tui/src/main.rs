@@ -1,5 +1,6 @@
 mod app;
 mod color_picker;
+mod screen_editor;
 mod curve_editor;
 mod edit;
 mod keymap;
