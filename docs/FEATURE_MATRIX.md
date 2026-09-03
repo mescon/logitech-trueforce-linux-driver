@@ -83,9 +83,11 @@ version of this file wrongly said it was. It is the RS50's Dynamic OLED, and
 fn0 layout count, fn1 layout descriptor, fn2 clear pending, fn3 set
 layout/data, ten layouts A-J, a typed firmware renderer rather than a
 framebuffer, reached at interface 1 endpoint 0 by SET_REPORT. Reached on
-hardware by a third party with static text and live iRacing telemetry.
-Unimplemented here, but the open questions are narrower than "what is it":
-function numbers and payload layout are known, and the risk below is not.
+hardware by a third party with static text and live iRacing telemetry, and
+since then first-hand on an RS50. Implemented: `wheel_oled` and
+`wheel_oled_layouts` in sysfs, a dashboard in `logi-tf-sim` and an editor
+with presets in both apps. What is still open is the risk below, which is
+the same one the rev lights carry.
 
 **`0x8132` AXIS_MAPPING, RS50 only.** Unknown, and it would duplicate
 something already done host-side.

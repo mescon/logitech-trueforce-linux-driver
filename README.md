@@ -560,8 +560,11 @@ in [docs/LAUNCH_OPTIONS.md](docs/LAUNCH_OPTIONS.md).
   of zero gives rev lights and a dashboard with no haptics at all. Direct-drive
   wheels only; the G923 has no screen.
 
-  To put something on the screen by hand, both apps have an editor on the
-  lights page: pick a layout, fill its fields, watch the preview, send.
+  The easiest way to set all of this is the screen editor on either app's
+  lights page ("Choose what to show..."): a preview and a list of
+  ready-made screens, from gear and speed to gauges and messages of your
+  own. "Show now" puts one on the screen, "Use during games" makes it the
+  dashboard, and the design behind any preset is open for changes.
 
   With a G923 and a direct-drive wheel plugged in together, say which one
   simulated TrueForce should drive: the Setup page has a picker, or set
