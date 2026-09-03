@@ -122,6 +122,8 @@ export component App inherits Window {
     in property <int> setup-tf-wheel: 0;
     in property <bool> setup-tf-wheel-visible: false;
     in property <int> setup-tf-pitch: 35;
+    in property <bool> setup-tf-screen: false;
+    in property <string> setup-tf-screen-template: "G|{gear}|{speed}";
     in property <bool> setup-tf-effects: true;
     in property <[SetupEffect]> setup-tf-effect-rows: [];
     in property <bool> setup-tf-sweep-running: false;
@@ -145,6 +147,8 @@ export component App inherits Window {
     callback setup-tf-set-intensity(int);
     callback setup-tf-set-wheel(int);
     callback setup-tf-set-pitch(int);
+    callback setup-tf-set-screen(bool);
+    callback setup-tf-set-screen-template(string);
     callback setup-tf-set-effects(bool);
     callback setup-tf-set-effect-gain(string, int);
     callback setup-tf-start-daemon();
@@ -685,6 +689,8 @@ export component App inherits Window {
                     tf-wheel: root.setup-tf-wheel;
                     tf-wheel-visible: root.setup-tf-wheel-visible;
                     tf-pitch: root.setup-tf-pitch;
+                    tf-screen: root.setup-tf-screen;
+                    tf-screen-template: root.setup-tf-screen-template;
                     tf-effects: root.setup-tf-effects;
                     tf-effect-rows: root.setup-tf-effect-rows;
                     tf-sweep-running: root.setup-tf-sweep-running;
@@ -705,6 +711,8 @@ export component App inherits Window {
                     tf-set-intensity(v) => { root.setup-tf-set-intensity(v); }
                     tf-set-wheel(v) => { root.setup-tf-set-wheel(v); }
                     tf-set-pitch(v) => { root.setup-tf-set-pitch(v); }
+                    tf-set-screen(v) => { root.setup-tf-set-screen(v); }
+                    tf-set-screen-template(t) => { root.setup-tf-set-screen-template(t); }
                     tf-set-effects(v) => { root.setup-tf-set-effects(v); }
                     tf-set-effect-gain(k, v) => { root.setup-tf-set-effect-gain(k, v); }
                     tf-start-daemon() => { root.setup-tf-start-daemon(); }

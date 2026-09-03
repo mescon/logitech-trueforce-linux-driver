@@ -345,6 +345,8 @@ pub struct App<S: SysfsIo> {
     /// The pitch line editor's draft, same lifecycle as
     /// `tf_intensity_edit` (the `p` key; commits 10-200).
     pub tf_pitch_edit: Option<String>,
+    /// The screen template being typed (Setup view, `c`), or `None`.
+    pub tf_screen_edit: Option<String>,
     /// Whether the per-layer haptic effect list is shown (the `l` key).
     /// Ten layers would crowd the section, so they stay folded until asked
     /// for, matching the GUI's disclosure.
@@ -498,6 +500,7 @@ impl<S: SysfsIo> App<S> {
             tf_daemon: false,
             tf_intensity_edit: None,
             tf_pitch_edit: None,
+            tf_screen_edit: None,
             tf_effects_open: false,
             tf_effect_idx: 0,
             tf_effect_edit: None,
@@ -738,6 +741,7 @@ impl<S: SysfsIo> App<S> {
             || self.test.confirm.is_some()
             || self.tf_intensity_edit.is_some()
             || self.tf_pitch_edit.is_some()
+            || self.tf_screen_edit.is_some()
             || self.tf_effect_edit.is_some()
             || self.tf_sweep_confirm
         {
@@ -1715,6 +1719,13 @@ impl<S: SysfsIo> App<S> {
         };
     }
 
+    /// Flip the screen dashboard (the Setup view's `o`).
+    fn tf_toggle_screen(&mut self) {
+        let target = !self.tf_cfg.screen;
+        let outcome = tfsim::set_screen_in(&self.tf_conf, target);
+        self.tf_report(if target { "screen on" } else { "screen off" }, outcome);
+    }
+
     /// Flip tf-sim's master switch (the Setup view's `m`).
     fn tf_toggle_master(&mut self) {
         let target = !self.tf_cfg.enabled;
@@ -1874,6 +1885,25 @@ impl<S: SysfsIo> App<S> {
         } else {
             Field::Effect
         };
+        // The screen template is text, not a number, so it has its own
+        // little editor ahead of the numeric one.
+        if let Some(draft) = self.tf_screen_edit.as_mut() {
+            match key {
+                Enter => {
+                    let text = draft.trim().to_string();
+                    self.tf_screen_edit = None;
+                    let outcome = tfsim::set_screen_template_in(&self.tf_conf, &text);
+                    self.tf_report(&format!("screen template {text}"), outcome);
+                }
+                Esc => self.tf_screen_edit = None,
+                Backspace => {
+                    draft.pop();
+                }
+                Char(c) if !c.is_control() => draft.push(c),
+                _ => {}
+            }
+            return;
+        }
         let Some(draft) = self
             .tf_intensity_edit
             .as_mut()
@@ -2595,6 +2625,7 @@ impl<S: SysfsIo> App<S> {
             // active, same rule as the SDK-dir editor below.
             if self.tf_intensity_edit.is_some()
                 || self.tf_pitch_edit.is_some()
+                || self.tf_screen_edit.is_some()
                 || self.tf_effect_edit.is_some()
             {
                 self.tf_edit_key(key);
@@ -2709,6 +2740,14 @@ impl<S: SysfsIo> App<S> {
                 }
                 Char('p') if inside && section == SetupSection::SimTf => {
                     self.tf_pitch_edit = Some(self.tf_cfg.pitch_pct.to_string());
+                }
+                // `o` rather than `s`: `s` is the stop-the-sweep key from
+                // anywhere in Setup, matched above this arm.
+                Char('o') if inside && section == SetupSection::SimTf => {
+                    self.tf_toggle_screen()
+                }
+                Char('c') if inside && section == SetupSection::SimTf => {
+                    self.tf_screen_edit = Some(self.tf_cfg.screen_template.clone());
                 }
                 Char('d') if inside && section == SetupSection::SimTf => {
                     self.tf_toggle_daemon()
@@ -4949,6 +4988,46 @@ mod tests {
         }
         a.on_key(KeyCode::Enter);
         assert_eq!(a.tf_cfg.pitch_pct, 150);
+    }
+
+    /// The screen dashboard: `o` flips the switch, `c` opens the template
+    /// for editing seeded with the current one, and Enter writes it. An
+    /// empty template is refused and the old one stays.
+    #[test]
+    fn setup_s_and_c_drive_the_screen_dashboard() {
+        use crossterm::event::KeyCode;
+        let mut a = tf_setup_app();
+        enter_setup(&mut a, SetupSection::SimTf);
+        assert!(!a.tf_cfg.screen, "off by default");
+        a.on_key(KeyCode::Char('o'));
+        assert!(a.tf_cfg.screen, "o turns the screen on");
+        a.on_key(KeyCode::Char('o'));
+        assert!(!a.tf_cfg.screen, "and off again");
+
+        a.on_key(KeyCode::Char('c'));
+        assert_eq!(
+            a.tf_screen_edit.as_deref(),
+            Some(logi_wheel_core::tfsim::DEFAULT_SCREEN_TEMPLATE),
+            "the current template seeds the editor"
+        );
+        for _ in 0..30 {
+            a.on_key(KeyCode::Backspace);
+        }
+        for c in "J|{gear}|{speed}|{rpm}|Lap".chars() {
+            a.on_key(KeyCode::Char(c));
+        }
+        a.on_key(KeyCode::Enter);
+        assert!(a.tf_screen_edit.is_none(), "Enter closes the editor");
+        assert_eq!(a.tf_cfg.screen_template, "J|{gear}|{speed}|{rpm}|Lap");
+
+        a.on_key(KeyCode::Char('c'));
+        for _ in 0..40 {
+            a.on_key(KeyCode::Backspace);
+        }
+        a.on_key(KeyCode::Enter);
+        assert_eq!(a.tf_cfg.screen_template, "J|{gear}|{speed}|{rpm}|Lap", "an empty template is refused");
+        // Refusals come back through tf_report as the daemon's own words.
+        assert!(a.status.contains("invalid"), "status: {}", a.status);
     }
 
     #[test]

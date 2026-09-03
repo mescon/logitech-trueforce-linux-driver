@@ -258,6 +258,10 @@ export component Setup inherits Rectangle {
     in property <int> tf-pitch: 35;
     // The effects layer: master switch plus one row per haptic layer.
     in property <bool> tf-effects: true;
+    // The base's screen as a dashboard: switch and template from
+    // tf-sim.conf, pushed by Rust with the other master controls.
+    in property <bool> tf-screen: false;
+    in property <string> tf-screen-template: "G|{gear}|{speed}";
     in property <[SetupEffect]> tf-effect-rows: [];
     // Kept beside the other section-open flags so the layer list starts
     // collapsed: ten sliders would otherwise bury the controls above it.
@@ -327,6 +331,8 @@ export component Setup inherits Rectangle {
     callback tf-set-enabled(bool);
     callback tf-set-intensity(int);
     callback tf-set-pitch(int);
+    callback tf-set-screen(bool);
+    callback tf-set-screen-template(string);
     callback tf-set-effects(bool);
     callback tf-set-effect-gain(string, int);
     callback tf-start-daemon();
@@ -924,6 +930,40 @@ export component Setup inherits Rectangle {
                     }
                     Text {
                         text: "Rev rate is how fast the felt engine buzz rises with the revs; 100% tracks the engine speed.";
+                        font-size: 11px;
+                        color: Theme.muted-text-color;
+                        wrap: word-wrap;
+                    }
+
+                    // The screen. Same telemetry as the rev lights, one
+                    // template, written by the daemon while a session runs.
+                    Switch {
+                        text: "Show the car on the base's screen";
+                        checked: root.tf-screen;
+                        toggled => { root.tf-set-screen(self.checked); }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            width: 70px;
+                            text: "Screen";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            color: Theme.text-color;
+                        }
+                        screen-edit := LineEdit {
+                            horizontal-stretch: 1;
+                            text: root.tf-screen-template;
+                            placeholder-text: "G|{gear}|{speed}";
+                            accepted(t) => { root.tf-set-screen-template(t); }
+                        }
+                        Button {
+                            text: "Apply";
+                            clicked => { root.tf-set-screen-template(screen-edit.text); }
+                        }
+                    }
+                    Text {
+                        text: "A layout letter, then its fields: {gear}, {speed}, {speed_mph}, {rpm}, and for the gauge layouts {rpm_pct}, {throttle_pct}, {brake_pct}. G is gear and speed; J is four rows of text. The screen goes back to the wheel's menu when the session ends.";
                         font-size: 11px;
                         color: Theme.muted-text-color;
                         wrap: word-wrap;

@@ -1056,7 +1056,7 @@ fn setup_sections<S: SysfsIo>(
                 let hint = if inside && app.tf_effects_open {
                     "[[ ] layer  v level  l hide  m/e/p/x/d/t  Esc back]"
                 } else if inside {
-                    "[m master  e intensity  p pitch  x effects  l layers  d daemon  t sweep  Esc back]"
+                    "[m master  e intensity  p pitch  o screen  c template  x effects  l layers  d daemon  t sweep  Esc back]"
                 } else {
                     "[Enter opens the controls]"
                 };
@@ -1117,6 +1117,12 @@ fn setup_sections<S: SysfsIo>(
                         draft_or(&app.tf_intensity_edit, format!("{}%", app.tf_cfg.intensity)),
                         Span::raw("   pitch: "),
                         draft_or(&app.tf_pitch_edit, format!("{}%", app.tf_cfg.pitch_pct)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::raw("  screen: "),
+                        Span::raw(if app.tf_cfg.screen { "on" } else { "off" }),
+                        Span::raw("   template: "),
+                        draft_or(&app.tf_screen_edit, app.tf_cfg.screen_template.clone()),
                     ]));
                     lines.push(Line::from(Span::styled(
                         "  rev rate = how fast the engine buzz rises; 100 tracks",

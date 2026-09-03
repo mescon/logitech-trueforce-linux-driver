@@ -1283,6 +1283,8 @@ fn main() -> Result<(), slint::PlatformError> {
         app.set_setup_tf_enabled(cfg.enabled);
         app.set_setup_tf_intensity(i32::from(cfg.intensity));
         app.set_setup_tf_pitch(i32::from(cfg.pitch_pct));
+        app.set_setup_tf_screen(cfg.screen);
+        app.set_setup_tf_screen_template(cfg.screen_template.as_str().into());
         app.set_setup_tf_effects(cfg.effects);
         app.set_setup_tf_effect_rows(slint::ModelRc::new(slint::VecModel::from(
             bridge::setup_effects(&cfg),
@@ -2755,6 +2757,29 @@ fn main() -> Result<(), slint::PlatformError> {
                 logi_wheel_core::tfsim::set_pitch_in(
                     &logi_wheel_core::tfsim::default_path(),
                     v.clamp(10, 200) as u8,
+                ),
+            );
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_setup_tf_set_screen(move |v| {
+            let Some(app) = app_weak.upgrade() else { return };
+            report_tf_write(
+                &app,
+                logi_wheel_core::tfsim::set_screen_in(&logi_wheel_core::tfsim::default_path(), v),
+            );
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_setup_tf_set_screen_template(move |t| {
+            let Some(app) = app_weak.upgrade() else { return };
+            report_tf_write(
+                &app,
+                logi_wheel_core::tfsim::set_screen_template_in(
+                    &logi_wheel_core::tfsim::default_path(),
+                    &t,
                 ),
             );
         });
