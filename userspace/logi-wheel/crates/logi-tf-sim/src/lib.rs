@@ -47,6 +47,7 @@ pub mod game_gain;
 pub mod lease;
 pub mod leds;
 pub mod pcars;
+pub mod screen;
 pub use logi_wheel_core::relay;
 pub mod sweep;
 pub mod synth;

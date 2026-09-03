@@ -492,6 +492,8 @@ struct Active {
     /// G923's LED classdevs) was found at stream start; `None` otherwise.
     /// Stopped (blanked) with the stream.
     leds: Option<RevLeds>,
+    /// The base's screen as a dashboard, when configured and present.
+    screen: Option<crate::screen::Screen>,
     /// Menu standby: zero-force output past the grace period parks the
     /// stream even while telemetry keeps arriving.
     gate: SilenceGate,
@@ -743,6 +745,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                                 samples: Vec::new(),
                                 last_captured: None,
                                 leds: Some(leds),
+                                screen: if cfg.screen { crate::screen::Screen::discover() } else { None },
                                 gate: SilenceGate::default(),
                                 lease: None,
                                 lease_key: String::new(),
@@ -805,6 +808,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                                 samples: Vec::with_capacity(MAX_GEN_MS as usize * crate::synth::SAMPLES_PER_MS),
                                 last_captured: None,
                                 leds,
+                                screen: if cfg.screen { crate::screen::Screen::discover() } else { None },
                                 gate: SilenceGate::default(),
                                 lease: Some(lease),
                                 lease_key,
@@ -896,6 +900,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                             samples: Vec::with_capacity(MAX_GEN_MS as usize * crate::synth::SAMPLES_PER_MS),
                             last_captured: Some(now),
                             leds: None,
+                            screen: None,
                             gate: SilenceGate::default(),
                             lease: Some(lease),
                             lease_key,
@@ -1000,12 +1005,18 @@ pub fn run(cfg: &Config) -> Result<()> {
                 if let Some(leds) = &mut a.leds {
                     leds.update(a.tel.rpm, a.tel.max_rpm, a.tel.pit_limiter, now);
                 }
+                if let Some(screen) = &mut a.screen {
+                    screen.update(&a.tel, &cfg.screen_template, now);
+                }
             }
         }
         if let Some(reason) = stop_reason {
             if let Some(mut a) = active.take() {
                 if let Some(leds) = &mut a.leds {
                     leds.stop();
+                }
+                if let Some(screen) = &mut a.screen {
+                    screen.stop();
                 }
                 eprintln!("logi-tf-sim: stream stop ({}): {reason}", a.game);
             }
@@ -1017,6 +1028,9 @@ pub fn run(cfg: &Config) -> Result<()> {
     if let Some(mut a) = active.take() {
         if let Some(leds) = &mut a.leds {
             leds.stop();
+        }
+        if let Some(screen) = &mut a.screen {
+            screen.stop();
         }
         eprintln!("logi-tf-sim: stream stop ({}): shutting down", a.game);
     }

@@ -140,6 +140,13 @@ pub struct Config {
     /// #59). Off restores the older behaviour, where only this file's own
     /// intensity applied.
     pub follow_game_gain: bool,
+    /// Drive the base's screen from telemetry while a session runs
+    /// (`wheel_oled`), the way the rev lights are driven. Off by default:
+    /// the screen belongs to the wheel's own menu until somebody asks.
+    pub screen: bool,
+    /// What to show: a `wheel_oled` frame with placeholders filled from
+    /// telemetry each update. See `crate::screen` for the placeholders.
+    pub screen_template: String,
     /// Stream to a G923 that publishes no live force to mirror, knowing
     /// it costs that wheel its force feedback for as long as the stream
     /// runs.
@@ -201,6 +208,8 @@ impl Default for Config {
             beamng_port: beamng::DEFAULT_PORT,
             relay_port: relay::DEFAULT_PORT,
             follow_game_gain: true,
+            screen: false,
+            screen_template: crate::screen::DEFAULT_TEMPLATE.to_string(),
             g923_stream_without_ffb_mirror: false,
             g923_ffb_invert: true,
             games: BTreeMap::new(),
@@ -386,6 +395,17 @@ fn apply_line(cfg: &mut Config, key: &str, raw: &str) -> bool {
             let Some(v) = parse_bool(raw) else { return false };
             cfg.effects = v;
         }
+        "screen" => {
+            let Some(v) = parse_bool(raw) else { return false };
+            cfg.screen = v;
+        }
+        "screen.template" => {
+            let t = raw.trim();
+            if t.is_empty() || t.len() > 96 {
+                return false;
+            }
+            cfg.screen_template = t.to_string();
+        }
         "follow_game_gain" => {
             let Some(v) = parse_bool(raw) else { return false };
             cfg.follow_game_gain = v;
@@ -489,6 +509,8 @@ impl Config {
         out.push_str(&format!("pitch={}\n", self.pitch_pct));
         out.push_str(&format!("cylinders={}\n", self.cylinders));
         out.push_str(&format!("leds={}\n", u8::from(self.leds)));
+        out.push_str(&format!("screen={}\n", u8::from(self.screen)));
+        out.push_str(&format!("screen.template={}\n", self.screen_template));
         out.push_str(&format!("port.codemasters={}\n", self.codemasters_port));
         out.push_str(&format!("port.pcars={}\n", self.pcars_port));
         out.push_str(&format!("port.beamng={}\n", self.beamng_port));
@@ -578,6 +600,10 @@ mod tests {
             cylinders: 8,
             leds: false,
             effects: false,
+            // Non-default on purpose: a round trip that lands on the default
+            // cannot see a field the writer forgot.
+            screen: true,
+            screen_template: "J|{gear}|{speed}|{rpm}|x".to_string(),
             effect_gains: gains,
             codemasters_port: 30500,
             pcars_port: 5607,

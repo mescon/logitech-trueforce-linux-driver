@@ -56,6 +56,10 @@ fn full_config() -> Config {
         cylinders: 8,
         leds: false,
         effects: false,
+        // Non-default on purpose: a round trip that lands on the default
+        // cannot see a field the writer forgot.
+        screen: true,
+        screen_template: "J|{gear}|{speed}|{rpm}|x".to_string(),
         effect_gains,
         codemasters_port: 30500,
         pcars_port: 5607,
@@ -78,6 +82,8 @@ fn frontend_reader_parses_this_crates_writer() {
     assert!(!seen.enabled);
     assert_eq!(seen.intensity, 42);
     assert_eq!(seen.pitch_pct, 50);
+    assert!(seen.screen, "the screen switch round-trips");
+    assert_eq!(seen.screen_template, "J|{gear}|{speed}|{rpm}|x");
     assert!(!seen.leds);
     assert_eq!(
         seen.game("dirt-rally-2"),

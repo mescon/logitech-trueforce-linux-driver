@@ -7,6 +7,16 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**The screen is a dashboard during a game.** With `screen=1` in
+`tf-sim.conf`, `logi-tf-sim` writes the base's OLED from the same
+telemetry that drives the rev lights: by default layout G with the gear
+and the speed, and `screen.template` takes any `wheel_oled` frame with
+`{gear}`, `{speed}`, `{speed_mph}`, `{rpm}` and, for the gauge layouts,
+`{rpm_pct}`, `{throttle_pct}` and `{brake_pct}` filled in. Written only
+when the text changes, and handed back to the wheel's menu when the
+session ends. Works in the lights-only mode too, so a strength of zero
+gives rev lights and a dashboard with no haptics at all.
+
 **The base's OLED can be written to.** `wheel_oled` puts a frame on the
 RS50's (and G PRO's) Dynamic OLED, `wheel_oled_layouts` lists the ten
 layouts and what each takes, and `off` hands the screen back at once.

@@ -38,6 +38,8 @@ pub const FILE_NAME: &str = "tf-sim.conf";
 pub const DEFAULT_INTENSITY: u8 = 30;
 /// Default per-game intensity (percent), relative to the master.
 pub const DEFAULT_GAME_INTENSITY: u8 = 100;
+/// Default screen template: layout G, gear and speed. Mirrors the daemon.
+pub const DEFAULT_SCREEN_TEMPLATE: &str = "G|{gear}|{speed}";
 /// Default pitch scale (percent of the crank rate).
 ///
 /// 35, matching the daemon, which is the only thing that makes this correct:
@@ -298,6 +300,10 @@ pub struct Config {
     /// Whether the daemon also drives the wheel's rev display
     /// (`wheel_rev_level`) from telemetry RPM while streaming.
     pub leds: bool,
+    /// Drive the base's screen from telemetry while a session runs.
+    pub screen: bool,
+    /// The `wheel_oled` frame template with telemetry placeholders.
+    pub screen_template: String,
     /// Whether the haptic layers beyond the engine note are mixed in.
     pub effects: bool,
     /// Per-layer gain; see [`EFFECTS`].
@@ -314,6 +320,8 @@ impl Default for Config {
             wheel: WheelChoice::default(),
             pitch_pct: DEFAULT_PITCH,
             leds: true,
+            screen: false,
+            screen_template: DEFAULT_SCREEN_TEMPLATE.to_string(),
             effects: true,
             effect_gains: EffectGains::default(),
             games: BTreeMap::new(),
@@ -444,6 +452,17 @@ impl Config {
                         cfg.leds = v;
                     }
                 }
+                "screen" => {
+                    if let Some(v) = parse_bool(raw) {
+                        cfg.screen = v;
+                    }
+                }
+                "screen.template" => {
+                    let t = raw.trim();
+                    if !t.is_empty() && t.len() <= 96 {
+                        cfg.screen_template = t.to_string();
+                    }
+                }
                 "effects" => {
                     if let Some(v) = parse_bool(raw) {
                         cfg.effects = v;
@@ -500,6 +519,7 @@ impl Config {
 fn daemon_recognises(key: &str, raw: &str) -> bool {
     match key {
         "enabled"
+        | "screen"
         | "leds"
         | "effects"
         | "follow_game_gain"
@@ -507,6 +527,7 @@ fn daemon_recognises(key: &str, raw: &str) -> bool {
         | "g923.stream_without_ffb_mirror" => parse_bool(raw).is_some(),
         "intensity" => parse_percent(raw).is_some(),
         "wheel" => WheelChoice::parse(raw).is_some(),
+        "screen.template" => !raw.trim().is_empty() && raw.trim().len() <= 96,
         "pitch" => raw.parse::<u8>().is_ok_and(|v| (10..=200u16).contains(&u16::from(v))),
         "cylinders" => raw.parse::<u8>().is_ok_and(|v| (1..=16).contains(&v)),
         "port.codemasters" | "port.pcars" | "port.beamng" | "port.relay" => {
@@ -625,6 +646,20 @@ pub fn set_wheel_in(path: &Path, wheel: WheelChoice) -> Result<(), Error> {
 
 pub fn set_leds_in(path: &Path, leds: bool) -> Result<(), Error> {
     write_key_in(path, "leds", if leds { "1" } else { "0" })
+}
+
+/// Write the screen switch.
+pub fn set_screen_in(path: &Path, on: bool) -> Result<(), Error> {
+    write_key_in(path, "screen", if on { "1" } else { "0" })
+}
+
+/// Write the screen template (trimmed; empty or over 96 bytes is refused).
+pub fn set_screen_template_in(path: &Path, template: &str) -> Result<(), Error> {
+    let t = template.trim();
+    if t.is_empty() || t.len() > 96 {
+        return Err(Error::Invalid);
+    }
+    write_key_in(path, "screen.template", t)
 }
 
 /// Write one game's enable switch.
