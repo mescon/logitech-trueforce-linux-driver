@@ -281,6 +281,21 @@ is_our_proxy() {
 game_exe=$(printf '%s\n' "$@" | grep -m1 -e '\.exe$' || true)
 game_dir=""
 [ -n "$game_exe" ] && game_dir=$(dirname "$game_exe")
+# Where the game actually loads its DLLs from. Steam's command names the
+# executable in the game's top folder, and for an Unreal title that is a
+# small stub which starts the real binary from <Project>/Binaries/Win64;
+# a dinput8.dll beside the stub is never loaded (ACC, 2026-09-05: the
+# proxy sat in the top folder, the SDK got no rotation answer, and the
+# game steered as if the wheel had three times its range). So the proxy
+# goes into the top folder and into every shipping-binary folder below.
+proxy_dirs=""
+if [ -n "$game_dir" ]; then
+	proxy_dirs="$game_dir"
+	for d in $(find "$game_dir" -maxdepth 3 -type d -path '*/Binaries/Win64' 2>/dev/null); do
+		ls "$d"/*-Shipping.exe >/dev/null 2>&1 && proxy_dirs="$proxy_dirs
+$d"
+	done
+fi
 
 hidraw_granted=""
 case "$want_hidraw" in
@@ -298,7 +313,7 @@ case "$want_hidraw" in
 	# SDK proxy install-tf-shim.sh --proxy puts in front of the library.
 	# Raw HID is granted only when one of them is in play.
 	can_stage_proxy=0
-	if [ -n "$game_dir" ] && [ -d "$game_dir" ] && \
+	if [ -n "$proxy_dirs" ] && \
 	   [ -r "$(share_file dinput8-escape.dll 2>/dev/null || echo /nonexistent)" ]; then
 		can_stage_proxy=1
 	fi
@@ -460,32 +475,48 @@ merge_attrs=""
 staged_proxy=""
 # A proxy we stage below (any native-TrueForce session with raw HID) is
 # refreshed there; one left in a game that gets no proxy is removed here.
-if [ -z "$hidraw_granted" ] && [ "$want_texture" != "merge" ] && [ -n "$game_dir" ] && \
-   is_our_proxy "$game_dir/dinput8.dll"; then
-	if rm -f "$game_dir/dinput8.dll" 2>/dev/null; then
-		say "removed a leftover dinput8 escape proxy from $game_dir (this game gets no texture merge, so it would only add a second telemetry sender)"
-	else
-		say "a leftover dinput8 escape proxy is in $game_dir and could not be removed; expect two telemetry senders"
-	fi
+if [ -z "$hidraw_granted" ] && [ "$want_texture" != "merge" ] && [ -n "$proxy_dirs" ]; then
+	while read -r d; do
+		[ -n "$d" ] && is_our_proxy "$d/dinput8.dll" || continue
+		if rm -f "$d/dinput8.dll" 2>/dev/null; then
+			say "removed a leftover dinput8 escape proxy from $d (this game gets no proxy, so it would only add a second telemetry sender)"
+		else
+			say "a leftover dinput8 escape proxy is in $d and could not be removed; expect two telemetry senders"
+		fi
+	done <<-PROXYDIRS
+	$proxy_dirs
+	PROXYDIRS
 fi
-# Stage the dinput8 escape proxy into the game's directory and make Wine
-# load it. Returns non-zero when there is nowhere to put it.
+# Stage the dinput8 escape proxy into every directory the game may load it
+# from (proxy_dirs above) and make Wine load it. Returns non-zero when
+# there is nowhere to put it.
 stage_escape_proxy() {
 	proxy_src=$(share_file dinput8-escape.dll || true)
-	if [ -z "$game_dir" ] || [ ! -d "$game_dir" ] || [ ! -r "$proxy_src" ]; then
+	if [ -z "$proxy_dirs" ] || [ ! -r "$proxy_src" ]; then
 		return 1
 	fi
-	# cmp, not a timestamp: Steam validation rewrites files and a stale
-	# proxy looks exactly like a missing one.
-	if ! cmp -s "$proxy_src" "$game_dir/dinput8.dll" 2>/dev/null; then
-		if cp -f "$proxy_src" "$game_dir/dinput8.dll" 2>/dev/null; then
-			say "staged dinput8 proxy into $game_dir"
-		else
-			say "could not copy the dinput8 proxy into $game_dir"
-			return 1
+	staged_any=0
+	while read -r d; do
+		[ -n "$d" ] && [ -d "$d" ] || continue
+		# cmp, not a timestamp: Steam validation rewrites files and a
+		# stale proxy looks exactly like a missing one.
+		if ! cmp -s "$proxy_src" "$d/dinput8.dll" 2>/dev/null; then
+			if cp -f "$proxy_src" "$d/dinput8.dll" 2>/dev/null; then
+				say "staged dinput8 proxy into $d"
+			else
+				say "could not copy the dinput8 proxy into $d"
+				continue
+			fi
 		fi
-	fi
-	is_our_proxy "$game_dir/dinput8.dll" && staged_proxy="$game_dir/dinput8.dll"
+		if is_our_proxy "$d/dinput8.dll"; then
+			staged_proxy="$staged_proxy
+$d/dinput8.dll"
+			staged_any=1
+		fi
+	done <<-PROXYDIRS
+	$proxy_dirs
+	PROXYDIRS
+	[ "$staged_any" = "1" ] || return 1
 	# Merge with whatever the user already set; never clobber it.
 	case "${WINEDLLOVERRIDES:-}" in
 	*dinput8*) ;;
@@ -943,8 +974,13 @@ if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_attrs" ] || \
    [ -n "$hidraw_granted" ] || [ -n "$helper_group_pid" ]; then
 	session_cleanup() {
 		[ -n "$rpm_bridge_pid" ] && kill "$rpm_bridge_pid" 2>/dev/null
-		if [ -n "$staged_proxy" ] && is_our_proxy "$staged_proxy"; then
-			rm -f "$staged_proxy" 2>/dev/null && say "dinput8 proxy removed from the game's directory"
+		if [ -n "$staged_proxy" ]; then
+			while read -r f; do
+				[ -n "$f" ] && is_our_proxy "$f" && rm -f "$f" 2>/dev/null && \
+					say "dinput8 proxy removed from $(dirname "$f")"
+			done <<-STAGED
+			$staged_proxy
+			STAGED
 		fi
 		# The in-prefix helper is a wine process, and wine keeps the
 		# prefix's wineserver alive for as long as one runs. Leaving it

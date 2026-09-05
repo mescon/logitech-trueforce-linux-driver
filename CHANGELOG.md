@@ -39,7 +39,11 @@ for the texture merge, with the proxy's own telemetry relay off so the
 shared-memory relay stays the one sender; it grants raw HID only when
 that proxy or the SDK proxy (`tools/install-tf-shim.sh --proxy`) is in
 play, says why otherwise, and keeps force feedback. The SDK proxy is
-not the default: ACC on that RS50 would not load it at all.
+not the default: ACC on that RS50 would not load it at all. The proxy
+goes into the game's top folder and into every shipping-binary folder
+below it, since an Unreal title's real binary loads its DLLs from
+`<Project>/Binaries/Win64` and a copy beside Steam's stub is never
+loaded (that run steered as if the wheel had three times its range).
 
 **Speed and brake on the relay datagram.** The screen's gear-and-speed
 dashboard and its pedal presets showed zeros in every shared-memory sim,
