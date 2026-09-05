@@ -26,6 +26,16 @@ not fit is refused with a reason before anything is sent. The window
 also drew the pedal Sensitivity/Curve toggle on the screen row, a
 widget-kind collision; fixed, and a test now keeps the kinds distinct.
 
+**The rotation range is held against the SDK for the whole session.**
+Logitech's SDK pushes its own 90-degree operating range at start-up and
+again on a session restart, whether or not its rotation question is
+answered. The driver undid such pushes, but gave up after three so a
+persistent writer could not keep it busy; the third push in an ACC
+session on an RS50 then handed the wheel over, a base clamped to 90
+degrees while `wheel_range` still read 900 (2026-09-05). Both restore
+paths now undo every push, three log lines and then quietly. Writing
+`wheel_range` by hand still wins, as before.
+
 **Raw HID only with the SDK's rotation question answered.** The
 launcher turned raw HID on for a native-TrueForce title whenever the
 SDK files were in the prefix. With Logitech's stock library alone the

@@ -5700,13 +5700,17 @@ struct hidpp_dd_ff_data {
 	 */
 	bool tm_push_seen;
 	/*
-	 * Strike counter for tm_push_seen re-arms, same shape as
-	 * range_restore_attempts above: caps the SDK push-restore at 3 SETs
-	 * per session so a persistent external writer (one that keeps
-	 * re-pushing a range on every classify) cannot re-arm this forever.
-	 * Incremented in tm_restore_work when it actually performs the SET;
-	 * reset by the same explicit wheel_range write that clears
-	 * tm_push_seen.
+	 * How many SDK pushes this session's restore has undone. Once a
+	 * strike counter that gave up at 3, so a writer re-pushing on every
+	 * classify could not re-arm this forever; measured against Logitech's
+	 * SDK in ACC on an RS50 (2026-09-05) the pushes come two or three to
+	 * a session, at start-up and again on a session restart, and the
+	 * third one handed the wheel over: a base clamped to 90 degrees
+	 * while this driver still reported 900. A push on the TrueForce
+	 * interface is never something the user asked for, so every one is
+	 * undone now; the counter only decides how many get a log line
+	 * (three), and it saturates. Reset by the explicit wheel_range write
+	 * that clears tm_push_seen.
 	 */
 	u8 tm_restore_attempts;
 	u16 tm_restore_deg;
@@ -7823,10 +7827,12 @@ static void hidpp_dd_ff_range_maybe_restore(struct hidpp_dd_ff_data *ff)
 			ff->mode_known, ff->current_mode);
 		return;
 	}
-	if (ff->range_restore_attempts >= 3) {
-		ff->restore_want = 0;
-		return;
-	}
+	/*
+	 * No strike limit here: a range of 90 that nobody asked for is the
+	 * SDK's, and after the third strike the base sat clamped at 90
+	 * degrees while wheel_range still read 900 (ACC on an RS50,
+	 * 2026-09-05). Restored every time; three log lines, then quiet.
+	 */
 
 	/*
 	 * The wheel must be stationary: never move the soft stops while
@@ -7872,23 +7878,23 @@ static void hidpp_dd_ff_range_maybe_restore(struct hidpp_dd_ff_data *ff)
 	if (ff->restore_want != want || READ_ONCE(ff->range) != 90)
 		return;
 
-	ff->range_restore_attempts++;
+	if (ff->range_restore_attempts < U8_MAX)
+		ff->range_restore_attempts++;
 	if (hidpp_dd_set_range_hw(ff, want) == 0) {
 		ff->restore_want = 0;
-		dd_info(hidpp->hid_dev,
-			 "rotation range auto-restored to %u degrees (attempt %u/3; disable via wheel_range_restore)\n",
-			 want, ff->range_restore_attempts);
+		if (ff->range_restore_attempts <= 3)
+			dd_info(hidpp->hid_dev,
+				 "rotation range auto-restored to %u degrees (%u so far; disable via wheel_range_restore)\n",
+				 want, ff->range_restore_attempts);
 		sysfs_notify(&hidpp->hid_dev->dev.kobj, NULL, "wheel_range");
 	} else {
 		dd_warn(hidpp->hid_dev,
 			 "rotation range auto-restore to %u degrees failed\n",
 			 want);
 	}
-	if (ff->range_restore_attempts == 3) {
-		ff->restore_want = 0;
-		dd_warn(hidpp->hid_dev,
-			 "an external writer keeps changing the rotation range; giving up on auto-restore for this session\n");
-	}
+	if (ff->range_restore_attempts == 3)
+		dd_info(hidpp->hid_dev,
+			 "something keeps setting the rotation range to 90; every change is restored from here on, quietly\n");
 }
 
 static void hidpp_dd_ff_range_readback(struct hidpp_dd_ff_data *ff)
@@ -17205,18 +17211,19 @@ static void hidpp_dd_texmerge_restore_work(struct work_struct *work)
 	 */
 	if (READ_ONCE(ff->tm_push_seen) && READ_ONCE(ff->tm_restore_gen) == gen &&
 	    !atomic_read_acquire(&ff->stopping)) {
-		ff->tm_restore_attempts++;
-		if (hidpp_dd_set_range_hw(ff, want) == 0)
-			dd_info(ff->hidpp->hid_dev,
-				"restored range to %u after SDK push (attempt %u/3)\n",
-				want, ff->tm_restore_attempts);
-		else
+		if (ff->tm_restore_attempts < U8_MAX)
+			ff->tm_restore_attempts++;
+		if (hidpp_dd_set_range_hw(ff, want) != 0)
 			dd_warn(ff->hidpp->hid_dev,
 				"range restore to %u after SDK push failed\n",
 				want);
+		else if (ff->tm_restore_attempts <= 3)
+			dd_info(ff->hidpp->hid_dev,
+				"restored range to %u after SDK push (%u so far)\n",
+				want, ff->tm_restore_attempts);
 		if (ff->tm_restore_attempts == 3)
-			dd_warn(ff->hidpp->hid_dev,
-				"an external writer keeps pushing the rotation range; giving up on SDK push-restore for this session\n");
+			dd_info(ff->hidpp->hid_dev,
+				"the SDK keeps pushing the rotation range; every push is restored from here on, quietly\n");
 	}
 
 	/*
@@ -17289,8 +17296,7 @@ static void hidpp_dd_texmerge_seen_range_push(struct hidpp_dd_ff_data *ff,
 	 * actually performed 3 SETs this session, a further external writer
 	 * wins and this stops trying.
 	 */
-	if (ff->tm_restore_attempts >= 3)
-		return;
+	/* No strike limit: every push is undone (see tm_restore_attempts). */
 
 	/*
 	 * Nothing to restore if the cached range already matches what was
