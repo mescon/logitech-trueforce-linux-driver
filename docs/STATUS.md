@@ -37,15 +37,20 @@ on the hardware by its owner (issue #72, 2026-09-02): force is linear in
 the commanded level above a static-friction floor of about 3.6% of full
 scale, and the engine's gain matches the firmware path to within the
 measurement's own noise, so the scaling needed no change. Under it the
-condition effects stay silent, because that edition's steering reports do
-not reach the engine yet, and the rev lights stay on their own LED device,
+condition effects are fed the steering position as of this release (the
+axis is located by usage in the report descriptor rather than at the
+RS50's offset), though nobody has yet judged spring or damper on that
+wheel by feel; the rev lights stay on their own LED device,
 which speaks the command that wheel obeys rather than the direct-drive one.
 
-That wheel can also wedge: every HID++ command times out while init has
-already reported success, and only a power cycle of the wheel recovers it,
-not a module reload or a USB replug. The driver now notices a run of
-unanswered commands and says so, once, in dmesg, since the natural response
-to force quietly stopping is exactly the pair of things that do not work.
+That wheel can also wedge after a stalled motor: HID++ commands fail,
+as a mix of timeouts and fast submit errors, while init has already
+reported success and steering still works. Reloading the driver or
+replugging the wheel recovers it, measured by its owner against an
+eight-minute control (#72); an earlier claim that only a power cycle did
+was withdrawn. The driver notices a run of transport failures and says
+so, once, in dmesg, with that recovery, and declares recovery only after
+a run of answers.
 
 Whether force feedback comes up at all on that wheel depends on its HID++
 answering while this driver is still in probe. A fix that keeps waiting
