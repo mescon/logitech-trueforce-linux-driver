@@ -58,11 +58,34 @@ written (#75); the driver resends a frame every 50 ms because the panel
 returns to its own menu after under two seconds of silence.
 
 **A wheel that stops answering is reported instead of pretended.** A G923
-Xbox edition can wedge so that every HID++ command times out while force
-feedback still reports as loaded; only a power cycle of the wheel recovers
-it, and the two things a user naturally tries, reloading the driver and
-replugging USB, do not (#72). The driver now notices a run of unanswered
-commands and says so once in dmesg, with the one recovery that works.
+Xbox edition can wedge after a stalled motor so that HID++ commands fail
+while force feedback still reports as loaded and steering still works
+(#72). The driver now notices a run of transport failures, timeouts and
+fast submit errors alike, and says so once in dmesg, with the recovery
+its reporter measured: reloading the driver or replugging the wheel,
+both of which re-run force-feedback init. Recovery is declared only after
+a run of answers, since a wedged wheel produces a mix of fast failures
+and silence and one stray reply is not recovery, and the rotation-range
+readback poll is not counted, since some wheels never answer it and on
+those it was the only traffic between games and warned on its own.
+
+**The steering position comes from the descriptor.** The direct-drive
+engine's condition effects (spring, damper, friction, inertia) read the
+wheel position from the interface-0 report at a fixed offset behind a
+fixed-length gate, both properties of the RS50's report; the G923 Xbox
+edition's report is a different length with X one byte later, so the
+gate rejected every report and its conditions saw a wheel permanently
+centred and still. The axis is now located by usage in the parsed
+descriptor, cached per report layout, which works on both and on
+whatever the next wheel does. The lookup and its verification against
+evdev are the #72 reporter's.
+
+**The rev display runs even when the wheel refuses a stream.** A G923
+Xbox edition on the firmware force path cannot take a synthesised
+stream without losing force feedback, and the helper refused the session
+and retried into the same refusal with the lights dark (#76). It now
+drives the rev display for such a wheel and says why the haptics stay
+off; `g923_xbox_dd_engine=1` remains the way to have both.
 
 **The doctor notices a module that was updated but never reloaded, and
 there is a `report` mode.** DKMS installs a new driver build and leaves

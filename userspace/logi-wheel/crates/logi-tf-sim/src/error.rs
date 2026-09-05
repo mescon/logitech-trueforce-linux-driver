@@ -16,6 +16,11 @@ pub enum Error {
     Busy(String),
     /// No supported wheel was found by libtrueforce discovery.
     NoWheel,
+    /// The wheel is there but cannot take a synthesised stream, and
+    /// will not until its setup changes: the G923 Xbox edition on the
+    /// firmware force path, whose stream would silence its force
+    /// feedback. The daemon drives the rev display for it instead.
+    NoHaptics(String),
     /// A libtrueforce call failed: (function, LOGITF_* return code).
     Stream(String, i32),
 }
@@ -39,6 +44,7 @@ impl fmt::Display for Error {
             ),
             Error::Io(what, e) => write!(f, "{what}: {e}"),
             Error::NoWheel => write!(f, "no supported wheel found"),
+            Error::NoHaptics(why) => write!(f, "{why}"),
             Error::Stream(func, rc) => write!(f, "{func} failed (rc {rc})"),
         }
     }

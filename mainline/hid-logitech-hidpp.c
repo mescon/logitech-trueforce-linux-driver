@@ -494,7 +494,11 @@ struct hidpp_device {
 	 * whether the user has been told. See hidpp_note_sync_result().
 	 */
 	unsigned int sync_timeouts;
+	unsigned int sync_answers;
 	bool unresponsive_warned;
+	/* Set around a command the driver already knows this wheel may
+	 * never answer (the range readback poll), so it is not counted. */
+	bool sync_uncounted;
 	u8 protocol_major;
 	u8 protocol_minor;
 
@@ -762,42 +766,60 @@ static int __do_hidpp_send_message_sync(struct hidpp_device *hidpp,
  * One or two is a busy wheel; this many is a wheel that has stopped.
  */
 #define HIDPP_UNRESPONSIVE_AFTER	5
+#define HIDPP_RESPONSIVE_AFTER		5
 
 /*
- * Notice a wheel that has stopped answering, and say so once.
- *
- * A G923 Xbox edition can wedge in a way that leaves every HID++ command
- * timing out while the driver still believes force feedback is loaded:
- * init reported success, every later command silently expired, and the
- * user saw a driver that had quietly stopped applying force. Reloading
- * the module and re-enumerating USB do not recover it; only a power cycle
- * of the wheel does, which is precisely the one thing a user who has been
- * told nothing will not try (issue #72, reproduced twice by its reporter).
+ * Wedged-wheel detector. A direct-drive base, or a G923 Xbox edition on
+ * the 0x8123 path, can stop answering HID++ altogether after a stalled
+ * motor (driven into an end stop, or held against a strong effect), and
+ * from then on force is dead while input, and the wheel's own display,
+ * carry on as if nothing happened. The reporter of issue #72 measured
+ * the way out with a ladder: left alone for eight minutes it stays dead;
+ * reloading this module, replugging USB or re-enumerating the device all
+ * recover it, because each re-runs force-feedback init. The advice below
+ * says so. (An earlier version of this message sent people to a power
+ * cycle on the strength of a measurement later withdrawn.)
  *
  * This cannot unwedge the firmware. It can stop the driver lying about
- * it. Timeouts are counted only when they are consecutive, since a single
- * one is ordinary on a busy wheel, and the warning fires once per run so
- * a wedged wheel does not fill the log. Any answered command, error
- * replies included, resets it: the wheel is talking again.
+ * it. What counts as trouble is any transport failure (ret < 0): a
+ * timeout is the wheel saying nothing, and a fast -EIO/-EPIPE from the
+ * submit is the same silence arriving sooner; a wedged wheel produces a
+ * mix of both, so counting only timeouts let the fast ones reset the
+ * count and print a false recovery. A HID++ error reply (ret > 0) is an
+ * answer. Failures count only while consecutive, the warning fires once
+ * per episode, and recovery is declared only after a run of answers,
+ * since one stray reply in the middle of a dead wheel is not recovery.
  *
- * Called with send_mutex held, which is what makes the counter safe.
+ * The range-readback poll is exempt (sync_uncounted): some wheels never
+ * answer it, and on those it is the only HID++ traffic between games, so
+ * it accumulated five timeouts on its own and warned a user whose wheel
+ * was fine.
+ *
+ * Called with send_mutex held, which is what makes the counters safe.
  */
 static void hidpp_note_sync_result(struct hidpp_device *hidpp, int ret)
 {
-	if (ret != -ETIMEDOUT) {
-		if (hidpp->unresponsive_warned)
-			hid_info(hidpp->hid_dev,
-				 "wheel is answering commands again\n");
+	if (READ_ONCE(hidpp->sync_uncounted))
+		return;
+	if (ret >= 0) {
 		hidpp->sync_timeouts = 0;
+		if (!hidpp->unresponsive_warned)
+			return;
+		if (++hidpp->sync_answers < HIDPP_RESPONSIVE_AFTER)
+			return;
 		hidpp->unresponsive_warned = false;
+		hidpp->sync_answers = 0;
+		hid_info(hidpp->hid_dev,
+			 "wheel is answering commands again\n");
 		return;
 	}
+	hidpp->sync_answers = 0;
 	if (++hidpp->sync_timeouts < HIDPP_UNRESPONSIVE_AFTER ||
 	    hidpp->unresponsive_warned)
 		return;
 	hidpp->unresponsive_warned = true;
 	hid_warn(hidpp->hid_dev,
-		 "wheel has not answered the last %u commands: it has stopped responding. Reloading the driver or replugging USB will not recover it; power-cycle the wheel\n",
+		 "wheel has not answered the last %u commands: it has stopped responding, and force feedback is likely dead while steering still works. Reload the driver (modprobe -r hid-logitech-dd; modprobe hid-logitech-dd) or replug the wheel; both re-run force-feedback init and recover it\n",
 		 hidpp->sync_timeouts);
 }
 
@@ -3947,7 +3969,9 @@ static void hidpp_ff_range_poll_work(struct work_struct *work)
 	if (data->range <= 0)
 		goto rearm;
 
+	WRITE_ONCE(data->hidpp->sync_uncounted, true);
 	ret = hidpp_ff_read_aperture(data, &live);
+	WRITE_ONCE(data->hidpp->sync_uncounted, false);
 	if (ret) {
 		/*
 		 * Report it, but do not pronounce on it. This used to fail
@@ -5035,7 +5059,6 @@ static void hidpp_ff_retry_work(struct work_struct *work)
 #define HIDPP_DD_FF_REPORT_ID		0x01
 #define HIDPP_DD_FF_EFFECT_CONSTANT		0x01
 #define HIDPP_DD_FF_REPORT_SIZE		64
-#define HIDPP_DD_INPUT_REPORT_SIZE		30	/* Interface 0 joystick report */
 
 /* Direct-drive FFB refresh command (sent periodically to maintain FFB state) */
 #define HIDPP_DD_FF_REFRESH_ID		0x05
@@ -5903,6 +5926,15 @@ struct hidpp_dd_ff_data {
 	 * inside the FFB timer tick from successive wheel_pos samples.
 	 */
 	u16 wheel_pos;			/* latest raw encoder position, 0..65535 */
+	/*
+	 * Where the steering axis lives in the interface-0 input report,
+	 * looked up once per report layout from the parsed descriptor (see
+	 * hidpp_dd_track_wheel_pos()). pos_report is the report it was
+	 * found in; a different report starts a fresh lookup.
+	 */
+	struct hid_report *pos_report;
+	unsigned int pos_offset;	/* bit offset into the payload */
+	unsigned int pos_bits;		/* 0: no X usage in pos_report */
 	u16 wheel_pos_prev;		/* previous sample (timer-local) */
 	s32 wheel_vel;			/* encoder delta between consecutive timer ticks */
 	s32 wheel_vel_prev;
@@ -6016,7 +6048,9 @@ static void hidpp_dd_tf_init_work_handler(struct work_struct *work);
 static void hidpp_dd_query_device_identity(struct hidpp_dd_ff_data *ff);
 static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range);
 static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t);
-static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp, u8 *data, int size);
+static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp,
+				     struct hid_report *report, u8 *data,
+				     int size);
 static void hidpp_dd_oled_read_layouts(struct hidpp_device *hidpp,
 				       struct hidpp_dd_ff_data *ff);
 static struct hidpp_dd_ff_data *hidpp_dd_find_ff_data(struct hid_device *hdev);
@@ -18238,7 +18272,7 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 	 * removed (issue #22).
 	 */
 	if ((hidpp->quirks & HIDPP_QUIRK_DD_FFB) &&
-	    size == HIDPP_DD_INPUT_REPORT_SIZE &&
+	    report && size > 0 &&
 	    data[0] != REPORT_ID_HIDPP_SHORT &&
 	    data[0] != REPORT_ID_HIDPP_LONG &&
 	    data[0] != REPORT_ID_HIDPP_VERY_LONG &&
@@ -18246,41 +18280,43 @@ static int hidpp_raw_event(struct hid_device *hdev, struct hid_report *report,
 		struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
 
 		if (intf->cur_altsetting->desc.bInterfaceNumber == 0)
-			hidpp_dd_track_wheel_pos(hidpp, data, size);
+			hidpp_dd_track_wheel_pos(hidpp, report, data, size);
 	}
 
 	return 0;
 }
 
 /*
- * Track the live steering-wheel position from interface-0 input reports.
- * Pedal shaping (curves/deadzones/combined mode) used to happen here in
- * software; it never actually worked (a report-propagation bug meant the
- * G Hub pedal UI settings never reached this path) and has been removed.
- * Pedal axes now reach userspace raw; shaping them is HID-BPF's job.
+ * Track the steering axis from the interface-0 input report, for the
+ * FFB condition-effect tick (SPRING/DAMPER/FRICTION/INERTIA rely on it).
  *
- * Joystick report format (30 bytes, offset 4+):
- *   Offset 4-5: Wheel position (u16 LE)
- *   Offset 6-7: Accelerator/Throttle (u16 LE, passed through raw)
- *   Offset 8-9: Brake (u16 LE, passed through raw)
- *   Offset 10-11: Clutch (u16 LE, passed through raw)
+ * The axis is located by usage in the parsed descriptor rather than by a
+ * fixed byte offset and a fixed report length. Both of those were
+ * properties of the RS50's 30-byte report (X at bytes 4-5 of the
+ * payload): the G923 Xbox edition sends an 11-byte joystick report with
+ * X one byte later, so the length gate rejected every report and its
+ * conditions saw a wheel permanently centred and still (issue #72; the
+ * lookup, and its verification against evdev on that wheel, are the
+ * reporter's). The result is cached per report layout, so the hot path
+ * is one compare and one extract.
+ *
+ * field->report_offset is a bit offset into the payload past the
+ * report-ID byte, which is what hid_input_field() extracts against. A
+ * narrower axis is shifted up to the u16 the engine's centre arithmetic
+ * assumes.
  */
-static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp, u8 *data, int size)
+static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp,
+				     struct hid_report *report, u8 *data,
+				     int size)
 {
 	struct hidpp_dd_ff_data *ff;
+	u8 *payload = data;
+	int payload_size = size;
+	u32 raw;
 
 	if (!hidpp || !(hidpp->quirks & HIDPP_QUIRK_DD_FFB))
 		return;
 
-	/*
-	 * Interface 0's hidpp is brought up via hidpp_dd_minimal_probe which
-	 * doesn't run hidpp_dd_ff_init and therefore never writes to
-	 * hidpp->private_data. At raw_event time the shared ff_data lives
-	 * on interface 1's hidpp instead. If our own slot is empty, walk
-	 * the siblings, cache the pointer, and use it. This is what kept
-	 * the interface-0 input path from ever updating wheel_pos before
-	 * this commit.
-	 */
 	ff = READ_ONCE(hidpp->private_data);
 	if (!ff) {
 		ff = hidpp_dd_find_ff_data(hidpp->hid_dev);
@@ -18289,22 +18325,46 @@ static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp, u8 *data, int s
 		WRITE_ONCE(hidpp->private_data, ff);
 	}
 
-	/* Don't process during shutdown */
 	if (atomic_read_acquire(&ff->stopping))
 		return;
 
-	/* Need at least the wheel-position field */
-	if (size < 6)
+	if (report->id) {
+		payload++;
+		payload_size--;
+	}
+
+	if (ff->pos_report != report) {
+		unsigned int i, j;
+
+		ff->pos_bits = 0;
+		for (i = 0; i < report->maxfield && !ff->pos_bits; i++) {
+			struct hid_field *field = report->field[i];
+
+			if (!field || !field->report_size ||
+			    field->report_size > 16)
+				continue;
+			for (j = 0; j < field->maxusage; j++) {
+				if (field->usage[j].hid != HID_GD_X)
+					continue;
+				ff->pos_offset = field->report_offset +
+						 j * field->report_size;
+				ff->pos_bits = field->report_size;
+				break;
+			}
+		}
+		ff->pos_report = report;
+	}
+
+	if (!ff->pos_bits ||
+	    ff->pos_offset + ff->pos_bits > (unsigned int)payload_size * 8)
 		return;
 
-	/*
-	 * Steering axis lives at report bytes 4-5 as a little-endian u16
-	 * (0x0000 full left, 0x8000 centre, 0xFFFF full right), per the
-	 * interface-0 HID descriptor (usage page 0x01 generic desktop,
-	 * usage 0x30 X). Publish it lock-free for the FFB condition-
-	 * effect tick (SPRING/DAMPER/FRICTION/INERTIA rely on it).
-	 */
-	WRITE_ONCE(ff->wheel_pos, get_unaligned_le16(&data[4]));
+	raw = hid_field_extract(hidpp->hid_dev, payload, ff->pos_offset,
+				ff->pos_bits);
+	if (ff->pos_bits < 16)
+		raw <<= 16 - ff->pos_bits;
+
+	WRITE_ONCE(ff->wheel_pos, (u16)raw);
 	if (!READ_ONCE(ff->wheel_pos_seen))
 		WRITE_ONCE(ff->wheel_pos_seen, true);
 }

@@ -331,12 +331,11 @@ fn open_g923(cfg: &Config, paths: &g923::G923Paths) -> Result<OpenWheel> {
         && !paths.kernel_carries_force
         && !cfg.g923_stream_without_ffb_mirror
     {
-        return Err(Error::Io(
+        return Err(Error::NoHaptics(
             "this G923 publishes no live force to mirror (the Xbox edition), and streaming \
              would silence its force feedback; set g923.stream_without_ffb_mirror=1 to \
              stream anyway and lose force while it runs"
                 .into(),
-            std::io::Error::from(std::io::ErrorKind::Unsupported),
         ));
     }
     // Discovery already correlated the TrueForce interface with its
@@ -858,6 +857,46 @@ pub fn run(cfg: &Config) -> Result<()> {
                                 lease_key,
                                 warned_busy: false,
                             });
+                        }
+                        // A wheel that cannot take the stream at all, and
+                        // will not until its setup changes, still has a
+                        // rev display: drive that rather than retry into
+                        // the same refusal forever with the lights dark
+                        // (issue #76, a G923 Xbox edition in Assetto Corsa).
+                        Err(Error::NoHaptics(why))
+                            if cfg.leds && crate::leds::other_owner().is_none() =>
+                        {
+                            match RevLeds::discover() {
+                                Some(leds) => {
+                                    eprintln!("logi-tf-sim: {why}");
+                                    eprintln!(
+                                        "logi-tf-sim: rev display only ({id}): this wheel takes no \
+                                         synthesised haptics as set up, so only the lights are driven"
+                                    );
+                                    active = Some(Active {
+                                        stream: None,
+                                        game_gain: crate::game_gain::GameGain::new(None, false),
+                                        mixer: Mixer::engine_only(
+                                            cfg.cylinders,
+                                            f32::from(cfg.pitch_pct) / 100.0,
+                                            cfg.effect_gains,
+                                        ),
+                                        game: id,
+                                        tel,
+                                        last_telemetry: now,
+                                        last_gen: now,
+                                        samples: Vec::new(),
+                                        last_captured: None,
+                                        leds: Some(leds),
+                                        screen: if cfg.screen { crate::screen::Screen::discover() } else { None },
+                                        gate: SilenceGate::default(),
+                                        lease: None,
+                                        lease_key: String::new(),
+                                        warned_busy: false,
+                                    });
+                                }
+                                None => next_open_attempt = now + OPEN_RETRY,
+                            }
                         }
                         Err(e) => {
                             eprintln!("logi-tf-sim: cannot open wheel ({e}); retrying in {}s", OPEN_RETRY.as_secs());

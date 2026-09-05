@@ -105,7 +105,7 @@ body:
       label: Current sysfs Values (if relevant)
       description: |
         If the bug relates to settings, run:
-        `for f in /sys/class/hidraw/hidraw*/device/rs50_*; do echo "$f: $(cat $f 2>/dev/null)"; done`
+        `for f in /sys/class/hidraw/hidraw*/device/wheel_*; do echo "$f: $(cat $f 2>/dev/null)"; done`
       render: shell
 
   - type: textarea
