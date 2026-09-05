@@ -270,6 +270,18 @@ fi
 # Nonzero when the plan granted the game raw HID access (an SDK title):
 # those sessions can leave the wheel's TrueForce engine started, so they
 # get the teardown pair on exit (see send_teardown_pair below).
+# Whether a dinput8.dll is this project's escape proxy: it carries its own
+# environment-variable names, which no other dinput8 does.
+is_our_proxy() {
+	[ -f "$1" ] && grep -aq 'LOGI_ESCAPE_RELAY' "$1" 2>/dev/null
+}
+# The game's own directory, taken from the .exe in the command Steam hands
+# us. A native Linux game or a bare test command has none, and then there
+# is nowhere to stage the proxy.
+game_exe=$(printf '%s\n' "$@" | grep -m1 -e '\.exe$' || true)
+game_dir=""
+[ -n "$game_exe" ] && game_dir=$(dirname "$game_exe")
+
 hidraw_granted=""
 case "$want_hidraw" in
 "") ;;
@@ -278,15 +290,27 @@ case "$want_hidraw" in
 	say "set PROTON_ENABLE_HIDRAW=0"
 	;;
 *)
+	# The SDK's rotation question must be answered or the stock library
+	# takes the wheel and gives nothing back (steering and force stop on
+	# track: an RS50 in ACC, 2026-09-05). Two things answer it: the dinput8
+	# escape proxy this wrapper stages into the game's directory (below,
+	# for every native-TrueForce session, texture merge or not), and the
+	# SDK proxy install-tf-shim.sh --proxy puts in front of the library.
+	# Raw HID is granted only when one of them is in play.
+	can_stage_proxy=0
+	if [ -n "$game_dir" ] && [ -d "$game_dir" ] && \
+	   [ -r "$(share_file dinput8-escape.dll 2>/dev/null || echo /nonexistent)" ]; then
+		can_stage_proxy=1
+	fi
 	if [ "$have_tf_files" = "1" ] && [ "$have_tf_proxy" = "0" ] && \
-	   [ "$want_texture" != "merge" ]; then
+	   [ "$can_stage_proxy" = "0" ]; then
 		export PROTON_ENABLE_HIDRAW=0
 		say "NOT setting PROTON_ENABLE_HIDRAW: Logitech's TrueForce files are in"
-		say "this prefix without this project's proxy in front of them. With raw"
-		say "HID the stock library takes the wheel and steering and force feedback"
-		say "stop on track, and it does not stream under Proton anyway. Install"
-		say "the proxy (tools/install-tf-shim.sh --proxy), then start the game again."
-		say "Force feedback still works; the game's own TrueForce does not."
+		say "this prefix, but nothing here can answer the SDK's rotation question"
+		say "(no game directory to stage the dinput8 proxy into, and no SDK proxy"
+		say "in the prefix). With raw HID the stock library takes the wheel and"
+		say "steering and force feedback stop on track. Force feedback still"
+		say "works; the game's own TrueForce does not."
 	elif [ "$have_tf_files" = "1" ] || [ -z "$prefix_root" ]; then
 		export PROTON_ENABLE_HIDRAW="$want_hidraw"
 		hidraw_granted=1
@@ -434,15 +458,9 @@ merge_attrs=""
 # start, alongside whatever that start's plan feeds the daemon with, and
 # two producers for one game make the lights and the screen take turns.
 staged_proxy=""
-# Whether a dinput8.dll is this project's escape proxy: it carries its own
-# environment-variable names, which no other dinput8 does.
-is_our_proxy() {
-	[ -f "$1" ] && grep -aq 'LOGI_ESCAPE_RELAY' "$1" 2>/dev/null
-}
-game_exe=$(printf '%s\n' "$@" | grep -m1 -e '\.exe$' || true)
-game_dir=""
-[ -n "$game_exe" ] && game_dir=$(dirname "$game_exe")
-if [ "$want_texture" != "merge" ] && [ -n "$game_dir" ] && \
+# A proxy we stage below (any native-TrueForce session with raw HID) is
+# refreshed there; one left in a game that gets no proxy is removed here.
+if [ -z "$hidraw_granted" ] && [ "$want_texture" != "merge" ] && [ -n "$game_dir" ] && \
    is_our_proxy "$game_dir/dinput8.dll"; then
 	if rm -f "$game_dir/dinput8.dll" 2>/dev/null; then
 		say "removed a leftover dinput8 escape proxy from $game_dir (this game gets no texture merge, so it would only add a second telemetry sender)"
@@ -450,33 +468,52 @@ if [ "$want_texture" != "merge" ] && [ -n "$game_dir" ] && \
 		say "a leftover dinput8 escape proxy is in $game_dir and could not be removed; expect two telemetry senders"
 	fi
 fi
+# Stage the dinput8 escape proxy into the game's directory and make Wine
+# load it. Returns non-zero when there is nowhere to put it.
+stage_escape_proxy() {
+	proxy_src=$(share_file dinput8-escape.dll || true)
+	if [ -z "$game_dir" ] || [ ! -d "$game_dir" ] || [ ! -r "$proxy_src" ]; then
+		return 1
+	fi
+	# cmp, not a timestamp: Steam validation rewrites files and a stale
+	# proxy looks exactly like a missing one.
+	if ! cmp -s "$proxy_src" "$game_dir/dinput8.dll" 2>/dev/null; then
+		if cp -f "$proxy_src" "$game_dir/dinput8.dll" 2>/dev/null; then
+			say "staged dinput8 proxy into $game_dir"
+		else
+			say "could not copy the dinput8 proxy into $game_dir"
+			return 1
+		fi
+	fi
+	is_our_proxy "$game_dir/dinput8.dll" && staged_proxy="$game_dir/dinput8.dll"
+	# Merge with whatever the user already set; never clobber it.
+	case "${WINEDLLOVERRIDES:-}" in
+	*dinput8*) ;;
+	*)
+		export WINEDLLOVERRIDES="dinput8=n,b${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
+		say "set WINEDLLOVERRIDES=$WINEDLLOVERRIDES"
+		;;
+	esac
+	return 0
+}
+
+# A native-TrueForce session without the texture merge still needs the
+# SDK's rotation question answered (see the raw-HID grant above), and the
+# escape proxy is what answers it. Staged with its telemetry relay OFF:
+# the shared-memory relay already feeds the daemon for this game, and a
+# second sender on the same port made the lights and the screen take
+# turns (an RS50 in ACC, 2026-09-05).
+if [ -n "$hidraw_granted" ] && [ "$want_texture" != "merge" ] && \
+   [ "$have_tf_proxy" = "0" ]; then
+	if stage_escape_proxy; then
+		export LOGI_ESCAPE_RELAY=0
+		say "dinput8 proxy answers the SDK's rotation question only (LOGI_ESCAPE_RELAY=0)"
+	fi
+fi
+
 if [ "$want_texture" = "merge" ] && \
    { [ "$have_tf_files" = "1" ] || [ -z "$prefix_root" ]; }; then
-	# The game's own directory, taken from the .exe in the command Steam
-	# hands us (game_dir above). A native Linux game or a bare test
-	# command has none, and then there is nowhere to stage the proxy: say
-	# so and move on.
-	proxy_src=$(share_file dinput8-escape.dll || true)
-	if [ -n "$game_dir" ] && [ -d "$game_dir" ] && [ -r "$proxy_src" ]; then
-		# cmp, not a timestamp: Steam validation rewrites files and a
-		# stale proxy looks exactly like a missing one.
-		if ! cmp -s "$proxy_src" "$game_dir/dinput8.dll" 2>/dev/null; then
-			if cp -f "$proxy_src" "$game_dir/dinput8.dll" 2>/dev/null; then
-				say "staged dinput8 proxy into $game_dir"
-			else
-				say "could not copy the dinput8 proxy into $game_dir"
-			fi
-		fi
-		is_our_proxy "$game_dir/dinput8.dll" && staged_proxy="$game_dir/dinput8.dll"
-		# Merge with whatever the user already set; never clobber it.
-		case "${WINEDLLOVERRIDES:-}" in
-		*dinput8*) ;;
-		*)
-			export WINEDLLOVERRIDES="dinput8=n,b${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
-			say "set WINEDLLOVERRIDES=$WINEDLLOVERRIDES"
-			;;
-		esac
-	else
+	if ! stage_escape_proxy; then
 		say "not staging the dinput8 proxy (no game dir or dll found);"
 		say "the texture merge will idle without its RPM feed"
 	fi

@@ -327,14 +327,13 @@ pub fn resolve_sdk_dir(field: &str, installer: Option<&Path>) -> Option<PathBuf>
 /// `None` (nothing resolved) omits the flag: the installer then runs its
 /// own resolution and prints its own copy-the-DLLs guidance on failure.
 ///
-/// Always with `--proxy`: the range-answering proxy in front of the SDK
-/// library is what makes the SDK route work under Proton at all. Without
-/// it the library opens the wheel over raw HID, never gets its rotation
-/// question answered, and the game's DirectInput steering and force stop
-/// on track (an RS50 in ACC, 2026-09-05); the launcher refuses raw HID in
-/// that state. On a G923 the same proxy carries the game's TrueForce.
+/// The plain shim, without the SDK proxy: the rotation question the SDK
+/// must have answered under Proton is answered by the dinput8 escape
+/// proxy `logi-launch` stages for every native-TrueForce session. The SDK
+/// proxy (`--proxy`) stays a by-hand route; ACC on an RS50 would not load
+/// it at all (2026-09-05), while it is what carries TrueForce to a G923.
 pub fn shim_install_args(prefix: &str, sdk_dir: Option<&Path>) -> Vec<String> {
-    let mut args = vec!["--prefix".to_string(), prefix.to_string(), "--proxy".to_string()];
+    let mut args = vec!["--prefix".to_string(), prefix.to_string()];
     if let Some(dir) = sdk_dir {
         args.push("--sdk-dir".to_string());
         args.push(dir.to_string_lossy().into_owned());
@@ -590,7 +589,7 @@ mod tests {
     fn shim_install_args_pass_the_resolved_dir_and_omit_none() {
         assert_eq!(
             shim_install_args("/pfx", None),
-            vec!["--prefix".to_string(), "/pfx".to_string(), "--proxy".to_string()],
+            vec!["--prefix".to_string(), "/pfx".to_string()],
             "nothing resolved: the flag is omitted so the installer's own lookup (and its guidance) runs"
         );
         assert_eq!(
@@ -598,11 +597,10 @@ mod tests {
             vec![
                 "--prefix".to_string(),
                 "/pfx".to_string(),
-                "--proxy".to_string(),
                 "--sdk-dir".to_string(),
                 "/data/sdk".to_string(),
             ],
-            "the resolved dir is passed explicitly, and the proxy always goes in"
+            "the resolved dir is passed explicitly"
         );
     }
 

@@ -410,12 +410,13 @@ generated from the same registry the app uses, so the two cannot disagree.
 
 - **TrueForce haptics** (the high-frequency texture layer, on top of normal
   FFB) in SDK-aware sims: stage Logitech's signed SDK DLLs into the game's
-  Proton prefix with this project's proxy in front of them (the app's Setup
-  page does both; by hand, `tools/install-tf-shim.sh --proxy`), and launch
-  with `logi-launch %command%`, which turns raw HID on for the wheels that
-  want it. Set `PROTON_ENABLE_HIDRAW=1` by hand only with the proxy in
-  place: with Logitech's stock library alone the game's steering and force
-  feedback stop on track, and the launcher refuses to set it. The
+  Proton prefix (the app's Setup page, or `tools/install-tf-shim.sh`), and
+  launch with `logi-launch %command%`, which turns raw HID on for the
+  wheels that want it and stages the proxy that answers the SDK's rotation
+  question. Set `PROTON_ENABLE_HIDRAW=1` by hand only with something
+  answering that question (`tools/install-tf-shim.sh --proxy`): with
+  Logitech's stock library alone the game's steering and force feedback
+  stop on track, and the launcher refuses to set it in that state. The
   DLLs are the one part nobody can automate, because Logitech's files cannot
   be redistributed. The one-time recipe is on the
   [Force feedback in games](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Force-Feedback-in-Games)

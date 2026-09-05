@@ -26,18 +26,20 @@ not fit is refused with a reason before anything is sent. The window
 also drew the pedal Sensitivity/Curve toggle on the screen row, a
 widget-kind collision; fixed, and a test now keeps the kinds distinct.
 
-**Raw HID only with the proxy in front of Logitech's library.** The
+**Raw HID only with the SDK's rotation question answered.** The
 launcher turned raw HID on for a native-TrueForce title whenever the
 SDK files were in the prefix. With Logitech's stock library alone the
 SDK opens the wheel, never gets its rotation question answered under
 Proton, and the game's DirectInput steering and force feedback stop the
 moment a session starts, while nothing is gained, since that library
 does not stream under Proton without the answer either (an RS50 in ACC,
-2026-09-05). The launcher now grants raw HID only with this project's
-range-answering proxy installed (or the escape proxy a texture-merge
-session stages), says why otherwise, and keeps force feedback. The
-apps' Setup page installs the shim with the proxy from now on; by hand
-it is `tools/install-tf-shim.sh --proxy`. The docs say the same.
+2026-09-05). The launcher now stages its dinput8 escape proxy, which
+answers that question, for every native-TrueForce session and not only
+for the texture merge, with the proxy's own telemetry relay off so the
+shared-memory relay stays the one sender; it grants raw HID only when
+that proxy or the SDK proxy (`tools/install-tf-shim.sh --proxy`) is in
+play, says why otherwise, and keeps force feedback. The SDK proxy is
+not the default: ACC on that RS50 would not load it at all.
 
 **Speed and brake on the relay datagram.** The screen's gear-and-speed
 dashboard and its pedal presets showed zeros in every shared-memory sim,

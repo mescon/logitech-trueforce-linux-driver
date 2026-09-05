@@ -4111,7 +4111,7 @@ mod tests {
         assert_eq!(
             a.take_pending_shim(),
             Some((
-                vec!["--prefix".to_string(), "/lib/steamapps/compatdata/100/pfx".to_string(), "--proxy".to_string()],
+                vec!["--prefix".to_string(), "/lib/steamapps/compatdata/100/pfx".to_string()],
                 "install"
             ))
         );
@@ -4127,7 +4127,6 @@ mod tests {
                 vec![
                     "--prefix".to_string(),
                     "/lib/steamapps/compatdata/100/pfx".to_string(),
-                    "--proxy".to_string(),
                     "--sdk-dir".to_string(),
                     "/data/sdk".to_string(),
                 ],
@@ -4238,7 +4237,7 @@ mod tests {
         assert!(a.add_game.is_none(), "the picker closes on install");
         assert_eq!(
             a.take_pending_shim(),
-            Some((vec!["--prefix".to_string(), "/pfx/tekken".to_string(), "--proxy".to_string()], "install"))
+            Some((vec!["--prefix".to_string(), "/pfx/tekken".to_string()], "install"))
         );
     }
 
@@ -4263,7 +4262,7 @@ mod tests {
         assert!(a.add_game.is_none(), "a non-empty path commits");
         assert_eq!(
             a.take_pending_shim(),
-            Some((vec!["--prefix".to_string(), "/home/me/.wine".to_string(), "--proxy".to_string()], "install"))
+            Some((vec!["--prefix".to_string(), "/home/me/.wine".to_string()], "install"))
         );
     }
 
