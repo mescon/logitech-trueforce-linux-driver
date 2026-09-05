@@ -291,10 +291,17 @@ game_dir=""
 proxy_dirs=""
 if [ -n "$game_dir" ]; then
 	proxy_dirs="$game_dir"
-	for d in $(find "$game_dir" -maxdepth 3 -type d -path '*/Binaries/Win64' 2>/dev/null); do
-		ls "$d"/*-Shipping.exe >/dev/null 2>&1 && proxy_dirs="$proxy_dirs
+	# Read line by line: game folders have spaces in their names, and a
+	# word-split find result staged nothing (2026-09-05, second run).
+	while read -r d; do
+		[ -n "$d" ] || continue
+		if ls "$d"/*-Shipping.exe >/dev/null 2>&1; then
+			proxy_dirs="$proxy_dirs
 $d"
-	done
+		fi
+	done <<-FOUND
+	$(find "$game_dir" -maxdepth 3 -type d -path '*/Binaries/Win64' 2>/dev/null)
+	FOUND
 fi
 
 hidraw_granted=""
