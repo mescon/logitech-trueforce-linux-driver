@@ -293,10 +293,11 @@ errors that mean the device moved (`ENOENT`, `ENODEV`), the bridge resolves
 again rather than writing into a stale path for the rest of the session, so
 a wheel that is replugged mid-game is picked up without restarting anything.
 
-The wire format, LTFR version 2 (32 bytes since 2026-08-14, little-endian,
-append-only - the first 28 bytes are the original version-2 layout, the
-version byte is unchanged, and old consumers keep reading just those 28;
-the authoritative copy lives in `logi-wheel-core`'s `relay.rs`):
+The wire format, LTFR version 2 (40 bytes since 2026-09-05, 32 since
+2026-08-14, little-endian, append-only - the first 28 bytes are the
+original version-2 layout, the version byte is unchanged, and old consumers
+keep reading just what they know; the authoritative copy lives in
+`logi-wheel-core`'s `relay.rs`):
 
 | offset | field    | type   | notes |
 |---|---|---|---|
@@ -308,7 +309,9 @@ the authoritative copy lives in `logi-wheel-core`'s `relay.rs`):
 | 18 | max_rpm  | f32 LE  | engine redline, rpm |
 | 22 | throttle | f32 LE  | 0.0-1.0; 0 = the sender cannot tell |
 | 26 | gear     | i16 LE  | -1 reverse, 0 neutral, 1..N; 0 also = unknown |
-| 28 | shift_rpm | f32 LE | first-shift-light rpm (appended field; absent from 28-byte senders, which is fine) |
+| 28 | shift_rpm | f32 LE | first-shift-light rpm (appended field; absent from 28-byte senders, which is fine; the relay sends 0 = unknown) |
+| 32 | speed    | f32 LE  | car speed, m/s; 0 = the sender cannot tell (appended 2026-09-05, for the base's screen) |
+| 36 | brake    | f32 LE  | 0.0-1.0; 0 = the sender cannot tell (appended with speed) |
 
 Send at roughly 60 Hz; consumers rate-limit on their side, and
 `logi-rpm-bridge` drops packets whose rpm is not in `[0, 30000)`. Fields a

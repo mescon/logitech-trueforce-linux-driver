@@ -69,6 +69,7 @@ const VERSION_MAJOR: i32 = 3;
 
 // Field offsets, generated from the vendor header (see module docs).
 const OFF_VERSION_MAJOR: usize = 0;
+const OFF_CAR_SPEED: usize = 1392;
 const OFF_ENGINE_RPS: usize = 1396;
 const OFF_MAX_ENGINE_RPS: usize = 1400;
 const OFF_GEAR: usize = 1408;
@@ -134,6 +135,7 @@ pub fn decode(buf: &[u8]) -> Option<RelayTelemetry> {
     // player" to everything downstream.
     let throttle = f32_at(buf, OFF_THROTTLE)?;
     let throttle = if throttle.is_finite() { throttle.clamp(0.0, 1.0) } else { 0.0 };
+    let speed = f32_at(buf, OFF_CAR_SPEED).filter(|v| v.is_finite()).unwrap_or(0.0).max(0.0);
 
     // RaceRoom's -2 means "not available"; every other value already uses
     // the relay's own convention of -1 reverse, 0 neutral, 1..=N forward.
@@ -142,7 +144,7 @@ pub fn decode(buf: &[u8]) -> Option<RelayTelemetry> {
         _ => 0,
     };
 
-    Some(RelayTelemetry { game_id: ID, rpm, max_rpm, throttle, gear, airborne: false })
+    Some(RelayTelemetry { game_id: ID, rpm, max_rpm, throttle, gear, speed, brake: 0.0, airborne: false })
 }
 
 #[cfg(test)]

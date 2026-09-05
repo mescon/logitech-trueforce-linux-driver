@@ -326,8 +326,15 @@ pub fn resolve_sdk_dir(field: &str, installer: Option<&Path>) -> Option<PathBuf>
 /// status line reported (no silent divergence between the two lookups).
 /// `None` (nothing resolved) omits the flag: the installer then runs its
 /// own resolution and prints its own copy-the-DLLs guidance on failure.
+///
+/// Always with `--proxy`: the range-answering proxy in front of the SDK
+/// library is what makes the SDK route work under Proton at all. Without
+/// it the library opens the wheel over raw HID, never gets its rotation
+/// question answered, and the game's DirectInput steering and force stop
+/// on track (an RS50 in ACC, 2026-09-05); the launcher refuses raw HID in
+/// that state. On a G923 the same proxy carries the game's TrueForce.
 pub fn shim_install_args(prefix: &str, sdk_dir: Option<&Path>) -> Vec<String> {
-    let mut args = vec!["--prefix".to_string(), prefix.to_string()];
+    let mut args = vec!["--prefix".to_string(), prefix.to_string(), "--proxy".to_string()];
     if let Some(dir) = sdk_dir {
         args.push("--sdk-dir".to_string());
         args.push(dir.to_string_lossy().into_owned());
@@ -583,7 +590,7 @@ mod tests {
     fn shim_install_args_pass_the_resolved_dir_and_omit_none() {
         assert_eq!(
             shim_install_args("/pfx", None),
-            vec!["--prefix".to_string(), "/pfx".to_string()],
+            vec!["--prefix".to_string(), "/pfx".to_string(), "--proxy".to_string()],
             "nothing resolved: the flag is omitted so the installer's own lookup (and its guidance) runs"
         );
         assert_eq!(
@@ -591,10 +598,11 @@ mod tests {
             vec![
                 "--prefix".to_string(),
                 "/pfx".to_string(),
+                "--proxy".to_string(),
                 "--sdk-dir".to_string(),
                 "/data/sdk".to_string(),
             ],
-            "the resolved dir is passed explicitly"
+            "the resolved dir is passed explicitly, and the proxy always goes in"
         );
     }
 

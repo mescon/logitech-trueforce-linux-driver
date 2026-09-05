@@ -97,9 +97,11 @@ const TEL_NUM_VEHICLES: usize = 12;
 const TEL_VEHICLES: usize = 16;
 const TEL_STRIDE: usize = 1888;
 const VEH_ID: usize = 0;
+const VEH_LOCAL_VEL: usize = 184;
 const VEH_GEAR: usize = 352;
 const VEH_ENGINE_RPM: usize = 356;
 const VEH_THROTTLE: usize = 388;
+const VEH_BRAKE: usize = 396;
 const VEH_ENGINE_MAX_RPM: usize = 532;
 
 // Scoring buffer (file offsets, version block included).
@@ -190,6 +192,16 @@ pub fn decode(telemetry: &[u8], scoring: &[u8], game_id: &'static str) -> Option
 
     let throttle = f64_at(telemetry, base + VEH_THROTTLE)?;
     let throttle = if throttle.is_finite() { throttle.clamp(0.0, 1.0) as f32 } else { 0.0 };
+    // For the base's screen: the car's speed is the length of its local
+    // velocity vector, and the brake is the unfiltered pedal. Zeros if
+    // either reads as nonsense, never a dropped sample.
+    let speed = (0..3)
+        .map(|i| f64_at(telemetry, base + VEH_LOCAL_VEL + i * 8).unwrap_or(0.0))
+        .map(|v| if v.is_finite() { v * v } else { 0.0 })
+        .sum::<f64>()
+        .sqrt() as f32;
+    let brake = f64_at(telemetry, base + VEH_BRAKE).unwrap_or(0.0);
+    let brake = if brake.is_finite() { brake.clamp(0.0, 1.0) as f32 } else { 0.0 };
 
     // rFactor 2 already uses the relay's convention: -1 reverse, 0 neutral,
     // 1..=N forward. Only an implausible value is squashed.
@@ -198,7 +210,7 @@ pub fn decode(telemetry: &[u8], scoring: &[u8], game_id: &'static str) -> Option
         _ => 0,
     };
 
-    Some(RelayTelemetry { game_id, rpm: rpm as f32, max_rpm: max_rpm as f32, throttle, gear, airborne: false })
+    Some(RelayTelemetry { game_id, rpm: rpm as f32, max_rpm: max_rpm as f32, throttle, gear, speed, brake, airborne: false })
 }
 
 #[cfg(test)]

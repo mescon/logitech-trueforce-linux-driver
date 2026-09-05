@@ -56,6 +56,7 @@ pub const CHANNEL_ENGINE_RPM: &[u8] = b"truck.engine.rpm\0";
 pub const CHANNEL_EFFECTIVE_THROTTLE: &[u8] = b"truck.effective.throttle\0";
 pub const CHANNEL_ENGINE_GEAR: &[u8] = b"truck.engine.gear\0";
 pub const CHANNEL_SPEED: &[u8] = b"truck.speed\0";
+pub const CHANNEL_EFFECTIVE_BRAKE: &[u8] = b"truck.effective.brake\0";
 
 /// common/scssdk_telemetry_common_configs.h: config-id "truck" och
 /// attributet "rpm.limit" (motorns varvtalstak, float).

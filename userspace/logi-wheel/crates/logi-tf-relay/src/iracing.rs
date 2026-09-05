@@ -203,7 +203,7 @@ pub fn decode(map: &[u8]) -> Option<RelayTelemetry> {
         return None;
     }
 
-    let wanted = ["RPM", "Throttle", "Gear", "PlayerCarSLBlinkRPM"];
+    let wanted = ["RPM", "Throttle", "Gear", "PlayerCarSLBlinkRPM", "Speed", "Brake"];
     let vars = find_vars(map, &wanted);
     let (rpm_v, throttle_v, gear_v) = (vars[0]?, vars[1]?, vars[2]?);
 
@@ -219,6 +219,11 @@ pub fn decode(map: &[u8]) -> Option<RelayTelemetry> {
     // engine note. Without it there is nothing honest to send: a guessed
     // redline makes every car sound wrong rather than slightly wrong.
     let max_rpm = vars[3].and_then(|v| read_var(buf, v)).map(|v| v as f32)?;
+    // For the base's screen; a session without them reads as zeros.
+    let speed = vars[4].and_then(|v| read_var(buf, v)).map_or(0.0, |v| v as f32);
+    let brake = vars[5].and_then(|v| read_var(buf, v)).map_or(0.0, |v| v as f32);
+    let speed = if speed.is_finite() { speed.max(0.0) } else { 0.0 };
+    let brake = if brake.is_finite() { brake.clamp(0.0, 1.0) } else { 0.0 };
 
     if !rpm.is_finite() || !throttle.is_finite() || !max_rpm.is_finite() {
         return None;
@@ -241,7 +246,7 @@ pub fn decode(map: &[u8]) -> Option<RelayTelemetry> {
         throttle: throttle.clamp(0.0, 1.0),
         gear: gear.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
         // iRacing's telemetry has no wheels-off-ground field this reads.
-        airborne: false,
+        speed, brake, airborne: false,
     })
 }
 
@@ -304,6 +309,7 @@ mod tests {
                 ("Throttle", VAR_TYPE_FLOAT, 0.75),
                 ("Gear", VAR_TYPE_INT, 4.0),
                 ("PlayerCarSLBlinkRPM", VAR_TYPE_FLOAT, 7800.0),
+                ("Speed", VAR_TYPE_FLOAT, 55.0),
             ],
             true,
         )
@@ -318,6 +324,8 @@ mod tests {
         assert_eq!(t.max_rpm, 7800.0);
         assert_eq!(t.throttle, 0.75);
         assert_eq!(t.gear, 4);
+        assert_eq!(t.speed, 55.0, "Speed rides along for the screen");
+        assert_eq!(t.brake, 0.0, "a session without Brake reads as zero, not as nothing");
     }
 
     /// The point of a self-describing format: reorder the table and the

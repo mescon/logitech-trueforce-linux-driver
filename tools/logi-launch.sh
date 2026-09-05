@@ -246,11 +246,24 @@ say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-u
 # because only this wrapper knows which prefix the game is launching with.
 shim_dir="$prefix_root/pfx/drive_c/Program Files/Logi/Trueforce"
 have_tf_files=0
+# Whether this project's range-answering proxy stands in front of the SDK
+# library (install-tf-shim.sh --proxy leaves the real one beside it as
+# trueforce_real.dll). Raw HID is granted only with something answering
+# the SDK's rotation question: that proxy, or the dinput8 escape proxy a
+# texture-merge session stages. With Logitech's stock library alone the
+# SDK opens the wheel, never gets its answer under Proton, and the game's
+# DirectInput steering and force feedback die the moment a session starts
+# (an RS50 in ACC, 2026-09-05), while nothing is gained, since that
+# library does not stream under Proton without the answer either.
+have_tf_proxy=0
 if [ -n "$prefix_root" ]; then
 	# Any version directory holding the SDK dll counts; the version numbers
 	# are whatever that person's G HUB shipped.
 	for f in "$shim_dir"/*/trueforce_sdk_x64.dll; do
 		[ -f "$f" ] && have_tf_files=1 && break
+	done
+	for f in "$shim_dir"/*/trueforce_real.dll; do
+		[ -f "$f" ] && have_tf_proxy=1 && break
 	done
 fi
 
@@ -265,7 +278,16 @@ case "$want_hidraw" in
 	say "set PROTON_ENABLE_HIDRAW=0"
 	;;
 *)
-	if [ "$have_tf_files" = "1" ] || [ -z "$prefix_root" ]; then
+	if [ "$have_tf_files" = "1" ] && [ "$have_tf_proxy" = "0" ] && \
+	   [ "$want_texture" != "merge" ]; then
+		export PROTON_ENABLE_HIDRAW=0
+		say "NOT setting PROTON_ENABLE_HIDRAW: Logitech's TrueForce files are in"
+		say "this prefix without this project's proxy in front of them. With raw"
+		say "HID the stock library takes the wheel and steering and force feedback"
+		say "stop on track, and it does not stream under Proton anyway. Install"
+		say "the proxy (tools/install-tf-shim.sh --proxy), then start the game again."
+		say "Force feedback still works; the game's own TrueForce does not."
+	elif [ "$have_tf_files" = "1" ] || [ -z "$prefix_root" ]; then
 		export PROTON_ENABLE_HIDRAW="$want_hidraw"
 		hidraw_granted=1
 		say "set PROTON_ENABLE_HIDRAW=$want_hidraw"

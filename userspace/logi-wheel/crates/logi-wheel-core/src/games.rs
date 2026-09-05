@@ -470,11 +470,11 @@ impl GameCompat {
              force feedback. For haptics, turn this game on under Simulated \
              TrueForce; logi-launch puts the telemetry relay in the game's \
              prefix and starts the daemon for you, and that route is \
-             confirmed working on a G923. Installing the shim WITH --proxy \
-             carries the game's own TrueForce to the wheel instead, the same \
-             proxy that ships the 90-degree rotation fix; the apps do not \
-             install it yet, so use tools/install-tf-shim.sh --proxy. Steam \
-             Input off."
+             confirmed working on a G923. Installing the shim (the app \
+             installs it with its proxy, the same proxy that ships the \
+             90-degree rotation fix; by hand, tools/install-tf-shim.sh \
+             --proxy) carries the game's own TrueForce to the wheel instead. \
+             Steam Input off."
         } else {
             self.setup
         }
@@ -614,7 +614,7 @@ pub const GAMES: &[GameCompat] = &[
         // The last sentence is the answer to "why does AC EVO's card say
         // texture merge and this one does not": the merge is gated per
         // title in `LaunchPlan::for_game`, and ACC is not in the gate.
-        setup: "Install the TrueForce shim once; launch options `logi-launch %command%` (it turns raw HID on and stages everything this game needs); turn Steam Input off. No engine-note texture merge here: ACC produces its own TrueForce audio, so the merge is not wired for it.",
+        setup: "Install the TrueForce shim once, from the app's Setup page (it installs the shim with its proxy; by hand, tools/install-tf-shim.sh --proxy: without the proxy the launcher keeps raw HID off, since the stock library alone stops steering and force on track); launch options `logi-launch %command%` (it turns raw HID on and stages everything this game needs); turn Steam Input off. No engine-note texture merge here: ACC produces its own TrueForce audio, so the merge is not wired for it.",
         confidence: Confidence::Verified,
     },
     GameCompat {
@@ -628,7 +628,7 @@ pub const GAMES: &[GameCompat] = &[
         // redline into the physics block, so unlike Competizione it needed
         // its own decoder rather than Assetto Corsa's unchanged.
         simulated_tf: SimTf::LiveNow("ac-evo"),
-        setup: "Install the TrueForce shim once; launch options `logi-launch %command%` (it turns raw HID on and stages everything this game needs); turn Steam Input off.",
+        setup: "Install the TrueForce shim once, from the app's Setup page (it installs the shim with its proxy; by hand, tools/install-tf-shim.sh --proxy: without the proxy the launcher keeps raw HID off, since the stock library alone stops steering and force on track); launch options `logi-launch %command%` (it turns raw HID on and stages everything this game needs); turn Steam Input off.",
         confidence: Confidence::Verified,
     },
     GameCompat {

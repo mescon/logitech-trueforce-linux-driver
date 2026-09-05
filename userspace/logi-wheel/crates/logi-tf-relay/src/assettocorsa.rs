@@ -47,11 +47,11 @@
 //! |--------|------------|------|----------------------------------------|
 //! | 0      | `packetId` | i32  | increments per physics tick            |
 //! | 4      | `gas`      | f32  | throttle, 0.0..=1.0                    |
-//! | 8      | `brake`    | f32  | unused here                            |
+//! | 8      | `brake`    | f32  | 0.0..=1.0, for the screen's pedal readout |
 //! | 12     | `fuel`     | f32  | unused here                            |
 //! | 16     | `gear`     | i32  | **0 reverse, 1 neutral, 2 first**      |
 //! | 20     | `rpms`     | i32  | engine speed, already rpm              |
-//! | 28     | `speedKmh` | f32  | unused here                            |
+//! | 28     | `speedKmh` | f32  | km/h; sent as m/s for the screen       |
 //!
 //! ## Layout (`Local\acpmf_static`)
 //!
@@ -103,8 +103,10 @@ pub const SECTION_PHYSICS_EVO: &str = "Local\\acevo_pmf_physics";
 
 // Physics offsets (see module docs).
 const OFF_GAS: usize = 4;
+const OFF_BRAKE: usize = 8;
 const OFF_GEAR: usize = 16;
 const OFF_RPMS: usize = 20;
+const OFF_SPEED_KMH: usize = 28;
 
 /// Through the last physics field read, `rpms`.
 const MIN_PHYSICS_LEN: usize = OFF_RPMS + 4;
@@ -201,12 +203,15 @@ pub fn decode(
     }
 
     let (throttle, gear) = head_inputs(physics)?;
+    let (speed, brake) = head_screen_fields(physics);
     Some(RelayTelemetry {
         game_id,
         rpm,
         max_rpm,
         throttle,
         gear,
+        speed,
+        brake,
         airborne: gate.airborne(physics),
     })
 }
@@ -279,6 +284,15 @@ fn airborne_with(gate: &mut AirborneGate, physics: &[u8]) -> bool {
     true
 }
 
+/// Speed (m/s) and brake from the physics head, for the base's screen.
+/// Both optional: a read too short for them, as the tests' fixtures are,
+/// gives zeros rather than dropping the sample.
+fn head_screen_fields(physics: &[u8]) -> (f32, f32) {
+    let speed = f32_at(physics, OFF_SPEED_KMH).filter(|v| v.is_finite()).unwrap_or(0.0) / 3.6;
+    let brake = f32_at(physics, OFF_BRAKE).filter(|v| v.is_finite()).unwrap_or(0.0);
+    (speed.max(0.0), brake.clamp(0.0, 1.0))
+}
+
 /// Read throttle and gear from the physics head, which every Assetto Corsa
 /// generation shares. Factored out so the two decoders cannot drift on the
 /// gear translation, which is the field most easily got wrong.
@@ -333,7 +347,8 @@ pub fn decode_evo(physics: &[u8]) -> Option<RelayTelemetry> {
         return None;
     }
     let (throttle, gear) = head_inputs(physics)?;
-    Some(RelayTelemetry { game_id: ID_EVO, rpm, max_rpm, throttle, gear, airborne: false })
+    let (speed, brake) = head_screen_fields(physics);
+    Some(RelayTelemetry { game_id: ID_EVO, rpm, max_rpm, throttle, gear, speed, brake, airborne: false })
 }
 
 #[cfg(test)]
@@ -361,6 +376,19 @@ mod tests {
     /// These numbers are the whole decoder. `maxRpm` in particular sits
     /// behind five wchar_t[33] fields, so it is the one most easily moved by
     /// a careless edit.
+    #[test]
+    fn speed_and_brake_ride_along_when_the_head_is_long_enough() {
+        let mut b = physics(0.5, 3, 4000);
+        b.resize(OFF_SPEED_KMH + 4, 0);
+        b[OFF_BRAKE..][..4].copy_from_slice(&0.75f32.to_le_bytes());
+        b[OFF_SPEED_KMH..][..4].copy_from_slice(&142.0f32.to_le_bytes());
+        let (speed, brake) = head_screen_fields(&b);
+        assert!((speed - 142.0 / 3.6).abs() < 1e-3);
+        assert_eq!(brake, 0.75);
+        // The short fixture reads as zeros, not as a dropped sample.
+        assert_eq!(head_screen_fields(&physics(0.5, 3, 4000)), (0.0, 0.0));
+    }
+
     #[test]
     fn offsets_match_the_documented_layout() {
         assert_eq!(OFF_GAS, 4);

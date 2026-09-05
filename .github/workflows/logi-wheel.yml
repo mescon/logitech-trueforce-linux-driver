@@ -87,6 +87,21 @@ jobs:
         run: cargo build -p logi-tf-relay --locked --target x86_64-pc-windows-gnu --verbose
       - name: Clippy the relay for Windows
         run: cargo clippy -p logi-tf-relay --all-targets --locked --target x86_64-pc-windows-gnu -- -D warnings
+      # The build above is the one way this project has of producing the
+      # relay when no contributor machine has the Windows target: after a
+      # source change, download this artifact, run
+      # tools/check-committed-dlls.sh's sibling check by committing it as
+      # tools/logi-tf-relay.exe, and the staleness check below passes on
+      # the next push. Uploaded before that check so a stale commit still
+      # yields the fresh binary it needs.
+      - name: Build the relay as it ships (relay-dist profile)
+        run: cargo build --profile relay-dist --locked -p logi-tf-relay --target x86_64-pc-windows-gnu
+      - name: Keep the freshly built relay as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: logi-tf-relay-${{ github.sha }}
+          path: userspace/logi-wheel/target/x86_64-pc-windows-gnu/relay-dist/logi-tf-relay.exe
+          if-no-files-found: error
       - name: The committed relay binary must not be older than its sources
         # Packaging installs tools/logi-tf-relay.exe, because no distro
         # builder can produce a Windows binary. A prebuilt artifact is only

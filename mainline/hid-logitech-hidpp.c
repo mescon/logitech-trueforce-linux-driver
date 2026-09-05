@@ -15131,6 +15131,22 @@ static umode_t hidpp_dd_wheel_group_is_visible(struct kobject *kobj,
 	struct device *dev = kobj_to_dev(kobj);
 	struct hid_device *hid = to_hid_device(dev);
 	bool real_gpro = dd_is_real_gpro(hid);
+	bool g923_xbox = hid->product == USB_DEVICE_ID_LOGITECH_G923_XBOX_WHEEL;
+
+	/*
+	 * The G923 Xbox edition reaches this group only under
+	 * g923_xbox_dd_engine=1, for the force engine. Its rev strip has its
+	 * own owner, the five ::RPM1..RPM5 classdevs (hidpp_g923_rev_init),
+	 * which speak the command that wheel obeys. Exposing wheel_rev_level
+	 * here as well gave the strip two owners, and logi-tf-sim, which
+	 * looks for that attribute before the classdevs, wrote its levels
+	 * into the one this wheel ignores: haptics on, lights dark (issue
+	 * #76). It has no LIGHTSYNC strip either, so those go too.
+	 */
+	if (g923_xbox &&
+	    (attr == &dev_attr_wheel_rev_level.attr ||
+	     strncmp(attr->name, "wheel_led_", strlen("wheel_led_")) == 0))
+		return 0;
 
 	/*
 	 * Rev-lights use the same 0x807A level protocol on both the RS50

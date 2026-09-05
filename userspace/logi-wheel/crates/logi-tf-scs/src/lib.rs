@@ -62,6 +62,11 @@ struct State {
     rpm: AtomicU32,
     max_rpm: AtomicU32,
     throttle: AtomicU32,
+    /// Metres per second, for the base's screen; the SDK's `truck.speed`
+    /// is signed (reverse is negative), so it is stored as read and made
+    /// positive when sampled.
+    speed: AtomicU32,
+    brake: AtomicU32,
     gear: AtomicI32,
     paused: AtomicBool,
 }
@@ -72,6 +77,8 @@ static STATE: State = State {
     rpm: AtomicU32::new(0),
     max_rpm: AtomicU32::new(0),
     throttle: AtomicU32::new(0),
+    speed: AtomicU32::new(0),
+    brake: AtomicU32::new(0),
     gear: AtomicI32::new(0),
     paused: AtomicBool::new(true),
 };
@@ -103,6 +110,8 @@ fn sample() -> Option<RelayTelemetry> {
         max_rpm,
         throttle: load_f32(&STATE.throttle).clamp(0.0, 1.0),
         gear,
+        speed: load_f32(&STATE.speed).abs(),
+        brake: load_f32(&STATE.brake).clamp(0.0, 1.0),
         airborne: false,
     })
 }
@@ -125,7 +134,7 @@ fn send_engine_off() {
     let max_rpm = load_f32(&STATE.max_rpm);
     if max_rpm > 0.0 {
         let game_id = STATE.game_id.lock().map(|g| *g).unwrap_or(logi_wheel_core::relay::ID);
-        send(&RelayTelemetry { game_id, rpm: 0.0, max_rpm, throttle: 0.0, gear: 0, airborne: false });
+        send(&RelayTelemetry { game_id, rpm: 0.0, max_rpm, throttle: 0.0, gear: 0, speed: 0.0, brake: 0.0, airborne: false });
     }
 }
 
@@ -141,6 +150,22 @@ unsafe extern "C" fn channel_throttle(_: ScsString, _: ScsU32, value: *const Scs
     let _ = catch_unwind(|| {
         if let Some(v) = value.as_ref().and_then(|v| v.as_float()) {
             store_f32(&STATE.throttle, v);
+        }
+    });
+}
+
+unsafe extern "C" fn channel_speed(_: ScsString, _: ScsU32, value: *const ScsValue, _: ScsContext) {
+    let _ = catch_unwind(|| {
+        if let Some(v) = value.as_ref().and_then(|v| v.as_float()) {
+            store_f32(&STATE.speed, v);
+        }
+    });
+}
+
+unsafe extern "C" fn channel_brake(_: ScsString, _: ScsU32, value: *const ScsValue, _: ScsContext) {
+    let _ = catch_unwind(|| {
+        if let Some(v) = value.as_ref().and_then(|v| v.as_float()) {
+            store_f32(&STATE.brake, v);
         }
     });
 }
@@ -270,6 +295,8 @@ pub unsafe extern "C" fn scs_telemetry_init(
         store_f32(&STATE.rpm, 0.0);
         store_f32(&STATE.max_rpm, 0.0);
         store_f32(&STATE.throttle, 0.0);
+        store_f32(&STATE.speed, 0.0);
+        store_f32(&STATE.brake, 0.0);
         STATE.gear.store(0, Ordering::Relaxed);
 
         for event in [
@@ -280,10 +307,12 @@ pub unsafe extern "C" fn scs_telemetry_init(
         ] {
             let _ = register_event(event, on_event, std::ptr::null_mut());
         }
-        let channels: [(&[u8], ScsValueType, ScsChannelCallback); 3] = [
+        let channels: [(&[u8], ScsValueType, ScsChannelCallback); 5] = [
             (CHANNEL_ENGINE_RPM, SCS_VALUE_TYPE_FLOAT, channel_rpm),
             (CHANNEL_EFFECTIVE_THROTTLE, SCS_VALUE_TYPE_FLOAT, channel_throttle),
             (CHANNEL_ENGINE_GEAR, SCS_VALUE_TYPE_S32, channel_gear),
+            (CHANNEL_SPEED, SCS_VALUE_TYPE_FLOAT, channel_speed),
+            (CHANNEL_EFFECTIVE_BRAKE, SCS_VALUE_TYPE_FLOAT, channel_brake),
         ];
         for (name, value_type, callback) in channels {
             let _ = register_channel(

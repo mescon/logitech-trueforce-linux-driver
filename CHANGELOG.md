@@ -26,6 +26,40 @@ not fit is refused with a reason before anything is sent. The window
 also drew the pedal Sensitivity/Curve toggle on the screen row, a
 widget-kind collision; fixed, and a test now keeps the kinds distinct.
 
+**Raw HID only with the proxy in front of Logitech's library.** The
+launcher turned raw HID on for a native-TrueForce title whenever the
+SDK files were in the prefix. With Logitech's stock library alone the
+SDK opens the wheel, never gets its rotation question answered under
+Proton, and the game's DirectInput steering and force feedback stop the
+moment a session starts, while nothing is gained, since that library
+does not stream under Proton without the answer either (an RS50 in ACC,
+2026-09-05). The launcher now grants raw HID only with this project's
+range-answering proxy installed (or the escape proxy a texture-merge
+session stages), says why otherwise, and keeps force feedback. The
+apps' Setup page installs the shim with the proxy from now on; by hand
+it is `tools/install-tf-shim.sh --proxy`. The docs say the same.
+
+**Speed and brake on the relay datagram.** The screen's gear-and-speed
+dashboard and its pedal presets showed zeros in every shared-memory sim,
+because the relay's datagram carried rpm, redline, throttle and gear and
+nothing else. Two fields are appended (the format is append-only, so
+every reader keeps working): speed in m/s and brake, from ACC and AC
+(the physics head), iRacing (`Speed`, `Brake`), RaceRoom (`car_speed`),
+rFactor 2 and Le Mans Ultimate (the local velocity vector and the
+unfiltered brake), and the truck sims (`truck.speed`,
+`truck.effective.brake`). The relay is rebuilt, and CI now keeps each
+build of it as an artifact so a source change can be shipped without a
+Windows toolchain at hand.
+
+**The G923 Xbox edition's rev lights under the force engine.** With
+`g923_xbox_dd_engine=1` the wheel joined the direct-drive attribute
+group, which exposed `wheel_rev_level` next to the five LED classdevs
+that actually drive its strip. The helper looks for the attribute
+first, so its levels went to the one this wheel ignores: haptics on,
+lights dark (#76). The attribute and the LIGHTSYNC ones, which the
+wheel has no strip for, are hidden on that wheel, leaving the strip one
+owner.
+
 **A leftover telemetry proxy no longer feeds a game twice.** The dinput8
 escape proxy that `logi-launch` stages for a texture-merge title stayed
 in the game's folder afterwards, and a copy in a game that gets no merge
