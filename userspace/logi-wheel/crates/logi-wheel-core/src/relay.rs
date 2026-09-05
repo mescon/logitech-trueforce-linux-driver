@@ -325,10 +325,10 @@ impl RelayListener {
     /// make sense of may still be exactly what the other one wants, and a
     /// hub that only passed on what it understood would be a filter nobody
     /// asked for.
-    pub fn drain(&self, buf: &mut [u8], mut each: impl FnMut(&[u8])) {
+    pub fn drain(&self, buf: &mut [u8], mut each: impl FnMut(&[u8], SocketAddr)) {
         loop {
             match self.sock.recv_from(buf) {
-                Ok((n, _peer)) => {
+                Ok((n, peer)) => {
                     if self.role == Role::Hub {
                         for addr in &self.fanout {
                             // Nothing may be listening on a fan-out port,
@@ -339,7 +339,7 @@ impl RelayListener {
                             let _ = self.sock.send_to(&buf[..n], addr);
                         }
                     }
-                    each(&buf[..n]);
+                    each(&buf[..n], peer);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -688,7 +688,7 @@ mod fanout {
         // necessarily there on the first read. Bounded so a real failure
         // still fails rather than hanging.
         for _ in 0..50 {
-            l.drain(&mut buf, |p| {
+            l.drain(&mut buf, |p, _| {
                 if let Some(rt) = decode(p) {
                     got.push(rt.rpm);
                 }

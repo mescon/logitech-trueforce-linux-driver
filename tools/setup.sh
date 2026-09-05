@@ -1048,9 +1048,33 @@ report() {
 		echo "wheel:         no direct-drive wheel bound"
 	fi
 	echo "usb:           $(lsusb 2>/dev/null | grep -iE '046d:(c2[67][0-9a-f])' | sed 's/.*ID //' | tr '\n' ';' || echo none)"
+	# Copies of this project's dinput8 escape proxy sitting in game
+	# folders. logi-launch stages one for a texture-merge title and takes
+	# it out again at exit; a copy that outlived that, or was put there by
+	# hand, keeps relaying that game's RPM next to whatever else feeds the
+	# daemon, and two senders make the lights and the screen take turns.
+	local lib proxies=""
+	for lib in "$HOME/.steam/steam/steamapps" "$HOME/.local/share/Steam/steamapps" \
+		   "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps"; do
+		[ -d "$lib/common" ] || continue
+		proxies="$proxies$(find "$lib/common" -maxdepth 5 -name dinput8.dll -size +200k 2>/dev/null \
+			| while read -r f; do grep -aq LOGI_ESCAPE_RELAY "$f" 2>/dev/null && readlink -f "$f"; done)
+"
+	done
+	proxies=$(printf '%s' "$proxies" | sort -u | sed '/^$/d')
+	if [ -n "$proxies" ]; then
+		echo "escape proxies: (this project's dinput8 proxy, found in game folders)"
+		printf '%s\n' "$proxies" | while read -r f; do
+			if cmp -s "$f" "$(helper_source dinput8-escape.dll 2>/dev/null || echo /nonexistent)"; then
+				echo "  $f (current build)"
+			else
+				echo "  $f (OLD BUILD; logi-launch refreshes or removes it on that game's next start, or: rm \"$f\")"
+			fi
+		done
+	fi
 	if [ -r /tmp/logi-launch.log ]; then
 		echo "launcher:      (last plan and settings from /tmp/logi-launch.log)"
-		grep -E 'plan:|PROTON_ENABLE_HIDRAW|staged|started|not staging|cannot' /tmp/logi-launch.log | tail -8 | sed 's/^/  /'
+		grep -E 'plan:|PROTON_ENABLE_HIDRAW|staged|started|not staging|cannot|removed' /tmp/logi-launch.log | grep -v 'ld\.so' | tail -8 | sed 's/^/  /'
 	else
 		echo "launcher:      /tmp/logi-launch.log absent (logi-launch has not run)"
 	fi

@@ -26,6 +26,18 @@ not fit is refused with a reason before anything is sent. The window
 also drew the pedal Sensitivity/Curve toggle on the screen row, a
 widget-kind collision; fixed, and a test now keeps the kinds distinct.
 
+**A leftover telemetry proxy no longer feeds a game twice.** The dinput8
+escape proxy that `logi-launch` stages for a texture-merge title stayed
+in the game's folder afterwards, and a copy in a game that gets no merge
+kept relaying that game's RPM next to the shared-memory relay. Each
+sends a different part of the telemetry, the last datagram wins, and the
+lights and the screen took turns between gear and no gear (seen on an
+RS50 in ACC). The launcher now removes a leftover proxy of ours from a
+game that gets no merge, takes its own staged copy out again at exit,
+and `setup.sh report` lists every copy found in a Steam library with
+whether it is the current build. The helper says so, once, when two
+senders feed one game.
+
 **Rev lights and the screen in ACC on a direct-drive wheel.** The
 launcher used to keep `logi-tf-sim` off for a title whose own TrueForce
 reaches the wheel (ACC, AC EVO on an RS50 or G PRO), so nothing fed the

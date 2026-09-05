@@ -627,6 +627,42 @@ impl Decoders {
     }
 }
 
+/// Who is sending relay datagrams for which game. Two producers for the
+/// same game id are never right: each publishes a different subset of the
+/// telemetry (a stale escape proxy sends rpm with no gear or speed, the
+/// shared-memory relay sends all of it), and whichever datagram arrived
+/// last wins, so the screen and the lights take turns between the two.
+/// Seen on an RS50 in ACC with a proxy left in the game's folder from an
+/// earlier session. Said once per game, with both addresses, since the
+/// symptom looks like a broken game decoder.
+#[derive(Default)]
+struct Producers {
+    seen: Vec<(&'static str, std::net::SocketAddr)>,
+    warned: Vec<&'static str>,
+}
+
+impl Producers {
+    fn note(&mut self, game: &'static str, peer: std::net::SocketAddr) {
+        if self.seen.contains(&(game, peer)) {
+            return;
+        }
+        self.seen.push((game, peer));
+        let peers: Vec<String> =
+            self.seen.iter().filter(|(g, _)| *g == game).map(|(_, p)| p.to_string()).collect();
+        if peers.len() > 1 && !self.warned.contains(&game) {
+            self.warned.push(game);
+            eprintln!(
+                "logi-tf-sim: {game}: telemetry is arriving from {} senders ({}); each sends a \
+                 different part of it, so the lights and the screen will take turns. One of them \
+                 is a leftover: a dinput8 escape proxy in the game's folder, or a second relay. \
+                 Stop the extra one (logi-launch removes a stale proxy on the next start).",
+                peers.len(),
+                peers.join(", ")
+            );
+        }
+    }
+}
+
 /// Drain every pending datagram on `sock` through `parse`, keeping the
 /// newest sample that parsed.
 fn drain(
@@ -657,6 +693,7 @@ pub fn run(cfg: &Config) -> Result<()> {
     let pc_sock = bind(cfg.pcars_port)?;
     let bn_sock = bind(cfg.beamng_port)?;
     let mut relay_sock = open_relay(cfg.relay_port);
+    let mut producers = Producers::default();
     // TrueForce a game produced itself, captured from its SDK calls by the
     // proxy DLL and forwarded here. Separate from the telemetry sockets
     // because it is finished haptics rather than an input to synthesis: the
@@ -709,8 +746,9 @@ pub fn run(cfg: &Config) -> Result<()> {
         drain(&pc_sock, &mut buf, pcars::parse, &mut latest);
         drain(&bn_sock, &mut buf, |p| decoders.beamng.parse(p), &mut latest);
         if let Some(listener) = &relay_sock {
-            listener.drain(&mut buf, |pkt| {
+            listener.drain(&mut buf, |pkt, peer| {
                 if let Some(sample) = relay::parse(pkt) {
+                    producers.note(sample.0, peer);
                     latest = Some(sample);
                 }
             });
@@ -1406,6 +1444,22 @@ mod lights_only_tests {
     /// Zero at either level means no stream. Both levels matter: a driver
     /// who zeroes the master expects silence everywhere, and one who zeroes
     /// a single game expects it there.
+    #[test]
+    fn two_producers_for_one_game_are_reported_once() {
+        let mut p = Producers::default();
+        let a: std::net::SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        let b: std::net::SocketAddr = "127.0.0.1:40002".parse().unwrap();
+        p.note("acc", a);
+        p.note("acc", a);
+        assert!(p.warned.is_empty(), "one sender is fine");
+        p.note("assetto", b);
+        assert!(p.warned.is_empty(), "different games may have different senders");
+        p.note("acc", b);
+        assert_eq!(p.warned, vec!["acc"]);
+        p.note("acc", "127.0.0.1:40003".parse().unwrap());
+        assert_eq!(p.warned, vec!["acc"], "said once per game");
+    }
+
     #[test]
     fn zero_strength_wants_no_stream() {
         let quiet = Config { intensity: 0, ..Config::default() };

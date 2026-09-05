@@ -407,14 +407,33 @@ rpm_bridge_pid=""
 # The exact attribute paths this invocation wrote 1 to, one per line, so the
 # exit path can undo those and only those.
 merge_attrs=""
+# The proxy this invocation staged, if any, so the exit path takes it out
+# again. A proxy left behind keeps relaying the game's RPM on the next
+# start, alongside whatever that start's plan feeds the daemon with, and
+# two producers for one game make the lights and the screen take turns.
+staged_proxy=""
+# Whether a dinput8.dll is this project's escape proxy: it carries its own
+# environment-variable names, which no other dinput8 does.
+is_our_proxy() {
+	[ -f "$1" ] && grep -aq 'LOGI_ESCAPE_RELAY' "$1" 2>/dev/null
+}
+game_exe=$(printf '%s\n' "$@" | grep -m1 -e '\.exe$' || true)
+game_dir=""
+[ -n "$game_exe" ] && game_dir=$(dirname "$game_exe")
+if [ "$want_texture" != "merge" ] && [ -n "$game_dir" ] && \
+   is_our_proxy "$game_dir/dinput8.dll"; then
+	if rm -f "$game_dir/dinput8.dll" 2>/dev/null; then
+		say "removed a leftover dinput8 escape proxy from $game_dir (this game gets no texture merge, so it would only add a second telemetry sender)"
+	else
+		say "a leftover dinput8 escape proxy is in $game_dir and could not be removed; expect two telemetry senders"
+	fi
+fi
 if [ "$want_texture" = "merge" ] && \
    { [ "$have_tf_files" = "1" ] || [ -z "$prefix_root" ]; }; then
 	# The game's own directory, taken from the .exe in the command Steam
-	# hands us. A native Linux game or a bare test command has none, and
-	# then there is nowhere to stage the proxy: say so and move on.
-	game_exe=$(printf '%s\n' "$@" | grep -m1 -e '\.exe$' || true)
-	game_dir=""
-	[ -n "$game_exe" ] && game_dir=$(dirname "$game_exe")
+	# hands us (game_dir above). A native Linux game or a bare test
+	# command has none, and then there is nowhere to stage the proxy: say
+	# so and move on.
 	proxy_src=$(share_file dinput8-escape.dll || true)
 	if [ -n "$game_dir" ] && [ -d "$game_dir" ] && [ -r "$proxy_src" ]; then
 		# cmp, not a timestamp: Steam validation rewrites files and a
@@ -426,6 +445,7 @@ if [ "$want_texture" = "merge" ] && \
 				say "could not copy the dinput8 proxy into $game_dir"
 			fi
 		fi
+		is_our_proxy "$game_dir/dinput8.dll" && staged_proxy="$game_dir/dinput8.dll"
 		# Merge with whatever the user already set; never clobber it.
 		case "${WINEDLLOVERRIDES:-}" in
 		*dinput8*) ;;
@@ -864,6 +884,9 @@ if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_attrs" ] || \
    [ -n "$hidraw_granted" ] || [ -n "$helper_group_pid" ]; then
 	session_cleanup() {
 		[ -n "$rpm_bridge_pid" ] && kill "$rpm_bridge_pid" 2>/dev/null
+		if [ -n "$staged_proxy" ] && is_our_proxy "$staged_proxy"; then
+			rm -f "$staged_proxy" 2>/dev/null && say "dinput8 proxy removed from the game's directory"
+		fi
 		# The in-prefix helper is a wine process, and wine keeps the
 		# prefix's wineserver alive for as long as one runs. Leaving it
 		# behind therefore leaves Steam believing the game is still
