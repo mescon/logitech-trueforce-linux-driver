@@ -26,6 +26,27 @@ not fit is refused with a reason before anything is sent. The window
 also drew the pedal Sensitivity/Curve toggle on the screen row, a
 widget-kind collision; fixed, and a test now keeps the kinds distinct.
 
+**No power cycle to recover a latched wheel.** Logitech's TrueForce SDK
+can leave the wheel's engine latched after a session that ended without
+its teardown (a hard-killed or crashed game): the next SDK session loads
+but never streams, and steering and force go dead on track. Until now the
+only fix was a power cycle. A new `wheel_reset` sysfs attribute
+re-enumerates the wheel over USB from inside the driver (the teardown pair
+and a full init burst do not clear the latch; a re-enumeration does,
+measured on the RS50 in ACC, 2026-09-06), and `logi-launch` writes it
+before a TrueForce session, waits for the wheel to return, and carries on.
+`LOGI_TF_RESET=0` opts out. The attribute is user-writable through the
+existing udev rule, so the launcher needs no privilege.
+
+**Steer lock guidance for the TrueForce path.** A game running with
+TrueForce (raw HID on) reads the wheel over its full mechanical range,
+2700 on the RS50, regardless of the rotation set on the base or through
+`wheel_range`. Set the game's steer lock to the wheel's maximum and let the
+game apply each car's own ratio, the usual direct-drive setup; matching the
+base's number in the game is only correct on the non-TrueForce path. The
+sysfs reference, the game-setup notes and the wiki say so, so nobody copies
+the base-screen number into the game and gets an over-light ratio.
+
 **The rotation range is held against the SDK for the whole session.**
 Logitech's SDK pushes its own 90-degree operating range at start-up and
 again on a session restart, whether or not its rotation question is

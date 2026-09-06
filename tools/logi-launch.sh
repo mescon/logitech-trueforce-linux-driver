@@ -398,49 +398,90 @@ esac
 # The one sysfs device directory carrying that wheel's attributes, or empty
 # when none of the wanted product ids is attached (a G923 always lands here:
 # it has no texture merge to arm and no TrueForce engine to tear down).
-wheel_dir=""
-for d in /sys/bus/hid/devices/*046D:C2*; do
-	[ -e "$d/wheel_tf_merge" ] || continue
-	d_id="${d##*/}"			# 0003:046D:C276.0003
-	d_pid="${d_id#*:*:}"; d_pid="${d_pid%%.*}"
-	case " $wheel_pids " in
-	*" $d_pid "*) wheel_dir="$d"; break ;;
-	esac
-done
-[ -n "$wheel_dir" ] && say "acting on the wheel at $wheel_dir"
-
-# That wheel's force-feedback evdev node, for the helpers that would
-# otherwise take whichever eventN sorted first.
-#
-# --wheel already reaches the plan, the merge switch, the teardown and
-# logi-tf-sim, and stopped here: logi-ffb picked its own device by scanning
-# for the first node that looks like a wheel. On a two-wheel rig that is a
-# coin toss, and the one selection this script had already made was right
-# there. Scoped by USB device (the physical parent both interfaces hang off)
-# rather than by name, which is the same test logi-wheel-core's
-# `discover_wheel_input_under` makes.
-wheel_event=""
-if [ -n "$wheel_dir" ]; then
-	# ../.. from the HID device directory is the USB device: the wheel's
-	# interfaces (hidraw here, input there) are siblings under it.
-	wheel_usb=$(cd "$wheel_dir/../.." 2>/dev/null && pwd -P) || wheel_usb=""
-	for e in /sys/class/input/event*; do
-		[ -d "$e/device" ] || continue
-		[ -n "$wheel_usb" ] || break
-		e_real=$(cd "$e/device" 2>/dev/null && pwd -P) || continue
-		case "$e_real" in
-		"$wheel_usb"/*) ;;
-		*) continue ;;
+# Resolve the wheel's sysfs dir, USB device and force-feedback node into
+# globals. A function because a TrueForce reset (below) re-enumerates the
+# wheel and changes its hid ids, so this runs again after one.
+resolve_wheel() {
+	wheel_dir=""
+	for d in /sys/bus/hid/devices/*046D:C2*; do
+		[ -e "$d/wheel_tf_merge" ] || continue
+		d_id="${d##*/}"			# 0003:046D:C276.0003
+		d_pid="${d_id#*:*:}"; d_pid="${d_pid%%.*}"
+		case " $wheel_pids " in
+		*" $d_pid "*) wheel_dir="$d"; break ;;
 		esac
-		# Force feedback, not the wheel's keyboard-like sibling nodes.
-		e_ff=$(cat "$e/device/capabilities/ff" 2>/dev/null || true)
-		case "$e_ff" in
-		""|0) continue ;;
-		esac
-		wheel_event="${e##*/}"
-		break
 	done
-	[ -n "$wheel_event" ] && say "the wheel's force-feedback node is $wheel_event"
+	[ -n "$wheel_dir" ] && say "acting on the wheel at $wheel_dir"
+
+	# That wheel's force-feedback evdev node, for the helpers that would
+	# otherwise take whichever eventN sorted first.
+	#
+	# --wheel already reaches the plan, the merge switch, the teardown and
+	# logi-tf-sim, and stopped here: logi-ffb picked its own device by scanning
+	# for the first node that looks like a wheel. On a two-wheel rig that is a
+	# coin toss, and the one selection this script had already made was right
+	# there. Scoped by USB device (the physical parent both interfaces hang off)
+	# rather than by name, which is the same test logi-wheel-core's
+	# `discover_wheel_input_under` makes.
+	wheel_event=""
+	if [ -n "$wheel_dir" ]; then
+		# ../.. from the HID device directory is the USB device: the wheel's
+		# interfaces (hidraw here, input there) are siblings under it.
+		wheel_usb=$(cd "$wheel_dir/../.." 2>/dev/null && pwd -P) || wheel_usb=""
+		for e in /sys/class/input/event*; do
+			[ -d "$e/device" ] || continue
+			[ -n "$wheel_usb" ] || break
+			e_real=$(cd "$e/device" 2>/dev/null && pwd -P) || continue
+			case "$e_real" in
+			"$wheel_usb"/*) ;;
+			*) continue ;;
+			esac
+			# Force feedback, not the wheel's keyboard-like sibling nodes.
+			e_ff=$(cat "$e/device/capabilities/ff" 2>/dev/null || true)
+			case "$e_ff" in
+			""|0) continue ;;
+			esac
+			wheel_event="${e##*/}"
+			break
+		done
+		[ -n "$wheel_event" ] && say "the wheel's force-feedback node is $wheel_event"
+	fi
+}
+resolve_wheel
+
+# Clear a latched TrueForce engine before the game opens the SDK: a session
+# that ended without its teardown (a hard-killed or crashed game) can leave
+# the wheel latched so the next SDK session loads but never streams, and
+# steering and force go dead on track. Re-enumerating the wheel over USB
+# clears it (wheel_reset does that from inside the driver; proven on the
+# RS50 in ACC 2026-09-06, where the teardown pair and a full init burst did
+# not recover it but a re-enumeration did). Native-TrueForce sessions only
+# (raw HID granted), and off with LOGI_TF_RESET=0.
+if [ "${LOGI_TF_RESET:-1}" = "1" ] && [ -n "$hidraw_granted" ] && \
+   [ -n "$wheel_dir" ] && [ -w "$wheel_dir/wheel_reset" ]; then
+	old_wheel_dir="$wheel_dir"
+	if echo 1 > "$wheel_dir/wheel_reset" 2>/dev/null; then
+		say "reset the wheel to clear any latched TrueForce engine (LOGI_TF_RESET=0 to skip)"
+		# The old sysfs dir disappears on re-enumeration; a fresh one
+		# appears. Bounded (~10s) so a wheel that never returns does not
+		# hang the launch - the game then starts against whatever is there.
+		waited=0
+		while [ "$waited" -lt 100 ] && [ -e "$old_wheel_dir/wheel_reset" ]; do
+			sleep 0.1; waited=$((waited + 1))
+		done
+		waited=0
+		while :; do
+			resolve_wheel
+			{ [ -n "$wheel_dir" ] && [ "$wheel_dir" != "$old_wheel_dir" ]; } && break
+			[ "$waited" -ge 100 ] && break
+			sleep 0.1; waited=$((waited + 1))
+		done
+		if [ -n "$wheel_dir" ] && [ "$wheel_dir" != "$old_wheel_dir" ]; then
+			say "the wheel is back after the reset ($wheel_dir)"
+		else
+			say "the wheel did not re-enumerate in time; starting anyway"
+		fi
+	fi
 fi
 
 # Whether the SDK shim relays the game's own TrueForce to logi-tf-sim.

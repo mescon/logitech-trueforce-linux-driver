@@ -11777,6 +11777,42 @@ static ssize_t wheel_led_apply_store(struct device *dev, struct device_attribute
 static DEVICE_ATTR_WO(wheel_led_apply);
 
 /*
+ * wheel_reset: write 1 to re-enumerate the wheel over USB, the software
+ * equivalent of unplugging and replugging it. Logitech's TrueForce SDK
+ * can leave the wheel's engine latched after a session that ended without
+ * its teardown (a hard-killed or crashed game): the next SDK session opens
+ * but never streams, and the wheel's DirectInput steering and force go
+ * dead on track. A power cycle clears it; so does this, without reaching
+ * behind the desk (issue trail: the RS50 in ACC, 2026-09-06, where a USB
+ * re-enumeration recovered a latched wheel that the teardown pair and a
+ * full init burst did not). The reset is queued to a workqueue, so the
+ * write returns first and the driver re-probes cleanly; the udev rule
+ * already makes this attribute user-writable, so logi-launch can clear a
+ * latch before a TrueForce session with no privilege.
+ */
+static ssize_t wheel_reset_store(struct device *dev, struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct hid_device *hid = to_hid_device(dev);
+	bool go;
+	int ret;
+
+	ret = kstrtobool(buf, &go);
+	if (ret)
+		return ret;
+	if (!go)
+		return count;
+	if (!hid_is_usb(hid))
+		return -ENOTSUPP;
+
+	dd_info(hid,
+		"wheel reset: re-enumerating the USB device (clears a latched TrueForce engine without a power cycle)\n");
+	usb_queue_reset_device(to_usb_interface(hid->dev.parent));
+	return count;
+}
+static DEVICE_ATTR_WO(wheel_reset);
+
+/*
  * wheel_led_effect - select LED effect mode (1-5)
  * 1=Inside→Out, 2=Outside→In, 3=Right→Left, 4=Left→Right, 5=Custom (static)
  * Must set to 5 for custom per-LED colors to be visible.
@@ -15069,6 +15105,7 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_led_direction.attr,
 	&dev_attr_wheel_led_colors.attr,
 	&dev_attr_wheel_led_apply.attr,
+	&dev_attr_wheel_reset.attr,
 	&dev_attr_wheel_led_brightness.attr,
 	&dev_attr_wheel_led_effect.attr,
 	&dev_attr_wheel_rev_level.attr,

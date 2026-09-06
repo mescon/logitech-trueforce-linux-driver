@@ -165,6 +165,15 @@ cat wheel_range
 echo 540 > wheel_range
 ```
 
+This governs the ordinary DirectInput/evdev axis and the soft endstop. It
+does **not** constrain the axis Logitech's TrueForce SDK exposes over raw
+HID: that path always presents the wheel's full mechanical range (2700 on
+the RS50), whatever this is set to. So in a game running with TrueForce
+(raw HID on), set the game's steer lock / rotation to the wheel's maximum
+and let the game apply each car's own ratio, which is the usual direct-drive
+setup; matching this value in the game is only correct on the non-TrueForce
+path.
+
 On the G PRO PID (`046d:c272` / `046d:c268`) - both real G PRO and
 RS50-in-compat - the standard HID++ range feature is not advertised
 at the index the native code expects; the driver falls back to
@@ -1009,6 +1018,24 @@ echo 1 > wheel_led_apply
 
 ---
 
+
+### wheel_reset
+**Access**: Write-only (`1`)
+
+Re-enumerates the wheel over USB from inside the driver, the software
+equivalent of unplugging and replugging it. Logitech's TrueForce SDK can
+leave the wheel's engine latched after a session that ended without its
+teardown (a hard-killed or crashed game): the next SDK session opens but
+never streams, and the wheel's steering and force go dead on track. A power
+cycle clears it; so does this, and `logi-launch` writes it before a
+TrueForce session so the ritual is unnecessary (`LOGI_TF_RESET=0` opts out).
+
+```bash
+echo 1 > wheel_reset   # the wheel drops off the bus and comes back in ~2 s
+```
+
+The reset is queued to a workqueue, so the write returns immediately and the
+driver re-probes cleanly; the hid ids change across it. USB wheels only.
 ## Pedal Configuration
 
 Pedal shaping is a 64-point `0x80A4` response curve, the same mechanism as
