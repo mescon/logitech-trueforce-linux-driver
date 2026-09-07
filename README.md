@@ -2,6 +2,14 @@
 
 # Logitech TrueForce Linux Driver
 
+[![Build](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/build.yml/badge.svg)](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/build.yml)
+[![Userspace CI](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/logi-wheel.yml/badge.svg)](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/logi-wheel.yml)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=mescon_logitech-rs50-linux-driver&metric=alert_status)](https://sonarcloud.io/dashboard?id=mescon_logitech-rs50-linux-driver)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=mescon_logitech-rs50-linux-driver&metric=security_rating)](https://sonarcloud.io/dashboard?id=mescon_logitech-rs50-linux-driver)
+[![Latest release](https://img.shields.io/github/v/release/mescon/logitech-trueforce-linux-driver)](https://github.com/mescon/logitech-trueforce-linux-driver/releases/latest)
+[![AUR version](https://img.shields.io/aur/version/logitech-trueforce-dkms?label=AUR)](https://aur.archlinux.org/packages/logitech-trueforce-dkms)
+[![License: GPL-2.0](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](https://github.com/mescon/logitech-trueforce-linux-driver/blob/master/COPYING)
+
 A Linux kernel driver and userspace tools for three Logitech racing wheels:
 the direct-drive **RS50** and **G PRO Racing Wheel**, and the gear-driven
 **G923**. It brings force feedback, TrueForce haptics, a live RPM rev-light
