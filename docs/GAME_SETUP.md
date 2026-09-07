@@ -54,8 +54,8 @@ instead of wrapping it.
 |---|---|---|---|---|
 | American Truck Simulator * | Native Linux | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
 | Assetto Corsa (original) | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
-| Assetto Corsa Competizione | Proton | TrueForce shim | Install the shim<br>`PROTON_ENABLE_HIDRAW=1 %command%` | Turn on simulated TrueForce<br>and leave `PROTON_ENABLE_HIDRAW` unset |
-| Assetto Corsa EVO (early access) | Proton | TrueForce shim | Install the shim<br>`PROTON_ENABLE_HIDRAW=1 %command%` | Turn on simulated TrueForce<br>and leave `PROTON_ENABLE_HIDRAW` unset |
+| Assetto Corsa Competizione | Proton | TrueForce shim | Install the shim<br>`logi-launch %command%` | Turn on simulated TrueForce<br>and leave `PROTON_ENABLE_HIDRAW` unset |
+| Assetto Corsa EVO (early access) | Proton | TrueForce shim | Install the shim<br>`logi-launch %command%` | Turn on simulated TrueForce<br>and leave `PROTON_ENABLE_HIDRAW` unset |
 | Assetto Corsa Rally (early access) * | Proton | Native FFB | Nothing to do | Nothing to do |
 | Automobilista 2 | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
 | BeamNG.drive * | Native Linux | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
@@ -71,14 +71,14 @@ instead of wrapping it.
 | Gran Turismo 7 | Not on Linux | Not on Linux | - | - |
 | GRID (2019) | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
 | GRID Legends | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
-| iRacing * | Proton | logi-ffb | Launch via logi-ffb<br>`logi-ffb %command%` | Launch via logi-ffb<br>`logi-ffb %command%` |
+| iRacing * | Proton | logi-ffb | DirectInput force feedback<br>`logi-launch %command%` | DirectInput force feedback<br>`logi-launch %command%` |
 | KartKraft * | Proton | Native FFB | Nothing to do | Nothing to do |
-| Le Mans Ultimate | Proton | logi-ffb | Launch via logi-ffb<br>`logi-ffb %command%` | Launch via logi-ffb<br>`logi-ffb %command%` |
+| Le Mans Ultimate | Proton | logi-ffb | DirectInput force feedback<br>`logi-launch %command%` | DirectInput force feedback<br>`logi-launch %command%` |
 | Need for Speed: Shift | Proton | Native FFB | Nothing to do | Nothing to do |
 | Project CARS 2 | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
-| RaceRoom Racing Experience * | Proton | logi-ffb | Launch via logi-ffb<br>`logi-ffb %command%` | Launch via logi-ffb<br>`logi-ffb %command%` |
+| RaceRoom Racing Experience * | Proton | logi-ffb | DirectInput force feedback<br>`logi-launch %command%` | DirectInput force feedback<br>`logi-launch %command%` |
 | Rennsport * | Proton | Native FFB | Nothing to do | Nothing to do |
-| rFactor 2 | Proton | logi-ffb | Launch via logi-ffb<br>`logi-ffb %command%` | Launch via logi-ffb<br>`logi-ffb %command%` |
+| rFactor 2 | Proton | logi-ffb | DirectInput force feedback<br>`logi-launch %command%` | DirectInput force feedback<br>`logi-launch %command%` |
 | Richard Burns Rally * | Proton | Native FFB | Nothing to do | Nothing to do |
 | TOCA Race Driver 3 | Proton | Native FFB | Nothing to do | Nothing to do |
 | Wreckfest | Proton | Native FFB | Nothing to do | Nothing to do |

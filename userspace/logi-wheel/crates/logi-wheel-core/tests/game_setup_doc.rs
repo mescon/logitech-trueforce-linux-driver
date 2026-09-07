@@ -50,12 +50,17 @@ fn recipe_cell(g: &GameCompat, caps: WheelCaps) -> String {
     }
     let action = match g.setup_action(caps) {
         SetupAction::InstallShim => "Install the shim",
-        SetupAction::UseLogiFfb => "Launch via logi-ffb",
+        SetupAction::UseLogiFfb => "DirectInput force feedback",
         SetupAction::SimulatedTrueForce => "Turn on simulated TrueForce",
         SetupAction::WorksOutOfBox => "Nothing to do",
     };
+    // The one launch command is always `logi-launch %command%`: it works out
+    // raw HID, the logi-ffb proxy, the relay and the daemon per game, so the
+    // table never shows the raw option (a bare PROTON_ENABLE_HIDRAW is unsafe
+    // without the proxy the launcher stages, and a bare logi-ffb loses the
+    // telemetry). A game that needs no launcher at all shows only the action.
     match g.launch_options(caps) {
-        Some(opts) => format!("{action}<br>`{opts}`"),
+        Some(_) => format!("{action}<br>`logi-launch %command%`"),
         None => action.to_string(),
     }
 }
@@ -269,9 +274,14 @@ fn the_two_wheel_columns_actually_differ_for_sdk_titles() {
     let dd = recipe_cell(acc, WheelCaps { sdk_trueforce: true });
     let classic = recipe_cell(acc, WheelCaps { sdk_trueforce: false });
     assert_ne!(dd, classic);
-    assert!(dd.contains("PROTON_ENABLE_HIDRAW=1"), "{dd}");
-    // The hazard is the assignment, not the name: this cell mentions the
-    // variable precisely in order to say to leave it alone.
+    // The direct-drive column installs the shim and launches through
+    // logi-launch; it never shows a bare PROTON_ENABLE_HIDRAW, which is
+    // unsafe without the proxy the launcher stages (an RS50 in ACC,
+    // 2026-09-07).
+    assert!(dd.contains("Install the shim") && dd.contains("logi-launch %command%"), "{dd}");
+    assert!(!dd.contains("PROTON_ENABLE_HIDRAW"), "{dd}");
+    // The G923 column names the route that works and says to leave the
+    // variable alone; the hazard is the assignment, not the name.
     assert!(!classic.contains("PROTON_ENABLE_HIDRAW=1"), "{classic}");
     assert!(classic.contains("unset"), "{classic}");
     assert!(
