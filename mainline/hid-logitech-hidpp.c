@@ -5948,7 +5948,8 @@ struct hidpp_dd_ff_data {
 	unsigned int pos_offset;	/* bit offset into the payload */
 	unsigned int pos_bits;		/* 0: no X usage in pos_report */
 	u16 wheel_pos_prev;		/* previous sample (timer-local) */
-	s32 wheel_vel;			/* encoder delta between consecutive timer ticks */
+	u16 wheel_hold_ticks;		/* ticks since wheel_pos last changed (see the timer) */
+	s32 wheel_vel;			/* encoder counts per timer tick, held between position reports */
 	s32 wheel_vel_prev;
 	s32 wheel_accel;
 	bool wheel_state_primed;	/* false until the timer has seen two samples */
@@ -6543,6 +6544,14 @@ static bool hidpp_dd_foreign_stream_active(struct hidpp_dd_ff_data *ff)
  * Timer callback - sends continuous force updates to the wheel.
  * Direct-drive wheels require periodic force commands to maintain FFB effect.
  */
+/*
+ * Ticks without a new position before the held velocity is dropped to
+ * zero: 8 ms, three report periods of the slowest wheel this engine
+ * drives (the G923 at ~400 Hz), so a pause in reports reads as a stop
+ * only once it is longer than any gap a moving wheel produces.
+ */
+#define HIDPP_DD_VEL_HOLD_TICKS	8
+
 static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 {
 	struct hidpp_dd_ff_data *ff = container_of(t, struct hidpp_dd_ff_data, effect_timer);
@@ -6571,17 +6580,46 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 	cur_pos = READ_ONCE(ff->wheel_pos);
 	if (!ff->wheel_state_primed) {
 		ff->wheel_pos_prev = cur_pos;
+		ff->wheel_hold_ticks = 0;
 		ff->wheel_vel = 0;
 		ff->wheel_vel_prev = 0;
 		ff->wheel_accel = 0;
 		ff->wheel_state_primed = true;
+	} else if (cur_pos == ff->wheel_pos_prev) {
+		/*
+		 * No new position this tick. A G923 reports position at
+		 * about 400 Hz against this 1 kHz timer, so the plain
+		 * per-tick delta read as a full step on one tick and zero
+		 * on the next: a 400 to 500 Hz square wave in velocity, and
+		 * through DAMPER, FRICTION and INERTIA a torque that
+		 * zigzagged by a third of full scale every packet (issue
+		 * #85, the motor whine when turning a still car's wheel;
+		 * captured on the wire). Hold the last velocity across the
+		 * gap instead, and let it go to zero once the gap is long
+		 * enough to mean the wheel really has stopped. A direct-drive
+		 * wheel reports every tick and never takes this branch.
+		 */
+		if (ff->wheel_hold_ticks < U16_MAX)
+			ff->wheel_hold_ticks++;
+		if (ff->wheel_hold_ticks >= HIDPP_DD_VEL_HOLD_TICKS) {
+			ff->wheel_accel = -ff->wheel_vel;
+			ff->wheel_vel_prev = ff->wheel_vel;
+			ff->wheel_vel = 0;
+		} else {
+			ff->wheel_accel = 0;
+		}
 	} else {
-		s32 new_vel = (s32)(s16)(cur_pos - ff->wheel_pos_prev);
+		s32 delta = (s32)(s16)(cur_pos - ff->wheel_pos_prev);
+		/* Spread the step over the ticks it took: counts per tick. */
+		s32 new_vel = delta / (s32)(ff->wheel_hold_ticks + 1);
 
+		if (!new_vel)
+			new_vel = delta > 0 ? 1 : -1;	/* keep the direction */
 		ff->wheel_accel = new_vel - ff->wheel_vel;
 		ff->wheel_vel_prev = ff->wheel_vel;
 		ff->wheel_vel = new_vel;
 		ff->wheel_pos_prev = cur_pos;
+		ff->wheel_hold_ticks = 0;
 	}
 	wheel_pos_signed = (s32)cur_pos - 0x8000;
 	wheel_vel = ff->wheel_vel;
@@ -9200,12 +9238,22 @@ static void hidpp_dd_ff_query_settings(struct hidpp_dd_ff_data *ff)
 		 * effect mode 5, so an animated effect the wheel restored from
 		 * its profile survives load (issue #29's sibling for effect).
 		 */
-		ret = hidpp_dd_lightsync_apply_slot(hidpp, ff, ff->led_active_slot,
-						    false);
-			if (ret)
-				dd_warn(hid, "Failed to apply initial LED config: %d\n", ret);
-			else
-				dd_dbg(hid, "Initial LED configuration applied\n");
+			if (ff->idx_rgb_config == HIDPP_DD_FEATURE_NOT_FOUND) {
+				/*
+				 * A rev strip without RGB zones (the G923 Xbox
+				 * edition): nothing to apply, and not a failure.
+				 * Logged as a warning, this read as "the LEDs
+				 * failed" to two owners whose strips were fine.
+				 */
+				dd_info(hid, "no RGB zone config on this wheel (0x807B); the rev strip is unaffected\n");
+			} else {
+				ret = hidpp_dd_lightsync_apply_slot(hidpp, ff,
+						ff->led_active_slot, false);
+				if (ret)
+					dd_warn(hid, "Failed to apply initial LED config: %d\n", ret);
+				else
+					dd_dbg(hid, "Initial LED configuration applied\n");
+			}
 		}
 	}
 }
