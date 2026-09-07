@@ -8485,8 +8485,20 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 		}
 		WRITE_ONCE(ff->range, live);
 		dd_info(hid,
-			"G923 (Xbox): rotation range %u degrees, read and set through 0x8123 (index 0x%02x)\n",
+			"rotation range %u degrees, read and set through 0x8123 (index 0x%02x)\n",
 			live, ff->idx_g920_ff);
+
+		/*
+		 * Same feature for the overall force strength: this wheel has
+		 * no strength feature and no compat one either, so the write
+		 * below used to fail the same way (issue #82). Seed the cache
+		 * from GET_GLOBAL_GAINS, as g920_get_config does.
+		 */
+		if (ff->idx_g920_ff != HIDPP_DD_FEATURE_NOT_FOUND &&
+		    hidpp_send_fap_command_sync(hidpp, ff->idx_g920_ff,
+						HIDPP_FF_GET_GLOBAL_GAINS, NULL, 0,
+						&response) == 0)
+			ff->strength = get_unaligned_be16(&response.fap.params[0]);
 	}
 
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_STRENGTH, &ff->idx_strength);
@@ -9996,7 +10008,21 @@ static ssize_t wheel_strength_store(struct device *dev, struct device_attribute 
 	/* Convert percentage to 0-65535 range */
 	value = (strength * 65535) / 100;
 
-	if (ff->idx_strength == HIDPP_DD_FEATURE_NOT_FOUND) {
+	if (ff->idx_g920_ff != HIDPP_DD_FEATURE_NOT_FOUND) {
+		/*
+		 * G923 Xbox edition: the global gain of the classic feature,
+		 * the same write hidpp_ff_set_gain makes on the default path
+		 * (gain, then two zero boost bytes).
+		 */
+		u8 gain[4] = { (value >> 8) & 0xFF, value & 0xFF, 0, 0 };
+
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_g920_ff,
+						  HIDPP_FF_SET_GLOBAL_GAINS,
+						  gain, sizeof(gain), &response);
+		ret = hidpp_errno(hid, ret, "set strength (0x8123)");
+		if (ret)
+			return ret;
+	} else if (ff->idx_strength == HIDPP_DD_FEATURE_NOT_FOUND) {
 		/* Compat-mode fallback: same encoding as native (Nm * 8192
 		 * scale, capped at u16 max), different feature index. See
 		 * docs/HIDPP_DD_PROTOCOL_SPECIFICATION.md section 5.1. */
