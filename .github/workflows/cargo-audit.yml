@@ -1,0 +1,26 @@
+name: cargo-audit
+# Fails if any Rust dependency has a known advisory in the RustSec database.
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'userspace/logi-wheel/**/Cargo.toml'
+      - 'userspace/logi-wheel/Cargo.lock'
+      - '.github/workflows/cargo-audit.yml'
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: '17 4 * * 1'
+jobs:
+  audit:
+    name: Audit dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: cargo audit
+        working-directory: userspace/logi-wheel
+        run: cargo audit

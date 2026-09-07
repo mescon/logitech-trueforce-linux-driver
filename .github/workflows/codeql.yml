@@ -1,0 +1,36 @@
+name: CodeQL
+# Static security analysis of the kernel C. The Rust userspace is covered by
+# cargo-audit (dependency advisories), clippy and SonarCloud; c-cpp is where
+# CodeQL adds the most for a driver. build-mode none extracts the source
+# without a kernel build, so this needs no headers.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: '27 3 * * 1'
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: c-cpp
+            build-mode: none
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
