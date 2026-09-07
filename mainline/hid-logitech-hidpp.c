@@ -5828,6 +5828,7 @@ struct hidpp_dd_ff_data {
 	u8 idx_calibrate;		/* Feature index for centre calibration (G Pro sub-device 0x05, page 0x812C) */
 	u8 calibrate_dev_idx;		/* HID++ device index used for calibrate sends (0x05 on G Pro) */
 	u8 idx_compat_angle;		/* Compat-mode steering angle (HID++ feature 0x8138). Discovered lazily by hidpp_dd_compat_set_range. */
+	u8 idx_g920_ff;			/* G923 Xbox edition only: the classic force-feedback feature (0x8123), where that wheel keeps its rotation range (GET/SET_APERTURE). NOT_FOUND on every other wheel. */
 	u8 idx_compat_strength;		/* Compat-mode FFB strength (HID++ feature 0x8136). Discovered lazily by hidpp_dd_compat_set_strength. */
 	u8 idx_compat_trueforce;	/* Compat-mode TRUEFORCE strength (HID++ feature 0x8139, fn 3). Discovered lazily by hidpp_dd_compat_set_trueforce. */
 	u8 idx_compat_damping;		/* Compat-mode damping (HID++ feature 0x8133, fn 1; verified at fallback idx 0x14). Discovered lazily by hidpp_dd_compat_set_damping. */
@@ -7905,12 +7906,18 @@ static void hidpp_dd_ff_range_readback(struct hidpp_dd_ff_data *ff)
 	u16 hw_range, cached;
 	int ret;
 
-	if (ff->idx_range == HIDPP_DD_FEATURE_NOT_FOUND)
-		return;
-
-	ret = hidpp_send_fap_command_sync(hidpp, ff->idx_range,
-					  HIDPP_DD_HIDPP_FN_GET, params, 0,
-					  &response);
+	if (ff->idx_g920_ff != HIDPP_DD_FEATURE_NOT_FOUND) {
+		/* G923 Xbox edition: same big-endian pair, from 0x8123 */
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_g920_ff,
+						  HIDPP_FF_GET_APERTURE, NULL, 0,
+						  &response);
+	} else {
+		if (ff->idx_range == HIDPP_DD_FEATURE_NOT_FOUND)
+			return;
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_range,
+						  HIDPP_DD_HIDPP_FN_GET, params, 0,
+						  &response);
+	}
 	if (ret)
 		return;
 
@@ -8439,12 +8446,48 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	ff->idx_compat_trueforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_compat_damping = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_compat_filter = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_g920_ff = HIDPP_DD_FEATURE_NOT_FOUND;
 
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_RANGE, &ff->idx_range);
 	if (ret == 0)
 		dd_dbg(hid, "Range feature at index 0x%02x\n", ff->idx_range);
 	else if (ret != -ENOENT)
 		dd_dbg(hid, "Range feature lookup failed: %d\n", ret);
+
+	/*
+	 * The G923 Xbox edition keeps its rotation range inside the classic
+	 * force-feedback feature (0x8123, GET_APERTURE / SET_APERTURE). It
+	 * has neither the direct-drive range feature above nor the compat
+	 * one, and answers HID++ error 0x06 when the compat fallback index
+	 * is tried on it, so under the force engine this data used to hold
+	 * the direct-drive default of 1080 and every write failed: the apps
+	 * showed a range the wheel never had and could not change it
+	 * (issue #82). Resolve 0x8123 here and read the real range from it;
+	 * hidpp_dd_set_range_hw and hidpp_dd_ff_range_readback use the same
+	 * index. The read is the one g920_get_config makes on the classic
+	 * path, which this wheel answers at probe (900 on every reporter's
+	 * wheel so far).
+	 */
+	if (hid->product == USB_DEVICE_ID_LOGITECH_G923_XBOX_WHEEL) {
+		struct hidpp_report response;
+		u16 live = 900;	/* gear-driven default */
+
+		ret = hidpp_root_get_feature(hidpp, HIDPP_PAGE_G920_FORCE_FEEDBACK,
+					     &ff->idx_g920_ff);
+		if (ret == 0 &&
+		    hidpp_send_fap_command_sync(hidpp, ff->idx_g920_ff,
+						HIDPP_FF_GET_APERTURE, NULL, 0,
+						&response) == 0) {
+			u16 rd = get_unaligned_be16(&response.fap.params[0]);
+
+			if (rd >= 180 && rd <= 900)
+				live = rd;
+		}
+		WRITE_ONCE(ff->range, live);
+		dd_info(hid,
+			"G923 (Xbox): rotation range %u degrees, read and set through 0x8123 (index 0x%02x)\n",
+			live, ff->idx_g920_ff);
+	}
 
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_STRENGTH, &ff->idx_strength);
 	if (ret == 0)
@@ -9786,7 +9829,25 @@ static int hidpp_dd_set_range_hw(struct hidpp_dd_ff_data *ff, int range)
 	u8 params[3];
 	int ret;
 
-	if (ff->idx_range == HIDPP_DD_FEATURE_NOT_FOUND) {
+	if (ff->idx_g920_ff != HIDPP_DD_FEATURE_NOT_FOUND) {
+		/*
+		 * G923 Xbox edition: the range lives in 0x8123 (see
+		 * hidpp_dd_discover_settings_features), with the classic
+		 * path's bounds of 180 to 900 degrees. This is also the
+		 * write that undoes the SDK's session-start range push on
+		 * that wheel (tm_restore_work), which the compat path below
+		 * could never do there (HID++ error 0x06, issue #82).
+		 */
+		range = clamp(range, 180, 900);
+		params[0] = (range >> 8) & 0xFF;
+		params[1] = range & 0xFF;
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_g920_ff,
+						  HIDPP_FF_SET_APERTURE, params, 2,
+						  &response);
+		ret = hidpp_errno(hidpp->hid_dev, ret, "set range (0x8123)");
+		if (ret)
+			return ret;
+	} else if (ff->idx_range == HIDPP_DD_FEATURE_NOT_FOUND) {
 		/*
 		 * Compat-mode fallback: the standard 0x812F-style range
 		 * feature is not advertised when the RS50 enumerates as a
@@ -9872,7 +9933,8 @@ static ssize_t wheel_range_store(struct device *dev, struct device_attribute *at
 	 * subsequent re-arm.
 	 */
 	WRITE_ONCE(ff->tm_restore_gen, READ_ONCE(ff->tm_restore_gen) + 1);
-	dd_info(hid, "Rotation range set to %d degrees\n", range);
+	/* ff->range, not the request: hidpp_dd_set_range_hw may clamp it further */
+	dd_info(hid, "Rotation range set to %u degrees\n", READ_ONCE(ff->range));
 	return count;
 }
 

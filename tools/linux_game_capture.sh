@@ -131,7 +131,8 @@ snapshot() {
 		date -u +"%Y-%m-%dT%H:%M:%SZ"
 		echo
 		echo "=== wheel sysfs (relevant attributes) ==="
-		for attr in wheel_profile wheel_mode wheel_range wheel_strength \
+		for attr in wheel_profile wheel_mode wheel_range wheel_range_restore \
+			    range range_restore wheel_strength \
 			    wheel_damping wheel_ffb_filter wheel_ffb_constant_sign \
 			    wheel_trueforce wheel_led_brightness; do
 			for f in /sys/class/hidraw/*/device/"$attr"; do
@@ -145,13 +146,15 @@ snapshot() {
 		lsusb -t || true
 		echo
 		echo "=== current modules ==="
-		lsmod | grep -E '^(hid_logitech_hidpp|usbhid|usbmon)' || true
+		lsmod | grep -E '^(hid_logitech_dd|hid_logitech_hidpp|usbhid|usbmon)' || true
 		echo
 		echo "=== modinfo version ==="
 		modinfo -F version hid-logitech-dd 2>/dev/null || echo "(unknown)"
 		echo
 		echo "=== recent wheel dmesg ==="
-		dmesg --since '60 seconds ago' 2>/dev/null | grep -E 'RS50|G PRO|hidpp|046d' | tail -30 || true
+		# Every tag this driver logs under, so a G923's lines are kept
+		# too: they went missing from a reporter's bundle (issue #81).
+		dmesg --since '60 seconds ago' 2>/dev/null | grep -E 'logitech-dd|hid_logitech_dd|RS50|G PRO|G923|hidpp|046d' | tail -40 || true
 	} > "$out"
 }
 

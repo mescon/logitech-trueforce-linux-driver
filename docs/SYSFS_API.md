@@ -165,6 +165,12 @@ cat wheel_range
 echo 540 > wheel_range
 ```
 
+On the G923 Xbox edition under `g923_xbox_dd_engine=1` the range is read
+from and written to the wheel's classic force-feedback feature (0x8123),
+the same one the default path uses, and is clamped to `180` to `900`: it
+is a gear-driven wheel. The attribute reports what the wheel answered at
+probe, not a direct-drive default.
+
 This governs the ordinary DirectInput/evdev axis and the soft endstop. It
 does **not** constrain the axis Logitech's TrueForce SDK exposes over raw
 HID: that path always presents the wheel's full mechanical range (2700 on

@@ -5,6 +5,23 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**G923 Xbox edition: the force engine reports and sets the real rotation
+range.** Under `g923_xbox_dd_engine=1` the driver started from the
+direct-drive default of 1080 without asking the wheel, and wrote the range
+through a feature that edition does not have, so both apps showed a range
+the wheel never had and could not change it (#82). The engine now reads
+the range from the wheel's classic force-feedback feature at probe and
+writes it there, clamped to 180 to 900 degrees. The same write now runs
+after Logitech's SDK pushes its own range at session start, where on that
+wheel it used to fail every time.
+
+**Capture bundles keep a G923's driver lines.** The Linux capture script
+filtered dmesg for the direct-drive tags only, so a G923 owner's bundle
+came back with an empty log and no range values; it now keeps every tag
+this driver logs under and reads the classic path's `range` attributes too.
+
 ## 0.40.0 - 2026-09-07
 
 **A screen editor in both apps, presets first.** On the lights page the
