@@ -17,6 +17,28 @@ writes it there, clamped to 180 to 900 degrees. The same write now runs
 after Logitech's SDK pushes its own range at session start, where on that
 wheel it used to fail every time.
 
+**G923 Xbox edition: the force engine sets the strength through the same
+feature.** The force-feedback slider failed the same way as the range
+under the engine; it now writes the classic feature's global gain, seeded
+from the wheel at load (#82).
+
+**A wedged wheel is reported even when it answers with errors.** The
+detector took any HID++ error reply as a healthy answer, so a wheel that
+mixed timeouts with refusals of every effect download never reached the
+warning; fifteen minutes of dead force went unreported (#72). Error
+replies now leave the counters alone.
+
+**No motor whine on a slowly reporting wheel.** The engine took velocity
+as the position change per millisecond; a G923 reports position every
+2.5 ms, so damping and friction saw an on-off velocity and the torque
+zigzagged by a third of full scale on every packet, audible as a whine
+when turning the wheel of a still car (#85). Velocity is now held between
+reports. Direct-drive wheels report every millisecond and are unaffected.
+
+**No false LED failure on the Xbox edition.** The probe warned about a
+failed LED config on a wheel that has a rev strip but no RGB zones; it
+now says so once, as information (#72, #76).
+
 **Capture bundles keep a G923's driver lines.** The Linux capture script
 filtered dmesg for the direct-drive tags only, so a G923 owner's bundle
 came back with an empty log and no range values; it now keeps every tag
