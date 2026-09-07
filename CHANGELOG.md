@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.40.0 - 2026-09-07
 
 **A screen editor in both apps, presets first.** On the lights page the
 window's "Choose what to show..." opens a preview of the base's screen
@@ -93,7 +93,7 @@ Windows toolchain at hand.
 group, which exposed `wheel_rev_level` next to the five LED classdevs
 that actually drive its strip. The helper looks for the attribute
 first, so its levels went to the one this wheel ignores: haptics on,
-lights dark (#76). The attribute and the LIGHTSYNC ones, which the
+lights dark (#76, #79). The attribute and the LIGHTSYNC ones, which the
 wheel has no strip for, are hidden on that wheel, leaving the strip one
 owner.
 
@@ -109,7 +109,7 @@ and `setup.sh report` lists every copy found in a Steam library with
 whether it is the current build. The helper says so, once, when two
 senders feed one game.
 
-**Rev lights and the screen in ACC on a direct-drive wheel.** The
+**Rev lights and the screen in ACC on a direct-drive wheel (#77).** The
 launcher used to keep `logi-tf-sim` off for a title whose own TrueForce
 reaches the wheel (ACC, AC EVO on an RS50 or G PRO), so nothing fed the
 rev lights or the screen in those games. Now, where the relay can read
@@ -161,12 +161,14 @@ gate rejected every report and its conditions saw a wheel permanently
 centred and still. The axis is now located by usage in the parsed
 descriptor, cached per report layout, which works on both and on
 whatever the next wheel does. The lookup and its verification against
-evdev are the #72 reporter's.
+evdev are the #72 reporter's. On the G923 Xbox edition this is what
+feeds the centering and understeer force that was dead under the engine
+(#78).
 
 **The rev display runs even when the wheel refuses a stream.** A G923
 Xbox edition on the firmware force path cannot take a synthesised
 stream without losing force feedback, and the helper refused the session
-and retried into the same refusal with the lights dark (#76). It now
+and retried into the same refusal with the lights dark (#76, #79). It now
 drives the rev display for such a wheel and says why the haptics stay
 off; `g923_xbox_dd_engine=1` remains the way to have both.
 
