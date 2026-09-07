@@ -12,6 +12,8 @@ on:
     paths: ["userspace/logi-wheel/**", "tools/**", ".github/workflows/logi-wheel.yml"]
   pull_request:
     paths: ["userspace/logi-wheel/**", "tools/**", ".github/workflows/logi-wheel.yml"]
+permissions:
+  contents: read
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,7 +21,7 @@ jobs:
       run:
         working-directory: userspace/logi-wheel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install system dependencies (logi-wheel-gui)
         run: |
           sudo apt-get update
@@ -69,7 +71,7 @@ jobs:
       run:
         working-directory: userspace/logi-wheel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # The freshness check below walks each file's history. With the
           # default depth-1 snapshot every path dates to the same single
@@ -97,7 +99,7 @@ jobs:
       - name: Build the relay as it ships (relay-dist profile)
         run: cargo build --profile relay-dist --locked -p logi-tf-relay --target x86_64-pc-windows-gnu
       - name: Keep the freshly built relay as an artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: logi-tf-relay-${{ github.sha }}
           path: userspace/logi-wheel/target/x86_64-pc-windows-gnu/relay-dist/logi-tf-relay.exe
@@ -126,7 +128,7 @@ jobs:
   committed-dlls:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # The check walks each file's history; the default depth-1
           # snapshot would date every path to the same commit and wave

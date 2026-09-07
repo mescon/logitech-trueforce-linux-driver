@@ -11,12 +11,14 @@ on:
   pull_request:
     branches: [master, main]
 
+permissions:
+  contents: read
 jobs:
   checkpatch:
     name: Coding Style
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -51,7 +53,7 @@ jobs:
       image: ${{ matrix.image }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install build dependencies
         env:
@@ -97,7 +99,7 @@ jobs:
     # the effect-math one was written the day a torque-to-the-stop bug in
     # that code shipped and could have been a five-line test.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Texture synthesis
         run: make -C tests/texture-merge run
       - name: Effect maths
@@ -110,7 +112,7 @@ jobs:
       image: ubuntu:24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install dependencies
         run: |
@@ -149,7 +151,7 @@ jobs:
       image: ubuntu:24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install dependencies
         run: |
@@ -210,7 +212,7 @@ jobs:
       image: ubuntu:24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install dependencies
         run: |

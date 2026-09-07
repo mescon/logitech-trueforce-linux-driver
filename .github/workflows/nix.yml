@@ -35,6 +35,8 @@ on:
       - "udev/**"
       - "tools/**"
 
+permissions:
+  contents: read
 jobs:
   flake:
     runs-on: ubuntu-latest
@@ -42,7 +44,7 @@ jobs:
     # the container, with no shared cache between runs.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # The official Nix container rather than a third-party action: this
       # is the same command that verifies the flake by hand on a machine
       # without NixOS, so what CI checks and what a maintainer can
