@@ -785,10 +785,15 @@ static int __do_hidpp_send_message_sync(struct hidpp_device *hidpp,
  * timeout is the wheel saying nothing, and a fast -EIO/-EPIPE from the
  * submit is the same silence arriving sooner; a wedged wheel produces a
  * mix of both, so counting only timeouts let the fast ones reset the
- * count and print a false recovery. A HID++ error reply (ret > 0) is an
- * answer. Failures count only while consecutive, the warning fires once
- * per episode, and recovery is declared only after a run of answers,
- * since one stray reply in the middle of a dead wheel is not recovery.
+ * count and print a false recovery. A HID++ error reply (ret > 0) is
+ * neither: the wheel spoke, but a wedged G923 Xbox edition mixes
+ * timeouts with INVALID_ARGS refusals of every effect download and
+ * state change (issue #72, traced on the reporter's wheel: force dead
+ * for fifteen minutes, not one warning, because each refusal reset the
+ * run). So a refusal leaves both counters alone. Failures count only
+ * while consecutive, the warning fires once per episode, and recovery
+ * is declared only after a run of real answers, since one stray reply
+ * in the middle of a dead wheel is not recovery.
  *
  * The range-readback poll is exempt (sync_uncounted): some wheels never
  * answer it, and on those it is the only HID++ traffic between games, so
@@ -801,7 +806,9 @@ static void hidpp_note_sync_result(struct hidpp_device *hidpp, int ret)
 {
 	if (READ_ONCE(hidpp->sync_uncounted))
 		return;
-	if (ret >= 0) {
+	if (ret > 0)
+		return;
+	if (ret == 0) {
 		hidpp->sync_timeouts = 0;
 		if (!hidpp->unresponsive_warned)
 			return;
