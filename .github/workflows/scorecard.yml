@@ -7,12 +7,14 @@ on:
     - cron: '23 5 * * 1'
   push:
     branches: [master]
-permissions: read-all
+permissions:
+  contents: read
 jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       security-events: write
       id-token: write
     steps:

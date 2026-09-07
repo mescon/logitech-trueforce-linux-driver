@@ -18595,7 +18595,7 @@ static int hidpp_initialize_battery(struct hidpp_device *hidpp)
 	desc->properties = battery_props;
 	desc->num_properties = num_battery_props;
 	desc->get_property = hidpp_battery_get_property;
-	sprintf(battery->name, "hidpp_battery_%ld", n);
+	snprintf(battery->name, sizeof(battery->name), "hidpp_battery_%ld", n);
 	desc->name = battery->name;
 	desc->type = POWER_SUPPLY_TYPE_BATTERY;
 	desc->use_for_apm = 0;
