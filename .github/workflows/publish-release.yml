@@ -300,7 +300,11 @@ jobs:
           work="$(mktemp -d)"; cd "$work"
           osc checkout home:mescon logitech-trueforce-dkms
           cd home:mescon/logitech-trueforce-dkms
-          rm -f logitech-trueforce-linux-driver-*.tar.gz logi-wheel-vendor-*.tar.zst
+          # *-vendor-*.tar.zst, not logi-wheel-vendor-* : the vendor tarball was
+          # logi-dd-vendor-* before the 0.20.0 rename, and a copy of
+          # logi-dd-vendor-0.19.1.tar.zst outlived every release because the
+          # narrower glob never matched it. This catches any prefix.
+          rm -f logitech-trueforce-linux-driver-*.tar.gz *-vendor-*.tar.zst
           cp "$GITHUB_WORKSPACE/packaging-ref/packaging/obs/logitech-trueforce-dkms.spec" .
           cp "$GITHUB_WORKSPACE/packaging-ref/packaging/obs/_service" .
           cp "/tmp/logitech-trueforce-linux-driver-${VERSION}.tar.gz" .
