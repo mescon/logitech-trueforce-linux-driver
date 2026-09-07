@@ -459,27 +459,26 @@ resolve_wheel
 # (raw HID granted), and off with LOGI_TF_RESET=0.
 if [ "${LOGI_TF_RESET:-1}" = "1" ] && [ -n "$hidraw_granted" ] && \
    [ -n "$wheel_dir" ] && [ -w "$wheel_dir/wheel_reset" ]; then
-	old_wheel_dir="$wheel_dir"
 	if echo 1 > "$wheel_dir/wheel_reset" 2>/dev/null; then
 		say "reset the wheel to clear any latched TrueForce engine (LOGI_TF_RESET=0 to skip)"
-		# The old sysfs dir disappears on re-enumeration; a fresh one
-		# appears. Bounded (~10s) so a wheel that never returns does not
-		# hang the launch - the game then starts against whatever is there.
+		# usb_queue_reset_device is a fast in-place USB reset: it keeps the
+		# same hid ids and the sysfs dir may not even disappear, so the
+		# signal to wait on is the wheel answering again, not a new dir.
+		# Read wheel_range until it comes back (it briefly errors during the
+		# reset), bounded so a wheel that never returns does not hang the
+		# launch - the game then starts against whatever is there.
+		sleep 0.3
 		waited=0
-		while [ "$waited" -lt 100 ] && [ -e "$old_wheel_dir/wheel_reset" ]; do
-			sleep 0.1; waited=$((waited + 1))
-		done
-		waited=0
-		while :; do
+		while [ "$waited" -lt 80 ]; do
 			resolve_wheel
-			{ [ -n "$wheel_dir" ] && [ "$wheel_dir" != "$old_wheel_dir" ]; } && break
-			[ "$waited" -ge 100 ] && break
+			[ -n "$wheel_dir" ] && [ -r "$wheel_dir/wheel_range" ] && \
+				[ -n "$(cat "$wheel_dir/wheel_range" 2>/dev/null)" ] && break
 			sleep 0.1; waited=$((waited + 1))
 		done
-		if [ -n "$wheel_dir" ] && [ "$wheel_dir" != "$old_wheel_dir" ]; then
-			say "the wheel is back after the reset ($wheel_dir)"
+		if [ -n "$wheel_dir" ]; then
+			say "the wheel answered after the reset ($wheel_dir)"
 		else
-			say "the wheel did not re-enumerate in time; starting anyway"
+			say "the wheel did not come back in time; starting anyway"
 		fi
 	fi
 fi
