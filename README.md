@@ -4,10 +4,15 @@
 
 [![Build](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/build.yml/badge.svg)](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/build.yml)
 [![Userspace CI](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/logi-wheel.yml/badge.svg)](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/logi-wheel.yml)
+[![CodeQL](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/codeql.yml/badge.svg)](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/mescon/logitech-trueforce-linux-driver/badge)](https://securityscorecards.dev/viewer/?uri=github.com/mescon/logitech-trueforce-linux-driver)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=mescon_logitech-rs50-linux-driver&metric=alert_status)](https://sonarcloud.io/dashboard?id=mescon_logitech-rs50-linux-driver)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=mescon_logitech-rs50-linux-driver&metric=security_rating)](https://sonarcloud.io/dashboard?id=mescon_logitech-rs50-linux-driver)
+
 [![Latest release](https://img.shields.io/github/v/release/mescon/logitech-trueforce-linux-driver)](https://github.com/mescon/logitech-trueforce-linux-driver/releases/latest)
-[![AUR version](https://img.shields.io/aur/version/logitech-trueforce-dkms?label=AUR)](https://aur.archlinux.org/packages/logitech-trueforce-dkms)
+[![AUR](https://img.shields.io/aur/version/logitech-trueforce-dkms?label=AUR)](https://aur.archlinux.org/packages/logitech-trueforce-dkms)
+[![Fedora COPR](https://copr.fedorainfracloud.org/coprs/mescon/logitech-trueforce/package/logitech-trueforce-kmod/status_image/last_build.png)](https://copr.fedorainfracloud.org/coprs/mescon/logitech-trueforce/)
+[![openSUSE OBS](https://build.opensuse.org/projects/home:mescon/packages/logitech-trueforce-dkms/badge.svg?type=default)](https://build.opensuse.org/package/show/home:mescon/logitech-trueforce-dkms)
+[![Nix flake](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/nix.yml/badge.svg)](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/nix.yml)
 [![License: GPL-2.0](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](https://github.com/mescon/logitech-trueforce-linux-driver/blob/master/COPYING)
 
 A Linux kernel driver and userspace tools for three Logitech racing wheels:
