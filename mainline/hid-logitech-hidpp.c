@@ -6971,6 +6971,22 @@ static void hidpp_dd_ff_send_force(struct hidpp_dd_ff_data *ff, s32 force)
 		return;
 
 	/*
+	 * The direct-drive wheels apply wheel_strength in firmware to every
+	 * steering force this stream carries. The G923 Xbox edition has no
+	 * such feature: its global gain only scales the effects its own
+	 * engine plays, which this stream bypasses, so the slider did
+	 * nothing under the force engine (issue #86). Scale here instead,
+	 * after the game's gain and on the autocenter term too, which is
+	 * what the firmware does on the other wheels.
+	 */
+	if (ff->idx_g920_ff != HIDPP_DD_FEATURE_NOT_FOUND) {
+		u16 strength = READ_ONCE(ff->strength);
+
+		if (strength != 0xFFFF)
+			force = (s32)(((s64)force * strength) / 0xFFFF);
+	}
+
+	/*
 	 * Someone else owns the stream: publish this force for the
 	 * interceptor to write into their packets rather than sending a
 	 * packet of our own. Two writers do not share the endpoint, they
@@ -8544,6 +8560,27 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 						HIDPP_FF_GET_GLOBAL_GAINS, NULL, 0,
 						&response) == 0)
 			ff->strength = get_unaligned_be16(&response.fap.params[0]);
+
+		/*
+		 * The wheel powers up with its own centring spring on, and
+		 * the classic path's first act is to download a zero-strength
+		 * autocenter over it (g920_ff_set_autocenter). This engine
+		 * emulates autocenter in its stream and never did that, so
+		 * the firmware spring stayed on underneath: strongest with
+		 * the slider at 0, when the stream goes quiet and the
+		 * firmware has the motor to itself (issue #86). Same packet
+		 * as the classic path, once.
+		 */
+		if (ff->idx_g920_ff != HIDPP_DD_FEATURE_NOT_FOUND) {
+			u8 ac[HIDPP_AUTOCENTER_PARAMS_LENGTH] = {
+				[1] = HIDPP_FF_EFFECT_SPRING | HIDPP_FF_EFFECT_AUTOSTART,
+			};
+
+			if (hidpp_send_fap_command_sync(hidpp, ff->idx_g920_ff,
+							HIDPP_FF_DOWNLOAD_EFFECT,
+							ac, sizeof(ac), &response))
+				dd_warn(hid, "could not switch off the wheel's own centring spring\n");
+		}
 	}
 
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_STRENGTH, &ff->idx_strength);
