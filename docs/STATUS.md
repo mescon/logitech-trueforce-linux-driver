@@ -14,7 +14,7 @@ measured, which are argued, and which are hoped.
 | RS50 (`c276`, both editions) | yes, native path | yes, the game's own and simulated | full `wheel_*` surface | yes, and LIGHTSYNC colours |
 | G PRO (`c272`/`c268`) | yes, same path | yes | full surface | level-based, see below |
 | G923 PS (`c266`/`c267`) | yes, classic path | simulated only | **none** | yes, classic command |
-| G923 Xbox (`c26e`) | yes, HID++ 0x8123 by default; this driver's own engine with `g923_xbox_dd_engine=1` | simulated; alongside force only on the driver's engine | **none** | registered, unconfirmed |
+| G923 Xbox (`c26e`) | yes, HID++ 0x8123 by default; this driver's own engine with `g923_xbox_dd_engine=1` | simulated; alongside force only on the driver's engine | **none** | yes, follows revs on the engine (#72) |
 
 The Xbox editions of the RS50 (`c275`) and the G923 (`c26d`) boot speaking
 the console's own protocol, with no HID++ interface to bind. Both are
@@ -39,9 +39,16 @@ scale, and the engine's gain matches the firmware path to within the
 measurement's own noise, so the scaling needed no change. Under it the
 condition effects are fed the steering position as of this release (the
 axis is located by usage in the report descriptor rather than at the
-RS50's offset), though nobody has yet judged spring or damper on that
-wheel by feel; the rev lights stay on their own LED device,
-which speaks the command that wheel obeys rather than the direct-drive one.
+RS50's offset), and all four conditions were measured alive on a real
+unit in September 2026 (#72: spring returns to centre, damper, friction
+and inertia each slow a fixed push by a distinct, repeatable factor); the
+rev lights stay on their own LED device, which speaks the command that
+wheel obeys rather than the direct-drive one. Two owners found that this
+engine with raw HID off is the setup that gives force and simulated
+TrueForce together on that wheel (#72, #84); 0.40.1 taught it the wheel's
+real range and strength, its own strength scaling, the firmware centring
+spring, and the 2 ms position reports its velocity estimate had aliased
+against (#82, #85, #86).
 
 That wheel can also wedge after a stalled motor: HID++ commands fail,
 as a mix of timeouts and fast submit errors, while init has already
@@ -50,7 +57,9 @@ replugging the wheel recovers it, measured by its owner against an
 eight-minute control (#72); an earlier claim that only a power cycle did
 was withdrawn. The driver notices a run of transport failures and says
 so, once, in dmesg, with that recovery, and declares recovery only after
-a run of answers.
+a run of answers. A wedged wheel can also answer with HID++ errors rather
+than silence (traced in #72: every effect download refused as an invalid
+argument), and since 0.40.1 those no longer count as a healthy answer.
 
 Whether force feedback comes up at all on that wheel depends on its HID++
 answering while this driver is still in probe. A fix that keeps waiting

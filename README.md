@@ -294,11 +294,14 @@ which force feedback alone cannot do.
 confirmed on a real unit, and **rev lights**. Neither the forces nor the
 haptics existed for this wheel on Linux before this project.
 
-The rev lights are the one part not yet confirmed in a game: the strip has
-been lit on a real Xbox wheel, but nothing has driven it from live telemetry
-yet. It exposes the same five `::RPM1`..`::RPM5` LED
-devices the PlayStation edition does, so anything that drives those works
-here unchanged.
+The rev lights follow RPM in a game, confirmed by an owner in Assetto
+Corsa EVO. The strip exposes the same five `::RPM1`..`::RPM5` LED devices
+the PlayStation edition does, so anything that drives those works here
+unchanged. Two owners found that this wheel gives force feedback and
+simulated TrueForce together on the driver's own force engine
+(`g923_xbox_dd_engine=1`, raw HID off); the [G923 wiki
+page](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/G923)
+has that recipe.
 
 This edition ships in a console-only mode that Linux cannot use, and has to
 be switched into PC mode. The packages handle it: a udev rule does the switch
