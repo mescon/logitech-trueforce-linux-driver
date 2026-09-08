@@ -8582,16 +8582,14 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 			live, ff->idx_g920_ff);
 
 		/*
-		 * Same feature for the overall force strength: this wheel has
-		 * no strength feature and no compat one either, so the write
-		 * below used to fail the same way (issue #82). Seed the cache
-		 * from GET_GLOBAL_GAINS, as g920_get_config does.
+		 * The overall force strength stays at its 100% default here.
+		 * This wheel's global gain register (GET/SET_GLOBAL_GAINS) is
+		 * where the classic path lands a game's evdev FF_GAIN, so
+		 * seeding wheel_strength from it, as an earlier version did,
+		 * would have carried a game's or fftest's last gain (75% for
+		 * fftest) into every engine session as if the user had set it.
+		 * The engine applies FF_GAIN itself, per tick.
 		 */
-		if (ff->idx_g920_ff != HIDPP_DD_FEATURE_NOT_FOUND &&
-		    hidpp_send_fap_command_sync(hidpp, ff->idx_g920_ff,
-						HIDPP_FF_GET_GLOBAL_GAINS, NULL, 0,
-						&response) == 0)
-			ff->strength = get_unaligned_be16(&response.fap.params[0]);
 
 		/*
 		 * The wheel powers up with its own centring spring on, and
