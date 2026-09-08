@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.40.2 - 2026-09-08
 
 **Velocity from the real time between position reports.** The force
 engine measured the time between two reports by counting its own 1 ms
@@ -16,7 +16,14 @@ position now carries its arrival time and the velocity is the change
 over the measured interval. Replayed from the reporter's capture the
 worst torque step drops by a further four times, at no lag; replayed
 from an RS50 capture it is identical on 98% of ticks and only better on
-the rest.
+the rest. Confirmed gone by the reporter.
+
+**G923 Xbox edition: the strength slider no longer inherits a game's
+gain.** The engine seeded the slider at load from the wheel's global gain
+register, which is where the classic path lands a game's (or fftest's)
+force-feedback gain, so a session after one could run at that gain as if
+the user had set it. The slider now starts at 100% and the engine applies
+the game's gain itself.
 
 ## 0.40.1 - 2026-09-08
 
