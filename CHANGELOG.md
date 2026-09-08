@@ -35,6 +35,14 @@ zigzagged by a third of full scale on every packet, audible as a whine
 when turning the wheel of a still car (#85). Velocity is now held between
 reports. Direct-drive wheels report every millisecond and are unaffected.
 
+**G923 Xbox edition: the engine's strength slider works, and 0 autocenter
+means none.** The engine's force bypasses the firmware gain the strength
+slider wrote, so the slider did nothing; it now scales the force in the
+driver. And the wheel's own centring spring, which the classic path
+switches off first thing, stayed on underneath the engine, strongest with
+the slider at 0 when the engine's stream went quiet. The engine now
+switches it off at load (#86).
+
 **No false LED failure on the Xbox edition.** The probe warned about a
 failed LED config on a wheel that has a rev strip but no RGB zones; it
 now says so once, as information (#72, #76).
