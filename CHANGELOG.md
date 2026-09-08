@@ -5,6 +5,19 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**Velocity from the real time between position reports.** The force
+engine measured the time between two reports by counting its own 1 ms
+ticks; on a wheel reporting every 2.00 ms the count wobbles between 1, 2
+and 3 as the two drift past each other, doubling or halving the velocity
+at those reports, which was the whine that survived 0.40.1 (#85). Each
+position now carries its arrival time and the velocity is the change
+over the measured interval. Replayed from the reporter's capture the
+worst torque step drops by a further four times, at no lag; replayed
+from an RS50 capture it is identical on 98% of ticks and only better on
+the rest.
+
 ## 0.40.1 - 2026-09-08
 
 **G923 Xbox edition: the force engine reports and sets the real rotation

@@ -27,6 +27,7 @@
 #include <linux/fixp-arith.h>
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
+#include <linux/seqlock.h>
 #include <linux/version.h>
 /*
  * linux/unaligned.h was introduced in kernel 6.12, older kernels use asm/unaligned.h
@@ -5938,6 +5939,9 @@ struct hidpp_dd_ff_data {
 	 * inside the FFB timer tick from successive wheel_pos samples.
 	 */
 	u16 wheel_pos;			/* latest raw encoder position, 0..65535 */
+	ktime_t wheel_pos_ts;		/* when wheel_pos arrived; paired with it under wheel_pos_seq */
+	seqcount_t wheel_pos_seq;	/* keeps wheel_pos and wheel_pos_ts a matching pair across contexts */
+	ktime_t wheel_pos_prev_ts;	/* arrival time of wheel_pos_prev (timer-local) */
 	/*
 	 * Where the steering axis lives in the interface-0 input report,
 	 * looked up once per report layout from the parsed descriptor (see
@@ -6559,6 +6563,7 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 	s32 tf_sample[HIDPP_DD_TF_NEW_SAMPLES] = { 0 };
 	s32 wheel_pos_signed, wheel_vel, wheel_accel;
 	u16 cur_pos;
+	ktime_t cur_ts;
 	unsigned long flags, now;
 	bool any_playing;
 	bool any_texture = false;
@@ -6577,9 +6582,18 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 	 * the derivatives are stable. Two-sample priming avoids bogus
 	 * first-tick velocity spikes.
 	 */
-	cur_pos = READ_ONCE(ff->wheel_pos);
+	{
+		unsigned int seq;
+
+		do {
+			seq = read_seqcount_begin(&ff->wheel_pos_seq);
+			cur_pos = ff->wheel_pos;
+			cur_ts = ff->wheel_pos_ts;
+		} while (read_seqcount_retry(&ff->wheel_pos_seq, seq));
+	}
 	if (!ff->wheel_state_primed) {
 		ff->wheel_pos_prev = cur_pos;
+		ff->wheel_pos_prev_ts = cur_ts;
 		ff->wheel_hold_ticks = 0;
 		ff->wheel_vel = 0;
 		ff->wheel_vel_prev = 0;
@@ -6610,15 +6624,33 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 		}
 	} else {
 		s32 delta = (s32)(s16)(cur_pos - ff->wheel_pos_prev);
-		/* Spread the step over the ticks it took: counts per tick. */
-		s32 new_vel = delta / (s32)(ff->wheel_hold_ticks + 1);
+		s64 dt = ktime_to_ns(ktime_sub(cur_ts, ff->wheel_pos_prev_ts));
+		s32 new_vel;
 
+		/*
+		 * Counts per millisecond (one tick) from the REAL time between
+		 * the two reports, rounded to nearest. Counting ticks instead
+		 * was still wrong on the G923: its reports land every 2.00 ms
+		 * against this 1 ms tick, and as the two drift past each other
+		 * the count wobbles between 1, 2 and 3, doubling or halving the
+		 * velocity at those reports (issue #85, the whine that survived
+		 * the hold; replayed from a capture, the worst torque step
+		 * drops from 5888 to 1280 of 65535 with this, at no lag). A
+		 * direct-drive wheel's reports arrive every millisecond, so
+		 * this is its plain per-tick delta, slightly truer.
+		 */
+		if (dt > 0)
+			new_vel = (s32)div_s64((s64)delta * NSEC_PER_MSEC +
+					       (delta >= 0 ? dt / 2 : -dt / 2), dt);
+		else
+			new_vel = delta / (s32)(ff->wheel_hold_ticks + 1);
 		if (!new_vel)
 			new_vel = delta > 0 ? 1 : -1;	/* keep the direction */
 		ff->wheel_accel = new_vel - ff->wheel_vel;
 		ff->wheel_vel_prev = ff->wheel_vel;
 		ff->wheel_vel = new_vel;
 		ff->wheel_pos_prev = cur_pos;
+		ff->wheel_pos_prev_ts = cur_ts;
 		ff->wheel_hold_ticks = 0;
 	}
 	wheel_pos_signed = (s32)cur_pos - 0x8000;
@@ -15509,6 +15541,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->hidpp = hidpp;
 	ff->owner_hidpp = hidpp;	/* Track who allocated for cleanup */
 	ff->range = 1080;	/* Direct-drive default: 1080 degrees */
+	seqcount_init(&ff->wheel_pos_seq);
 	ff->strength = 65535;	/* Default: 100% */
 	ff->damping = 0;	/* Default: 0% */
 	ff->trueforce = 65535;	/* Default: 100% */
@@ -18603,7 +18636,17 @@ static void hidpp_dd_track_wheel_pos(struct hidpp_device *hidpp,
 	if (ff->pos_bits < 16)
 		raw <<= 16 - ff->pos_bits;
 
-	WRITE_ONCE(ff->wheel_pos, (u16)raw);
+	/*
+	 * Position and arrival time as one pair: the effect timer derives
+	 * velocity from the real time between two reports (see there), and
+	 * a time paired with the wrong position would be a wrong velocity
+	 * for a tick. This runs in the interrupt path for one endpoint, so
+	 * writers never overlap.
+	 */
+	write_seqcount_begin(&ff->wheel_pos_seq);
+	ff->wheel_pos = (u16)raw;
+	ff->wheel_pos_ts = ktime_get();
+	write_seqcount_end(&ff->wheel_pos_seq);
 	if (!READ_ONCE(ff->wheel_pos_seen))
 		WRITE_ONCE(ff->wheel_pos_seen, true);
 }
