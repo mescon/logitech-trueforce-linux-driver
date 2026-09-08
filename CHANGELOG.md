@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.40.1 - 2026-09-08
 
 **G923 Xbox edition: the force engine reports and sets the real rotation
 range.** Under `g923_xbox_dd_engine=1` the driver started from the
