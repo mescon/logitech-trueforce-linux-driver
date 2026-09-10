@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.40.3 - 2026-09-12
 
 **The effect timer is armed from one place, under one lock (#90).** A game's
 effect upload, playback or autocenter change could re-arm the force
