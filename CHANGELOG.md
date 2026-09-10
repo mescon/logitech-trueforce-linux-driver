@@ -5,6 +5,18 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The effect timer is armed from one place, under one lock (#90).** A game's
+effect upload, playback or autocenter change could re-arm the force
+engine's timer while its callback was running on another CPU, and the
+callback then tripped the kernel's warning in `hrtimer_forward`, printing a
+full trace each time; Assetto Corsa re-uploads its playing force hundreds
+of times a second. Reproduced on the old build and silent on the new one
+under the same test. The timer now arms only when not already armed,
+decided under the effects lock, and the callback hands over under the same
+lock, so nothing is lost and nothing arms twice.
+
 ## 0.40.2 - 2026-09-08
 
 **Velocity from the real time between position reports.** The force

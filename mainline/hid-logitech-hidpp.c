@@ -5925,6 +5925,7 @@ struct hidpp_dd_ff_data {
 	/* FFB effects tracking */
 	struct hidpp_dd_ff_effect effects[HIDPP_DD_FF_MAX_EFFECTS];
 	spinlock_t effects_lock;	/* Protects effects array */
+	bool timer_armed;		/* effect_timer is running or queued; under effects_lock (see hidpp_dd_ff_timer_kick) */
 	s32 last_force;			/* Last force sent; used by playback() to know whether a release-to-zero packet is needed when all effects stop. */
 	s32 constant_force;		/* Cached sum of currently-playing FF_CONSTANT contributions; condition/periodic/ramp effects are computed per-tick inside the timer callback. */
 
@@ -6570,8 +6571,12 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 	bool route_tf;
 	int i;
 
-	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized))
+	if (atomic_read_acquire(&ff->stopping) || !atomic_read(&ff->initialized)) {
+		spin_lock_irqsave(&ff->effects_lock, flags);
+		ff->timer_armed = false;
+		spin_unlock_irqrestore(&ff->effects_lock, flags);
 		return HRTIMER_NORESTART;
+	}
 
 	route_tf = READ_ONCE(ff->texture_route) == HIDPP_DD_TEXTURE_ROUTE_TF;
 
@@ -6974,19 +6979,39 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 	 * deflects. The timer staying alive is what makes the gated
 	 * resume transparent.
 	 */
+	/*
+	 * Decide under effects_lock, re-reading the effect table: an effect
+	 * started since the scan above found the timer armed and did not
+	 * start it (hidpp_dd_ff_timer_kick), so it is this decision that
+	 * must see it. Clearing timer_armed in the same critical section as
+	 * the decision not to restart is what makes that hand-over exact.
+	 */
+	spin_lock_irqsave(&ff->effects_lock, flags);
+	if (!any_playing) {
+		for (i = 0; i < HIDPP_DD_FF_MAX_EFFECTS; i++) {
+			if (ff->effects[i].uploaded && ff->effects[i].playing) {
+				any_playing = true;
+				break;
+			}
+		}
+	}
 	if ((any_playing || ff->tf_streaming || READ_ONCE(ff->autocenter)) &&
 	    !atomic_read_acquire(&ff->stopping) &&
 	    atomic_read(&ff->initialized)) {
+		spin_unlock_irqrestore(&ff->effects_lock, flags);
 		/*
 		 * Advance from the deadline that has just expired rather
 		 * than from now, so the time this callback spent working
 		 * does not accumulate into the period. The old jiffies
 		 * timer re-armed relative to now and drifted by exactly
-		 * that much.
+		 * that much. Safe: while timer_armed is set nothing else
+		 * starts this timer, so it cannot be queued here.
 		 */
 		hrtimer_forward_now(t, HIDPP_DD_FF_TICK_KT);
 		return HRTIMER_RESTART;
 	}
+	ff->timer_armed = false;
+	spin_unlock_irqrestore(&ff->effects_lock, flags);
 
 	return HRTIMER_NORESTART;
 }
@@ -7506,6 +7531,37 @@ static bool hidpp_dd_tf_tick(struct hidpp_dd_ff_data *ff, bool any_texture,
 /*
  * FF effect upload callback - stores effect for later playback.
  */
+/*
+ * The one way to start the effect timer from outside its own callback.
+ *
+ * hrtimer_start() on a timer whose callback is running on another CPU
+ * re-queues it under the callback's feet, and the callback's
+ * hrtimer_forward_now() then trips the kernel's WARN_ON(timer->is_queued)
+ * and prints a full trace. Assetto Corsa re-uploads its playing constant
+ * force about 335 times a second, each one landing here, so on a G923 Xbox
+ * edition that race fired many times a second: a trace storm from softirq
+ * context that stalled the machine (issue #90, wineserver in the trace).
+ *
+ * So the timer is armed only when it is not already running, decided under
+ * effects_lock, and the callback clears timer_armed under the same lock in
+ * the same breath as it decides not to restart, after re-reading the effect
+ * table. A starter therefore either finds the timer armed, in which case the
+ * callback is guaranteed to see the effect it just marked, or arms it
+ * itself. No lost wake-up, and never two arms of one timer.
+ */
+static void hidpp_dd_ff_timer_kick(struct hidpp_dd_ff_data *ff, ktime_t delay)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ff->effects_lock, flags);
+	if (!ff->timer_armed && !atomic_read_acquire(&ff->stopping) &&
+	    atomic_read(&ff->initialized)) {
+		ff->timer_armed = true;
+		hrtimer_start(&ff->effect_timer, delay, HRTIMER_MODE_REL_SOFT);
+	}
+	spin_unlock_irqrestore(&ff->effects_lock, flags);
+}
+
 static int hidpp_dd_ff_upload(struct input_dev *dev, struct ff_effect *effect,
 			  struct ff_effect *old)
 {
@@ -7537,9 +7593,8 @@ static int hidpp_dd_ff_upload(struct input_dev *dev, struct ff_effect *effect,
 	}
 	spin_unlock_irqrestore(&ff->effects_lock, flags);
 
-	if (recompute && !atomic_read_acquire(&ff->stopping))
-		hrtimer_start(&ff->effect_timer, HIDPP_DD_FF_TICK_KT,
-			      HRTIMER_MODE_REL_SOFT);
+	if (recompute)
+		hidpp_dd_ff_timer_kick(ff, HIDPP_DD_FF_TICK_KT);
 
 	/*
 	 * Log full effect parameters, not just the type: root-causing FFB
@@ -7677,13 +7732,10 @@ static int hidpp_dd_ff_playback(struct input_dev *dev, int id, int value)
 	 * immediately to emit a single zero-force ("return to idle")
 	 * packet and let the callback stop rescheduling itself.
 	 */
-	if (atomic_read_acquire(&ff->stopping))
-		return 0;
 	if (any_playing)
-		hrtimer_start(&ff->effect_timer, HIDPP_DD_FF_TICK_KT,
-			      HRTIMER_MODE_REL_SOFT);
+		hidpp_dd_ff_timer_kick(ff, HIDPP_DD_FF_TICK_KT);
 	else if (ff->last_force != 0)
-		hrtimer_start(&ff->effect_timer, 0, HRTIMER_MODE_REL_SOFT);
+		hidpp_dd_ff_timer_kick(ff, 0);
 
 	return 0;
 }
@@ -7719,10 +7771,8 @@ static void hidpp_dd_ff_set_autocenter(struct input_dev *dev, u16 magnitude)
 	if (!ff)
 		return;
 	WRITE_ONCE(ff->autocenter, magnitude);
-	if (magnitude && !atomic_read_acquire(&ff->stopping) &&
-	    atomic_read(&ff->initialized))
-		hrtimer_start(&ff->effect_timer, HIDPP_DD_FF_TICK_KT,
-			      HRTIMER_MODE_REL_SOFT);
+	if (magnitude)
+		hidpp_dd_ff_timer_kick(ff, HIDPP_DD_FF_TICK_KT);
 	dd_dbg(ff->hidpp->hid_dev, "FF_AUTOCENTER set to %u\n",
 		magnitude);
 }
@@ -10286,9 +10336,8 @@ static ssize_t wheel_autocenter_store(struct device *dev, struct device_attribut
 		return ret;
 
 	WRITE_ONCE(ff->autocenter, clamp(val, 0, 65535));
-	if (val && atomic_read(&ff->initialized))
-		hrtimer_start(&ff->effect_timer, HIDPP_DD_FF_TICK_KT,
-			      HRTIMER_MODE_REL_SOFT);
+	if (val)
+		hidpp_dd_ff_timer_kick(ff, HIDPP_DD_FF_TICK_KT);
 	return count;
 }
 
