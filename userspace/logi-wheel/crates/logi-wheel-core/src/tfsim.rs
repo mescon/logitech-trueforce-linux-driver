@@ -265,7 +265,7 @@ impl WheelChoice {
             "dd" | "rs50" | "gpro" | "g pro" | "g-pro" | "direct-drive" | "directdrive" => {
                 Some(WheelChoice::DirectDrive)
             }
-            "g923" | "923" => Some(WheelChoice::G923),
+            "g923" | "923" | "xbox" | "g923-xbox" => Some(WheelChoice::G923),
             _ => None,
         }
     }
@@ -1145,6 +1145,9 @@ mod wheel_choice_tests {
         assert_eq!(WheelChoice::parse("RS50"), Some(WheelChoice::DirectDrive));
         assert_eq!(WheelChoice::parse("G PRO"), Some(WheelChoice::DirectDrive));
         assert_eq!(WheelChoice::parse(" G923 "), Some(WheelChoice::G923));
+        // The Xbox edition drives the daemon through the same G923 path.
+        assert_eq!(WheelChoice::parse("xbox"), Some(WheelChoice::G923));
+        assert_eq!(WheelChoice::parse("g923-xbox"), Some(WheelChoice::G923));
         // Empty means unset, which is auto.
         assert_eq!(WheelChoice::parse(""), Some(WheelChoice::Auto));
         // Nonsense is rejected rather than silently becoming a default, so
