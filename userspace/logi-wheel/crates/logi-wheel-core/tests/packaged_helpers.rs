@@ -162,13 +162,40 @@ fn the_modprobe_settings_reach_every_channel() {
         let by_file = text.contains("hid-logitech-dd.conf");
         // NixOS is declarative: the same softdep and blacklist go in
         // through boot.extraModprobeConfig rather than as a file.
-        let inline = text.contains("softdep hid-logitech-dd") && text.contains("hid-logitech-new");
+        let inline = ORDERING.iter().all(|line| text.contains(line)) && text.contains("hid-logitech-new");
         assert!(
             by_file || inline,
             "{channel} sets neither the softdep ordering nor the new-lg4ff blacklist, \
              so this driver may lose the bind race there and never be noticed"
         );
     }
+}
+
+/// The load order every channel ships: loading either in-tree Logitech
+/// module pulls this driver in first, so it registers before they look for
+/// a G923. The direction matters: the in-tree hidpp driver oopses if the
+/// udev rebind rule unbinds it while the wheel's event node is held open
+/// (#90), so it must never bind the wheel to begin with.
+const ORDERING: [&str; 2] = [
+    "softdep hid-logitech-hidpp pre: hid-logitech-dd",
+    "softdep hid-logitech pre: hid-logitech-dd",
+];
+
+#[test]
+fn the_modprobe_file_orders_this_driver_before_both_in_tree_modules() {
+    let root = repo();
+    let conf = root.join("packaging/modprobe.d/hid-logitech-dd.conf");
+    if !conf.is_file() {
+        return;
+    }
+    let text = std::fs::read_to_string(&conf).unwrap();
+    for line in ORDERING {
+        assert!(text.lines().any(|l| l == line), "modprobe.d file lacks {line:?}");
+    }
+    assert!(
+        !text.contains("post:"),
+        "a post: ordering on this driver never fired when udev asked for the in-tree module directly"
+    );
 }
 
 #[test]

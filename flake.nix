@@ -268,15 +268,19 @@
                 (logitechTrueforceModule {kernel = config.boot.kernelPackages.kernel; })
                 ];
             boot.kernelModules = [ "hid-logitech-dd" ];
-            # The same two lines packaging/modprobe.d/hid-logitech-dd.conf
+            # The same lines packaging/modprobe.d/hid-logitech-dd.conf
             # carries on every other channel, which NixOS cannot take as a
-            # file: the load-order hint that lets this driver claim a wheel
-            # before the in-tree ones do, and the narrow blacklist that
-            # stops berarma's new-lg4ff fork racing it for the G923 ids.
-            # Without them a NixOS G923 owner depends on the udev rebind
-            # rule alone, which is meant to be the fallback.
+            # file: the load order that makes either in-tree module pull
+            # this driver in first, so it registers before they look for a
+            # G923 (the in-tree hidpp driver cannot survive the udev
+            # rebind rule's unbind while the wheel's event node is held
+            # open, #90), and the narrow blacklist that stops berarma's
+            # new-lg4ff fork racing it for the G923 ids. Without them a
+            # NixOS G923 owner depends on the udev rebind rule alone,
+            # which is meant to be the fallback.
             boot.extraModprobeConfig = ''
-              softdep hid-logitech-dd post: hid-logitech hid-logitech-hidpp
+              softdep hid-logitech-hidpp pre: hid-logitech-dd
+              softdep hid-logitech pre: hid-logitech-dd
               blacklist hid-logitech-new
             '';
             services.udev.packages = [ self.packages.${pkgs.system}.udev-rules ];

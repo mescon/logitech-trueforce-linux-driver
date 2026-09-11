@@ -7,6 +7,18 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**The in-tree driver no longer gets a G923 first (#90).** When the in-tree
+hid-logitech-hidpp driver had bound a G923 and our udev rule then took the
+wheel over, the in-tree driver's force-feedback teardown ran later, when
+whichever process held the wheel's event node (plymouth at boot, Steam or
+a game afterwards) closed it, and touched memory the unbind had already
+freed: a kernel oops on an Xbox edition at boot. The module load order now
+pulls hid-logitech-dd in before either in-tree Logitech module, so ours is
+registered first and the in-tree driver never binds the wheel; the rebind
+rule stays as the fallback. Installed by setup.sh, dkms-update.sh, the
+packages and the NixOS module; on distributions whose initramfs carries the
+in-tree module, regenerate it after updating.
+
 **A DirectInput game no longer finds two wheels under Steam.** logi-ffb hides
 the real wheel from Wine's DirectInput by marking it disabled in the
 prefix's registry, but it looked for the prefix in `WINEPREFIX` only, which
