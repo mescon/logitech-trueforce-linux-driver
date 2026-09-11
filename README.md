@@ -295,7 +295,11 @@ confirmed on a real unit, and **rev lights**. Neither the forces nor the
 haptics existed for this wheel on Linux before this project.
 
 The rev lights follow RPM in a game, confirmed by an owner in Assetto
-Corsa EVO. The strip exposes the same five `::RPM1`..`::RPM5` LED devices
+Corsa EVO. With Logitech's TrueForce files in a game's prefix,
+`logi-launch %command%` puts this edition on the same route as a
+direct-drive wheel: the game's own force and TrueForce over raw HID, and
+the simulated daemon for the rev lights and screen only. The strip
+exposes the same five `::RPM1`..`::RPM5` LED devices
 the PlayStation edition does, so anything that drives those works here
 unchanged. Two owners found that this wheel gives force feedback and
 simulated TrueForce together on the driver's own force engine

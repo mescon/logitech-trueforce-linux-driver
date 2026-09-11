@@ -14,7 +14,7 @@ measured, which are argued, and which are hoped.
 | RS50 (`c276`, both editions) | yes, native path | yes, the game's own and simulated | full `wheel_*` surface | yes, and LIGHTSYNC colours |
 | G PRO (`c272`/`c268`) | yes, same path | yes | full surface | level-based, see below |
 | G923 PS (`c266`/`c267`) | yes, classic path | simulated only | **none** | yes, classic command |
-| G923 Xbox (`c26e`) | yes, HID++ 0x8123 by default; this driver's own engine with `g923_xbox_dd_engine=1` | simulated; alongside force only on the driver's engine | **none** | yes, follows revs on the engine (#72) |
+| G923 Xbox (`c26e`) | yes, HID++ 0x8123 by default; this driver's own engine with `g923_xbox_dd_engine=1` | the game's own with the SDK files present, else simulated; both with force | **none** | yes, follows revs on the engine (#72) |
 
 The Xbox editions of the RS50 (`c275`) and the G923 (`c26d`) boot speaking
 the console's own protocol, with no HID++ interface to bind. Both are

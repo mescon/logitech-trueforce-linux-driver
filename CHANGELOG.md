@@ -7,6 +7,18 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**The G923 Xbox edition takes the SDK route when Logitech's TrueForce
+files are in the game's prefix.** That wheel follows the SDK's stream
+(#81), and with a real copy of AC EVO and the SDK files an owner had force,
+TrueForce and rev lights, minus the game's own engine texture, which the
+simulated daemon was playing over (#91). The launcher now treats the Xbox
+edition like a direct-drive wheel on such a title: raw HID scoped to it,
+the rotation-answer proxy staged with its telemetry relay on, and the
+daemon running for the rev lights and the screen only, told so by a
+per-session marker it reads even when already running. No kernel texture
+merge on this wheel, whose SDK packets already carry real texture. Without
+the SDK files nothing changes.
+
 **A game's steering lock moves the wheel again.** The driver undid every
 rotation range the SDK pushed, which was right when the SDK pushed a blind
 90 degrees because nothing answered its rotation question, and wrong once
