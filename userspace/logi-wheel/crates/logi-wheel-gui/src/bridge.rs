@@ -1463,7 +1463,7 @@ mod tests {
     fn a_wheel_without_sdk_trueforce_gets_no_shim_row_and_no_launch_options() {
         let cfg = tfsim::Config::default();
         let games_list = vec![wine_game("Assetto Corsa Competizione", Source::Steam, false)];
-        let g923 = games::WheelCaps { sdk_trueforce: false };
+        let g923 = games::WheelCaps::classic();
 
         let rows = setup_games(&games_list, &cfg, g923, None, games::RevLeds::Bar, None);
         assert_eq!(rows[0].action, ACTION_OUT_OF_BOX);
@@ -1488,7 +1488,7 @@ mod tests {
         // is the part that is per wheel: it gets the shim. The launch line
         // is deliberately identical on both, because the line itself no
         // longer encodes the recipe.
-        let dd = setup_games(&games_list, &cfg, games::WheelCaps { sdk_trueforce: true }, None, games::RevLeds::Bar, None);
+        let dd = setup_games(&games_list, &cfg, games::WheelCaps::direct_drive(), None, games::RevLeds::Bar, None);
         assert_eq!(dd[0].action, ACTION_SHIM);
         assert_eq!(dd[0].launch, "logi-launch %command%");
         assert_ne!(dd[0].action, rows[0].action, "the wheels must still differ somewhere");
@@ -1501,7 +1501,7 @@ mod tests {
     fn setup_games_threads_the_hidraw_scope_into_the_plan_sentence() {
         let cfg = tfsim::Config::default();
         let games_list = vec![wine_game("Assetto Corsa Competizione", Source::Steam, false)];
-        let dd = games::WheelCaps { sdk_trueforce: true };
+        let dd = games::WheelCaps::direct_drive();
 
         let rows = setup_games(&games_list, &cfg, dd, Some("0x046D/0xC276"), games::RevLeds::Bar, None);
         assert!(
@@ -1524,7 +1524,7 @@ mod tests {
     #[test]
     fn a_merge_title_card_carries_the_proxy_state_and_rev_light_style() {
         let cfg = tfsim::Config::default();
-        let dd = games::WheelCaps { sdk_trueforce: true };
+        let dd = games::WheelCaps::direct_drive();
         let games_list = vec![
             wine_game("Assetto Corsa EVO", Source::Steam, false),
             wine_game("Assetto Corsa Competizione", Source::Steam, false),

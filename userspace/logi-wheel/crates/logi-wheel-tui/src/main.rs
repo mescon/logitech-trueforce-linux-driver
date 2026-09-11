@@ -303,17 +303,18 @@ fn report_hidpp_features(device: &Device<logi_wheel_core::sysfs::RealSysfs>) {
     }
 }
 
-/// Try each known way of driving a wheel's rev strip, one at a time, and
-/// let the person watching say which one worked.
-///
-/// Written because the feature map cannot answer this. The PlayStation G923
-/// implements 0x807A and yet obeys the classic lg4ff command instead, so
-/// "has LIGHTSYNC" does not imply "lights up when spoken to that way". On a
-/// wheel nobody here owns, watching the rim is the only reliable evidence.
-///
-/// This WRITES to the wheel, unlike `--hidpp-features`. It only ever sends
-/// LED commands: nothing here produces force, and every test turns the
-/// lights off again afterwards.
+/// The plan's `wheel=` value for a set of capabilities: the launcher only
+/// logs it, but a person reading that log should see which recipe ran.
+fn wheel_class_name(caps: logi_wheel_core::games::WheelCaps) -> &'static str {
+    if !caps.sdk_trueforce {
+        "classic"
+    } else if caps.texture_merge {
+        "direct-drive"
+    } else {
+        "g923-xbox"
+    }
+}
+
 /// What a game needs on the wheel that is attached, as `key=value` lines
 /// for `logi-launch` to act on.
 ///
@@ -346,27 +347,26 @@ fn launch_plan(
         println!("wheel=none");
         return Ok(());
     }
-    let mut kinds: Vec<bool> = wheels.iter().map(|d| d.wheel_caps().sdk_trueforce).collect();
+    let mut kinds: Vec<games::WheelCaps> = wheels.iter().map(|d| d.wheel_caps()).collect();
     kinds.dedup();
     let forced = match wheel_arg.as_deref() {
-        Some("dd") | Some("direct-drive") | Some("rs50") | Some("gpro") => Some(true),
-        Some("g923") | Some("classic") => Some(false),
+        Some("dd") | Some("direct-drive") | Some("rs50") | Some("gpro") => Some(games::WheelCaps::direct_drive()),
+        Some("xbox") | Some("g923-xbox") => Some(games::WheelCaps::xbox_sdk()),
+        Some("g923") | Some("classic") => Some(games::WheelCaps::classic()),
         Some(other) => {
-            eprintln!("unknown --wheel {other:?}; use dd or g923");
+            eprintln!("unknown --wheel {other:?}; use dd, xbox or g923");
             None
         }
         None => None,
     };
     let ambiguous = forced.is_none() && kinds.len() > 1;
-    let caps = games::WheelCaps {
-        sdk_trueforce: forced.unwrap_or_else(|| wheels[0].wheel_caps().sdk_trueforce),
-    };
+    let caps = forced.unwrap_or_else(|| wheels[0].wheel_caps());
     if ambiguous {
         println!("wheel=mixed");
         println!("note=several kinds of wheel attached and the game picks one, not us");
-        println!("note=name it with --wheel dd or --wheel g923 to get the full recipe");
+        println!("note=name it with --wheel dd, --wheel xbox or --wheel g923 to get the full recipe");
     } else {
-        println!("wheel={}", if caps.sdk_trueforce { "direct-drive" } else { "classic" });
+        println!("wheel={}", wheel_class_name(caps));
     }
 
     // An unknown title still gets the daemon; see `LaunchPlan::unknown`.
@@ -434,7 +434,7 @@ fn launch_plan_list() -> Result<(), Box<dyn std::error::Error>> {
         wheels.first().map(|d| d.wheel_caps()).unwrap_or_else(games::WheelCaps::assumed);
     let scope = games::hidraw_scope_for(&wheels, caps);
     let rev_leds = logi_wheel_core::launch::rev_leds();
-    println!("# for a {} wheel", if caps.sdk_trueforce { "direct-drive" } else { "classic" });
+    println!("# for a {} wheel", wheel_class_name(caps));
     println!("{:<28} {:<9} {:<34} settings", "--game", "appid", "title");
     for g in games::GAMES {
         let slug = games::slug_for(g.name);
@@ -455,6 +455,17 @@ fn launch_plan_list() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Try each known way of driving a wheel's rev strip, one at a time, and
+/// let the person watching say which one worked.
+///
+/// Written because the feature map cannot answer this. The PlayStation G923
+/// implements 0x807A and yet obeys the classic lg4ff command instead, so
+/// "has LIGHTSYNC" does not imply "lights up when spoken to that way". On a
+/// wheel nobody here owns, watching the rim is the only reliable evidence.
+///
+/// This WRITES to the wheel, unlike `--hidpp-features`. It only ever sends
+/// LED commands: nothing here produces force, and every test turns the
+/// lights off again afterwards.
 fn led_probe(only: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     use logi_wheel_core::hidpp;
     use std::io::Write;

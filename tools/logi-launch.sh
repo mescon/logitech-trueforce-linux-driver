@@ -110,11 +110,12 @@ say() { printf '[logi-launch] %s\n' "$*" >>"$LOG"; }
 # reinstalled from a backup. `logi-wheel --launch-plan --list` prints the
 # names.
 # --game names the title when the appid cannot identify it. --wheel names
-# which wheel to set up for, which matters only when more than one kind is
-# plugged in: the game chooses the wheel it uses in its own settings and
-# never tells us, so with a direct-drive wheel and a G923 both attached we
-# decline to guess rather than risk setting PROTON_ENABLE_HIDRAW on the
-# G923 and costing it force feedback.
+# which wheel to set up for (--wheel dd, --wheel xbox, --wheel g923), which
+# matters only when more than one kind is plugged in: the game chooses the
+# wheel it uses in its own settings and never tells us, so with a
+# direct-drive wheel and a G923 both attached we decline to guess rather
+# than risk setting PROTON_ENABLE_HIDRAW on the G923 and costing it force
+# feedback.
 named_game=""
 named_wheel=""
 while :; do
@@ -384,10 +385,12 @@ esac
 # direct-drive product id, which is the single-wheel case.
 DD_PIDS="C276 C272 C268"
 G923_PIDS="C266 C267 C26E"
+XBOX_PIDS="C26E"
 wheel_pids="$DD_PIDS"
 case "$named_wheel" in
 "") ;;
 dd|direct-drive|rs50|gpro) wheel_pids="$DD_PIDS" ;;
+xbox|g923-xbox) wheel_pids="$XBOX_PIDS" ;;
 g923|classic) wheel_pids="$G923_PIDS" ;;
 *) say "unknown --wheel $named_wheel; treating it as a direct-drive wheel" ;;
 esac
@@ -493,10 +496,16 @@ fi
 # this only passes on the answer this script already has. A value set by
 # hand wins over both.
 if [ -z "${LOGI_TF_CAPTURE:-}" ]; then
-	case "$named_wheel" in
-	g923|classic) export LOGI_TF_CAPTURE=1 ;;
-	dd|direct-drive|rs50|gpro) export LOGI_TF_CAPTURE=0 ;;
-	esac
+	if [ -n "$hidraw_granted" ]; then
+		# Raw HID means the SDK's own stream already reaches the wheel,
+		# so a captured copy must never be replayed on top of it.
+		export LOGI_TF_CAPTURE=0
+	else
+		case "$named_wheel" in
+		g923|classic) export LOGI_TF_CAPTURE=1 ;;
+		dd|direct-drive|rs50|gpro) export LOGI_TF_CAPTURE=0 ;;
+		esac
+	fi
 fi
 
 # The kernel texture merge: the driver mixes an engine-note texture into
@@ -575,17 +584,20 @@ $d/dinput8.dll"
 	return 0
 }
 
-# A native-TrueForce session without the texture merge still needs the
-# SDK's rotation question answered (see the raw-HID grant above), and the
-# escape proxy is what answers it. Staged with its telemetry relay OFF:
-# the shared-memory relay already feeds the daemon for this game, and a
-# second sender on the same port made the lights and the screen take
-# turns (an RS50 in ACC, 2026-09-05).
+# For ACC the in-prefix shared-memory helper is the telemetry source, and
+# a second sender on the same port made the lights and the screen take
+# turns (an RS50 in ACC, 2026-09-05), so the proxy's relay is switched
+# off. For AC EVO the proxy IS the telemetry source, on every wheel, so
+# there it stays on.
 if [ -n "$hidraw_granted" ] && [ "$want_texture" != "merge" ] && \
    [ "$have_tf_proxy" = "0" ]; then
 	if stage_escape_proxy; then
-		export LOGI_ESCAPE_RELAY=0
-		say "dinput8 proxy answers the SDK's rotation question only (LOGI_ESCAPE_RELAY=0)"
+		if [ "$want_relay" = "ac-evo" ]; then
+			say "dinput8 proxy answers the SDK's rotation question and relays telemetry (this game has no other source)"
+		else
+			export LOGI_ESCAPE_RELAY=0
+			say "dinput8 proxy answers the SDK's rotation question only (LOGI_ESCAPE_RELAY=0)"
+		fi
 	fi
 fi
 
@@ -683,6 +695,39 @@ fi
 # the game runs, the wheel behaves normally, and the rev lights stay
 # dark. Started only if it is not already up, and left running, since
 # it idles when nothing is streaming.
+# The daemon's session marker: while raw HID is granted to a title whose
+# own TrueForce reaches the wheel, the daemon must not synthesise haptics
+# for it (it would play over the real thing) and runs for the rev lights
+# and the screen only. The daemon's own rule covers a direct-drive wheel;
+# the marker is what tells it on the G923 Xbox edition, and it reaches a
+# daemon that is already running. Same directory as the daemon's stream
+# lease, same fallbacks (logi-tf-sim's native_session and lease modules).
+# Written whenever raw HID is granted, whether or not this launch is the
+# one starting the daemon: the marker describes the session, not that.
+native_marker=""
+if [ -n "${LOGI_WHEEL_RUNTIME_DIR:-}" ]; then
+	marker_dir="$LOGI_WHEEL_RUNTIME_DIR"
+elif [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+	marker_dir="$XDG_RUNTIME_DIR/logi-wheel"
+else
+	marker_dir="${TMPDIR:-/tmp}/logi-wheel-$(id -u)"
+fi
+if [ -n "$want_relay" ] && [ "$want_relay" != "none" ]; then
+	# A stale marker from a launcher that died would keep the haptics
+	# off for this title; it is ours to clear before deciding afresh.
+	safe_id=$(printf '%s' "$want_relay" | tr -c 'A-Za-z0-9._-\n' '-')
+	rm -f "$marker_dir/native.$safe_id" 2>/dev/null
+	if [ -n "$hidraw_granted" ]; then
+		mkdir -p "$marker_dir" 2>/dev/null
+		if : > "$marker_dir/native.$safe_id" 2>/dev/null; then
+			native_marker="$marker_dir/native.$safe_id"
+			say "marked this session's TrueForce as the game's own; the daemon drives lights and screen only"
+		else
+			say "could not write $marker_dir/native.$safe_id; the daemon may play its own texture over the game's"
+		fi
+	fi
+fi
+
 if [ "${LOGI_LAUNCH_TF_SIM:-1}" = "1" ] && [ "${want_tfsim:-1}" = "1" ]; then
 	# Both at once is a recipe only a hand-written games.conf line can
 	# ask for, and it works: the two read the same relay port, so
@@ -1020,6 +1065,7 @@ fi
 if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_attrs" ] || \
    [ -n "$hidraw_granted" ] || [ -n "$helper_group_pid" ]; then
 	session_cleanup() {
+		[ -n "$native_marker" ] && rm -f "$native_marker" 2>/dev/null
 		[ -n "$rpm_bridge_pid" ] && kill "$rpm_bridge_pid" 2>/dev/null
 		if [ -n "$staged_proxy" ]; then
 			while read -r f; do

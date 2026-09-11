@@ -611,9 +611,9 @@ impl<S: SysfsIo> Device<S> {
     pub fn wheel_caps(&self) -> crate::games::WheelCaps {
         match self.model {
             WheelModel::Unknown if self.io.exists("wheel_range") => {
-                crate::games::WheelCaps { sdk_trueforce: true }
+                crate::games::WheelCaps::direct_drive()
             }
-            model => crate::games::WheelCaps::of(model),
+            model => crate::games::WheelCaps::for_wheel(model, self.product_id()),
         }
     }
 
