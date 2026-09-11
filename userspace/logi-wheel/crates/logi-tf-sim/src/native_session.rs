@@ -23,12 +23,6 @@ pub fn marker_path_in(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("native.{safe}"))
 }
 
-/// Whether the launcher has marked `id`'s current session as one whose
-/// own TrueForce reaches the wheel.
-pub fn is_active(id: &str) -> bool {
-    marker_path_in(&crate::lease::dir(), id).exists()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

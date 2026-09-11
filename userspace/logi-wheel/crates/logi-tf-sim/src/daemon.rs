@@ -500,6 +500,26 @@ fn native_trueforce_here_in(cfg: &Config, id: &str, marker_dir: &std::path::Path
     by_live_id(id).is_some_and(|g| g.native_trueforce_reaches(WheelCaps::direct_drive()))
 }
 
+/// Whether the captured-TrueForce path may open a stream this tick.
+///
+/// Captured samples carry no game id of their own, so this keys off
+/// whichever game's telemetry was seen in the same tick, the same as the
+/// synthesis paths above. A launcher normally turns capture off once raw
+/// HID is granted, but a hand-set `LOGI_TF_CAPTURE=1` or a stray packet
+/// must still not be allowed to open a stream doubling a session the
+/// marker already says is native.
+fn captured_stream_wanted(cfg: &Config, latest: Option<(&str, Telemetry)>) -> bool {
+    captured_stream_wanted_in(cfg, latest, &crate::lease::dir())
+}
+
+fn captured_stream_wanted_in(
+    cfg: &Config,
+    latest: Option<(&str, Telemetry)>,
+    marker_dir: &std::path::Path,
+) -> bool {
+    !latest.is_some_and(|(id, _)| native_trueforce_here_in(cfg, id, marker_dir))
+}
+
 struct Active {
     /// The wheel's TrueForce stream, or `None` for a lights-only session.
     ///
@@ -999,7 +1019,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                         eprintln!("logi-tf-sim: captured TrueForce push failed: {e}");
                     }
                 }
-            } else if now >= next_open_attempt {
+            } else if now >= next_open_attempt && captured_stream_wanted(cfg, latest) {
                 match open_wheel_stream(cfg) {
                     Ok(OpenWheel { stream, lease, lease_key, .. }) => {
                         eprintln!(
@@ -1483,22 +1503,51 @@ mod lights_only_tests {
 
         assert!(wants_haptics(&Config::default(), "assetto"), "the default plays");
         // A native-TrueForce title on a direct-drive wheel: never haptics,
-        // whatever the strength; the same title on a G923 gets them.
+        // whatever the strength; the same title on a G923 gets them. Routed
+        // through the `_in` form with an empty temp dir throughout, so a
+        // stale marker left behind on a developer box cannot flip these.
+        let dir = std::env::temp_dir().join(format!("logi-native-daemon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
         let dd = Config { wheel: logi_wheel_core::tfsim::WheelChoice::DirectDrive, ..Config::default() };
-        assert!(native_trueforce_here(&dd, "acc"));
-        assert!(native_trueforce_here(&dd, "ac-evo"));
-        assert!(!native_trueforce_here(&dd, "assetto"), "the original AC has no TrueForce of its own");
+        assert!(native_trueforce_here_in(&dd, "acc", &dir));
+        assert!(native_trueforce_here_in(&dd, "ac-evo", &dir));
+        assert!(!native_trueforce_here_in(&dd, "assetto", &dir), "the original AC has no TrueForce of its own");
         let g923 = Config { wheel: logi_wheel_core::tfsim::WheelChoice::G923, ..Config::default() };
-        assert!(!native_trueforce_here(&g923, "acc"));
+        assert!(!native_trueforce_here_in(&g923, "acc", &dir));
 
         // The Xbox edition on the SDK route: the launcher's session marker
         // says the game's own TrueForce reaches this wheel, so no haptics.
-        let dir = std::env::temp_dir().join(format!("logi-native-daemon-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
         assert!(!native_trueforce_here_in(&g923, "ac-evo", &dir));
         std::fs::write(crate::native_session::marker_path_in(&dir, "ac-evo"), b"").unwrap();
         assert!(native_trueforce_here_in(&g923, "ac-evo", &dir));
         assert!(!native_trueforce_here_in(&g923, "assetto", &dir), "another title is unaffected");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The captured-TrueForce path opens a stream itself, outside the
+    /// telemetry match this test module otherwise exercises. `open_wheel_stream`
+    /// needs a real wheel, so this tests the predicate factored out of that
+    /// branch (`captured_stream_wanted_in`) rather than the open call itself.
+    #[test]
+    fn captured_stream_does_not_open_over_a_marked_native_session() {
+        let dir = std::env::temp_dir().join(format!("logi-native-captured-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let g923 = Config { wheel: logi_wheel_core::tfsim::WheelChoice::G923, ..Config::default() };
+        let latest = Some(("ac-evo", Telemetry::default()));
+
+        assert!(captured_stream_wanted_in(&g923, latest, &dir), "no marker yet, nothing to block the open");
+        assert!(captured_stream_wanted_in(&g923, None, &dir), "no game named this tick, nothing to check");
+
+        std::fs::write(crate::native_session::marker_path_in(&dir, "ac-evo"), b"").unwrap();
+        assert!(
+            !captured_stream_wanted_in(&g923, latest, &dir),
+            "the marker says this game's own TrueForce is already on the wheel"
+        );
+        assert!(
+            captured_stream_wanted_in(&g923, Some(("assetto", Telemetry::default())), &dir),
+            "another title's marker does not apply here"
+        );
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
