@@ -31,7 +31,7 @@ pub fn marker_path_in(dir: &Path, id: &str) -> PathBuf {
 /// wheel, and that is enough to refuse a second writer. An unreadable
 /// directory counts as no marker.
 pub fn any_active_in(dir: &Path) -> bool {
-    std::fs::read_dir(dir).map_or(false, |entries| {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
         entries.flatten().any(|e| e.file_name().to_string_lossy().starts_with("native."))
     })
 }
