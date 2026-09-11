@@ -1488,7 +1488,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         // changes, not only when the games are rescanned.
                         let caps_changed = {
                             let mut slot = caps_resp.lock().unwrap();
-                            let differs = slot.sdk_trueforce != caps.sdk_trueforce;
+                            let differs = *slot != caps;
                             *slot = caps;
                             differs
                         };
