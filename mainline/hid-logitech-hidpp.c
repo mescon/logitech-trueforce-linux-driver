@@ -3519,11 +3519,22 @@ static int hidpp_ff_queue_work(struct hidpp_ff_private_data *data, int effect_id
 		}
 	}
 
+	/*
+	 * Gone once hidpp_ff_classic_teardown() has run: the device is
+	 * unbound and nothing behind this queue exists any more. Checked
+	 * and queued under the same lock the teardown takes, so a command
+	 * never lands on a queue that is being destroyed.
+	 */
+	if (!data->wq) {
+		spin_unlock_irqrestore(&data->lock, flags);
+		kfree(wd);
+		return -ENODEV;
+	}
+
 	list_add_tail(&wd->node, &data->pending);
 	s = ++data->queue_len;
-	spin_unlock_irqrestore(&data->lock, flags);
-
 	queue_work(data->wq, &data->work);
+	spin_unlock_irqrestore(&data->lock, flags);
 
 	/* warn about excessive queue size */
 	if (s >= 20 && s % 20 == 0)
@@ -4091,10 +4102,26 @@ rearm:
 			   msecs_to_jiffies(HIDPP_FF_RANGE_POLL_MS));
 }
 
+/*
+ * The input core calls ff->destroy when the LAST reference to the input
+ * device drops, and any open event node defers that past the unbind:
+ * plymouth holds every input node at boot, Steam and Wine hold the
+ * wheel's while they run. The in-tree driver does its whole teardown in
+ * this callback and reads the devm-managed hidpp struct the unbind has
+ * already freed, which is the oops of #90. Here hidpp_remove() tears the
+ * force feedback down synchronously through hidpp_ff_classic_teardown()
+ * and clears this hook, so this body only runs if a device was never
+ * removed through hidpp_remove(), and it refuses to touch hidpp once the
+ * teardown has taken it away.
+ */
 static void hidpp_ff_destroy(struct ff_device *ff)
 {
 	struct hidpp_ff_private_data *data = ff->private;
-	struct hid_device *hid = data->hidpp->hid_dev;
+	struct hid_device *hid;
+
+	if (!data || !data->hidpp)
+		return;
+	hid = data->hidpp->hid_dev;
 
 	hid_info(hid, "Unloading HID++ force feedback.\n");
 
@@ -4121,6 +4148,80 @@ static void hidpp_ff_destroy(struct ff_device *ff)
 	}
 
 	kfree(data->effect_ids);
+}
+
+/*
+ * The input device that carries the classic (0x8123) force feedback of
+ * hdev, with a reference taken, or NULL. Called before hid_hw_stop(),
+ * while the inputs list is still populated; the reference keeps the
+ * input device alive across the stop so its ff state can be torn down
+ * afterwards with hidpp still valid, whether or not a process holds the
+ * event node open.
+ */
+static struct input_dev *hidpp_ff_classic_input_get(struct hid_device *hdev)
+{
+	struct hid_input *hi;
+
+	list_for_each_entry(hi, &hdev->inputs, list) {
+		struct input_dev *idev = hi->input;
+
+		if (idev && idev->ff && idev->ff->destroy == hidpp_ff_destroy &&
+		    idev->ff->private)
+			return input_get_device(idev);
+	}
+	return NULL;
+}
+
+/*
+ * Everything hidpp_ff_destroy() used to do, done now, from hidpp_remove()
+ * after hid_hw_stop(). The input device is unregistered by then, so no
+ * new effect calls start; one already inside upload or erase holds
+ * ff->mutex, which is taken here, and playback, gain and autocenter only
+ * reach the queue, which refuses them once wq is NULL. The worker is the
+ * last user of data->hidpp and destroy_workqueue() waits for it, so
+ * hidpp can be dropped once that returns. ff->destroy is cleared because
+ * nothing is left for it to do: the input core frees ff->private itself.
+ */
+static void hidpp_ff_classic_teardown(struct input_dev *idev)
+{
+	struct hidpp_ff_private_data *data = idev->ff->private;
+	struct hid_device *hid = data->hidpp->hid_dev;
+	struct workqueue_struct *wq;
+	unsigned long flags;
+
+	device_remove_file(&hid->dev, &dev_attr_range);
+	device_remove_file(&hid->dev, &dev_attr_range_restore);
+
+	/* re-arms itself, so this has to be the cancel that waits */
+	WRITE_ONCE(data->restore_enabled, false);
+	cancel_delayed_work_sync(&data->range_poll);
+
+	mutex_lock(&idev->ff->mutex);
+
+	spin_lock_irqsave(&data->lock, flags);
+	wq = data->wq;
+	data->wq = NULL;
+	spin_unlock_irqrestore(&data->lock, flags);
+	if (wq)
+		destroy_workqueue(wq);
+
+	/* the drain leaves the list empty; free anything it did not */
+	while (!list_empty(&data->pending)) {
+		struct hidpp_ff_work_data *wd =
+			list_first_entry(&data->pending,
+					 struct hidpp_ff_work_data, node);
+		list_del(&wd->node);
+		kfree(wd);
+	}
+
+	kfree(data->effect_ids);
+	data->effect_ids = NULL;
+	data->hidpp = NULL;
+	idev->ff->destroy = NULL;
+
+	mutex_unlock(&idev->ff->mutex);
+
+	hid_info(hid, "Unloading HID++ force feedback.\n");
 }
 
 static int hidpp_ff_init(struct hidpp_device *hidpp,
@@ -19620,6 +19721,7 @@ static void hidpp_remove(struct hid_device *hdev)
 {
 	struct hidpp_device *hidpp = hid_get_drvdata(hdev);
 	struct hidpp_dd_ff_data *ff;
+	struct input_dev *classic_ff;
 
 	/*
 	 * Restore the real ll_driver on interface 0 BEFORE hid_hw_stop so
@@ -19795,10 +19897,22 @@ static void hidpp_remove(struct hid_device *hdev)
 		dd_lg4ff_deinit(hdev);
 
 	/*
+	 * Classic (0x8123) force feedback is torn down here, not in the
+	 * input core's deferred destroy callback: see hidpp_ff_destroy().
+	 * The reference is taken while the inputs list still exists.
+	 */
+	classic_ff = hidpp_ff_classic_input_get(hdev);
+
+	/*
 	 * Stop hardware to prevent raw_event callbacks from accessing
 	 * private_data while we're freeing it.
 	 */
 	hid_hw_stop(hdev);
+
+	if (classic_ff) {
+		hidpp_ff_classic_teardown(classic_ff);
+		input_put_device(classic_ff);
+	}
 
 	/* Now safe to clean up direct-drive force feedback - no more callbacks */
 	if (hidpp->quirks & HIDPP_QUIRK_DD_FFB)

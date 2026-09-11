@@ -17,7 +17,12 @@ pulls hid-logitech-dd in before either in-tree Logitech module, so ours is
 registered first and the in-tree driver never binds the wheel; the rebind
 rule stays as the fallback. Installed by setup.sh, dkms-update.sh, the
 packages and the NixOS module; on distributions whose initramfs carries the
-in-tree module, regenerate it after updating.
+in-tree module, regenerate it after updating. Our own copy of that teardown
+had the same flaw on the classic force-feedback path (the PlayStation
+editions, and the Xbox edition with the direct-drive engine off): unloading
+or unplugging while a game held the wheel open could oops the same way. The
+driver now tears that state down while it is still valid, at remove time,
+and leaves nothing for the deferred callback to do.
 
 **A DirectInput game no longer finds two wheels under Steam.** logi-ffb hides
 the real wheel from Wine's DirectInput by marking it disabled in the
