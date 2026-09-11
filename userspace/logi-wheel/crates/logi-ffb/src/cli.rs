@@ -134,7 +134,18 @@ fn run_game(cmd: Vec<String>) -> crate::Result<ExitCode> {
     // steering failure cannot leave an abandoned proxy thread or an FF sink that
     // was never shut down.
     let plan = steering::plan_for(vendor, product, &name);
-    steering::apply(&plan, std::env::var("WINEPREFIX").ok().as_deref())?;
+    let prefix = steering::wine_prefix_from(
+        std::env::var("WINEPREFIX").ok().as_deref(),
+        std::env::var("STEAM_COMPAT_DATA_PATH").ok().as_deref(),
+    );
+    match &prefix {
+        Some(p) => eprintln!("logi-ffb: hiding {name:?} from DirectInput in {p}"),
+        None => eprintln!(
+            "logi-ffb: no Wine prefix known (WINEPREFIX and STEAM_COMPAT_DATA_PATH unset); a DirectInput game may list the real wheel too, bind it to {:?}",
+            crate::descriptor::VIRTUAL_NAME
+        ),
+    }
+    steering::apply(&plan, prefix.as_deref())?;
 
     let mut proxy = Proxy::new(paths)?;
     let stop = Arc::new(AtomicBool::new(false));

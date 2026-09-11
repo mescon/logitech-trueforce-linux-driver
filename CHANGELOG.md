@@ -7,6 +7,17 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**A DirectInput game no longer finds two wheels under Steam.** logi-ffb hides
+the real wheel from Wine's DirectInput by marking it disabled in the
+prefix's registry, but it looked for the prefix in `WINEPREFIX` only, which
+Steam never sets, so under Proton that step was skipped on every launch and
+a DirectInput-only title could bind the real wheel, which has no force
+feedback through Wine (#92, RaceRoom on an RS50: input fine, force meter
+moving, rim dead). The prefix now also comes from Steam's
+`STEAM_COMPAT_DATA_PATH`, a prefix Proton has not built yet is left alone,
+and logi-ffb says which prefix it steered. Until then, binding the game's
+steering to `logi-ffb Virtual Wheel` by hand does the same.
+
 **A game's steering lock moves the wheel again.** The driver undid every
 rotation range the SDK pushed, which was right when the SDK pushed a blind
 90 degrees because nothing answered its rotation question, and wrong once

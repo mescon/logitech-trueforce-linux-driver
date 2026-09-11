@@ -64,10 +64,33 @@ fn disable_line(name: &str) -> String {
     format!("\"{name}\"=\"disabled\"")
 }
 
+/// The Wine prefix this launch will run in, from the environment a game
+/// wrapper sees: `WINEPREFIX` when the user or a script set one, else the
+/// `pfx` directory under Steam's `STEAM_COMPAT_DATA_PATH`. Steam never sets
+/// `WINEPREFIX` for the command it runs; Proton derives the prefix from the
+/// compat data path itself, so a wrapper that only honours `WINEPREFIX`
+/// silently skips the registry steering on every Steam launch and leaves a
+/// DirectInput-only game free to bind the real wheel, which has no force
+/// feedback through Wine (#92).
+pub fn wine_prefix_from(wineprefix: Option<&str>, compat_data_path: Option<&str>) -> Option<String> {
+    match wineprefix {
+        Some(p) if !p.is_empty() => return Some(p.to_string()),
+        _ => {}
+    }
+    match compat_data_path {
+        Some(p) if !p.is_empty() => Some(format!("{}/pfx", p.trim_end_matches('/'))),
+        _ => None,
+    }
+}
+
 /// Apply `plan` to a Wine prefix: if `wineprefix` is `Some(path)`, ensure
 /// `<path>/user.reg` disables `plan.reg_disable_name` in DirectInput. If the
 /// disable line is already present, nothing is written (idempotent). If
-/// `wineprefix` is `None`, this is a no-op (env-only steering).
+/// `wineprefix` is `None`, this is a no-op (env-only steering). A prefix
+/// with no `user.reg` yet is one Proton has not created; it gets nothing
+/// written into it (Proton builds a prefix from scratch and a stray file
+/// there would make it look half-made), so the line lands on the next
+/// launch instead.
 pub fn apply(plan: &Plan, wineprefix: Option<&str>) -> Result<()> {
     let Some(prefix) = wineprefix else {
         return Ok(());
@@ -78,7 +101,7 @@ pub fn apply(plan: &Plan, wineprefix: Option<&str>) -> Result<()> {
 
     let existing = match fs::read_to_string(&reg_path) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(Error::Io(format!("read {}", reg_path.display()), e)),
     };
 
@@ -140,6 +163,31 @@ mod tests {
     fn apply_is_noop_without_a_wineprefix() {
         let p = plan_for(0x046d, 0xc276, "Logitech RS50 Base for PlayStation/PC");
         assert!(apply(&p, None).is_ok());
+    }
+
+    #[test]
+    fn the_prefix_comes_from_wineprefix_then_steams_compat_data_path() {
+        // Steam sets only STEAM_COMPAT_DATA_PATH for the command it runs.
+        assert_eq!(wine_prefix_from(None, Some("/data/compat/211500")), Some("/data/compat/211500/pfx".to_string()));
+        assert_eq!(wine_prefix_from(None, Some("/data/compat/211500/")), Some("/data/compat/211500/pfx".to_string()));
+        // A prefix set by hand wins over Steam's.
+        assert_eq!(wine_prefix_from(Some("/home/me/pfx"), Some("/data/compat/211500")), Some("/home/me/pfx".to_string()));
+        // Empty strings count as unset, the way a `VAR= cmd` launch leaves them.
+        assert_eq!(wine_prefix_from(Some(""), Some("")), None);
+        assert_eq!(wine_prefix_from(None, None), None);
+    }
+
+    #[test]
+    fn apply_leaves_a_prefix_without_a_registry_alone() {
+        let dir = std::env::temp_dir().join(format!("logi-ffb-steering-fresh-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let p = plan_for(0x046d, 0xc276, "Logitech RS50 Base for PlayStation/PC");
+        apply(&p, Some(dir.to_str().unwrap())).unwrap();
+        assert!(!dir.join("user.reg").exists(), "a prefix Proton has not built must not get a user.reg from us");
+        // And a prefix directory that does not exist at all is not an error either.
+        let missing = dir.join("missing");
+        apply(&p, Some(missing.to_str().unwrap())).unwrap();
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
