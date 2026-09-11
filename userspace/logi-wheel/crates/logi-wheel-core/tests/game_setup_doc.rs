@@ -18,9 +18,10 @@ use logi_wheel_core::games::{
 };
 use std::path::PathBuf;
 
-/// The two wheel classes the recipes differ between. There is no third:
-/// what changes a recipe is whether the wheel answers Logitech's TrueForce
-/// SDK, and that splits the supported wheels exactly here.
+/// The two wheel classes the recipes differ between. The doc's columns key
+/// on `sdk_trueforce` alone, so the Xbox edition of the G923 shares the
+/// direct-drive column: it answers Logitech's TrueForce SDK too, even
+/// though it drives it over a different route than RS50 or G PRO.
 const CLASSES: [(&str, WheelCaps); 2] = [
     ("RS50 / G PRO", WheelCaps::direct_drive()),
     ("G923", WheelCaps::classic()),

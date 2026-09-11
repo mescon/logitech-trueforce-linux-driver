@@ -340,7 +340,7 @@ impl RevLeds {
 ///
 /// So the smallest honest unit of support is the (game, wheel) pair. This
 /// carries the wheel half of it, as capabilities rather than a model name,
-/// so adding a wheel means teaching [`WheelCaps::of`] about it and nothing
+/// so adding a wheel means teaching [`WheelCaps::for_wheel`] about it and nothing
 /// in the registry has to change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WheelCaps {
