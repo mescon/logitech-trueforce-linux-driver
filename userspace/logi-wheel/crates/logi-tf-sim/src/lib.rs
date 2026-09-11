@@ -46,6 +46,7 @@ pub mod g923;
 pub mod game_gain;
 pub mod lease;
 pub mod leds;
+pub mod native_session;
 pub mod pcars;
 pub mod screen;
 pub use logi_wheel_core::relay;

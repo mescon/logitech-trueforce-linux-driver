@@ -479,13 +479,21 @@ fn targets_direct_drive(cfg: &Config) -> bool {
 }
 
 /// Whether `id`'s own TrueForce reaches the wheel this daemon drives, so
-/// that synthesising haptics for it would double the real thing. The
-/// launcher keeps the daemon off such titles on such wheels unless the
-/// relay can feed it, and then it runs for the rev lights and the screen
-/// only; this is the daemon's own half of that rule, so it holds even when
-/// the daemon was started by hand or for another game.
+/// that synthesising haptics for it would double the real thing. Two ways
+/// to know: the daemon's own rule for a direct-drive wheel, which holds
+/// even when it was started by hand or for another game, and the
+/// launcher's session marker (`native_session`), which is how the G923
+/// Xbox edition on the SDK route says so, and which reaches a daemon that
+/// was already running when the game started.
 fn native_trueforce_here(cfg: &Config, id: &str) -> bool {
+    native_trueforce_here_in(cfg, id, &crate::lease::dir())
+}
+
+fn native_trueforce_here_in(cfg: &Config, id: &str, marker_dir: &std::path::Path) -> bool {
     use logi_wheel_core::games::{by_live_id, WheelCaps};
+    if crate::native_session::marker_path_in(marker_dir, id).exists() {
+        return true;
+    }
     if !targets_direct_drive(cfg) {
         return false;
     }
@@ -1482,5 +1490,15 @@ mod lights_only_tests {
         assert!(!native_trueforce_here(&dd, "assetto"), "the original AC has no TrueForce of its own");
         let g923 = Config { wheel: logi_wheel_core::tfsim::WheelChoice::G923, ..Config::default() };
         assert!(!native_trueforce_here(&g923, "acc"));
+
+        // The Xbox edition on the SDK route: the launcher's session marker
+        // says the game's own TrueForce reaches this wheel, so no haptics.
+        let dir = std::env::temp_dir().join(format!("logi-native-daemon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!native_trueforce_here_in(&g923, "ac-evo", &dir));
+        std::fs::write(crate::native_session::marker_path_in(&dir, "ac-evo"), b"").unwrap();
+        assert!(native_trueforce_here_in(&g923, "ac-evo", &dir));
+        assert!(!native_trueforce_here_in(&g923, "assetto", &dir), "another title is unaffected");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
