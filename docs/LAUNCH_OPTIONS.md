@@ -474,6 +474,7 @@ to be told:
 ```
 logi-launch --wheel dd %command%      # the RS50 or G PRO
 logi-launch --wheel g923 %command%    # the G923
+logi-launch --wheel xbox %command%    # the G923 Xbox edition, on the SDK route
 ```
 
 That choice also aims `logi-tf-sim` at the same wheel, so the game and the
