@@ -496,10 +496,15 @@ fi
 # this only passes on the answer this script already has. A value set by
 # hand wins over both.
 if [ -z "${LOGI_TF_CAPTURE:-}" ]; then
-	case "$named_wheel" in
-	g923|classic) export LOGI_TF_CAPTURE=1 ;;
-	dd|direct-drive|rs50|gpro) export LOGI_TF_CAPTURE=0 ;;
-	esac
+	if [ -n "$hidraw_granted" ]; then
+		# Raw HID means the SDK's own stream already reaches the wheel, so a captured copy must never be replayed on top of it.
+		export LOGI_TF_CAPTURE=0
+	else
+		case "$named_wheel" in
+		g923|classic) export LOGI_TF_CAPTURE=1 ;;
+		dd|direct-drive|rs50|gpro) export LOGI_TF_CAPTURE=0 ;;
+		esac
+	fi
 fi
 
 # The kernel texture merge: the driver mixes an engine-note texture into
@@ -696,6 +701,8 @@ fi
 # the marker is what tells it on the G923 Xbox edition, and it reaches a
 # daemon that is already running. Same directory as the daemon's stream
 # lease, same fallbacks (logi-tf-sim's native_session and lease modules).
+# Written whenever raw HID is granted, whether or not this launch is the
+# one starting the daemon: the marker describes the session, not that.
 native_marker=""
 if [ -n "${LOGI_WHEEL_RUNTIME_DIR:-}" ]; then
 	marker_dir="$LOGI_WHEEL_RUNTIME_DIR"
@@ -709,7 +716,7 @@ if [ -n "$want_relay" ] && [ "$want_relay" != "none" ]; then
 	# off for this title; it is ours to clear before deciding afresh.
 	safe_id=$(printf '%s' "$want_relay" | tr -c 'A-Za-z0-9._-\n' '-')
 	rm -f "$marker_dir/native.$safe_id" 2>/dev/null
-	if [ -n "$hidraw_granted" ] && [ "${want_tfsim:-1}" = "1" ]; then
+	if [ -n "$hidraw_granted" ]; then
 		mkdir -p "$marker_dir" 2>/dev/null
 		if : > "$marker_dir/native.$safe_id" 2>/dev/null; then
 			native_marker="$marker_dir/native.$safe_id"
