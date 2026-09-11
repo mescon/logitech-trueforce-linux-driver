@@ -344,38 +344,70 @@ impl RevLeds {
 /// in the registry has to change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WheelCaps {
-    /// Whether the wheel answers Logitech's TrueForce SDK, so a game's own
-    /// TrueForce can reach it through the shim. True on the direct-drive
-    /// family (RS50, G PRO), false on the G923, whose force feedback is the
-    /// older classic protocol and whose SDK path has never worked.
+    /// Whether the wheel follows Logitech's TrueForce SDK stream, so a
+    /// game's own force and TrueForce can reach it through the SDK library
+    /// over raw HID. True on the direct-drive family (RS50, G PRO) and on
+    /// the G923 Xbox edition, whose firmware follows the stream's torque
+    /// (issue #81); false on the PlayStation G923, whose force feedback is
+    /// the older classic protocol.
     pub sdk_trueforce: bool,
+    /// Whether the kernel may merge its own texture into that stream. Only
+    /// where the SDK sends none: the direct-drive wheels in AC EVO. The
+    /// Xbox edition's SDK packets already carry real texture, so merging
+    /// ours there would double it.
+    pub texture_merge: bool,
 }
 
 impl WheelCaps {
-    /// The capabilities of `model`.
-    pub fn of(model: WheelModel) -> Self {
-        WheelCaps {
-            sdk_trueforce: match model {
-                WheelModel::Rs50 | WheelModel::GPro => true,
-                WheelModel::G923 => false,
-                // A wheel is attached and we could not name it from either
-                // its product id or its input name. The two ways of being
-                // wrong here do not cost the same: recommending the SDK
-                // path to a wheel that cannot take it loses that owner
-                // force feedback, while withholding it from one that could
-                // loses only an enhancement they can still turn on by
-                // hand. So an unidentified wheel gets the answer that
-                // cannot make things worse.
-                WheelModel::Unknown => false,
+    /// The direct-drive family.
+    pub const fn direct_drive() -> Self {
+        WheelCaps { sdk_trueforce: true, texture_merge: true }
+    }
+
+    /// The G923 Xbox edition on the SDK route.
+    pub const fn xbox_sdk() -> Self {
+        WheelCaps { sdk_trueforce: true, texture_merge: false }
+    }
+
+    /// A wheel the SDK cannot drive.
+    pub const fn classic() -> Self {
+        WheelCaps { sdk_trueforce: false, texture_merge: false }
+    }
+
+    /// The capabilities of a wheel of `model` with product id `pid`.
+    ///
+    /// The two G923 editions share a model (their settings, pedals and
+    /// labels are handled by product id and name elsewhere) but not a
+    /// route: only the Xbox edition (`c26e`, and `c26d` before its mode
+    /// switch) follows the SDK stream. A G923 whose product id is unknown
+    /// (found by name only) is treated as classic, the answer that cannot
+    /// cost an owner force feedback.
+    pub fn for_wheel(model: WheelModel, pid: Option<u16>) -> Self {
+        match model {
+            WheelModel::Rs50 | WheelModel::GPro => Self::direct_drive(),
+            WheelModel::G923 => match pid {
+                Some(0xc26e) | Some(0xc26d) => Self::xbox_sdk(),
+                _ => Self::classic(),
             },
+            // A wheel is attached and we could not name it from either
+            // its product id or its input name. Recommending the SDK
+            // path to a wheel that cannot take it loses that owner
+            // force feedback, while withholding it from one that could
+            // loses only an enhancement they can still turn on by hand.
+            WheelModel::Unknown => Self::classic(),
         }
+    }
+
+    /// The capabilities of `model` when its product id is not known.
+    pub fn of(model: WheelModel) -> Self {
+        Self::for_wheel(model, None)
     }
 
     /// What to assume with no wheel detected: the direct-drive family, the
     /// wheels this driver was written for. A front-end with nothing plugged
     /// in is describing the general case, not advising a specific owner.
     pub const fn assumed() -> Self {
-        WheelCaps { sdk_trueforce: true }
+        Self::direct_drive()
     }
 }
 
@@ -1238,13 +1270,16 @@ impl LaunchPlan {
 /// [`hidraw_scope`](LaunchPlan::hidraw_scope): every front-end that renders
 /// or prints a plan goes through this one function, so the sentence the
 /// Setup pages show and the value `logi-launch` sets cannot drift apart.
+///
+/// Whole-caps equality, so on a rig with a direct-drive wheel and an Xbox
+/// G923 each class scopes to its own wheel.
 pub fn hidraw_scope_for<S: crate::sysfs::SysfsIo>(
     wheels: &[crate::Device<S>],
     caps: WheelCaps,
 ) -> Option<String> {
     wheels
         .iter()
-        .filter(|d| d.wheel_caps().sdk_trueforce == caps.sdk_trueforce)
+        .filter(|d| d.wheel_caps() == caps)
         .filter_map(|d| d.product_id())
         .find(|pid| {
             crate::device::DD_PIDS.contains(pid) || crate::device::G923_PIDS.contains(pid)
@@ -1275,11 +1310,29 @@ mod tests {
     use super::*;
     use crate::tfsim;
 
-    const DD: WheelCaps = WheelCaps { sdk_trueforce: true };
-    const G923: WheelCaps = WheelCaps { sdk_trueforce: false };
+    const DD: WheelCaps = WheelCaps::direct_drive();
+    const G923: WheelCaps = WheelCaps::classic();
+    const XBOX: WheelCaps = WheelCaps::xbox_sdk();
 
     fn acc() -> &'static GameCompat {
         compat_for_appid(805550).expect("Assetto Corsa Competizione is in the registry")
+    }
+
+    #[test]
+    fn caps_follow_the_product_id_inside_the_g923_model() {
+        use crate::device::WheelModel;
+        assert_eq!(WheelCaps::for_wheel(WheelModel::Rs50, Some(0xc276)), WheelCaps::direct_drive());
+        assert_eq!(WheelCaps::for_wheel(WheelModel::GPro, Some(0xc272)), WheelCaps::direct_drive());
+        // The Xbox edition answers the SDK and streams real texture itself.
+        assert_eq!(WheelCaps::for_wheel(WheelModel::G923, Some(0xc26e)), WheelCaps::xbox_sdk());
+        assert_eq!(WheelCaps::for_wheel(WheelModel::G923, Some(0xc26d)), WheelCaps::xbox_sdk());
+        // The PlayStation editions, and a G923 known only by name, stay classic.
+        assert_eq!(WheelCaps::for_wheel(WheelModel::G923, Some(0xc266)), WheelCaps::classic());
+        assert_eq!(WheelCaps::for_wheel(WheelModel::G923, None), WheelCaps::classic());
+        assert_eq!(WheelCaps::for_wheel(WheelModel::Unknown, None), WheelCaps::classic());
+        assert_eq!(WheelCaps::of(WheelModel::G923), WheelCaps::classic());
+        assert!(WheelCaps::xbox_sdk().sdk_trueforce && !WheelCaps::xbox_sdk().texture_merge);
+        assert!(WheelCaps::direct_drive().texture_merge);
     }
 
     /// The two wheels must get DIFFERENT recipes for the same game, which
@@ -1731,7 +1784,7 @@ mod tests {
 
     #[test]
     fn setup_action_classifies_each_ffb_and_sim_combination() {
-        let dd = WheelCaps { sdk_trueforce: true };
+        let dd = WheelCaps::direct_drive();
         let action = |name: &str| GAMES.iter().find(|g| g.name == name).unwrap().setup_action(dd);
         // Native-TrueForce sims want the shim.
         assert_eq!(action("Assetto Corsa Competizione"), SetupAction::InstallShim);
@@ -1799,7 +1852,7 @@ mod tests {
     #[test]
     fn directinput_recipe_does_not_vary_by_wheel() {
         let lmu = match_title("Le Mans Ultimate").unwrap();
-        for caps in [WheelCaps { sdk_trueforce: true }, WheelCaps { sdk_trueforce: false }] {
+        for caps in [WheelCaps::direct_drive(), WheelCaps::xbox_sdk(), WheelCaps::classic()] {
             assert_eq!(lmu.setup_action(caps), SetupAction::UseLogiFfb);
             assert_eq!(lmu.launch_options(caps), Some(LAUNCH_LOGI_FFB));
         }
@@ -1811,7 +1864,7 @@ mod tests {
     #[test]
     fn every_offered_launch_option_is_pasteable() {
         for g in GAMES {
-            for caps in [WheelCaps { sdk_trueforce: true }, WheelCaps { sdk_trueforce: false }] {
+            for caps in [WheelCaps::direct_drive(), WheelCaps::xbox_sdk(), WheelCaps::classic()] {
                 if let Some(opts) = g.launch_options(caps) {
                     assert!(opts.contains("%command%"), "{}: {opts}", g.name);
                 }
@@ -1829,8 +1882,8 @@ mod tests {
     /// worse than no prose, so the rules are checked here.
     #[test]
     fn every_recipe_agrees_with_what_the_app_will_do() {
-        let dd = WheelCaps { sdk_trueforce: true };
-        let classic = WheelCaps { sdk_trueforce: false };
+        let dd = WheelCaps::direct_drive();
+        let classic = WheelCaps::classic();
         let mut problems = Vec::new();
 
         for g in GAMES {

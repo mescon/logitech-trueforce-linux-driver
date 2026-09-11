@@ -22,8 +22,8 @@ use std::path::PathBuf;
 /// what changes a recipe is whether the wheel answers Logitech's TrueForce
 /// SDK, and that splits the supported wheels exactly here.
 const CLASSES: [(&str, WheelCaps); 2] = [
-    ("RS50 / G PRO", WheelCaps { sdk_trueforce: true }),
-    ("G923", WheelCaps { sdk_trueforce: false }),
+    ("RS50 / G PRO", WheelCaps::direct_drive()),
+    ("G923", WheelCaps::classic()),
 ];
 
 fn doc_path() -> PathBuf {
@@ -191,16 +191,16 @@ fn render() -> String {
         "- **Install the shim.** Stage Logitech's signed SDK DLLs into the \
          game's Proton prefix, from the app's Setup page or \
          `tools/install-tf-shim.sh`. {}\n",
-        acc.setup_line(WheelCaps { sdk_trueforce: true })
+        acc.setup_line(WheelCaps::direct_drive())
     ));
     out.push_str(&format!(
         "- **On a wheel with no SDK TrueForce.** {}\n",
-        acc.setup_line(WheelCaps { sdk_trueforce: false })
+        acc.setup_line(WheelCaps::classic())
     ));
     let lmu = games::match_title("Le Mans Ultimate").expect("registry has Le Mans Ultimate");
     out.push_str(&format!(
         "- **Launch via logi-ffb.** {}\n",
-        lmu.setup_line(WheelCaps { sdk_trueforce: true })
+        lmu.setup_line(WheelCaps::direct_drive())
     ));
     out.push_str(
         "- **Nothing to do.** The wheel is an ordinary Linux force feedback \
@@ -271,8 +271,8 @@ fn a_native_trueforce_title_never_reads_as_needing_the_simulated_kind() {
 #[test]
 fn the_two_wheel_columns_actually_differ_for_sdk_titles() {
     let acc = games::match_title("Assetto Corsa Competizione").unwrap();
-    let dd = recipe_cell(acc, WheelCaps { sdk_trueforce: true });
-    let classic = recipe_cell(acc, WheelCaps { sdk_trueforce: false });
+    let dd = recipe_cell(acc, WheelCaps::direct_drive());
+    let classic = recipe_cell(acc, WheelCaps::classic());
     assert_ne!(dd, classic);
     // The direct-drive column installs the shim and launches through
     // logi-launch; it never shows a bare PROTON_ENABLE_HIDRAW, which is

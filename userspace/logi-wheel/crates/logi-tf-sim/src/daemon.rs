@@ -489,7 +489,7 @@ fn native_trueforce_here(cfg: &Config, id: &str) -> bool {
     if !targets_direct_drive(cfg) {
         return false;
     }
-    by_live_id(id).is_some_and(|g| g.native_trueforce_reaches(WheelCaps { sdk_trueforce: true }))
+    by_live_id(id).is_some_and(|g| g.native_trueforce_reaches(WheelCaps::direct_drive()))
 }
 
 struct Active {
