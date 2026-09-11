@@ -1107,8 +1107,13 @@ impl LaunchPlan {
             // 127.0.0.1:20780 feeds logi-rpm-bridge and therefore the
             // merge (docs/SHARED_MEMORY_RELAY.md, "The relay datagram is
             // a generic RPM contract"), so widening this gate to another
-            // title needs only a validated producer for it.
-            if plan.hidraw == Some(true) && game.simulated_tf.live_id() == Some("ac-evo") {
+            // title needs only a validated producer for it. And only on a
+            // wheel whose SDK stream carries no texture of its own
+            // (`caps.texture_merge`): the G923 Xbox edition's does, so it
+            // gets this route without the merge.
+            if plan.hidraw == Some(true) && caps.texture_merge
+                && game.simulated_tf.live_id() == Some("ac-evo")
+            {
                 plan.texture_merge = true;
             }
             // With the merge, the bridge already drives the rev lights, so
@@ -1356,6 +1361,15 @@ mod tests {
         // feedback, and the owner has no way to tell that is what happened.
         assert_ne!(classic.hidraw, Some(true), "PROTON_ENABLE_HIDRAW on a G923 kills its force feedback");
         assert!(classic.tfsim, "the G923's only TrueForce here is the simulated kind");
+
+        // On a non-AC-EVO SDK title the Xbox edition's recipe equals the
+        // direct-drive one exactly: raw HID on, the daemon for lights and
+        // the screen only from the relay. The two routes diverge only on
+        // AC EVO, the one title with a validated texture to merge (see
+        // `the_xbox_edition_gets_the_sdk_route_without_the_merge`).
+        let xbox = LaunchPlan::for_game(acc(), XBOX, false);
+        assert_ne!(xbox, classic, "the Xbox edition is not the classic recipe");
+        assert_eq!(xbox, dd, "same recipe as direct drive here; only AC EVO's merge tells them apart");
     }
 
     /// With several kinds of wheel attached and none named, the harmful
@@ -1934,5 +1948,26 @@ mod tests {
         assert!(Confidence::Unknown.is_provisional());
         assert!(!Confidence::Verified.is_provisional());
         assert!(!Confidence::Documented.is_provisional());
+    }
+
+    /// The Xbox edition takes the direct-drive route minus the merge: raw
+    /// HID for the SDK, the daemon for lights and screen only, and no
+    /// kernel texture on top of the real one the SDK already streams.
+    #[test]
+    fn the_xbox_edition_gets_the_sdk_route_without_the_merge() {
+        let evo = GAMES.iter().find(|g| g.simulated_tf.live_id() == Some("ac-evo")).expect("AC EVO");
+        let xbox = LaunchPlan::for_game(evo, XBOX, false);
+        assert_eq!(xbox.hidraw, Some(true));
+        assert!(!xbox.texture_merge, "the SDK already streams texture on this wheel");
+        assert!(xbox.tfsim && xbox.relay == Some("ac-evo"), "lights and screen from the escape proxy's relay");
+        assert!(xbox.describe().contains("haptics off"), "{}", xbox.describe());
+
+        let dd = LaunchPlan::for_game(evo, DD, false);
+        assert!(dd.texture_merge, "the direct-drive recipe is unchanged");
+
+        let acc = LaunchPlan::for_game(acc(), XBOX, false);
+        assert_eq!(acc.hidraw, Some(true));
+        assert!(!acc.texture_merge);
+        assert!(acc.tfsim && acc.relay == Some("acc"));
     }
 }
