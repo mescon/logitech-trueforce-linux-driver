@@ -502,12 +502,15 @@ fn native_trueforce_here_in(cfg: &Config, id: &str, marker_dir: &std::path::Path
 
 /// Whether the captured-TrueForce path may open a stream this tick.
 ///
-/// Captured samples carry no game id of their own, so this keys off
-/// whichever game's telemetry was seen in the same tick, the same as the
-/// synthesis paths above. A launcher normally turns capture off once raw
-/// HID is granted, but a hand-set `LOGI_TF_CAPTURE=1` or a stray packet
-/// must still not be allowed to open a stream doubling a session the
-/// marker already says is native.
+/// Captured samples carry no game id of their own, and they arrive on
+/// their own socket, so most ticks that carry one carry no telemetry and
+/// the first burst can come before the relay has named the game at all.
+/// The decision therefore cannot lean on this tick's telemetry alone: any
+/// session marker in the lease directory means a raw-HID SDK session has
+/// the wheel, and refuses the open outright. When a game is named this
+/// tick, the direct-drive rule applies as well. A launcher normally turns
+/// capture off once raw HID is granted, but a hand-set `LOGI_TF_CAPTURE=1`
+/// or a stray packet must still not open a stream doubling a native one.
 fn captured_stream_wanted(cfg: &Config, latest: Option<(&str, Telemetry)>) -> bool {
     captured_stream_wanted_in(cfg, latest, &crate::lease::dir())
 }
@@ -517,6 +520,9 @@ fn captured_stream_wanted_in(
     latest: Option<(&str, Telemetry)>,
     marker_dir: &std::path::Path,
 ) -> bool {
+    if crate::native_session::any_active_in(marker_dir) {
+        return false;
+    }
     !latest.is_some_and(|(id, _)| native_trueforce_here_in(cfg, id, marker_dir))
 }
 
@@ -1544,8 +1550,12 @@ mod lights_only_tests {
             "the marker says this game's own TrueForce is already on the wheel"
         );
         assert!(
-            captured_stream_wanted_in(&g923, Some(("assetto", Telemetry::default())), &dir),
-            "another title's marker does not apply here"
+            !captured_stream_wanted_in(&g923, None, &dir),
+            "captured samples come on their own socket: a tick without telemetry, or before the game is named, still sees the marker"
+        );
+        assert!(
+            !captured_stream_wanted_in(&g923, Some(("assetto", Telemetry::default())), &dir),
+            "captured samples carry no game id, so any live marker refuses them"
         );
 
         std::fs::remove_dir_all(&dir).unwrap();

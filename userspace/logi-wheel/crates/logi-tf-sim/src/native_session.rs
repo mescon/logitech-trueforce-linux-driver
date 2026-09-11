@@ -23,9 +23,35 @@ pub fn marker_path_in(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("native.{safe}"))
 }
 
+/// Whether any session marker exists in `dir`, whatever its id.
+///
+/// Captured SDK samples carry no game id, and a burst can arrive before
+/// the relay has named the game at all, so a decision about them cannot
+/// wait for telemetry: any live marker means a raw-HID SDK session has the
+/// wheel, and that is enough to refuse a second writer. An unreadable
+/// directory counts as no marker.
+pub fn any_active_in(dir: &Path) -> bool {
+    std::fs::read_dir(dir).map_or(false, |entries| {
+        entries.flatten().any(|e| e.file_name().to_string_lossy().starts_with("native."))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn any_active_sees_a_marker_of_any_id_and_nothing_else() {
+        let dir = std::env::temp_dir().join(format!("logi-native-any-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!any_active_in(&dir), "empty directory");
+        std::fs::write(dir.join("lease"), b"").unwrap();
+        assert!(!any_active_in(&dir), "the stream lease is not a session marker");
+        std::fs::write(marker_path_in(&dir, "ac-evo"), b"").unwrap();
+        assert!(any_active_in(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!any_active_in(&dir), "a missing directory is no marker");
+    }
 
     #[test]
     fn the_marker_is_a_file_named_after_the_live_id() {

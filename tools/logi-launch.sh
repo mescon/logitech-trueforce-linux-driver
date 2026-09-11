@@ -497,7 +497,8 @@ fi
 # hand wins over both.
 if [ -z "${LOGI_TF_CAPTURE:-}" ]; then
 	if [ -n "$hidraw_granted" ]; then
-		# Raw HID means the SDK's own stream already reaches the wheel, so a captured copy must never be replayed on top of it.
+		# Raw HID means the SDK's own stream already reaches the wheel,
+		# so a captured copy must never be replayed on top of it.
 		export LOGI_TF_CAPTURE=0
 	else
 		case "$named_wheel" in
