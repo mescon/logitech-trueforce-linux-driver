@@ -303,17 +303,6 @@ fn report_hidpp_features(device: &Device<logi_wheel_core::sysfs::RealSysfs>) {
     }
 }
 
-/// Try each known way of driving a wheel's rev strip, one at a time, and
-/// let the person watching say which one worked.
-///
-/// Written because the feature map cannot answer this. The PlayStation G923
-/// implements 0x807A and yet obeys the classic lg4ff command instead, so
-/// "has LIGHTSYNC" does not imply "lights up when spoken to that way". On a
-/// wheel nobody here owns, watching the rim is the only reliable evidence.
-///
-/// This WRITES to the wheel, unlike `--hidpp-features`. It only ever sends
-/// LED commands: nothing here produces force, and every test turns the
-/// lights off again afterwards.
 /// The plan's `wheel=` value for a set of capabilities: the launcher only
 /// logs it, but a person reading that log should see which recipe ran.
 fn wheel_class_name(caps: logi_wheel_core::games::WheelCaps) -> &'static str {
@@ -466,6 +455,17 @@ fn launch_plan_list() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Try each known way of driving a wheel's rev strip, one at a time, and
+/// let the person watching say which one worked.
+///
+/// Written because the feature map cannot answer this. The PlayStation G923
+/// implements 0x807A and yet obeys the classic lg4ff command instead, so
+/// "has LIGHTSYNC" does not imply "lights up when spoken to that way". On a
+/// wheel nobody here owns, watching the rim is the only reliable evidence.
+///
+/// This WRITES to the wheel, unlike `--hidpp-features`. It only ever sends
+/// LED commands: nothing here produces force, and every test turns the
+/// lights off again afterwards.
 fn led_probe(only: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     use logi_wheel_core::hidpp;
     use std::io::Write;
