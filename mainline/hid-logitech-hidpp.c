@@ -17561,6 +17561,9 @@ static void hidpp_dd_texmerge_restore_work(struct work_struct *work)
  * tm_shim_lock (the outer, ff-level lock) is never taken from here - doing
  * so would invert against the shim->lock this runs under.
  */
+/* The operating range the SDK pushes when nothing answered its rotation question. */
+#define HIDPP_DD_SDK_BLIND_RANGE_DEG	90
+
 static void hidpp_dd_texmerge_seen_range_push(struct hidpp_dd_ff_data *ff,
 					      const u8 *buf)
 {
@@ -17577,6 +17580,19 @@ static void hidpp_dd_texmerge_seen_range_push(struct hidpp_dd_ff_data *ff,
 	u16 cur;
 
 	if (!deg || deg > 2700)
+		return;
+
+	/*
+	 * Only the pathology is undone. 90 is what the SDK pushes when its
+	 * rotation question went unanswered (the blind default, captured on
+	 * the RS50 and the G923 Xbox edition). Any other value is a game
+	 * applying its configured steering lock through an SDK that WAS
+	 * answered, which is what the wheel does on Windows, and an owner
+	 * with the proxy staged rightly expects the game's steer lock to
+	 * move the wheel (issue #91). Undoing every push, as this did
+	 * before, made the game's setting a no-op on Linux.
+	 */
+	if (deg != HIDPP_DD_SDK_BLIND_RANGE_DEG)
 		return;
 
 	/* the user's detect-only opt-out covers the push-triggered restore too */

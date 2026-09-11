@@ -237,6 +237,12 @@ restore performed when the interceptor sees the SDK's type-`0x0e`
 range push directly (`docs/TRUEFORCE_PROTOCOL.md`): `0` means
 detect-only for both mechanisms, not just the poll-based one.
 
+Both mechanisms act only on a push of exactly 90 degrees, the value the
+SDK sends when nothing answered its rotation question. Any other pushed
+value is a game applying its own steering lock through an SDK that was
+answered (the launcher's proxy does that), and it is left in place so the
+game's setting moves the wheel as it does on Windows.
+
 ### wheel_strength
 **Access**: Read/Write
 **Values**: `0` to `100` (percentage)

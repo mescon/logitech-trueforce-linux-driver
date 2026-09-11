@@ -5,6 +5,15 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**A game's steering lock moves the wheel again.** The driver undid every
+rotation range the SDK pushed, which was right when the SDK pushed a blind
+90 degrees because nothing answered its rotation question, and wrong once
+the launcher's proxy answers it: from then on the pushes are the game's
+own steering lock, and undoing them made that setting a no-op on Linux
+while it works on Windows (#91). Only a push of exactly 90 is undone now.
+
 ## 0.40.3 - 2026-09-11
 
 **The effect timer is armed from one place, under one lock (#90).** A game's
