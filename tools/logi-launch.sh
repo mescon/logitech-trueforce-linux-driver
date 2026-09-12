@@ -104,6 +104,15 @@ share_file() {
 
 say() { printf '[logi-launch] %s\n' "$*" >>"$LOG"; }
 
+# The file name the daemon's session marker takes for a live id: the id
+# reduced to plain path characters, the same rule as logi-tf-sim's
+# native_session::marker_path_in, so the two always name the same file.
+# The dash is last in the class on purpose: anywhere else tr reads it as a
+# range, and `_-\n` is a reversed one, which made tr fail, the id come out
+# empty, and every marker land as `native.` where the daemon never looked
+# (#91, two days of "the daemon ignores the marker").
+native_marker_id() { printf '%s' "$1" | tr -c 'A-Za-z0-9._\n-' '-'; }
+
 # First line of every run: which builds are in play. A daemon older than
 # the module reads like a driver fault in every log after this one.
 say "versions: module $(cat /sys/module/hid_logitech_dd/version 2>/dev/null || echo 'not loaded'), $(logi-tf-sim --version 2>/dev/null || echo 'logi-tf-sim not on PATH'), $(logi-ffb --version 2>/dev/null || echo 'logi-ffb not on PATH')"
@@ -719,13 +728,19 @@ fi
 if [ -n "$want_relay" ] && [ "$want_relay" != "none" ]; then
 	# A stale marker from a launcher that died would keep the haptics
 	# off for this title; it is ours to clear before deciding afresh.
-	safe_id=$(printf '%s' "$want_relay" | tr -c 'A-Za-z0-9._-\n' '-')
-	rm -f "$marker_dir/native.$safe_id" 2>/dev/null
-	if [ -n "$hidraw_granted" ]; then
+	safe_id=$(native_marker_id "$want_relay")
+	if [ -z "$safe_id" ]; then
+		say "could not derive a session marker name from '$want_relay'; the daemon may play its own texture over the game's"
+		want_relay_marker=0
+	else
+		want_relay_marker=1
+		rm -f "$marker_dir/native.$safe_id" 2>/dev/null
+	fi
+	if [ -n "$hidraw_granted" ] && [ "$want_relay_marker" = 1 ]; then
 		mkdir -p "$marker_dir" 2>/dev/null
 		if : > "$marker_dir/native.$safe_id" 2>/dev/null; then
 			native_marker="$marker_dir/native.$safe_id"
-			say "marked this session's TrueForce as the game's own; the daemon drives lights and screen only"
+			say "marked this session's TrueForce as the game's own ($native_marker); the daemon drives lights and screen only"
 		else
 			say "could not write $marker_dir/native.$safe_id; the daemon may play its own texture over the game's"
 		fi
