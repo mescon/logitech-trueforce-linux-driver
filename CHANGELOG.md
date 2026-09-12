@@ -7,6 +7,16 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**A DirectInput force aimed north or south reaches a one-axis wheel.**
+The kernel projects a constant or periodic level by the sine of its
+direction, so a direction of 0 or 180 degrees, which DirectInput titles
+that steer by signed magnitude commonly leave in place, played as no force
+at all through logi-ffb. Those two now land on the wheel's axis, east and
+west, with the sign relation between them kept; every other direction is
+unchanged. Suspected in #92 (RaceRoom on an RS50: every effect report
+arrived, the rim stayed dead) and confirmable from the proxy's debug log,
+which now prints each report's bytes.
+
 **The G923 Xbox edition takes the SDK route when Logitech's TrueForce
 files are in the game's prefix.** That wheel follows the SDK's stream
 (#81), and with a real copy of AC EVO and the SDK files an owner had force,

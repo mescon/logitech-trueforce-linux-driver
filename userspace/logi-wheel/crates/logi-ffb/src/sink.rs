@@ -180,6 +180,26 @@ fn write_envelope(u: &mut [u8; FF_UNION_SIZE], at: usize, p: &EffectParams) {
     u[at + 6..at + 8].copy_from_slice(&p.fade_level.to_le_bytes());
 }
 
+/// The evdev direction for a PID direction in hundredths of a degree.
+///
+/// evdev puts a one-axis wheel's force on the east-west line: the kernel
+/// projects a constant or periodic level by the sine of the direction, so
+/// 0x4000 (east) plays the level as given and 0xC000 (west) negated. A
+/// direction on the north-south line projects to nothing. DirectInput
+/// titles that drive a wheel by signed magnitude often leave the
+/// direction at 0 (north) or 180 (south), which on that projection means
+/// no force at all, so those two are turned onto the axis: north becomes
+/// east and south becomes west, which keeps the relation between the two
+/// that a game flipping direction instead of sign relies on. Every other
+/// direction is scaled as it is.
+pub fn evdev_direction(pid_hundredths: u16) -> u16 {
+    match pid_hundredths {
+        0 => 0x4000,
+        18000 => 0xC000,
+        d => ((d as u32 * 0x10000) / 36000).min(0xFFFF) as u16,
+    }
+}
+
 /// Pure conversion from a decoded effect kind + accumulated params to a
 /// kernel `ff_effect`, ready for `EVIOCSFF`. `id` should be `-1` for a new
 /// upload (the kernel assigns one) or the existing kernel-assigned id to
@@ -238,7 +258,7 @@ pub fn to_ff_effect(kind: EffectKind, params: &EffectParams, id: i16) -> ff_effe
     // the full u16 (0x4000 = 90 degrees). Without this rescale a 270-degree
     // PID direction (27000) lands in evdev's upper-left quadrant instead of
     // west, flipping the force sign for every leftward effect.
-    let direction = ((params.direction as u32 * 0x10000) / 36000).min(0xFFFF) as u16;
+    let direction = evdev_direction(params.direction);
 
     ff_effect {
         type_,
@@ -486,6 +506,15 @@ mod tests {
     use crate::pidff::EffectKind;
 
     #[test]
+    fn north_and_south_directions_land_on_the_wheel_axis() {
+        assert_eq!(evdev_direction(0), 0x4000, "north would project to zero force");
+        assert_eq!(evdev_direction(18000), 0xC000, "south likewise, with the sign kept");
+        assert_eq!(evdev_direction(9000), 0x4000, "east is east");
+        assert_eq!(evdev_direction(27000), 0xC000, "west is west");
+        assert_eq!(evdev_direction(35999), 0xFFFE);
+    }
+
+    #[test]
     fn constant_maps_type_and_level() {
         let p = EffectParams { constant_level: -8000, duration_ms: 500, ..Default::default() };
         let e = to_ff_effect(EffectKind::Constant, &p, 3);
@@ -571,8 +600,10 @@ mod tests {
         assert_eq!(to_ff_effect(EffectKind::Constant, &p, 0).direction, 0x4000);
         let p = EffectParams { direction: 27000, ..Default::default() };
         assert_eq!(to_ff_effect(EffectKind::Constant, &p, 0).direction, 0xC000);
+        // PID 0 (north) would project to no force on a one-axis wheel, so
+        // it lands on the axis instead; see evdev_direction.
         let p = EffectParams { direction: 0, ..Default::default() };
-        assert_eq!(to_ff_effect(EffectKind::Constant, &p, 0).direction, 0);
+        assert_eq!(to_ff_effect(EffectKind::Constant, &p, 0).direction, 0x4000);
     }
 
     /// A Sink over /dev/null: exercises apply()'s bookkeeping without a real

@@ -379,9 +379,11 @@ impl Proxy {
                     Ok(uhid::Event::Output(bytes)) => {
                         if debug {
                             let report_id = bytes.first().copied().unwrap_or(0);
+                            let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
                             eprintln!(
-                                "logi-ffb: debug: uhid Output len={} report_id={report_id:#04x}",
-                                bytes.len()
+                                "logi-ffb: debug: uhid Output len={} report_id={report_id:#04x} bytes={}",
+                                bytes.len(),
+                                hex.join(" ")
                             );
                         }
                         if let Some(op) = pidff::decode(&bytes) {
