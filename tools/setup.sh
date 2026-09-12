@@ -274,13 +274,29 @@ doctor() {
 			have=$("$tool" --version 2>/dev/null || echo "")
 			stamp=$(app_build_id "$tool")
 			ok "$tool on PATH (${have:-version flag unsupported})"
+			# Apps from a distribution package are updated through it, and
+			# an app from before the stamp (0.40 and earlier) still carries
+			# its release number, which is enough to compare with a
+			# packaged module of the same release.
+			local fix owner
+			owner=$(package_owning "$(command -v "$tool")" | head -1)
+			if [ -n "$owner" ]; then
+				fix="update the package '$owner'"
+			else
+				fix="run: sudo $0"
+			fi
 			if [ -z "$stamp" ]; then
-				bad "$tool carries no build stamp (older than 0.41), so it cannot be the module's build (run: sudo $0)"
+				local rel="${have##* }"
+				if [ -n "$module_id" ] && [ "${module_id#v}" = "$rel" ]; then
+					ok "$tool is release $rel, the same as the module (built before the stamp existed)"
+				else
+					bad "$tool is release $rel with no build stamp, and the module is ${module_id:-not installed}: not the same build ($fix)"
+				fi
 			elif [ -n "$module_id" ] && [ "$module_id" != "unknown" ] \
 			     && [ "${stamp#v}" != "${module_id#v}" ]; then
-				bad "$tool is build $stamp but the module is $module_id: not built from the same source (run: sudo $0)"
-			elif [ -n "$checkout_id" ] && [ "${stamp#v}" != "${checkout_id#v}" ]; then
-				bad "$tool is build $stamp but this checkout is $checkout_id (run: sudo $0)"
+				bad "$tool is build $stamp but the module is $module_id: not built from the same source ($fix)"
+			elif [ -n "$checkout_id" ] && [ -z "$owner" ] && [ "${stamp#v}" != "${checkout_id#v}" ]; then
+				bad "$tool is build $stamp but this checkout is $checkout_id ($fix)"
 			fi
 		elif [ "$tool" = "logi-wheel-gui" ]; then
 			wrn "$tool is not installed (optional: the window; the terminal app does the same job)"
