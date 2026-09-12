@@ -431,11 +431,15 @@ static int range_bounds_radians(int index, double *lo, double *hi)
 typedef int (*set_force_mode_fn)(void *handle, unsigned char mode);
 static set_force_mode_fn g_setforcemode_real;
 
+static void push_range_belief(void *handle);
+
 static int setforcemode_wrapper(void *handle, unsigned char mode)
 {
 	int st = g_setforcemode_real(handle, mode);
 	say("logiWheelSetForceMode(handle=%p, mode=%u) -> 0x%08x%s", handle, (unsigned)mode,
 	    (unsigned)st, st ? "   <- REFUSED" : "");
+	if (st == 0 && mode)
+		push_range_belief(handle);
 	return st;
 }
 
@@ -487,6 +491,57 @@ static int set_range_rad_wrapper(void *handle, double rad)
 }
 
 
+
+// ------------------------------- telling the SDK the range it never asks
+//
+// On the G923 Xbox edition the SDK renders the wheel's endstops itself, in
+// torque, at the edges of the range it believes the wheel has. It never
+// learns that range on this wheel: it does not ask the wheel (no HID++ on
+// the wire), it does not go through the exported getters answered above
+// (the wall is the same with LOGI_RANGE_FIX=0), and Assetto Corsa EVO never
+// calls the setter. So it keeps its default, which is small, and the wheel
+// gets a wall of full torque a few tens of degrees off centre while the
+// game's force is lost under it (#91, capture-proven 2026-09-12). The one
+// door into that belief is the setter, so it is told once, right after the
+// game selects the force mode, with the range the wheel really has from
+// sysfs. A game that sets its own steering lock afterwards still wins:
+// this runs once per handle, before the game's force loop.
+// LOGI_RANGE_PUSH=0 switches it off.
+static void *g_range_pushed_handle;
+
+static void push_range_belief(void *handle)
+{
+	if (handle == g_range_pushed_handle)
+		return;
+	g_range_pushed_handle = handle;
+
+	char v[8];
+	if (GetEnvironmentVariableA("LOGI_RANGE_PUSH", v, sizeof(v)) && v[0] == '0') {
+		say("range push: LOGI_RANGE_PUSH=0, leaving the SDK's own belief");
+		return;
+	}
+	int deg = wheel_range_degrees();
+	if (deg <= 0) {
+		say("range push: no range in sysfs, leaving the SDK's own belief");
+		return;
+	}
+	set_range_fn fn = g_set_range_deg_real;
+	if (!fn) {
+		HMODULE m = GetModuleHandleW(L"trueforce_sdk_x64.dll");
+		if (m)
+			fn = (set_range_fn)GetProcAddress(m, "logiWheelSetOperatingRangeDegrees");
+		// Never our own wrapper: it forwards to a real pointer that is
+		// null in exactly this case.
+		if ((void *)fn == (void *)set_range_deg_wrapper)
+			fn = nullptr;
+	}
+	if (!fn) {
+		say("range push: logiWheelSetOperatingRangeDegrees not found, leaving the SDK's own belief");
+		return;
+	}
+	int st = fn(handle, (double)deg);
+	say("range push: told the SDK the wheel's range is %d degrees -> 0x%08x", deg, (unsigned)st);
+}
 
 static volatile LONGLONG g_kf_handle = 0;   // 64-bit SDK handle from the KF stream
 typedef int (*set_torque_kf_fn)(long long handle, double torque);

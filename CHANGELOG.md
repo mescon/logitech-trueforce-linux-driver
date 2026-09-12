@@ -45,7 +45,14 @@ the rotation-answer proxy staged with its telemetry relay on, and the
 daemon running for the rev lights and the screen only, told so by a
 per-session marker it reads even when already running. No kernel texture
 merge on this wheel, whose SDK packets already carry real texture. Without
-the SDK files nothing changes.
+the SDK files nothing changes. The first clean capture on that route showed
+the SDK rendering the wheel's endstops itself, in torque, at the edges of a
+range it never learns on this wheel: it does not ask the wheel, does not go
+through the getters the proxy answers, and the game never calls the setter,
+so the rim met a wall of full torque a few tens of degrees off centre with
+the game's force lost under it. The escape proxy now tells the SDK the
+wheel's real range once, right after the game selects the force mode
+(`LOGI_RANGE_PUSH=0` switches that off).
 
 **The in-tree driver no longer gets a G923 first (#90).** When the in-tree
 hid-logitech-hidpp driver had bound a G923 and our udev rule then took the
