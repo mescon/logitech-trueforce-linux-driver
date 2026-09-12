@@ -28,9 +28,12 @@ direction, so a direction of 0 or 180 degrees, which DirectInput titles
 that steer by signed magnitude commonly leave in place, played as no force
 at all through logi-ffb. Those two now land on the wheel's axis, east and
 west, with the sign relation between them kept; every other direction is
-unchanged. Suspected in #92 (RaceRoom on an RS50: every effect report
-arrived, the rim stayed dead) and confirmable from the proxy's debug log,
-which now prints each report's bytes.
+unchanged. Found through #92 (RaceRoom on an RS50: every effect report
+arrived, the rim stayed dead) and confirmed there: the proxy's debug log,
+which now prints each report's bytes, shows RaceRoom aiming every effect at
+0 degrees, and with the fix the rim has force. The same session confirmed
+the RaceRoom telemetry decoder live for the first time: engine texture and
+rev lights from the game's shared memory, now marked verified.
 
 **The G923 Xbox edition takes the SDK route when Logitech's TrueForce
 files are in the game's prefix.** That wheel follows the SDK's stream

@@ -15,7 +15,7 @@ daemon over localhost UDP.
 | Game | State |
 |---|---|
 | iRacing | Decoder written. Unconfirmed against a live session. |
-| RaceRoom Racing Experience | Decoder written. Unconfirmed against a live session. |
+| RaceRoom Racing Experience | **Layout confirmed on a live session** (2026-09-12, RS50 under Proton, #92). |
 | Assetto Corsa | Decoder written. Layout confirmed via Competizione, which shares it. |
 | Assetto Corsa Competizione | **Confirmed end to end on a G923** (2026-08-06). |
 | Assetto Corsa EVO | **Layout confirmed on a live session** (2026-08-06). |

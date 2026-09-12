@@ -746,10 +746,11 @@ nothing to switch on in the game.",
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("raceroom"),
         setup: "Launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off. Nothing to switch on in the game.",
-        // Expected: the decoder is written against KW Studios' own published
-        // `r3e.h`, whose major version it checks in-band before reading, but
-        // nobody has yet confirmed the game publishes `$R3E` under Proton.
-        confidence: Confidence::Expected,
+        // Verified 2026-09-12 on an RS50 under Proton (#92): the relay read
+        // `$R3E`, the daemon streamed engine texture from it and drove the
+        // rev lights, and DirectInput force reached the wheel through
+        // logi-ffb once its north-facing effects were put on the axis.
+        confidence: Confidence::Verified,
     },
     GameCompat {
         name: "BeamNG.drive",

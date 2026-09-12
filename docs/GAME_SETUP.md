@@ -76,7 +76,7 @@ instead of wrapping it.
 | Le Mans Ultimate | Proton | logi-ffb | DirectInput force feedback<br>`logi-launch %command%` | DirectInput force feedback<br>`logi-launch %command%` |
 | Need for Speed: Shift | Proton | Native FFB | Nothing to do | Nothing to do |
 | Project CARS 2 | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
-| RaceRoom Racing Experience * | Proton | logi-ffb | DirectInput force feedback<br>`logi-launch %command%` | DirectInput force feedback<br>`logi-launch %command%` |
+| RaceRoom Racing Experience | Proton | logi-ffb | DirectInput force feedback<br>`logi-launch %command%` | DirectInput force feedback<br>`logi-launch %command%` |
 | Rennsport * | Proton | Native FFB | Nothing to do | Nothing to do |
 | rFactor 2 | Proton | logi-ffb | DirectInput force feedback<br>`logi-launch %command%` | DirectInput force feedback<br>`logi-launch %command%` |
 | Richard Burns Rally * | Proton | Native FFB | Nothing to do | Nothing to do |
@@ -142,7 +142,7 @@ app's Setup page afterwards.
 
 ## Confidence
 
-- **verified** (3 titles): confirmed end to end by this project
+- **verified** (4 titles): confirmed end to end by this project
 - **documented** (16 titles): documented by the vendor or a reliable community source
-- **expected** (7 titles): expected to work, not confirmed
+- **expected** (6 titles): expected to work, not confirmed
 - **unknown** (4 titles): genuinely unknown
