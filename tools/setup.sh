@@ -262,13 +262,25 @@ doctor() {
 		want=$(sed -n 's/^version = "\(.*\)"/\1/p' \
 			"$REPO_ROOT/userspace/logi-wheel/Cargo.toml" | head -1)
 	fi
-	local tool have
+	# The stamps are what is compared: an app and a module built from
+	# different sources are a fault, whatever their release numbers say.
+	local module_id checkout_id
+	module_id=$(module_build_id)
+	checkout_id=""
+	[ -n "$want" ] && checkout_id=$(checkout_build_id)
+	local tool have stamp
 	for tool in logi-wheel logi-ffb logi-tf-sim logi-wheel-gui; do
 		if command -v "$tool" >/dev/null 2>&1; then
 			have=$("$tool" --version 2>/dev/null || echo "")
+			stamp=$(app_build_id "$tool")
 			ok "$tool on PATH (${have:-version flag unsupported})"
-			if [ -n "$want" ] && [ -n "$have" ] && [ "${have##* }" != "$want" ]; then
-				wrn "$tool is ${have##* } but this checkout is $want (run: sudo $0)"
+			if [ -z "$stamp" ]; then
+				bad "$tool carries no build stamp (older than 0.41), so it cannot be the module's build (run: sudo $0)"
+			elif [ -n "$module_id" ] && [ "$module_id" != "unknown" ] \
+			     && [ "${stamp#v}" != "${module_id#v}" ]; then
+				bad "$tool is build $stamp but the module is $module_id: not built from the same source (run: sudo $0)"
+			elif [ -n "$checkout_id" ] && [ "${stamp#v}" != "${checkout_id#v}" ]; then
+				bad "$tool is build $stamp but this checkout is $checkout_id (run: sudo $0)"
 			fi
 		elif [ "$tool" = "logi-wheel-gui" ]; then
 			wrn "$tool is not installed (optional: the window; the terminal app does the same job)"
@@ -797,6 +809,25 @@ do_tools() {
 # Cargo runs as the invoking user: building as root leaves a root-owned
 # target/ that the user's next plain `cargo build` cannot write, and roots
 # ~/.cargo too.
+# The checkout's build identity: what the module (Kbuild) and the apps
+# (crates/logi-build-id) both stamp themselves with when built from here.
+checkout_build_id() {
+	git -c "safe.directory=$REPO_ROOT" -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown
+}
+
+# The stamp an installed app prints: the parenthesised part of its
+# `--version` line, empty for an app too old to carry one.
+app_build_id() {
+	"$1" --version 2>/dev/null | sed -n 's/.*(\(.*\)).*/\1/p' | head -1
+}
+
+# The loaded module's stamp, or the installed module's when not loaded.
+module_build_id() {
+	cat /sys/module/hid_logitech_dd/version 2>/dev/null \
+		|| modinfo -F version hid-logitech-dd 2>/dev/null \
+		|| true
+}
+
 do_apps() {
 	local ws="$REPO_ROOT/userspace/logi-wheel"
 	[ -d "$ws" ] || { echo "  no userspace workspace here; skipping"; return 0; }
@@ -808,10 +839,12 @@ do_apps() {
 		cargo_bin=$(command -v cargo 2>/dev/null || true)
 	fi
 	if [ -z "$cargo_bin" ]; then
-		echo "  cargo not found, so the apps cannot be built here."
-		echo "  Install Rust (https://rustup.rs, or your distro's rust package) and re-run,"
-		echo "  or install the packaged apps for your distribution instead."
-		return 0
+		echo "  cargo not found, so the apps cannot be built here." >&2
+		echo "  Install Rust (https://rustup.rs, or your distro's rust package) and re-run." >&2
+		echo "  An app left over from an older build next to this module is a fault the" >&2
+		echo "  doctor reports, not a working install; to run without the apps on purpose:" >&2
+		echo "    sudo $0 --without-apps" >&2
+		return 1
 	fi
 
 	# The terminal app, the FFB proxy and the simulated-TrueForce daemon.
@@ -822,11 +855,14 @@ do_apps() {
 	local build='cd "$1" && cargo build --release -p logi-wheel-tui -p logi-ffb -p logi-tf-sim'
 	if [ -n "${SUDO_USER:-}" ]; then
 		runuser -u "$SUDO_USER" -- sh -lc "$build" _ "$ws" || {
-			echo "  build failed; leaving any existing apps alone" >&2
-			return 0
+			echo "  build failed; the installed apps were not touched, so they may be older than the module" >&2
+			return 1
 		}
 	else
-		sh -lc "$build" _ "$ws" || { echo "  build failed" >&2; return 0; }
+		sh -lc "$build" _ "$ws" || {
+			echo "  build failed; the installed apps were not touched, so they may be older than the module" >&2
+			return 1
+		}
 	fi
 	# The truck sims' telemetry plugin. Built here rather than in
 	# do_tools because it is a crate in this workspace, and staged into
@@ -850,8 +886,25 @@ do_apps() {
 		if [ -x "$ws/target/release/$bin" ]; then
 			install -Dm 0755 "$ws/target/release/$bin" "/usr/bin/$bin"
 			echo "  installed /usr/bin/$bin"
+		else
+			echo "  $bin was not built" >&2
+			return 1
 		fi
 	done
+	# Read the stamp back from what is now on PATH. A build that did not
+	# take (a stale binary earlier on PATH, an install that went elsewhere)
+	# is exactly the state this step exists to rule out (#91).
+	local want have
+	want=$(checkout_build_id)
+	for bin in logi-wheel logi-ffb logi-tf-sim; do
+		have=$(app_build_id "$bin")
+		if [ "$have" != "$want" ]; then
+			echo "  $bin on PATH reports build '${have:-none}' but this checkout is '$want'" >&2
+			echo "  ($(command -v "$bin" 2>/dev/null || echo "not on PATH")); the install did not take" >&2
+			return 1
+		fi
+	done
+	echo "  apps stamped $want, same as the module"
 
 	# The window is optional: it needs fontconfig headers and a working
 	# graphics stack, and a headless rig has no use for it. A failure here
@@ -868,6 +921,10 @@ do_apps() {
 	if [ "$built_gui" -eq 1 ] && [ -x "$ws/target/release/logi-wheel-gui" ]; then
 		install -Dm 0755 "$ws/target/release/logi-wheel-gui" /usr/bin/logi-wheel-gui
 		echo "  installed /usr/bin/logi-wheel-gui"
+		if [ "$(app_build_id logi-wheel-gui)" != "$want" ]; then
+			echo "  logi-wheel-gui on PATH does not report build $want; the install did not take" >&2
+			return 1
+		fi
 		# The menu entry and its icon. Every distro package ships both,
 		# so without them a from-source install is the only one where
 		# the window exists but nothing in the desktop can launch it.
@@ -879,6 +936,13 @@ do_apps() {
 	else
 		echo "  skipped the window (install fontconfig's headers to get it:"
 		echo "  libfontconfig-dev on Debian/Ubuntu, fontconfig-devel on Fedora, fontconfig on Arch)"
+		# The window is optional; a window older than the module is not.
+		# One from an earlier build would keep running against sysfs it
+		# no longer matches, so it goes, and the doctor says so.
+		if [ -x /usr/bin/logi-wheel-gui ] && [ "$(app_build_id /usr/bin/logi-wheel-gui)" != "$want" ]; then
+			rm -f /usr/bin/logi-wheel-gui
+			echo "  removed the older /usr/bin/logi-wheel-gui; the terminal app does the same job"
+		fi
 	fi
 }
 
@@ -910,8 +974,27 @@ setup() {
 		exit 1
 	fi
 
+	# The apps are built after the module, but whether they can be built
+	# is known now. Finding out at step 5, with a new module already
+	# installed, would leave older apps next to it: the state #91 was
+	# spent on. So refuse before touching anything.
+	if [ "$WITHOUT_APPS" -eq 0 ]; then
+		local cargo_probe=""
+		if [ -n "${SUDO_USER:-}" ]; then
+			cargo_probe=$(runuser -u "$SUDO_USER" -- sh -lc 'command -v cargo' 2>/dev/null || true)
+		else
+			cargo_probe=$(command -v cargo 2>/dev/null || true)
+		fi
+		if [ -z "$cargo_probe" ]; then
+			echo "error: cargo not found, so the apps cannot be rebuilt to match the module." >&2
+			echo "       Install Rust (https://rustup.rs, or your distro's rust package) and re-run," >&2
+			echo "       or, to install the module alone on purpose: sudo $0 --without-apps" >&2
+			exit 1
+		fi
+	fi
+
 	say "[1/8] Kernel module (DKMS) + udev rule"
-	"$REPO_ROOT/tools/dkms-update.sh" || exit 1
+	"$REPO_ROOT/tools/dkms-update.sh" --module-only || exit 1
 
 	say "[2/8] Migrating off any old full-fork install"
 	# The old build shipped its module as hid-logitech-hidpp - the SAME
@@ -981,7 +1064,15 @@ setup() {
 	do_tools || true
 
 	say "[5/8] Settings apps"
-	do_apps || true
+	if [ "$WITHOUT_APPS" -eq 1 ]; then
+		echo "  skipped (--without-apps); the doctor will report any app older than the module"
+	else
+		do_apps || {
+			echo "error: the apps were not rebuilt to match the module just installed." >&2
+			echo "       Fix the build error above and re-run: sudo $0" >&2
+			exit 1
+		}
+	fi
 
 	say "[6/8] TrueForce shim (Steam prefixes)"
 	if ls "$(resolved_sdk_dir)"/Logi/Trueforce/*/trueforce_sdk_x64.dll >/dev/null 2>&1; then
@@ -1081,10 +1172,22 @@ report() {
 	echo '```'
 }
 
-case "${1:-setup}" in
+WITHOUT_APPS=0
+cmd=""
+for arg in "$@"; do
+	case "$arg" in
+		--without-apps) WITHOUT_APPS=1 ;;
+		*) [ -z "$cmd" ] && cmd="$arg" ;;
+	esac
+done
+case "${cmd:-setup}" in
 	doctor) doctor ;;
 	report) report ;;
 	shim)   do_shim ;;
+	# Build and install the apps alone, stamped like the module; what
+	# dkms-update.sh runs after installing a module, so the two never
+	# drift apart on an update either.
+	apps)   do_apps || exit 1 ;;
 	setup)  setup ;;
-	*) echo "usage: sudo $0 [setup] | $0 doctor | $0 report | $0 shim" >&2; exit 2 ;;
+	*) echo "usage: sudo $0 [setup [--without-apps]] | sudo $0 apps | $0 doctor | $0 report | $0 shim" >&2; exit 2 ;;
 esac

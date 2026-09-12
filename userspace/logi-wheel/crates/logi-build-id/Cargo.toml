@@ -1,0 +1,9 @@
+[package]
+name = "logi-build-id"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The build identity every logi-wheel app prints, stamped from git describe like the kernel module"
+
+[dependencies]

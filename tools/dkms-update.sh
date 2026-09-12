@@ -47,6 +47,19 @@ EOF
 	sleep 5
 }
 
+# --module-only: the module, udev and modprobe files, nothing else. What
+# setup.sh passes, since it builds the apps itself in a later step. Run by
+# hand without it, this script rebuilds the apps too: a module updated
+# alone leaves the daemon and the settings apps at the previous build,
+# which is the mismatch #91 was spent on.
+MODULE_ONLY=0
+for arg in "$@"; do
+	case "$arg" in
+		--module-only) MODULE_ONLY=1 ;;
+		*) echo "usage: sudo $0 [--module-only]" >&2; exit 2 ;;
+	esac
+done
+
 PKG="logitech-trueforce"
 # A fixed development slot, deliberately not the release version: this
 # script exists to be run repeatedly from a working tree, and a version that
@@ -298,6 +311,15 @@ if [ -x "$TF_INSTALL" ]; then
 		"$TF_INSTALL" --all-steam \
 			|| echo "warning: TF shim install failed (continuing)"
 	fi
+fi
+
+if [ "$MODULE_ONLY" -eq 0 ]; then
+	echo "== rebuilding the apps to match the module =="
+	"$REPO_ROOT/tools/setup.sh" apps || {
+		echo "error: the module is installed but the apps were not rebuilt to match it." >&2
+		echo "       Fix the build error above and run: sudo $REPO_ROOT/tools/setup.sh apps" >&2
+		exit 1
+	}
 fi
 
 cat <<'EOF'

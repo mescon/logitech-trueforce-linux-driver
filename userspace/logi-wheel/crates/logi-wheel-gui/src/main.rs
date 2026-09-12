@@ -1225,7 +1225,7 @@ fn which(name: &str) -> Option<std::path::PathBuf> {
 
 fn main() -> Result<(), slint::PlatformError> {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
-        println!("logi-wheel-gui {}", env!("CARGO_PKG_VERSION"));
+        println!("{}", logi_wheel_core::version::banner("logi-wheel-gui"));
         return Ok(());
     }
 
@@ -1261,7 +1261,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // The Info identity block's software rows: this front-end's own
     // version, and the loaded kernel module's stamp (re-read whenever the
     // Info rows load, so a module reload shows up on the next visit).
-    app.set_info_app_version(concat!("logi-wheel-gui ", env!("CARGO_PKG_VERSION")).into());
+    app.set_info_app_version(logi_wheel_core::version::banner("logi-wheel-gui").into());
     app.set_info_driver_version(driver_version_text().into());
 
     // Setup page: helper presence, resolved once at startup: `PATH` first,

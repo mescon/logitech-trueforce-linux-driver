@@ -150,7 +150,7 @@ fn main() -> ExitCode {
             daemon::run(&cfg)
         }
         Mode::Version => {
-            println!("logi-tf-sim {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", logi_wheel_core::version::banner("logi-tf-sim"));
             Ok(())
         }
         Mode::Sweep(pitch) => daemon::install_signal_handlers()

@@ -57,7 +57,7 @@ pub fn report() -> String {
     let mut out = String::new();
     let _ = writeln!(out, "## logitech-trueforce diagnostic report");
     let _ = writeln!(out);
-    let _ = writeln!(out, "app        {}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(out, "app        {} ({})", crate::version::PKG_VERSION, crate::version::BUILD_ID);
     let _ = writeln!(out, "kernel     {}", slurp("/proc/sys/kernel/osrelease").unwrap_or_default());
     let _ = writeln!(out, "module     {}",
              slurp("/sys/module/hid_logitech_dd/version")
@@ -65,11 +65,14 @@ pub fn report() -> String {
     // A stale driver next to current apps is a real and common state, and
     // one that changes what a report means. It was visible here as two
     // version lines nobody was asked to compare.
-    if let Some(m) = slurp("/sys/module/hid_logitech_dd/version") {
-        let app = env!("CARGO_PKG_VERSION");
-        if !m.trim_start_matches('v').starts_with(app) {
-            let _ = writeln!(out, "           NOTE: driver {m} and apps {app} differ; the driver may need reinstalling");
-        }
+    if let crate::version::ModuleMatch::Differs(m) =
+        crate::version::against_module(slurp("/sys/module/hid_logitech_dd/version").as_deref())
+    {
+        let _ = writeln!(
+            out,
+            "           NOTE: driver {m} and apps {} were not built from the same source; rerun setup.sh",
+            crate::version::BUILD_ID
+        );
     }
     if let Some(os) = slurp("/etc/os-release") {
         if let Some(line) = os.lines().find(|l| l.starts_with("PRETTY_NAME=")) {

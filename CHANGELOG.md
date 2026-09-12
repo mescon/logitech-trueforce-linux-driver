@@ -7,6 +7,21 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**An install cannot leave an older app next to a newer module.** A day of
+Xbox-edition testing (#91) went to a daemon that was still the previous
+build: setup.sh rebuilt the apps only when cargo happened to be present and
+the build succeeded, and otherwise kept whatever was installed without a
+word, while the apps' version flag printed the last release number either
+way. Every app now carries the same build stamp as the kernel module (the
+checkout's `git describe`, or the release version for a package build) and
+prints it with `--version`; setup.sh refuses to start without cargo unless
+told `--without-apps`, fails if the apps do not build or do not read back
+with the checkout's stamp, and removes an older window app it cannot
+rebuild; dkms-update.sh rebuilds the apps after the module unless given
+`--module-only`; the doctor and the in-app report treat an app and module
+from different sources as a failure; and logi-launch logs the builds in
+play as the first line of every run.
+
 **A DirectInput force aimed north or south reaches a one-axis wheel.**
 The kernel projects a constant or periodic level by the sine of its
 direction, so a direction of 0 or 180 degrees, which DirectInput titles

@@ -22,6 +22,10 @@ pub use setting::{Access, Category, ModeReq, SettingSpec};
 pub mod registry;
 pub use registry::{CLASSIC_REGISTRY, REGISTRY};
 pub mod helpers;
+/// The build identity, shared with every app through the `logi-build-id` crate.
+pub mod version {
+    pub use logi_build_id::*;
+}
 pub mod launch;
 pub mod launchers;
 pub mod onboard;

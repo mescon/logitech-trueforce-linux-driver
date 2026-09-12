@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
-        println!("logi-ffb {}", env!("CARGO_PKG_VERSION"));
+        println!("{}", logi_build_id::banner("logi-ffb"));
         return ExitCode::SUCCESS;
     }
 

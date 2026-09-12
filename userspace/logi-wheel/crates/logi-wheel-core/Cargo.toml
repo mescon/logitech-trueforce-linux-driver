@@ -4,3 +4,6 @@ edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 license.workspace = true
+
+[dependencies]
+logi-build-id = { path = "../logi-build-id" }

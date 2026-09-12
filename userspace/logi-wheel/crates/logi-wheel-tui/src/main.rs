@@ -27,7 +27,7 @@ const DRIFT_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
-        println!("logi-wheel {}", env!("CARGO_PKG_VERSION"));
+        println!("{}", logi_wheel_core::version::banner("logi-wheel"));
         return Ok(());
     }
 

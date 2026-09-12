@@ -2986,10 +2986,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "logi-build-id"
+version = "0.40.3"
+
+[[package]]
 name = "logi-ffb"
 version = "0.40.3"
 dependencies = [
  "libc",
+ "logi-build-id",
  "nix 0.31.3",
 ]
 
@@ -3019,6 +3024,9 @@ dependencies = [
 [[package]]
 name = "logi-wheel-core"
 version = "0.40.3"
+dependencies = [
+ "logi-build-id",
+]
 
 [[package]]
 name = "logi-wheel-gui"

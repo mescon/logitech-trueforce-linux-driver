@@ -104,6 +104,10 @@ share_file() {
 
 say() { printf '[logi-launch] %s\n' "$*" >>"$LOG"; }
 
+# First line of every run: which builds are in play. A daemon older than
+# the module reads like a driver fault in every log after this one.
+say "versions: module $(cat /sys/module/hid_logitech_dd/version 2>/dev/null || echo 'not loaded'), $(logi-tf-sim --version 2>/dev/null || echo 'logi-tf-sim not on PATH'), $(logi-ffb --version 2>/dev/null || echo 'logi-ffb not on PATH')"
+
 # `logi-launch --game <name> %command%` names the title explicitly, for when
 # the appid cannot identify it: a non-Steam shortcut (whose id Steam
 # generates locally), a copy bought elsewhere, or a delisted game
