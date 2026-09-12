@@ -345,7 +345,10 @@ static int read_int_file(const char *path)
 	return v;
 }
 
-static int wheel_range_degrees(void)
+// The wheel's range attribute, found through Z:\sys: `wheel_range` on the
+// driver's own path, `range` on the classic one. `out` receives the path
+// when a readable one exists; the value is returned, -1 when none is.
+static int wheel_range_attr(char *out, size_t out_len)
 {
 	WIN32_FIND_DATAA fd;
 	HANDLE h = FindFirstFileA("Z:\\sys\\class\\hidraw\\*", &fd);
@@ -363,12 +366,38 @@ static int wheel_range_degrees(void)
 			int v = read_int_file(path);
 			if (v > 0) {
 				FindClose(h);
+				if (out)
+					snprintf(out, out_len, "%s", path);
 				return v;
 			}
 		}
 	} while (FindNextFileA(h, &fd));
 	FindClose(h);
 	return -1;
+}
+
+static int wheel_range_degrees(void)
+{
+	return wheel_range_attr(nullptr, 0);
+}
+
+// Write `deg` to the wheel's range attribute. The udev rule makes it
+// writable by any local user, which is what this process is.
+static bool wheel_range_write(int deg)
+{
+	char path[MAX_PATH + 64];
+	if (wheel_range_attr(path, sizeof(path)) < 0)
+		return false;
+	HANDLE h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+			       OPEN_EXISTING, 0, nullptr);
+	if (h == INVALID_HANDLE_VALUE)
+		return false;
+	char buf[16];
+	int n = snprintf(buf, sizeof(buf), "%d", deg);
+	DWORD written = 0;
+	bool ok = WriteFile(h, buf, (DWORD)n, &written, nullptr) && written == (DWORD)n;
+	CloseHandle(h);
+	return ok;
 }
 
 static const double RANGE_MIN_DEG = 90.0;
@@ -508,6 +537,7 @@ static int set_range_rad_wrapper(void *handle, double rad)
 // this runs once per handle, before the game's force loop.
 // LOGI_RANGE_PUSH=0 switches it off.
 static void *g_range_pushed_handle;
+static set_range_fn resolve_set_range_deg(void);
 
 static void push_range_belief(void *handle)
 {
@@ -525,22 +555,64 @@ static void push_range_belief(void *handle)
 		say("range push: no range in sysfs, leaving the SDK's own belief");
 		return;
 	}
-	set_range_fn fn = g_set_range_deg_real;
-	if (!fn) {
-		HMODULE m = GetModuleHandleW(L"trueforce_sdk_x64.dll");
-		if (m)
-			fn = (set_range_fn)GetProcAddress(m, "logiWheelSetOperatingRangeDegrees");
-		// Never our own wrapper: it forwards to a real pointer that is
-		// null in exactly this case.
-		if ((void *)fn == (void *)set_range_deg_wrapper)
-			fn = nullptr;
-	}
+	set_range_fn fn = resolve_set_range_deg();
 	if (!fn) {
 		say("range push: logiWheelSetOperatingRangeDegrees not found, leaving the SDK's own belief");
 		return;
 	}
 	int st = fn(handle, (double)deg);
 	say("range push: told the SDK the wheel's range is %d degrees -> 0x%08x", deg, (unsigned)st);
+}
+
+// The SDK's real range setter: the pointer captured when the game resolved
+// it, else looked up now. Never this proxy's own wrapper, whose real
+// pointer is null in exactly that case.
+static set_range_fn resolve_set_range_deg(void)
+{
+	set_range_fn fn = g_set_range_deg_real;
+	if (!fn) {
+		HMODULE m = GetModuleHandleW(L"trueforce_sdk_x64.dll");
+		if (m)
+			fn = (set_range_fn)GetProcAddress(m, "logiWheelSetOperatingRangeDegrees");
+		if ((void *)fn == (void *)set_range_deg_wrapper)
+			fn = nullptr;
+	}
+	return fn;
+}
+
+// ------------------------------------ the game's steering lock, applied
+//
+// The game does not hand its steering lock to the SDK. It sends it as a
+// DirectInput escape, command 5, a 20-byte block whose last eight bytes
+// are the value as a double in degrees, the same block it uses for its
+// other properties (one carries 40.0 at start-up; unknown, and outside the
+// range a lock can take). On Windows that escape reaches Logitech's driver
+// and G HUB sets the wheel; under Wine the escape is a stub that reports
+// success and drops it, so changing the lock in the game did nothing
+// (#91, seen in the proxy's own log the moment the setting was changed:
+// escape #8, 900.0). So it is applied here, the way G HUB would: the wheel
+// through sysfs, and the SDK's belief through its setter, so its own
+// endstops follow. LOGI_STEER_LOCK=0 switches this off.
+static void apply_game_steering_lock(double deg)
+{
+	char v[8];
+	if (GetEnvironmentVariableA("LOGI_STEER_LOCK", v, sizeof(v)) && v[0] == '0') {
+		say("steering lock from the game: %.1f degrees, LOGI_STEER_LOCK=0 so left alone", deg);
+		return;
+	}
+	if (!(deg >= RANGE_MIN_DEG && deg <= RANGE_MAX_DEG)) {
+		say("escape command 5 carries %.3f, not a steering lock; ignored", deg);
+		return;
+	}
+	int ideg = (int)(deg + 0.5);
+	bool wheel_ok = wheel_range_write(ideg);
+	int st = -1;
+	set_range_fn fn = resolve_set_range_deg();
+	if (fn && g_range_pushed_handle)
+		st = fn(g_range_pushed_handle, (double)ideg);
+	say("steering lock from the game: %d degrees -> wheel %s, SDK %s",
+	    ideg, wheel_ok ? "set" : "NOT set (no writable range attribute)",
+	    fn && g_range_pushed_handle ? (st == 0 ? "told" : "refused") : "not told (no handle yet)");
 }
 
 static volatile LONGLONG g_kf_handle = 0;   // 64-bit SDK handle from the KF stream
@@ -1485,6 +1557,15 @@ public:
 			say_bytes("in", e->lpvInBuffer, e->cbInBuffer);
 		} else if (loud) {
 			say("Escape #%ld  (null escape struct)", (long)n);
+		}
+		// A property set (command 5, no answer expected) whose value is
+		// a plausible steering lock is the game's lock: applied here
+		// because the stub below would drop it. See apply_game_steering_lock.
+		if (e && e->dwCommand == 5 && e->cbInBuffer == 20 && e->cbOutBuffer == 0 &&
+		    e->lpvInBuffer) {
+			double val;
+			memcpy(&val, (const unsigned char *)e->lpvInBuffer + 12, sizeof(val));
+			apply_game_steering_lock(val);
 		}
 		// Where Windows would have sent it. Wine's own Escape reports
 		// success while discarding the payload, so forwarding to it

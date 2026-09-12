@@ -52,7 +52,12 @@ through the getters the proxy answers, and the game never calls the setter,
 so the rim met a wall of full torque a few tens of degrees off centre with
 the game's force lost under it. The escape proxy now tells the SDK the
 wheel's real range once, right after the game selects the force mode
-(`LOGI_RANGE_PUSH=0` switches that off).
+(`LOGI_RANGE_PUSH=0` switches that off). The game's own steering lock
+turned out to travel the same road: Assetto Corsa EVO sends it as a
+DirectInput escape that Wine drops, not through the SDK, so changing it in
+the game never moved the wheel. The proxy applies that escape now, to the
+wheel's range and to the SDK's belief, which is what G HUB does on Windows
+(`LOGI_STEER_LOCK=0` switches that off).
 
 **The in-tree driver no longer gets a G923 first (#90).** When the in-tree
 hid-logitech-hidpp driver had bound a G923 and our udev rule then took the
