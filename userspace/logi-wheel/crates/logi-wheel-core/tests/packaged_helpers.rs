@@ -20,6 +20,7 @@ const HELPERS: &[(&str, &str)] = &[
     ("tools/xbox-modeswitch.sh", "logi-wheel-modeswitch"),
     ("tools/rebind-wheel.sh", "logi-rebind-wheel"),
     ("tools/logi-launch.sh", "logi-launch"),
+    ("tools/initramfs-refresh.sh", "logi-wheel-initramfs"),
 ];
 
 /// Every path that installs onto a user's system: the four distribution

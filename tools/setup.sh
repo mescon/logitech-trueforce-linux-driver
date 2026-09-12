@@ -28,6 +28,7 @@ UDEV_G923_DST="/etc/udev/rules.d/72-logitech-g923-rebind.rules"
 UDEV_XBOX_DST="/etc/udev/rules.d/73-logitech-xbox-modeswitch.rules"
 MODPROBE_DST="/etc/modprobe.d/hid-logitech-dd.conf"
 MODESWITCH_DST="/usr/bin/logi-wheel-modeswitch"
+INITRAMFS_DST="/usr/bin/logi-wheel-initramfs"
 # Direct-drive wheels, then the G923 editions. doctor was written before the
 # G923 was supported and checked only the first three, so every G923 owner was
 # told "no wheel detected" with the wheel plugged in and working, and the
@@ -500,6 +501,15 @@ doctor() {
 		# leaves no trace anywhere and simply looks like a wheel that never
 		# enumerates (issue #27). Inside this guard because its warning
 		# refers to "the rule above", which is only printed here.
+		if [ -x "$INITRAMFS_DST" ]; then
+			if out=$("$INITRAMFS_DST" --check 2>&1); then
+				ok "$out"
+			else
+				wrn "$out (run: sudo $0)"
+			fi
+		else
+			wrn "initramfs helper missing ($INITRAMFS_DST); on a system whose initramfs carries the in-tree driver, it binds a G923 first at boot (run: sudo $0)"
+		fi
 		if [ -x "$MODESWITCH_DST" ]; then
 			ok "Xbox mode-switch helper installed"
 		else
@@ -784,6 +794,11 @@ do_helpers() {
 do_tools() {
 	install -Dm 0755 "$REPO_ROOT/tools/logi-launch.sh" /usr/bin/logi-launch
 	echo "  installed /usr/bin/logi-launch"
+	# Lists the module for the initramfs generator and regenerates, so the
+	# modprobe.d load order can act from the first second of boot (#90).
+	# dkms-update.sh runs it after installing the module.
+	install -Dm 0755 "$REPO_ROOT/tools/initramfs-refresh.sh" "$INITRAMFS_DST"
+	echo "  installed $INITRAMFS_DST"
 	if command -v cc >/dev/null 2>&1; then
 		if cc -O2 -Wall -o /tmp/logi-rpm-bridge.$$ \
 		   "$REPO_ROOT/tools/logi-rpm-bridge.c" 2>/dev/null; then

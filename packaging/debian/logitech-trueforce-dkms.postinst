@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+# dh_dkms's snippet above has built and installed the module for the
+# running kernel. Put it in the initramfs as well, so it registers before
+# the in-tree hid-logitech-hidpp driver can claim a G923 at boot (#90).
+if [ "$1" = "configure" ] && [ -x /usr/bin/logi-wheel-initramfs ]; then
+	/usr/bin/logi-wheel-initramfs || echo "warning: could not update the initramfs; run logi-wheel-initramfs by hand" >&2
+fi
+
+exit 0

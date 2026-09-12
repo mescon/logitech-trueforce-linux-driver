@@ -56,8 +56,14 @@ freed: a kernel oops on an Xbox edition at boot. The module load order now
 pulls hid-logitech-dd in before either in-tree Logitech module, so ours is
 registered first and the in-tree driver never binds the wheel; the rebind
 rule stays as the fallback. Installed by setup.sh, dkms-update.sh, the
-packages and the NixOS module; on distributions whose initramfs carries the
-in-tree module, regenerate it after updating. Our own copy of that teardown
+packages and the NixOS module. That order can only act when both modules
+are where the boot can find them, and a G923 owner's initramfs usually
+carries the in-tree one (mkinitcpio adds it by itself) and not ours, so the
+in-tree driver still had the wheel a second after boot: a new helper,
+`logi-wheel-initramfs`, lists the module for mkinitcpio, dracut or
+initramfs-tools and regenerates the image, and every install path runs it
+after the module is built (the NixOS module puts it in the initrd). Our own
+copy of that teardown
 had the same flaw on the classic force-feedback path (the Xbox edition with
 the direct-drive engine off, and the G920): unloading
 or unplugging while a game held the wheel open could oops the same way. The

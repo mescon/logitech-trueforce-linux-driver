@@ -257,6 +257,10 @@ install -D -m 0644 tools/tf-init.bin \
 # G923 Xbox mode-switch helper, dispatched by udev rule 73.
 install -D -m 0755 tools/xbox-modeswitch.sh \
     %{buildroot}%{_bindir}/logi-wheel-modeswitch
+# Lists hid-logitech-dd for dracut and regenerates, so the module registers
+# before the in-tree driver can claim a G923 at boot (#90). Run from %%post.
+install -D -m 0755 tools/initramfs-refresh.sh \
+    %{buildroot}%{_bindir}/logi-wheel-initramfs
 # Rebinds a wheel that another driver claimed, which the settings apps'
 # diagnostics offer as a fix. Kept as a script rather than a command in the
 # app because a wheel presents several HID interfaces and all of them have
@@ -308,6 +312,7 @@ ln -s logi-wheel-gui %{buildroot}%{_bindir}/logi-dd-gui
 %{_datadir}/logitech-trueforce/dinput8-escape.dll
 %{_bindir}/logi-rpm-bridge
 %{_bindir}/logi-wheel-modeswitch
+%{_bindir}/logi-wheel-initramfs
 %{_bindir}/logi-rebind-wheel
 %{_bindir}/logi-launch
 %{_bindir}/logitech-trueforce-install-shim
@@ -325,6 +330,9 @@ dkms add -m %{module} -v %{modver} --rpm_safe_upgrade >/dev/null 2>&1 || true
 if dkms build -m %{module} -v %{modver} >/dev/null 2>&1; then
     dkms install -m %{module} -v %{modver} --force >/dev/null 2>&1 || true
 fi
+# Into the initramfs as well, so it registers before the in-tree driver can
+# claim a G923 at boot (#90); a no-op note when the module is not built yet.
+%{_bindir}/logi-wheel-initramfs >/dev/null 2>&1 || :
 
 %preun
 dkms remove -m %{module} -v %{modver} --all --rpm_safe_upgrade >/dev/null 2>&1 || true

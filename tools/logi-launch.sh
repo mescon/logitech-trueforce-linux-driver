@@ -742,6 +742,27 @@ if [ "${LOGI_LAUNCH_TF_SIM:-1}" = "1" ] && [ "${want_tfsim:-1}" = "1" ]; then
 		say "note: logi-tf-sim, so both are fed. The bridge drives the texture merge and the"
 		say "note: rev lights; the daemon adds its synthesized engine note on top."
 	fi
+	# A daemon left running across an update keeps serving the old build
+	# for as long as nobody stops it, and a run that then behaves like the
+	# old build reads as a driver fault (#91). A replaced binary shows up
+	# in /proc as "(deleted)", and a copy elsewhere on PATH as a different
+	# path; either means the running daemon is not the installed one.
+	if pgrep -x logi-tf-sim >/dev/null 2>&1; then
+		installed=$(readlink -f "$(command -v logi-tf-sim 2>/dev/null)" 2>/dev/null || true)
+		stale_daemon=0
+		for pid in $(pgrep -x logi-tf-sim); do
+			exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+			case "$exe" in *' (deleted)') stale_daemon=1 ;; esac
+			if [ -n "$installed" ] && [ "${exe% (deleted)}" != "$installed" ]; then
+				stale_daemon=1
+			fi
+		done
+		if [ "$stale_daemon" -eq 1 ]; then
+			say "logi-tf-sim is running from a build that is no longer the installed one; stopping it so this session gets the current build"
+			pkill -x logi-tf-sim 2>/dev/null || true
+			sleep 1
+		fi
+	fi
 	if pgrep -x logi-tf-sim >/dev/null 2>&1; then
 		say "logi-tf-sim is already running"
 		# It was started for some other session, possibly aimed at the

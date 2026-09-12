@@ -78,6 +78,8 @@ UDEV_XBOX_SRC="$REPO_ROOT/udev/73-logitech-xbox-modeswitch.rules"
 UDEV_XBOX_DST="/etc/udev/rules.d/73-logitech-xbox-modeswitch.rules"
 MODESWITCH_SRC="$REPO_ROOT/tools/xbox-modeswitch.sh"
 MODESWITCH_DST="/usr/bin/logi-wheel-modeswitch"
+INITRAMFS_SRC="$REPO_ROOT/tools/initramfs-refresh.sh"
+INITRAMFS_DST="/usr/bin/logi-wheel-initramfs"
 # The pre-0.38.0 name of the same helper, removed rather than kept: it is a
 # stale copy of a script that now covers two wheels, and leaving it means an
 # owner can run last release's version of the switch without knowing it.
@@ -311,6 +313,18 @@ if [ -x "$TF_INSTALL" ]; then
 		"$TF_INSTALL" --all-steam \
 			|| echo "warning: TF shim install failed (continuing)"
 	fi
+fi
+
+# The module must be in the initramfs too, or the in-tree driver loaded
+# from there binds a G923 a second after boot, before the modprobe.d
+# load order can act (#90). The helper knows mkinitcpio, dracut and
+# initramfs-tools, writes the one line each wants, and regenerates.
+if [ -f "$INITRAMFS_SRC" ]; then
+	if ! cmp -s "$INITRAMFS_SRC" "$INITRAMFS_DST" 2>/dev/null; then
+		echo "== installing $INITRAMFS_DST =="
+		install -Dm 0755 "$INITRAMFS_SRC" "$INITRAMFS_DST"
+	fi
+	"$INITRAMFS_DST" || echo "warning: could not update the initramfs; run $INITRAMFS_DST by hand" >&2
 fi
 
 if [ "$MODULE_ONLY" -eq 0 ]; then

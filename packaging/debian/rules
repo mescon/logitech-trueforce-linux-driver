@@ -96,6 +96,11 @@ override_dh_install:
 	# run from the udev worker itself; see the rule's own comment.
 	install -D -m 0755 tools/xbox-modeswitch.sh \
 		$(TUI)/usr/bin/logi-wheel-modeswitch
+	# Lists hid-logitech-dd for initramfs-tools and regenerates, so the
+	# module registers before the in-tree driver can claim a G923 at boot
+	# (#90). Run from the dkms package's postinst after the module is built.
+	install -D -m 0755 tools/initramfs-refresh.sh \
+		$(DRV)/usr/bin/logi-wheel-initramfs
 	# Rebinds a wheel that another driver claimed, which the settings apps'
 	# diagnostics offer as a fix. Kept as a script rather than a command in the
 	# app because a wheel presents several HID interfaces and all of them have

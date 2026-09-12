@@ -115,6 +115,27 @@ package_logitech-trueforce-dkms() {
 	install -Dm755 "$_src/tools/xbox-modeswitch.sh" \
 		"$pkgdir/usr/bin/logi-wheel-modeswitch"
 
+	# Lists hid-logitech-dd for mkinitcpio and regenerates the image, so the
+	# module registers before the in-tree driver can claim a G923 at boot
+	# (#90). The hook runs it after the dkms hook (71) has built the module;
+	# kernel updates then regenerate through mkinitcpio's own hook (90) with
+	# the conf.d line already in place.
+	install -Dm755 "$_src/tools/initramfs-refresh.sh" \
+		"$pkgdir/usr/bin/logi-wheel-initramfs"
+	install -dm755 "$pkgdir/usr/share/libalpm/hooks"
+	printf '%s\n' \
+		'[Trigger]' \
+		'Operation = Install' \
+		'Operation = Upgrade' \
+		'Type = Package' \
+		'Target = logitech-trueforce-dkms' \
+		'' \
+		'[Action]' \
+		'Description = Adding hid-logitech-dd to the initramfs...' \
+		'When = PostTransaction' \
+		'Exec = /usr/bin/logi-wheel-initramfs' \
+		> "$pkgdir/usr/share/libalpm/hooks/75-logitech-trueforce-initramfs.hook"
+
 	# softdep ordering hint for the G923 PIDs, plus a narrow blacklist of
 	# the standalone new-lg4ff DKMS fork (see the file for why that one
 	# blacklist entry is safe).

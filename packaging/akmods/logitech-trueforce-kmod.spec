@@ -94,7 +94,11 @@ wheel_* sysfs attributes and hidraw nodes (so settings do not need root)
 and to /dev/uhid (which logi-ffb needs to create its virtual
 force-feedback device).
 
+%post -n %{kmod_name}-kmod-common
+%{_bindir}/logi-wheel-initramfs >/dev/null 2>&1 || :
+
 %files -n %{kmod_name}-kmod-common
+%{_bindir}/logi-wheel-initramfs
 %{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules
 %{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
 %{_prefix}/lib/udev/rules.d/72-logitech-g923-rebind.rules
@@ -237,6 +241,12 @@ install -D -m 0644 udev/71-logi-ffb-uhid.rules \
     "%{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules"
 install -D -m 0644 udev/72-logitech-g923-rebind.rules \
     "%{buildroot}%{_prefix}/lib/udev/rules.d/72-logitech-g923-rebind.rules"
+# Lists hid-logitech-dd for dracut so the module registers before the
+# in-tree driver can claim a G923 at boot (#90). akmods builds the module
+# on the next boot, so the %%post run only writes the line; dracut picks
+# the module up on the following kernel update or a --force run.
+install -D -m 0755 tools/initramfs-refresh.sh \
+    "%{buildroot}%{_bindir}/logi-wheel-initramfs"
 # Xbox editions (G923 c26d, RS50 c275) boot-mode switch: needs usb_modeswitch
 # (Recommends above), a no-op without it.
 install -D -m 0644 udev/73-logitech-xbox-modeswitch.rules \

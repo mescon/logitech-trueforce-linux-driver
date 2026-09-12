@@ -268,6 +268,10 @@
                 (logitechTrueforceModule {kernel = config.boot.kernelPackages.kernel; })
                 ];
             boot.kernelModules = [ "hid-logitech-dd" ];
+            # In the initrd as well, so it registers before the in-tree
+            # hid-logitech-hidpp driver can claim a G923 at boot (#90); what
+            # logi-wheel-initramfs does for the other channels.
+            boot.initrd.kernelModules = [ "hid-logitech-dd" ];
             # The same lines packaging/modprobe.d/hid-logitech-dd.conf
             # carries on every other channel, which NixOS cannot take as a
             # file: the load order that makes either in-tree module pull
