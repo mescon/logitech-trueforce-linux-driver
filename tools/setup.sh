@@ -828,9 +828,36 @@ module_build_id() {
 		|| true
 }
 
+# The package that owns an installed file, or nothing. Three package
+# managers because the checkout path serves every distro.
+package_owning() {
+	pacman -Qo "$1" 2>/dev/null | sed -n 's/.* is owned by \(.*\)/\1/p' \
+		|| dpkg -S "$1" 2>/dev/null | cut -d: -f1 \
+		|| rpm -qf "$1" 2>/dev/null
+}
+
 do_apps() {
 	local ws="$REPO_ROOT/userspace/logi-wheel"
 	[ -d "$ws" ] || { echo "  no userspace workspace here; skipping"; return 0; }
+
+	# Apps that came from a distribution package belong with that
+	# package's module: a checkout build would carry a different stamp
+	# from the packaged module and the two would never match, and the
+	# package manager would put its own copies back on the next update
+	# anyway. Refuse rather than overwrite (found on a machine running
+	# the packaged 0.40.3 module: a checkout build over the packaged apps
+	# is exactly the mismatch this step exists to prevent).
+	local bin owner
+	for bin in logi-wheel logi-ffb logi-tf-sim logi-wheel-gui; do
+		[ -e "/usr/bin/$bin" ] || continue
+		owner=$(package_owning "/usr/bin/$bin" | head -1)
+		if [ -n "$owner" ]; then
+			echo "  /usr/bin/$bin belongs to the package '$owner'." >&2
+			echo "  Update the apps through your package manager so they match the packaged module;" >&2
+			echo "  to switch this machine to checkout builds, remove that package first." >&2
+			return 1
+		fi
+	done
 
 	local cargo_bin=""
 	if [ -n "${SUDO_USER:-}" ]; then
