@@ -7,34 +7,6 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## 0.41.0 - 2026-09-12
 
-**An install cannot leave an older app next to a newer module.** A day of
-Xbox-edition testing (#91) went to a daemon that was still the previous
-build: setup.sh rebuilt the apps only when cargo happened to be present and
-the build succeeded, and otherwise kept whatever was installed without a
-word, while the apps' version flag printed the last release number either
-way. Every app now carries the same build stamp as the kernel module (the
-checkout's `git describe`, or the release version for a package build) and
-prints it with `--version`; setup.sh refuses to start without cargo unless
-told `--without-apps`, fails if the apps do not build or do not read back
-with the checkout's stamp, and removes an older window app it cannot
-rebuild; dkms-update.sh rebuilds the apps after the module unless given
-`--module-only`; the doctor and the in-app report treat an app and module
-from different sources as a failure; and logi-launch logs the builds in
-play as the first line of every run.
-
-**A DirectInput force aimed north or south reaches a one-axis wheel.**
-The kernel projects a constant or periodic level by the sine of its
-direction, so a direction of 0 or 180 degrees, which DirectInput titles
-that steer by signed magnitude commonly leave in place, played as no force
-at all through logi-ffb. Those two now land on the wheel's axis, east and
-west, with the sign relation between them kept; every other direction is
-unchanged. Found through #92 (RaceRoom on an RS50: every effect report
-arrived, the rim stayed dead) and confirmed there: the proxy's debug log,
-which now prints each report's bytes, shows RaceRoom aiming every effect at
-0 degrees, and with the fix the rim has force. The same session confirmed
-the RaceRoom telemetry decoder live for the first time: engine texture and
-rev lights from the game's shared memory, now marked verified.
-
 **The G923 Xbox edition takes the SDK route when Logitech's TrueForce
 files are in the game's prefix.** That wheel follows the SDK's stream
 (#81), and with a real copy of AC EVO and the SDK files an owner had force,
@@ -83,6 +55,19 @@ or unplugging while a game held the wheel open could oops the same way. The
 driver now tears that state down while it is still valid, at remove time,
 and leaves nothing for the deferred callback to do.
 
+**A DirectInput force aimed north or south reaches a one-axis wheel.**
+The kernel projects a constant or periodic level by the sine of its
+direction, so a direction of 0 or 180 degrees, which DirectInput titles
+that steer by signed magnitude commonly leave in place, played as no force
+at all through logi-ffb. Those two now land on the wheel's axis, east and
+west, with the sign relation between them kept; every other direction is
+unchanged. Found through #92 (RaceRoom on an RS50: every effect report
+arrived, the rim stayed dead) and confirmed there: the proxy's debug log,
+which now prints each report's bytes, shows RaceRoom aiming every effect at
+0 degrees, and with the fix the rim has force. The same session confirmed
+the RaceRoom telemetry decoder live for the first time: engine texture and
+rev lights from the game's shared memory, now marked verified.
+
 **A DirectInput game no longer finds two wheels under Steam.** logi-ffb hides
 the real wheel from Wine's DirectInput by marking it disabled in the
 prefix's registry, but it looked for the prefix in `WINEPREFIX` only, which
@@ -94,12 +79,36 @@ moving, rim dead). The prefix now also comes from Steam's
 and logi-ffb says which prefix it steered. Until then, binding the game's
 steering to `logi-ffb Virtual Wheel` by hand does the same.
 
-**A game's steering lock moves the wheel again.** The driver undid every
+**An install cannot leave an older app next to a newer module.** A day of
+Xbox-edition testing (#91) went to a daemon that was still the previous
+build: setup.sh rebuilt the apps only when cargo happened to be present and
+the build succeeded, and otherwise kept whatever was installed without a
+word, while the apps' version flag printed the last release number either
+way. Every app now carries the same build stamp as the kernel module (the
+checkout's `git describe`, or the release version for a package build) and
+prints it with `--version`; setup.sh refuses to start without cargo unless
+told `--without-apps`, fails if the apps do not build or do not read back
+with the checkout's stamp, and removes an older window app it cannot
+rebuild; dkms-update.sh rebuilds the apps after the module unless given
+`--module-only`; the doctor and the in-app report treat an app and module
+from different sources as a failure; and logi-launch logs the builds in
+play as the first line of every run.
+
+**Only the SDK's blind 90-degree push is undone now.** The driver undid every
 rotation range the SDK pushed, which was right when the SDK pushed a blind
 90 degrees because nothing answered its rotation question, and wrong once
-the launcher's proxy answers it: from then on the pushes are the game's
-own steering lock, and undoing them made that setting a no-op on Linux
-while it works on Windows (#91). Only a push of exactly 90 is undone now.
+the launcher's proxy answers it: from then on a range a game sets through
+the SDK is the game's own choice, and undoing it made that setting a no-op
+on Linux while it works on Windows (#91). A push of exactly 90 is still
+undone; every other value stays. Whether a given game sets its steering
+lock through the SDK at all is the game's business: Assetto Corsa EVO does
+not on the Xbox edition's route, so its in-game lock remains inert there.
+
+**The engine's unbound work lands on the current workqueue name.** Kernels
+from 7.x warn once at probe that hid-logitech-dd queued work on a
+deprecated system workqueue, which read like a fault in dmesg although
+nothing was wrong (#87); the driver now uses the name the kernel renamed
+it to from 6.17 on, the same queue either way.
 
 ## 0.40.3 - 2026-09-11
 
