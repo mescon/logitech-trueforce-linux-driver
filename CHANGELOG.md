@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.41.0 - 2026-09-12
 
 **An install cannot leave an older app next to a newer module.** A day of
 Xbox-edition testing (#91) went to a daemon that was still the previous
