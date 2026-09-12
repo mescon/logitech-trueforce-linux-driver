@@ -64,6 +64,18 @@
  * assignment in 6.15. Both forms arm the same timer; only the spelling
  * of the initialisation differs.
  */
+/*
+ * 6.17 renamed the unbound system workqueue to system_dfl_wq and marked
+ * system_unbound_wq deprecated; from 7.x the kernel logs a warning the
+ * first time work lands on the old name, which reads like a fault in
+ * dmesg (#87). Same queue either way.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
+#define HIDPP_DD_UNBOUND_WQ	system_dfl_wq
+#else
+#define HIDPP_DD_UNBOUND_WQ	system_unbound_wq
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 15, 0)
 static inline void hidpp_dd_hrtimer_setup(struct hrtimer *timer,
 					  enum hrtimer_restart (*fn)(struct hrtimer *),
@@ -5894,7 +5906,7 @@ struct hidpp_dd_ff_data {
 	 * fired mid-SDK-init (hw A/B 2026-08-14).
 	 */
 	struct mutex rev_lock;
-	struct delayed_work rev_work;	/* coalescing flush; runs on system_unbound_wq */
+	struct delayed_work rev_work;	/* coalescing flush; runs on the unbound system queue */
 	/*
 	 * How many LEDs this wheel's strip has, from 0x807A fn0's second
 	 * parameter (0x0a on the direct-drive wheels, 0x05 on a G923). The
@@ -6110,7 +6122,7 @@ struct hidpp_dd_ff_data {
 	u16 kf_idle_ticks;		/* consecutive exactly-zero-force idle ticks (kf_idle_gate) */
 	bool kf_gated;			/* keepalive gated off: pair sent, stream silent until force returns */
 	u16 tf_window[HIDPP_DD_TF_WINDOW];	/* rolling window, offset binary */
-	struct work_struct tf_init_work; /* runs the 2x68-packet init (system_unbound_wq) */
+	struct work_struct tf_init_work; /* runs the 2x68-packet init (unbound system queue) */
 	/*
 	 * Honest-range poll: re-reads the physical rotation range every
 	 * HIDPP_DD_FF_REFRESH_INTERVAL_MS on system_unbound_wq, decoupled from
@@ -6851,7 +6863,7 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 		    !READ_ONCE(ff->tf_init_queued) &&
 		    hidpp_dd_ff_effect_is_texture(&e->effect)) {
 			WRITE_ONCE(ff->tf_init_queued, true);
-			queue_work(system_unbound_wq, &ff->tf_init_work);
+			queue_work(HIDPP_DD_UNBOUND_WQ, &ff->tf_init_work);
 		}
 
 		if (e->use_tf) {
@@ -8223,7 +8235,7 @@ static void hidpp_dd_ff_range_poll_work(struct work_struct *work)
 	}
 
 	if (!atomic_read_acquire(&ff->stopping) && atomic_read(&ff->initialized))
-		queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
+		queue_delayed_work(HIDPP_DD_UNBOUND_WQ, &ff->range_poll_work,
 				   msecs_to_jiffies(HIDPP_DD_FF_RANGE_POLL_MS));
 }
 
@@ -8447,7 +8459,7 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 				 "Profile change broadcast -> %s (profile %u)\n",
 				 profile ? "onboard" : "desktop", profile);
 			/* Re-query profile-dependent settings. */
-			queue_work(system_unbound_wq, &ff->settings_refresh_work);
+			queue_work(HIDPP_DD_UNBOUND_WQ, &ff->settings_refresh_work);
 		}
 		return 1;
 	}
@@ -8467,7 +8479,7 @@ static int hidpp_dd_ff_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 	    data[3] == 0x00) {
 		dd_info(hidpp->hid_dev,
 			 "OLED settings-edit broadcast -> re-querying settings\n");
-		queue_work(system_unbound_wq, &ff->settings_refresh_work);
+		queue_work(HIDPP_DD_UNBOUND_WQ, &ff->settings_refresh_work);
 		return 1;
 	}
 
@@ -9230,7 +9242,7 @@ static int hidpp_dd_set_mode(struct hidpp_dd_ff_data *ff, u8 profile)
 	 * but the settings we read via HID++ GETs don't trigger their own
 	 * events.
 	 */
-	queue_work(system_unbound_wq, &ff->settings_refresh_work);
+	queue_work(HIDPP_DD_UNBOUND_WQ, &ff->settings_refresh_work);
 
 	return 0;
 }
@@ -9790,7 +9802,7 @@ static void hidpp_dd_ff_init_work(struct work_struct *work)
 	 * range_poll_work below is unrelated (it detects a game SDK's
 	 * launch-time rotation-range reset) and stays.
 	 */
-	queue_delayed_work(system_unbound_wq, &ff->range_poll_work,
+	queue_delayed_work(HIDPP_DD_UNBOUND_WQ, &ff->range_poll_work,
 			   msecs_to_jiffies(HIDPP_DD_FF_RANGE_POLL_MS));
 
 	/*
@@ -12877,7 +12889,7 @@ static void hidpp_dd_rev_work_handler(struct work_struct *work)
 	if (READ_ONCE(ff->rev_target) != target &&
 	    !atomic_read_acquire(&ff->stopping) &&
 	    atomic_read(&ff->initialized))
-		queue_delayed_work(system_unbound_wq, &ff->rev_work,
+		queue_delayed_work(HIDPP_DD_UNBOUND_WQ, &ff->rev_work,
 				   msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS));
 
 	mutex_unlock(&ff->rev_lock);
@@ -13061,7 +13073,7 @@ static void hidpp_g923_rev_queue(struct hidpp_g923_rev *rev)
 		if (time_before(jiffies, next))
 			delay = next - jiffies;
 	}
-	mod_delayed_work(system_unbound_wq, &rev->work, delay);
+	mod_delayed_work(HIDPP_DD_UNBOUND_WQ, &rev->work, delay);
 }
 
 /*
@@ -13330,7 +13342,7 @@ static ssize_t wheel_rev_level_store(struct device *dev,
 			   msecs_to_jiffies(HIDPP_DD_REV_MIN_GAP_MS) - jiffies);
 	if (ff->rev_last_write && remaining > 0)
 		delay = remaining;
-	queue_delayed_work(system_unbound_wq, &ff->rev_work, delay);
+	queue_delayed_work(HIDPP_DD_UNBOUND_WQ, &ff->rev_work, delay);
 	mutex_unlock(&ff->rev_lock);
 
 	return count;
