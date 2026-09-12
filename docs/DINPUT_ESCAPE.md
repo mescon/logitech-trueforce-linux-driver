@@ -389,22 +389,22 @@ close path was found (`hid_hw_close` on a `hid_device` that had already lost
 its driver binding), with teardown now validating the binding under
 `device_lock` before touching it.
 
-### 2026-09-12: the steering lock is an escape, not an SDK call
+### 2026-09-12: the SDK announces its range through an escape
 
-Assetto Corsa EVO on a G923 Xbox edition, proxy log with the in-game
-steering lock changed once during the run. The game resolves the SDK's
-range setters by name and never calls them. What it sends instead is a
-DirectInput escape, command 5, a 20-byte block, no answer expected
-(`cbOutBuffer` 0): bytes 0-3 are the block size (20), bytes 4-7 are 1, bytes
-8-11 vary (they resemble the low half of the SDK handle), and the last
-eight bytes are a little-endian double. The one sent the moment the
-setting changed carried 900.0, the lock chosen in the game; one sent at
-start-up carries 39.99999, some other property. Command 5 with
-`cbOutBuffer` 8 is the matching getter. Under Wine every one of these lands
-in the stub and is dropped, which is why the game's lock never moved the
-wheel; on Windows the escape reaches Logitech's driver and G HUB applies
-it. The proxy now applies a command-5 set whose value lies within the
-range a lock can take (90 to 2700 degrees): the wheel through sysfs, the
-SDK's own belief through its setter. `LOGI_STEER_LOCK=0` switches that off.
-The getters are still dropped; what the game shows for the current lock is
-its own setting, not the wheel's.
+Assetto Corsa EVO on a G923 Xbox edition, proxy log. The game resolves the
+SDK's range setters by name and never calls them, and changing the
+in-game steering lock produces no SDK call and no escape: on this route the
+game's lock goes nowhere at all. What does appear is a DirectInput escape,
+command 5, sent by the SDK itself right after the proxy sets the operating
+range through the setter: a 20-byte block, no answer expected
+(`cbOutBuffer` 0), bytes 0-3 the block size, bytes 4-7 the value 1, bytes
+8-11 varying (they resemble the low half of the SDK handle), the last eight
+bytes the range as a little-endian double (900.0). Escapes of the same form
+at start-up carry 0.0 and 39.99999, other properties; command 5 with
+`cbOutBuffer` 8 is a getter. On Windows that escape is how Logitech's
+driver learns the range the SDK was given and sets the wheel; under Wine
+it is dropped. The proxy now applies a command-5 set whose value lies
+within the range a lock can take (90 to 2700 degrees) to the wheel's sysfs
+range, and to nothing else: the first build also called the SDK's setter
+from inside the escape, the SDK answered with another escape, and the game
+sat on a black screen in that loop. `LOGI_STEER_LOCK=0` switches it off.

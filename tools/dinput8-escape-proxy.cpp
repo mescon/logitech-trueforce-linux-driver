@@ -580,39 +580,42 @@ static set_range_fn resolve_set_range_deg(void)
 	return fn;
 }
 
-// ------------------------------------ the game's steering lock, applied
+// --------------------------------- the SDK's range escape, applied to the wheel
 //
-// The game does not hand its steering lock to the SDK. It sends it as a
-// DirectInput escape, command 5, a 20-byte block whose last eight bytes
-// are the value as a double in degrees, the same block it uses for its
-// other properties (one carries 40.0 at start-up; unknown, and outside the
-// range a lock can take). On Windows that escape reaches Logitech's driver
-// and G HUB sets the wheel; under Wine the escape is a stub that reports
-// success and drops it, so changing the lock in the game did nothing
-// (#91, seen in the proxy's own log the moment the setting was changed:
-// escape #8, 900.0). So it is applied here, the way G HUB would: the wheel
-// through sysfs, and the SDK's belief through its setter, so its own
-// endstops follow. LOGI_STEER_LOCK=0 switches this off.
-static void apply_game_steering_lock(double deg)
+// When the SDK's operating range is set (by the game's setter, or by the
+// push above), the SDK tells the driver through a DirectInput escape,
+// command 5: a 20-byte block whose last eight bytes are the range as a
+// double in degrees. That escape is how Logitech's Windows driver learns
+// the range and sets the wheel; under Wine it is a stub that reports
+// success and drops the block, so a range set through the SDK never
+// reached the wheel here. It is applied here instead: the wheel, through
+// sysfs. Only the wheel: the SDK is the sender, it already holds the
+// value, and calling its setter from inside its own escape re-enters it
+// and never returns (the first build of this did exactly that, escape
+// after escape until the game sat on a black screen, #91). The same block
+// carries the SDK's other properties (40.0 at start-up, unknown); the
+// bounds a lock can take tell those apart. LOGI_STEER_LOCK=0 switches
+// this off.
+static int g_last_escape_range;
+
+static void apply_sdk_range_escape(double deg)
 {
 	char v[8];
 	if (GetEnvironmentVariableA("LOGI_STEER_LOCK", v, sizeof(v)) && v[0] == '0') {
-		say("steering lock from the game: %.1f degrees, LOGI_STEER_LOCK=0 so left alone", deg);
+		say("range escape: %.1f degrees, LOGI_STEER_LOCK=0 so left to the driver", deg);
 		return;
 	}
 	if (!(deg >= RANGE_MIN_DEG && deg <= RANGE_MAX_DEG)) {
-		say("escape command 5 carries %.3f, not a steering lock; ignored", deg);
+		say("escape command 5 carries %.3f, not a range; ignored", deg);
 		return;
 	}
 	int ideg = (int)(deg + 0.5);
+	if (ideg == g_last_escape_range)
+		return;
+	g_last_escape_range = ideg;
 	bool wheel_ok = wheel_range_write(ideg);
-	int st = -1;
-	set_range_fn fn = resolve_set_range_deg();
-	if (fn && g_range_pushed_handle)
-		st = fn(g_range_pushed_handle, (double)ideg);
-	say("steering lock from the game: %d degrees -> wheel %s, SDK %s",
-	    ideg, wheel_ok ? "set" : "NOT set (no writable range attribute)",
-	    fn && g_range_pushed_handle ? (st == 0 ? "told" : "refused") : "not told (no handle yet)");
+	say("range escape: the SDK's range is now %d degrees -> wheel %s", ideg,
+	    wheel_ok ? "set" : "NOT set (no writable range attribute)");
 }
 
 static volatile LONGLONG g_kf_handle = 0;   // 64-bit SDK handle from the KF stream
@@ -1559,13 +1562,14 @@ public:
 			say("Escape #%ld  (null escape struct)", (long)n);
 		}
 		// A property set (command 5, no answer expected) whose value is
-		// a plausible steering lock is the game's lock: applied here
-		// because the stub below would drop it. See apply_game_steering_lock.
+		// a plausible range is the SDK telling the driver its range:
+		// applied to the wheel here, because the stub below would drop
+		// it. See apply_sdk_range_escape.
 		if (e && e->dwCommand == 5 && e->cbInBuffer == 20 && e->cbOutBuffer == 0 &&
 		    e->lpvInBuffer) {
 			double val;
 			memcpy(&val, (const unsigned char *)e->lpvInBuffer + 12, sizeof(val));
-			apply_game_steering_lock(val);
+			apply_sdk_range_escape(val);
 		}
 		// Where Windows would have sent it. Wine's own Escape reports
 		// success while discarding the payload, so forwarding to it
