@@ -3501,6 +3501,7 @@ static void hidpp_ff_work_handler(struct work_struct *w)
 static int hidpp_ff_queue_work(struct hidpp_ff_private_data *data, int effect_id, u8 command, u8 *params, u8 size)
 {
 	struct hidpp_ff_work_data *wd, *tail;
+	struct hid_device *hid;
 	unsigned long flags;
 	bool coalescible = command == HIDPP_FF_DOWNLOAD_EFFECT ||
 			   command == HIDPP_FF_SET_EFFECT_STATE ||
@@ -3546,11 +3547,12 @@ static int hidpp_ff_queue_work(struct hidpp_ff_private_data *data, int effect_id
 	list_add_tail(&wd->node, &data->pending);
 	s = ++data->queue_len;
 	queue_work(data->wq, &data->work);
+	hid = data->hidpp->hid_dev;	/* read under the lock; see the teardown */
 	spin_unlock_irqrestore(&data->lock, flags);
 
 	/* warn about excessive queue size */
 	if (s >= 20 && s % 20 == 0)
-		hid_warn(data->hidpp->hid_dev, "Force feedback command queue contains %d commands, causing substantial delays!", s);
+		hid_warn(hid, "Force feedback command queue contains %d commands, causing substantial delays!", s);
 
 	return 0;
 }
@@ -4185,7 +4187,7 @@ static struct input_dev *hidpp_ff_classic_input_get(struct hid_device *hdev)
 }
 
 /*
- * Everything hidpp_ff_destroy() used to do, done now, from hidpp_remove()
+ * The rest of what hidpp_ff_destroy() used to do, from hidpp_remove()
  * after hid_hw_stop(). The input device is unregistered by then, so no
  * new effect calls start; one already inside upload or erase holds
  * ff->mutex, which is taken here, and playback, gain and autocenter only
@@ -4194,12 +4196,17 @@ static struct input_dev *hidpp_ff_classic_input_get(struct hid_device *hdev)
  * hidpp can be dropped once that returns. ff->destroy is cleared because
  * nothing is left for it to do: the input core frees ff->private itself.
  */
-static void hidpp_ff_classic_teardown(struct input_dev *idev)
+/*
+ * The half of the teardown that must run BEFORE hid_hw_stop(): the two
+ * sysfs files walk hdev->inputs on every store, and hidinput_disconnect()
+ * edits that list, so they go while the list is still whole; and the
+ * range poll, which re-arms itself, is cancelled with everything it
+ * touches still alive.
+ */
+static void hidpp_ff_classic_detach(struct input_dev *idev)
 {
 	struct hidpp_ff_private_data *data = idev->ff->private;
 	struct hid_device *hid = data->hidpp->hid_dev;
-	struct workqueue_struct *wq;
-	unsigned long flags;
 
 	device_remove_file(&hid->dev, &dev_attr_range);
 	device_remove_file(&hid->dev, &dev_attr_range_restore);
@@ -4207,6 +4214,14 @@ static void hidpp_ff_classic_teardown(struct input_dev *idev)
 	/* re-arms itself, so this has to be the cancel that waits */
 	WRITE_ONCE(data->restore_enabled, false);
 	cancel_delayed_work_sync(&data->range_poll);
+}
+
+static void hidpp_ff_classic_teardown(struct input_dev *idev)
+{
+	struct hidpp_ff_private_data *data = idev->ff->private;
+	struct hid_device *hid = data->hidpp->hid_dev;
+	struct workqueue_struct *wq;
+	unsigned long flags;
 
 	mutex_lock(&idev->ff->mutex);
 
@@ -19911,9 +19926,17 @@ static void hidpp_remove(struct hid_device *hdev)
 	/*
 	 * Classic (0x8123) force feedback is torn down here, not in the
 	 * input core's deferred destroy callback: see hidpp_ff_destroy().
-	 * The reference is taken while the inputs list still exists.
+	 * The retry work can attach that force feedback late (a probe whose
+	 * init returned -ENODEV), so it is cancelled before looking, or it
+	 * could attach after the look and leave the deferred hook armed
+	 * with hidpp gone. The reference is taken while the inputs list
+	 * still exists, and the sysfs files and the poll go before the stop
+	 * edits that list.
 	 */
+	cancel_delayed_work_sync(&hidpp->ff_retry_work);
 	classic_ff = hidpp_ff_classic_input_get(hdev);
+	if (classic_ff)
+		hidpp_ff_classic_detach(classic_ff);
 
 	/*
 	 * Stop hardware to prevent raw_event callbacks from accessing
@@ -19934,7 +19957,6 @@ static void hidpp_remove(struct hid_device *hdev)
 
 	cancel_work_sync(&hidpp->work);
 	cancel_work_sync(&hidpp->reset_hi_res_work);
-	cancel_delayed_work_sync(&hidpp->ff_retry_work);
 	mutex_destroy(&hidpp->send_mutex);
 }
 
