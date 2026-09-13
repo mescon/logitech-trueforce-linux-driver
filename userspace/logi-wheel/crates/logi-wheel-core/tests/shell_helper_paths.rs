@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Checks that `tools/setup.sh` installs the telemetry helpers where the app
 //! looks for them.
 //!

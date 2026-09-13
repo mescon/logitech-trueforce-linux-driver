@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Real-wheel evdev force-feedback sink.
 //!
 //! The kernel driver for the direct-drive wheel already exposes a complete

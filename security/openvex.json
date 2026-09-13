@@ -1,0 +1,38 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/mescon/logitech-trueforce-linux-driver/security/openvex.json",
+  "author": "logitech-trueforce-linux-driver maintainer",
+  "role": "maintainer",
+  "timestamp": "2026-09-13T20:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": { "name": "RUSTSEC-2025-0141" },
+      "products": [ { "@id": "pkg:cargo/logi-wheel-gui@0.41.0" } ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "A maintenance notice, not a vulnerability: bincode 2.0.1 is reported unmaintained. It is a transitive dependency of the GUI toolkit's font and image stack and handles only data the application generated itself. Reviewed at each release; replaced when the toolkit moves."
+    },
+    {
+      "vulnerability": { "name": "RUSTSEC-2024-0436" },
+      "products": [ { "@id": "pkg:cargo/logi-wheel-gui@0.41.0" } ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "A maintenance notice, not a vulnerability: paste 1.0.15 is a procedural macro used at compile time by the image decoder the GUI toolkit pulls in. No paste code runs in the shipped binary. Reviewed at each release."
+    },
+    {
+      "vulnerability": { "name": "RUSTSEC-2026-0206" },
+      "products": [ { "@id": "pkg:cargo/logi-wheel-gui@0.41.0" } ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "A maintenance notice, not a vulnerability: rustybuzz 0.20.1 is the text shaper behind the GUI toolkit's SVG renderer. It processes only the application's own fonts and text. Reviewed at each release; replaced when the toolkit moves."
+    },
+    {
+      "vulnerability": { "name": "RUSTSEC-2026-0192" },
+      "products": [ { "@id": "pkg:cargo/logi-wheel-gui@0.41.0" } ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "A maintenance notice, not a vulnerability: ttf-parser 0.25.1 parses the application's own bundled fonts for the GUI toolkit. No untrusted font reaches it. Reviewed at each release; replaced when the toolkit moves."
+    }
+  ]
+}

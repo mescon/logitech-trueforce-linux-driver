@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 mod app;
 mod color_picker;
 mod screen_editor;

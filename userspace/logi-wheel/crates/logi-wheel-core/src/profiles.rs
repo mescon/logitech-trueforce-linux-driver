@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Computer-side profile store for desktop mode.
 //!
 //! In desktop mode the wheel is host-driven (onboard slot 0), so "profiles"

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Proxy orchestration: wheel discovery and the poll loop that ties the
 //! virtual uhid device, the real-wheel input source, and the real-wheel FF
 //! sink together.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Shared LIGHTSYNC view helpers: the effect-selector model both frontends
 //! render (the built-in sweeps and the five custom slots, matching G HUB's
 //! 4 + 5 model) and the mirrored-pair rule for the inside-out / outside-in

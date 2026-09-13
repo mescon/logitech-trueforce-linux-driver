@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Unified game-discovery data model. Each launcher backend (Steam, Lutris,
 //! Heroic) scans its own install for games and reports them as
 //! [`DiscoveredGame`]s; an aggregator merges the backends' results for the

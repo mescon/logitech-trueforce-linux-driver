@@ -1,4 +1,5 @@
 #!/bin/sh -e
+# SPDX-License-Identifier: GPL-2.0-only
 # Bridge end-to-end: LTFR datagram in, sysfs-format write out, and what a
 # second reader of the same telemetry gets (fed by the first, and promoted
 # when the first exits).

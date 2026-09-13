@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Dev-only harness: discover the real wheel and write one attribute through
 //! the same `Device` path the app uses. Not shipped in any binary.
 //!

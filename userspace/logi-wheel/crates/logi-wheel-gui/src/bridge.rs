@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Converts a `viewmodel::Row` into the Slint-generated `SettingRow` struct
 //! and builds the `ModelRc<SettingRow>` a `SettingsList` renders.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 use crate::error::{map_io_error, Error, Mode};
 use crate::kind::Kind;
 use crate::registry::{CLASSIC_REGISTRY, REGISTRY};

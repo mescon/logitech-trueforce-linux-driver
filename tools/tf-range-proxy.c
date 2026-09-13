@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * tf-range-proxy - answer the TrueForce SDK's rotation question correctly.
  *

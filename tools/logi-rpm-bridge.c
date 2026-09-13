@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /* logi-rpm-bridge: forward the game telemetry relay's RPM to the driver.
  *
  * Listens for LTFR datagrams on 127.0.0.1:20780 (the dinput8 escape

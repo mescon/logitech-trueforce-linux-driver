@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! The terminal app's screen editor: a modal over the `wheel_oled` row, the
 //! sibling of the colour picker. Two panes. The presets pane is where most
 //! people stop: Up/Down pick one, and the preview follows. Tab moves to the

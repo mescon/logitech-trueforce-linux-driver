@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Steam library discovery for the front-ends' Setup pages: which Proton
 //! games are installed, and whether the TrueForce SDK shim is present in
 //! each game's wine prefix. Pure `std::fs` line-scraping of Steam's VDF

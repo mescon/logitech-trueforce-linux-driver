@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Lutris backend for the unified game-discovery model: every game Lutris
 //! has a config file for, as a [`DiscoveredGame`]. Lutris config files are
 //! YAML; logi-wheel-core is std-only, so this line-scrapes the handful of keys

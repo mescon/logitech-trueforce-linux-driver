@@ -141,3 +141,49 @@ jobs:
         # source tree that fails at install time on the user's machine,
         # invisible to CI (issue #64).
         run: tools/check-packaging-sources.sh
+
+  # The Rust workspace's statement coverage, measured with cargo-llvm-cov and
+  # printed in the job summary. Informational: it is what the documentation
+  # quotes, and a drop below 80% is something to see, not something to block
+  # a fix on. libtrueforce is built here first so the daemon links against a
+  # copy made with this runner's toolchain.
+  coverage:
+    name: Coverage (Rust workspace)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup toolchain install stable --profile minimal --component llvm-tools-preview
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig-dev
+      - run: cargo install cargo-llvm-cov --locked
+      - run: make -C userspace/libtrueforce libtrueforce.a
+      - name: Measure
+        working-directory: userspace/logi-wheel
+        run: |
+          cargo llvm-cov --workspace --locked --summary-only 2>&1 | tee coverage.txt
+          { echo '## Statement coverage (cargo-llvm-cov, whole workspace)'; echo; echo '```'; tail -3 coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: userspace/logi-wheel/coverage.txt
+
+  # A CycloneDX SBOM per crate, from the locked dependency graph. Built on
+  # every push so the step is known to work before a release depends on it;
+  # the release pipeline runs the same command and attaches the result.
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo install cargo-cyclonedx --locked
+      - name: Generate
+        working-directory: userspace/logi-wheel
+        run: |
+          cargo cyclonedx -a -f json --locked
+          mkdir -p sbom
+          for f in crates/*/*.cdx.json; do mv "$f" "sbom/$(basename "$f")"; done
+          ls -1 sbom
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: userspace/logi-wheel/sbom/

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Front-end access to the simulated-TrueForce daemon (`logi-tf-sim`): its
 //! configuration file and its process state.
 //!

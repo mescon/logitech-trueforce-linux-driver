@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! A G HUB-style point-list curve editor for the pedal/steering response
 //! curves. The user edits control points (input/output percent) plus lower
 //! and upper deadzones; the composed curve is what the driver's 0x80A4

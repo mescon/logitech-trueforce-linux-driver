@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Onboard profile slot authoring: editing one of the wheel's five saved
 //! slots directly, as opposed to [`crate::profiles`]'s computer-side store.
 //!

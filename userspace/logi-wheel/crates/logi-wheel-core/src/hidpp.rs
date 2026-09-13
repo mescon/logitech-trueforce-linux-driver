@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Minimal HID++ 2.0 short-report query: just enough to read a classic
 //! (G923) wheel's main-application firmware string off its vendor HID++
 //! interface, the way Solaar/G HUB do. The direct-drive wheels never need

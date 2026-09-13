@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * tf-pipe-probe - find out who talks on \\.\pipe\logi.trueforce.connect
  *

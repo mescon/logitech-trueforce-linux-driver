@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Pure Rust view-model over `logi-wheel-core`: turns `REGISTRY` into the rows a
 //! GUI renders, and converts widget input back into `Value`s written to the
 //! device. No Slint dependency here, so this is fully unit-testable with

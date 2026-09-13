@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Reading the loaded kernel module's version stamp, so the front-ends can
 //! show which driver build is actually running (the Info identity block's
 //! Driver row). The module stamps `MODULE_VERSION` with `git describe` at

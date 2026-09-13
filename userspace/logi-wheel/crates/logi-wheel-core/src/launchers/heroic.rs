@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Heroic backend for the unified game-discovery model: every game Heroic
 //! has an installed-games manifest for, as a [`DiscoveredGame`]. Heroic's
 //! manifests and per-game configs are JSON; logi-wheel-core is std-only, so

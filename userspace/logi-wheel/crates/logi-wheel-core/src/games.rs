@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Per-game force-feedback and TrueForce compatibility registry.
 //!
 //! Static, std-only reference data the Setup pages render: for each known

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 // BeamNG OutGauge UDP telemetry; the decoder keeps state across packets,

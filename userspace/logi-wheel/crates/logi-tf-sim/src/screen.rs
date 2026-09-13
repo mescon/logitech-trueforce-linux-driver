@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! The base's screen as a dashboard, driven from the same telemetry as the
 //! rev lights.
 //!

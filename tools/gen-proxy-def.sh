@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Regenerate tf-range-proxy.def from the real SDK's export table.
 #
 # Written because doing it by hand went wrong in a way that was invisible:

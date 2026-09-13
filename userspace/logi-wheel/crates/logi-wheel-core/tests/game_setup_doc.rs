@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Renders `docs/GAME_SETUP.md` from the compatibility registry and checks
 //! the committed file still matches.
 //!

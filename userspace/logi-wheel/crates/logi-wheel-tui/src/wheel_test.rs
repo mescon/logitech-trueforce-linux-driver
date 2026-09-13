@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! The Test view's state and device I/O: live wheel monitoring over the
 //! wheel's evdev node, and the two guarded force-feedback test
 //! sequences.

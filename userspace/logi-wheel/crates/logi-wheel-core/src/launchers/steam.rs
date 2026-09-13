@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Steam backend for the unified game-discovery model: every installed
 //! game across the Steam libraries, Proton or native, as a
 //! [`DiscoveredGame`]. Reuses [`crate::steam`]'s VDF scraping and library

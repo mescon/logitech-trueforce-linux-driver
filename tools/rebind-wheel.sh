@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Diagnose and fix the common "wheel stuck on the wrong driver" problem.
 #

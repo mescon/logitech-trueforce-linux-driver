@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Pure logic for the Test view: wheel evdev discovery, raw
 //! `input_event` decoding, steering-to-degrees conversion and button
 //! naming.

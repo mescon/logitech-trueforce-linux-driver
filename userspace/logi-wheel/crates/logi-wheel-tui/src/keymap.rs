@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! One source of truth for every key binding: the `?` help overlay and the
 //! footer hints both render from the tables `sections` builds, so the two
 //! can never drift apart. Each binding says whether the slim footer shows

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 use crate::color_picker::{ColorPicker, PickerOutcome};
 use crate::screen_editor::{ScreenEditor, ScreenOutcome};
 use crate::curve_editor::CurveEditor;

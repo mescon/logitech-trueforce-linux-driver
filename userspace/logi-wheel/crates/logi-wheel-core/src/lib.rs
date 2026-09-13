@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Settings library for the hid-logitech-dd direct-drive wheels, plus the
 //! G923's classic lg4ff-style FFB engine (see [`WheelModel`], [`REGISTRY`]
 //! vs [`CLASSIC_REGISTRY`]).

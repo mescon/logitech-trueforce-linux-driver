@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Virtual wheel HID report descriptor and input report layout.
 
 pub const VENDOR: u16 = 0x046d;

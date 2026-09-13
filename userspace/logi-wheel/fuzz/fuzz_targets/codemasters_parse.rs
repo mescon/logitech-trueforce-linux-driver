@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 // Codemasters-format UDP telemetry (DiRT, GRID, EA WRC in that mode).

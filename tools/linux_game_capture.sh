@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Linux USB capture for the Logitech RS50 / G PRO wheel during a game
 # session. Writes a single .zip into dev/captures/ (gitignored scratch

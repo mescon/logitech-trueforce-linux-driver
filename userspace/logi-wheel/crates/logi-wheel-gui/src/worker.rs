@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! A background thread that owns the `Device`/`ViewModel` and does all
 //! sysfs I/O, so the UI thread never blocks on a wheel that is slow (or a
 //! rejected write that would otherwise stall the event loop).

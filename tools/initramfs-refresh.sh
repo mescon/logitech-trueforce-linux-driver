@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
 # Put hid-logitech-dd into the initramfs, and regenerate it.
 #
 # Why this exists (#90). The in-tree hid-logitech-hidpp driver claims the

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Install Logitech's real, Authenticode-signed SDK DLLs into Proton wine
 # prefixes so sims that use TrueForce / the Wheel SDK find them via CLSID

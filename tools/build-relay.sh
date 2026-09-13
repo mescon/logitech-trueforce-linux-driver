@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Rebuild the prebuilt logi-tf-relay.exe that packaging installs.
 #
 # The relay runs inside a game's Proton prefix, so it is a Windows binary.

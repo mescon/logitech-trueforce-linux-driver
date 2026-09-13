@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! The Test view's two guarded force-feedback simulations: shared step
 //! tables, kernel `ff_effect` construction, capability-based skipping and
 //! the sequence runner both front-ends drive.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Command-line front end.
 //!
 //! There is no subcommand: the common case is running a game with the proxy

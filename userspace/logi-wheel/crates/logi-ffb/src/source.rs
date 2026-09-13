@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Real-wheel evdev input source.
 //!
 //! Reads `struct input_event` records from the real wheel's evdev node

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 fn main() {
     // Build with the Fluent widget style so the app looks the same on every
     // distribution regardless of the builder's environment. A packager who

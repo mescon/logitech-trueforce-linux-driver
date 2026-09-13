@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Wrapper around `/dev/uhid`, the kernel's userspace-HID device interface.
 //!
 //! Unlike most kernel character devices, `/dev/uhid` is not ioctl-driven: a

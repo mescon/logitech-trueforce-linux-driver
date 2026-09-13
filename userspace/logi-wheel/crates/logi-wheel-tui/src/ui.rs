@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 use crate::app::{App, Focus};
 use crate::curve_editor::CurveEditor;
 use crate::wheel_test::TestView;

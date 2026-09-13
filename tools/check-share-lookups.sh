@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Fail if anything looks for our staged files by a fixed path alone.
 #
 # The files we stage into games (the dinput8 escape proxy, the telemetry

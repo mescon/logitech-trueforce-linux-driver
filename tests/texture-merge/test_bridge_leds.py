@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Bridge rev-LED mapping: LTFR datagrams in, wheel_rev_level writes out.
 
 Covers both mappings ("bar" default: LED 1 as soon as the engine turns,

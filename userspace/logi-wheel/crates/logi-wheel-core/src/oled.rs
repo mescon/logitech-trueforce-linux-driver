@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! The base's Dynamic OLED as the apps see it: the ten layouts, what each
 //! takes, how to compose a `wheel_oled` frame from typed fields, how to read
 //! one back into fields, and how to draw an approximation of it on screen.

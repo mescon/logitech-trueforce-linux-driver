@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! PID (Physical Interface Device) output report decoder.
 //!
 //! The virtual wheel exposes the PID output collection from the driver's HID

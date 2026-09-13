@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Simple-vs-advanced classification for the response-shaping settings,
 //! per axis.
 //!

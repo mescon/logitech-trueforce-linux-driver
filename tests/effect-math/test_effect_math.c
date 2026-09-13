@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Userspace tests for hidpp_dd_effect_math.h: the arithmetic that decides
  * what torque the motor is asked for. Same harness style as

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 use crate::kind::Kind;
 use crate::setting::{Access, Category, ModeReq, SettingSpec};
 

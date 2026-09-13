@@ -1,4 +1,5 @@
 #!/bin/sh -e
+# SPDX-License-Identifier: GPL-2.0-only
 # Build the dinput8 escape proxy with mingw-w64.
 #
 # dinput8-escape.dll is COMMITTED to the repository, like

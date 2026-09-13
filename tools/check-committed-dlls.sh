@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Freshness checks for the two committed Windows DLLs, the same promise
 # build-relay.sh --check makes for logi-tf-relay.exe: a prebuilt artifact
 # is only safe to ship if something notices when it falls behind its

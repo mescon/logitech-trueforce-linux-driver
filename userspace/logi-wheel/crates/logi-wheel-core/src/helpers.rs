@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Locating the game-helper executables the Setup pages manage: the
 //! `logi-launch` wrapper, the `logi-ffb` DirectInput FFB proxy, the
 //! `logi-tf-sim` daemon, the `logi-rpm-bridge` RPM feed and the TrueForce

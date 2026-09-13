@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Userspace DirectInput force-feedback proxy for the Logitech direct-drive wheels.
 
 pub mod descriptor;

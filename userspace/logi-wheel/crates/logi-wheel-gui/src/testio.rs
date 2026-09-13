@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! The Test page's device I/O: the evdev reader thread and the two
 //! guarded force-feedback simulations.
 //!

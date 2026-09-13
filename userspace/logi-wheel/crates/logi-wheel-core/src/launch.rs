@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! The launch-behaviour settings the front-ends persist for `logi-launch`:
 //! `$XDG_CONFIG_HOME/logi-wheel/launch.conf` (falling back to
 //! `~/.config/logi-wheel/launch.conf`), hand-rolled key=value in the same

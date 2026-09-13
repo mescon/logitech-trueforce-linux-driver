@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Phase-0 convenience wrapper: resolve the RS50 interface-0 hid device id and
 # attach the hardcoded-deadzone PoC to it. Run as root (BPF struct_ops attach
 # needs privilege). Holds the attachment until Ctrl-C.

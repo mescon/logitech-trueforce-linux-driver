@@ -122,6 +122,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" out/*.deb --clobber
 
+  # One CycloneDX SBOM per binary the release ships, from the locked
+  # dependency graph at the release tag, attached beside the assets they
+  # describe. The kernel module has no third-party components; its bill of
+  # materials is its own source, which every package ships.
+  sbom:
+    name: SBOM (CycloneDX)
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TAG }}
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo install cargo-cyclonedx --locked
+      - name: Generate and attach
+        working-directory: userspace/logi-wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          cargo cyclonedx -a -f json --locked
+          ver="${TAG#v}"
+          mkdir -p sbom
+          for c in logi-wheel-tui logi-wheel-gui logi-ffb logi-tf-sim logi-tf-relay; do
+            mv "crates/$c/$c.cdx.json" "sbom/${c}-${ver}.cdx.json"
+          done
+          ls -1 sbom
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" sbom/*.cdx.json --clobber
+
   telemetry-helpers:
     name: Telemetry helpers (relay + SCS plugin)
     needs: validate

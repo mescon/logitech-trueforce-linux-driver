@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Update the DKMS-installed logitech-trueforce package (built as the
 # hid-logitech-dd.ko module) from the current repo checkout. Copies

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /* Userspace tests for the pure texture-merge logic. */
 #include <stdio.h>
 #include <stdlib.h>

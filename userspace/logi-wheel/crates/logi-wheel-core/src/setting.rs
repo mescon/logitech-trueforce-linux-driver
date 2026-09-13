@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 use crate::kind::Kind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

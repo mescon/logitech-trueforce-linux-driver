@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Phase-1 loader: resolve the wheel's interface-0 hid_id and attach the
 # map-driven pedal shaper, pinning shaping_map at
 # /sys/fs/bpf/hid-logitech-dd/shaping_map (root:input 0660). Run as root; holds

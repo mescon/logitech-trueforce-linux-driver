@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! The modal LED color picker for `wheel_led_colors` (the LIGHTSYNC
 //! slot's 10-LED strip). It replaces the old raw 10-hex-value line editor
 //! with something a person can actually use: a cursor over the 10 LEDs, a

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # The DKMS packaging recipes for Debian, the AUR and OBS stage the module
 # source with explicit file lists, and a header added to mainline/ without
 # a matching manifest update ships a source tree that cannot compile on the

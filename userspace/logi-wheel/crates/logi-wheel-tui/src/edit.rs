@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 use logi_wheel_core::{Error, Kind, Value};
 
 pub struct EditState {

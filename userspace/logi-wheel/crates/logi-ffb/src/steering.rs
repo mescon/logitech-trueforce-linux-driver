@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Per-Wine-prefix enumeration steering.
 //!
 //! Games see two look-alike wheels once the virtual proxy device exists

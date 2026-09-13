@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! The point-list curve model shared by every frontend that shapes a pedal or
 //! steering response curve (TUI, GUI, ...). `compose` turns the user's control
 //! points plus lower/upper deadzones into the `in:out` point list the

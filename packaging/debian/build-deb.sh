@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Build the logitech-trueforce-dkms .deb from a clean export of the repo.
 # Run from anywhere; it locates the repo via git. Produces the .deb (and
 # source package) in the directory above the build tree.

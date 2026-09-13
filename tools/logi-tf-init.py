@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Send the TrueForce stream-engine init to the wheel and leave it ready.
 
 G HUB performs this 68-packet init on interface 2 at boot and leaves the

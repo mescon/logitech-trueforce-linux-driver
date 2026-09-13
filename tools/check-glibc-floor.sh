@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Fail if a shipped binary demands a newer glibc than our floor.
 #
 # glibc versions its symbols and a binary asks for whatever version the

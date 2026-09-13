@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * TrueForce session init sequence for the RS50 / G Pro direct-drive
  * family: 68 interface-2 type-0x01-report packets, sent twice at

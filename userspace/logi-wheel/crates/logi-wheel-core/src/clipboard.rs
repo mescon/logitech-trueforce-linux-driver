@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Putting text on the system clipboard, best-effort.
 //!
 //! Shared by both front-ends so a copy button and a copy key behave the

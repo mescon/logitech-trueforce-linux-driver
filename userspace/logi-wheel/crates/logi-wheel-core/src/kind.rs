@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 use crate::error::Error;
 use crate::value::{Color, Value};
 

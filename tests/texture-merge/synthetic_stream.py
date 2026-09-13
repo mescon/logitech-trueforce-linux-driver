@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Play the SDK's role for merge validation: init + START + a zero-force
 type-0x01 stream on the wheel's interface-2 hidraw node, then STOP.
 

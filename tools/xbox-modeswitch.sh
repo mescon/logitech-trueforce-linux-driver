@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
 # Switch a Logitech wheel out of Xbox console mode.
 #
 # Two wheels ship an Xbox edition that boots speaking Xbox GIP instead of

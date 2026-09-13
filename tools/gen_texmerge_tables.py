@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Generate the fixed-point tables for hidpp_dd_texture_merge.h.
 
 Run: python3 tools/gen_texmerge_tables.py

@@ -6,6 +6,7 @@
 [![Userspace CI](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/logi-wheel.yml/badge.svg)](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/logi-wheel.yml)
 [![CodeQL](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/codeql.yml/badge.svg)](https://github.com/mescon/logitech-trueforce-linux-driver/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/mescon/logitech-trueforce-linux-driver/badge)](https://securityscorecards.dev/viewer/?uri=github.com/mescon/logitech-trueforce-linux-driver)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14625/badge)](https://www.bestpractices.dev/projects/14625)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=mescon_logitech-rs50-linux-driver&metric=alert_status)](https://sonarcloud.io/dashboard?id=mescon_logitech-rs50-linux-driver)
 
 [![Latest release](https://img.shields.io/github/v/release/mescon/logitech-trueforce-linux-driver)](https://github.com/mescon/logitech-trueforce-linux-driver/releases/latest)
@@ -713,6 +714,42 @@ reports it can do against what this driver uses, and
 [**docs/STATUS.md**](docs/STATUS.md), which says plainly which claims here
 are measured, which are argued from the code, and which are neither, along
 with the problems we know about and have not fixed.
+
+## Verifying a release
+
+Every asset on a [release](https://github.com/mescon/logitech-trueforce-linux-driver/releases)
+is signed with the project's GnuPG key, fingerprint
+`4B5B DD78 0272 3B28 9FA9 34CA CD77 C00A 443B 9E79`, whose public half is
+attached to each release as `logitech-trueforce-signing-key.asc`. The Arch
+repository above is verified by pacman once the key is trusted. For any
+other asset:
+
+```bash
+gpg --import logitech-trueforce-signing-key.asc
+gpg --fingerprint 4B5BDD7802723B289FA934CACD77C00A443B9E79   # must match the line above
+gpg --verify logi-wheel_0.41.0-1_amd64.deb.sig logi-wheel_0.41.0-1_amd64.deb
+```
+
+A release is from this project when it verifies against that key; a change
+of key would be announced here and in the release notes. From 0.42.0 each
+release also carries a CycloneDX SBOM per binary. Only the latest release
+is supported; see [SECURITY.md](SECURITY.md) for the policy and the
+reporting process.
+
+## Project documents
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to take part and what a change needs
+- [GOVERNANCE.md](GOVERNANCE.md): roles, access, continuity, secrets
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [SECURITY.md](SECURITY.md): reporting and disclosure;
+  [docs/SECURITY_ASSURANCE.md](docs/SECURITY_ASSURANCE.md): threat model
+  and dependency policy; [security/openvex.json](security/openvex.json)
+- [docs/ROADMAP.md](docs/ROADMAP.md): what changes next;
+  [docs/STATUS.md](docs/STATUS.md): what works today
+- [CREDITS.md](CREDITS.md): who did the work
+- Architecture: the wiki's
+  [Architecture](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Architecture)
+  page
 
 ## Contributing
 

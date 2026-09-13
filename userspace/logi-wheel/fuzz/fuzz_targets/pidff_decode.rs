@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 // A PID output report as a Wine process writes it to the virtual wheel.

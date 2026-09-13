@@ -16,6 +16,21 @@ reporting, which SECURITY.md has pointed at all along, is now actually
 enabled on the repository. Force pushes to and deletion of master are
 refused.
 
+**The project's rules are written down, and the release carries its bill of
+materials.** New at the top level: CONTRIBUTING.md (sign-off, tests with the
+change, coding standards), GOVERNANCE.md (roles, access, continuity, the
+secrets policy), CODE_OF_CONDUCT.md, docs/ROADMAP.md, and
+docs/SECURITY_ASSURANCE.md with the threat model, the dependency policy and
+its remediation thresholds; SECURITY.md now states the disclosure timetable,
+reporter credit and exactly when a release stops receiving fixes;
+security/openvex.json records the dependency advisories that do not affect
+the project and why. The README says how to verify a release against the
+signing key. CI measures the Rust workspace's test coverage on every push
+(80% at the time of writing) and builds a CycloneDX SBOM per crate, and from
+the next release the SBOMs are attached to the release beside the binaries.
+Secret-scanning push protection is on. Answers for the OpenSSF Best
+Practices badge, all levels, live in .bestpractices.json.
+
 **Every parser that reads bytes from outside has a fuzz target.** The relay
 datagram, the PID report decoder behind logi-ffb, and the Codemasters,
 Project CARS, WRC, BeamNG and F1 telemetry decoders each get a cargo-fuzz

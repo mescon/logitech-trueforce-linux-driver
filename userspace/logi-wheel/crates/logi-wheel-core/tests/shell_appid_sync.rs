@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! Checks that `tools/setup.sh`'s Steam appid lists agree with the registry.
 //!
 //! The shell tooling cannot import the registry, so it keeps its own copy of

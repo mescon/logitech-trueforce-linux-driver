@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 // Probe Logitech's DirectInput OEM force-feedback driver under Wine.
 //
 // hidpp_forcefeedback_x64.dll is a COM in-proc server implementing
