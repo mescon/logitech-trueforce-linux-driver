@@ -10,8 +10,9 @@ on:
     # and both proxy DLLs live there with their sources, and a push that
     # touches only tools/ used to trigger no freshness check at all.
     paths: ["userspace/logi-wheel/**", "tools/**", ".github/workflows/logi-wheel.yml"]
+  # Unfiltered on pull requests: these checks are required by the branch
+  # protection, and a required check that never runs blocks the merge.
   pull_request:
-    paths: ["userspace/logi-wheel/**", "tools/**", ".github/workflows/logi-wheel.yml"]
 permissions:
   contents: read
 jobs:

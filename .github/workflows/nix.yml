@@ -26,14 +26,9 @@ on:
       - "udev/**"
       - "tools/**"
       - ".github/workflows/nix.yml"
+  # Unfiltered on pull requests: the flake check is required by the branch
+  # protection, and a required check that never runs blocks the merge.
   pull_request:
-    paths:
-      - "flake.nix"
-      - "flake.lock"
-      - "userspace/logi-wheel/**"
-      - "mainline/**"
-      - "udev/**"
-      - "tools/**"
 
 permissions:
   contents: read
