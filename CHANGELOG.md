@@ -11,7 +11,10 @@ the contract is "it works on RS50 and G Pro as listed here".
 workflows without a top-level permissions block ran with the repository's
 default token; both start read-only now, and only the release jobs that
 attach assets ask for write access. A compiled test binary that had been
-committed by accident is gone from the tree.
+committed by accident is gone from the tree. GitHub's private vulnerability
+reporting, which SECURITY.md has pointed at all along, is now actually
+enabled on the repository. Force pushes to and deletion of master are
+refused.
 
 **Every parser that reads bytes from outside has a fuzz target.** The relay
 datagram, the PID report decoder behind logi-ffb, and the Codemasters,

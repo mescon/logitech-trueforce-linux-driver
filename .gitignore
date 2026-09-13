@@ -244,3 +244,6 @@ userspace/logi-wheel/fuzz/target/
 userspace/logi-wheel/fuzz/artifacts/
 userspace/logi-wheel/fuzz/corpus/
 userspace/logi-wheel/fuzz/coverage/
+
+# Read by bestpractices.dev; must be committed despite the dotfile rule above.
+!.bestpractices.json

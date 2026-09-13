@@ -729,7 +729,8 @@ own tests (`cargo test --workspace` in `userspace/logi-wheel`), and the parts
 of the kernel driver that are pure arithmetic, the force maths and the texture
 synthesis, are header-only files with userspace harnesses under
 [`tests/`](tests/README.md) that build with nothing but a C compiler. CI runs
-all of it on every push. What needs hardware is listed in
+all of it on every push. Changes that add functionality come with tests for
+it, in the same change. What needs hardware is listed in
 [docs/STATUS.md](docs/STATUS.md).
 
 ## License
