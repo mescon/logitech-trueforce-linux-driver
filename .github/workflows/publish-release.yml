@@ -144,7 +144,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          cargo cyclonedx -a -f json --locked
+          cargo cyclonedx -a -f json
           ver="${TAG#v}"
           mkdir -p sbom
           for c in logi-wheel-tui logi-wheel-gui logi-ffb logi-tf-sim logi-tf-relay; do
