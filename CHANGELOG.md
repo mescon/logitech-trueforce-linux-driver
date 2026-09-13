@@ -5,6 +5,22 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**Workflow tokens are read-only unless a job says otherwise.** The two
+workflows without a top-level permissions block ran with the repository's
+default token; both start read-only now, and only the release jobs that
+attach assets ask for write access. A compiled test binary that had been
+committed by accident is gone from the tree.
+
+**Every parser that reads bytes from outside has a fuzz target.** The relay
+datagram, the PID report decoder behind logi-ffb, and the Codemasters,
+Project CARS, WRC, BeamNG and F1 telemetry decoders each get a cargo-fuzz
+target under `userspace/logi-wheel/fuzz`, kept out of the workspace so
+ordinary builds do not need a nightly toolchain. A first run of each found
+nothing; the point is that a game or a Wine process can hand the daemon or
+the proxy any bytes at all, and a panic there ends the session.
+
 ## 0.41.0 - 2026-09-12
 
 **The G923 Xbox edition takes the SDK route when Logitech's TrueForce

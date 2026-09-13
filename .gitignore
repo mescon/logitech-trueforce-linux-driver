@@ -238,3 +238,9 @@ tools/*.exe
 
 # Build product of tests/effect-math/Makefile; never commit it.
 tests/effect-math/test_effect_math
+
+# cargo-fuzz work directories (userspace/logi-wheel/fuzz)
+userspace/logi-wheel/fuzz/target/
+userspace/logi-wheel/fuzz/artifacts/
+userspace/logi-wheel/fuzz/corpus/
+userspace/logi-wheel/fuzz/coverage/

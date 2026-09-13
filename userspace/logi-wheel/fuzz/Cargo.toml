@@ -1,0 +1,61 @@
+[package]
+name = "logi-wheel-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Fuzz targets for every parser that reads bytes from the network or a HID node"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+logi-wheel-core = { path = "../crates/logi-wheel-core" }
+logi-tf-sim = { path = "../crates/logi-tf-sim" }
+logi-ffb = { path = "../crates/logi-ffb" }
+
+# Each target is one parser fed arbitrary bytes. They must never panic:
+# every one of these reads input that arrives over UDP from a game, from
+# an in-prefix relay, or from a HID report a Wine process writes, and a
+# panic there takes the daemon or the proxy down mid-session.
+[[bin]]
+name = "relay_decode"
+path = "fuzz_targets/relay_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "pidff_decode"
+path = "fuzz_targets/pidff_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "codemasters_parse"
+path = "fuzz_targets/codemasters_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "pcars_parse"
+path = "fuzz_targets/pcars_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wrc_parse"
+path = "fuzz_targets/wrc_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "beamng_parse"
+path = "fuzz_targets/beamng_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "f1_parse"
+path = "fuzz_targets/f1_parse.rs"
+test = false
+doc = false

@@ -1,5 +1,8 @@
 [workspace]
 resolver = "2"
+# fuzz/ is its own package: it needs libfuzzer-sys and a nightly toolchain
+# to run, so ordinary builds and tests must not pull it in.
+exclude = ["fuzz"]
 members = ["crates/logi-build-id", "crates/logi-wheel-core", "crates/logi-wheel-tui", "crates/logi-ffb", "crates/logi-wheel-gui", "crates/logi-tf-sim", "crates/logi-tf-scs", "crates/logi-tf-relay"]
 
 [workspace.package]
