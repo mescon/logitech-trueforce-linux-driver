@@ -57,14 +57,16 @@ explained in the release notes.
 
 ## How changes land
 
-The maintainer pushes to `master` directly; every push runs the full CI
-(kernel builds on several kernels, sparse and smatch, the Rust tests and
-clippy with warnings as errors, CodeQL, cargo-audit, the Nix flake). A
-change from anyone else arrives as a pull request and is reviewed by the
-maintainer before it is merged. Force pushes to and deletion of `master`
-are refused by the repository's branch protection. Changes are kept small
-and single-purpose; a release is a tag on `master`, and the release
-process is documented in the wiki's Building and Contributing page.
+Every change to `master`, the maintainer's included, arrives as a pull
+request. The branch protection refuses direct commits, force pushes and
+deletion, for administrators too, and a pull request merges only when the
+required CI checks have passed: the kernel builds on several kernels,
+sparse and smatch, the Rust tests and clippy with warnings as errors,
+CodeQL, the committed-binary checks and the Nix flake. A change from
+anyone else is reviewed by the maintainer before it is merged. Changes
+are kept small and single-purpose; a release is a tag on `master`, and
+the release process is documented in the wiki's Building and Contributing
+page.
 
 The maintainer's own changes do not get a second human review. That is a
 known limitation of a one-person project, not a policy choice, and it is
