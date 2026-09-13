@@ -180,7 +180,7 @@ jobs:
       - name: Generate
         working-directory: userspace/logi-wheel
         run: |
-          cargo cyclonedx -a -f json --locked
+          cargo cyclonedx -a -f json
           mkdir -p sbom
           for f in crates/*/*.cdx.json; do mv "$f" "sbom/$(basename "$f")"; done
           ls -1 sbom
