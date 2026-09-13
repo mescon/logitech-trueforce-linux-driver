@@ -235,3 +235,6 @@ tools/*.exe
 # makes. Refresh it with tools/build-relay.sh, never by hand; CI fails if it
 # falls behind its sources.
 !tools/logi-tf-relay.exe
+
+# Build product of tests/effect-math/Makefile; never commit it.
+tests/effect-math/test_effect_math

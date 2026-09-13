@@ -49,6 +49,12 @@ on:
         description: "Existing release tag to (re)publish, e.g. v0.12.1"
         required: true
 
+# Read-only token by default; the jobs that attach assets to the release
+# ask for contents: write themselves, and the channel pushes use their own
+# secrets, never the workflow token.
+permissions:
+  contents: read
+
 env:
   # tag name for either trigger; strip the leading v for the bare version
   TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
@@ -462,6 +468,8 @@ jobs:
   archrepo:
     name: Arch repo (signed)
     needs: [validate, aur-build]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
