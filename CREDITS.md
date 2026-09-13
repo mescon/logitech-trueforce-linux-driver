@@ -19,6 +19,24 @@ Every one of these people ran tests on hardware in their own home, often
 several rounds of them, and often getting nothing back for their trouble
 until the last round.
 
+- **[fenixadam](https://github.com/fenixadam)** - the G923 Xbox edition on
+  Logitech's own SDK, from the first capture to the release. His USB
+  captures decoded the SDK's stream on that wheel ([#81](../../issues/81)),
+  his hardware runs confirmed the rotation-range and strength fixes
+  ([#82](../../issues/82)), his kernel traces named two separate crashes and
+  the load-order race behind one of them ([#90](../../issues/90)), and a
+  full day of precise runs on the SDK route found four faults in a row
+  that no machine here could have shown: a marker written under the wrong
+  name, an SDK left believing a tiny rotation range, a proxy that re-entered
+  the SDK, and an installer that kept old apps ([#91](../../issues/91)). He
+  then compared the result against Windows on the same car. AC Rally
+  ([#83](../../issues/83)) is his too.
+- **[DaveDos95](https://github.com/DaveDos95)** - RaceRoom on an RS50 under
+  SteamOS ([#92](../../issues/92)): read the game's own profile file to rule
+  out the first diagnosis, then produced the proxy logs that proved the real
+  fault, a DirectInput force aimed straight north, and confirmed the fix
+  with a binary built for a system that cannot build its own. The same runs
+  were the first live confirmation of the RaceRoom telemetry decoder.
 - **[simonr2k4](https://github.com/simonr2k4)** - the entire G923 Xbox
   edition. Force feedback and TrueForce both work on that wheel because of
   his testing, and neither existed before it ([#27](../../issues/27)). He
@@ -59,6 +77,15 @@ until the last round.
 
 ## Sustained bug reporting
 
+- **[Ismael-Torresan](https://github.com/Ismael-Torresan)** - the only
+  quantitative measurements the force engine has: a fixed push over a fixed
+  travel, timed, for damper, friction and inertia on both the firmware's
+  path and the engine's, twice ([#72](../../issues/72),
+  [#87](../../issues/87)). Those numbers are what the engine's condition
+  forces will be calibrated against, and his wedge report on the Xbox
+  edition found a detector that reset itself on every error reply.
+- **[Lorenzoo78](https://github.com/Lorenzoo78)** - the Assetto Corsa EVO
+  stutter report under the launcher ([#74](../../issues/74)).
 - **[matthiasvegh](https://github.com/matthiasvegh)** - twelve issues and
   the most thorough reporting the project has had: rotation range having no
   effect ([#10](../../issues/10)), inverted force feedback
