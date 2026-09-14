@@ -7,6 +7,20 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**Every release asset is signed, and the release carries provenance.** The
+signing job only ever covered the Arch packages and their repository
+database, although the documentation said every asset; the Debian
+packages, the telemetry helpers and the SBOMs went out unsigned. The
+release workflow now ends by signing every asset that has no detached
+signature yet, with the same key, and by attaching a SLSA build provenance
+statement, `release-assets.intoto.jsonl`, that lists every asset by SHA-256
+and is signed through Sigstore by the SLSA generic generator.
+`slsa-verifier` can then confirm that an asset is the one this repository's
+workflow published at that tag; the README shows how. The workflow accepts
+a `provenance-only` dispatch that exercises the provenance jobs against an
+existing release without uploading anything. The README and the assurance
+document now say what was signed up to 0.41.0 instead of overstating it.
+
 **Reviewed dependency advisories are recorded where the scanners look.** The
 four RustSec notices against the GUI toolkit's font and image stack (bincode,
 paste, rustybuzz, ttf-parser, all "crate is unmaintained", none a
