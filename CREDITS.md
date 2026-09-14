@@ -74,6 +74,11 @@ until the last round.
   wheels ([#20](../../issues/20)).
 - **[PeposCJ](https://github.com/PeposCJ)** - contributed to the same
   protocol discussion.
+- **[fsfarmscaper](https://github.com/fsfarmscaper)** - decoded the dual
+  clutch page (`0x8127`) on a G923 Xbox edition by listening to the wheel
+  instead of writing to it, with predictions logged before the runs that
+  tested them, and shared the raw logs ([#97](../../issues/97)). The first
+  layout for that page from any source.
 
 ## Sustained bug reporting
 
