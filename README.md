@@ -717,24 +717,39 @@ with the problems we know about and have not fixed.
 
 ## Verifying a release
 
-Every asset on a [release](https://github.com/mescon/logitech-trueforce-linux-driver/releases)
-is signed with the project's GnuPG key, fingerprint
+Assets on a [release](https://github.com/mescon/logitech-trueforce-linux-driver/releases)
+are signed with the project's GnuPG key, fingerprint
 `4B5B DD78 0272 3B28 9FA9 34CA CD77 C00A 443B 9E79`, whose public half is
-attached to each release as `logitech-trueforce-signing-key.asc`. The Arch
-repository above is verified by pacman once the key is trusted. For any
-other asset:
+attached to each release as `logitech-trueforce-signing-key.asc`. Up to
+0.41.0 that covers the Arch packages and the repository database, which
+pacman verifies once the key is trusted; from 0.42.0 every asset has a
+detached `.sig`. To check one by hand:
 
 ```bash
 gpg --import logitech-trueforce-signing-key.asc
 gpg --fingerprint 4B5BDD7802723B289FA934CACD77C00A443B9E79   # must match the line above
-gpg --verify logi-wheel_0.41.0-1_amd64.deb.sig logi-wheel_0.41.0-1_amd64.deb
+gpg --verify logi-wheel-0.41.0-1-x86_64.pkg.tar.zst.sig logi-wheel-0.41.0-1-x86_64.pkg.tar.zst
 ```
 
 A release is from this project when it verifies against that key; a change
-of key would be announced here and in the release notes. From 0.42.0 each
-release also carries a CycloneDX SBOM per binary. Only the latest release
-is supported; see [SECURITY.md](SECURITY.md) for the policy and the
-reporting process.
+of key would be announced here and in the release notes.
+
+From 0.42.0 each release also carries a CycloneDX SBOM per binary and a
+SLSA provenance statement, `release-assets.intoto.jsonl`, listing every
+asset by SHA-256 and signed through Sigstore by the release workflow itself.
+[slsa-verifier](https://github.com/slsa-framework/slsa-verifier) checks that
+an asset is the one the workflow published, from this repository, at that
+tag:
+
+```bash
+slsa-verifier verify-artifact logi-wheel_0.42.0-1_amd64.deb \
+  --provenance-path release-assets.intoto.jsonl \
+  --source-uri github.com/mescon/logitech-trueforce-linux-driver \
+  --source-tag v0.42.0
+```
+
+Only the latest release is supported; see [SECURITY.md](SECURITY.md) for
+the policy and the reporting process.
 
 ## Project documents
 

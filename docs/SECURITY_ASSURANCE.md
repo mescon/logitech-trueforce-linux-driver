@@ -36,7 +36,7 @@ Who could attack, through what, and what the consequence would be.
 | **A Wine process** writing force-feedback reports to the virtual wheel | The PID report decoder in logi-ffb | A proxy crash (loss of force) or wrong forces | The decoder validates report ids, lengths and block indexes and is fuzzed; effects are translated into the kernel's own force-feedback interface, which bounds them; the proxy runs as the user, with no more access than the game itself has. |
 | **A game's prefix** where the Windows helpers run | The escape proxy and relay, and through them the wheel's sysfs range | Wrong rotation range; a stalled game | The helpers only read the game's shared memory and write telemetry to loopback; the one write they perform on the wheel (the rotation range the SDK announces) is bounds-checked to the range a wheel accepts, and can be switched off. |
 | **Another local user** | The wheel's sysfs attributes, which the udev rule makes world-writable | Changed settings; a changed rotation range while someone is driving | Accepted risk, stated here: the attributes are world-writable so that settings apps and games work without root, and a machine with a racing wheel attached is assumed to be single-user. No attribute grants any privilege beyond the wheel itself. |
-| **A dependency or a build tool** | Everything | Compromised releases | Dependencies are pinned by `Cargo.lock`, updated by Dependabot, checked by `cargo audit` on every push and weekly; GitHub Actions are pinned to commit hashes; workflow tokens are read-only by default; releases are signed and the signing key's fingerprint is published. |
+| **A dependency or a build tool** | Everything | Compromised releases | Dependencies are pinned by `Cargo.lock`, updated by Dependabot, checked by `cargo audit` on every push and weekly; GitHub Actions are pinned to commit hashes; workflow tokens are read-only by default; releases are signed, carry SLSA provenance for every asset, and the signing key's fingerprint is published. |
 | **The maintainer's accounts and secrets** | Releases and channels | Compromised releases | Two-factor authentication is required for write access; secrets live only in GitHub Actions and are rotated on any suspicion; the rules are in GOVERNANCE.md. |
 
 The critical code paths, in order of consequence, are the kernel module's
@@ -107,14 +107,23 @@ module source itself, which the packages ship.
 
 ## Verifying a release
 
-Every release asset is signed with the project's GnuPG key, fingerprint
+Release assets are signed with the project's GnuPG key, fingerprint
 `4B5B DD78 0272 3B28 9FA9 34CA CD77 C00A 443B 9E79`, published with each
-release as `logitech-trueforce-signing-key.asc`. The README's install
-section says how to verify: pacman does it once the key is trusted; for
-any other asset, `gpg --verify <asset>.sig <asset>` after importing the
-key and checking the fingerprint. The identity behind a release is that
-key: a release signed by any other key is not from this project until the
-README says the key has changed.
+release as `logitech-trueforce-signing-key.asc`: the Arch packages and
+repository database up to 0.41.0, every asset from 0.42.0. The README's
+"Verifying a release" says how to check one: pacman does it once the key
+is trusted; for any other asset, `gpg --verify <asset>.sig <asset>` after
+importing the key and checking the fingerprint. The identity behind a
+release is that key: a release signed by any other key is not from this
+project until the README says the key has changed.
+
+From 0.42.0 each release also carries a SLSA build provenance statement
+(`release-assets.intoto.jsonl`) produced by the SLSA generic generator:
+the release workflow hashes every attached asset and the generator signs
+the list keylessly through Sigstore, recording the repository, the tag and
+the workflow that published them. `slsa-verifier` checks an asset against
+it, as the README shows. The GnuPG signature says who signed; the
+provenance says what built it and from which commit.
 
 ## Support and end of support
 

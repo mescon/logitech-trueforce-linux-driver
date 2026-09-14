@@ -15,6 +15,15 @@ name: Publish release packages
 #                            release as a pacman repository (needs secrets
 #                            GPG_SIGNING_KEY and GPG_PASSPHRASE). Independent
 #                            of the AUR, which has had long outages.
+#   * Signatures + provenance -> once every asset is attached, each one
+#                            without a detached signature gets one from the
+#                            same key, and a SLSA provenance statement
+#                            listing every asset by SHA-256 is signed through
+#                            Sigstore and attached as
+#                            release-assets.intoto.jsonl. A manual dispatch
+#                            with provenance-only set skips every channel and
+#                            only exercises the provenance jobs against an
+#                            existing release, uploading nothing.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   COPR_CONFIG  the contents of your ~/.config/copr
@@ -48,6 +57,10 @@ on:
       tag:
         description: "Existing release tag to (re)publish, e.g. v0.12.1"
         required: true
+      provenance-only:
+        description: "Only hash the existing assets and build provenance, without uploading it"
+        type: boolean
+        default: false
 
 # Read-only token by default; the jobs that attach assets to the release
 # ask for contents: write themselves, and the channel pushes use their own
@@ -79,6 +92,7 @@ jobs:
   debian:
     name: Debian/Ubuntu .deb
     needs: validate
+    if: ${{ !inputs.provenance-only }}
     runs-on: ubuntu-latest
     # Only this job needs write access, to attach the .deb to the release.
     permissions:
@@ -129,6 +143,7 @@ jobs:
   sbom:
     name: SBOM (CycloneDX)
     needs: validate
+    if: ${{ !inputs.provenance-only }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -156,6 +171,7 @@ jobs:
   telemetry-helpers:
     name: Telemetry helpers (relay + SCS plugin)
     needs: validate
+    if: ${{ !inputs.provenance-only }}
     runs-on: ubuntu-latest
     # Attaches the built helpers to the release.
     permissions:
@@ -210,6 +226,7 @@ jobs:
   copr:
     name: Fedora COPR (akmod)
     needs: validate
+    if: ${{ !inputs.provenance-only }}
     runs-on: ubuntu-latest
     container: fedora:latest
     steps:
@@ -258,6 +275,7 @@ jobs:
   obs:
     name: openSUSE OBS
     needs: validate
+    if: ${{ !inputs.provenance-only }}
     runs-on: ubuntu-latest
     container: opensuse/tumbleweed:latest
     steps:
@@ -358,6 +376,7 @@ jobs:
   aur-build:
     name: Arch AUR (build check)
     needs: validate
+    if: ${{ !inputs.provenance-only }}
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
@@ -586,3 +605,110 @@ jobs:
             logitech-trueforce-signing-key.asc \
             --clobber
 
+  # Everything below runs once every job that attaches assets has finished,
+  # so that the signatures and the provenance cover the release as shipped.
+  # On a provenance-only dispatch the asset jobs are skipped, which is fine;
+  # anything else short of success means the release is incomplete and gets
+  # no signatures and no provenance until it is republished.
+  sign-assets:
+    name: Sign the remaining assets
+    needs: [validate, debian, sbom, telemetry-helpers, archrepo]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !inputs.provenance-only }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download every asset of the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
+          ls -1 assets
+      - name: Sign every asset that has no signature yet
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if [ -z "${GPG_SIGNING_KEY:-}" ]; then
+            echo "::error::GPG_SIGNING_KEY is not set; see README 'Arch Linux repository'." >&2
+            exit 1
+          fi
+          # Same scratch keyring and loopback pinentry as the Arch repo job.
+          export GNUPGHOME
+          GNUPGHOME=$(mktemp -d)
+          chmod 700 "$GNUPGHOME"
+          printf '%s\n' "$GPG_SIGNING_KEY" | gpg --batch --import
+          KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')
+          echo "signing with $KEYID"
+          cd assets
+          new=""
+          for f in *; do
+            # Signatures, the public key and provenance sign nothing.
+            case "$f" in *.sig|*.asc|*.intoto.jsonl) continue;; esac
+            [ -e "$f.sig" ] && continue
+            gpg --batch --yes --pinentry-mode loopback \
+                --passphrase "$GPG_PASSPHRASE" \
+                --detach-sign --no-armor -u "$KEYID" "$f"
+            gpg --verify "$f.sig" "$f"
+            new="$new $f.sig"
+          done
+          if [ -n "$new" ]; then
+            # shellcheck disable=SC2086
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" $new --clobber
+          fi
+          echo "signed:${new:- nothing, every asset already had a signature}"
+
+  # A SLSA build provenance statement listing every asset of the release by
+  # SHA-256, signed keylessly through Sigstore by the SLSA generic generator
+  # and attached as release-assets.intoto.jsonl. Anyone can then check that
+  # an asset they downloaded is the one this workflow published:
+  #   slsa-verifier verify-artifact <asset> \
+  #     --provenance-path release-assets.intoto.jsonl \
+  #     --source-uri github.com/mescon/logitech-trueforce-linux-driver \
+  #     --source-tag vX.Y.Z
+  hashes:
+    name: Hash the release assets
+    needs: [validate, sign-assets]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.sign-assets.result != 'failure' && needs.sign-assets.result != 'cancelled' }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - name: Download every asset of the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
+          # A republish must not list the previous statement as a subject.
+          rm -f assets/*.intoto.jsonl
+          ls -1 assets
+      - name: List them as sha256sum output, base64-encoded
+        id: hash
+        run: |
+          set -eu
+          cd assets
+          sha256sum -- *
+          echo "hashes=$(sha256sum -- * | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    name: Sign the provenance
+    needs: hashes
+    permissions:
+      actions: read   # the generator reads this run's metadata
+      id-token: write # keyless signing through Sigstore
+      contents: write # attaches the statement to the release
+    # Referenced by tag, not by commit hash, on purpose: slsa-verifier can
+    # only verify the generator's ref when it is a tag (the generator's
+    # README, "Referencing SLSA builders and generators").
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.hashes.outputs.hashes }}
+      provenance-name: release-assets.intoto.jsonl
+      upload-assets: ${{ !inputs.provenance-only }}
+      upload-tag-name: ${{ github.event.release.tag_name || inputs.tag }}
