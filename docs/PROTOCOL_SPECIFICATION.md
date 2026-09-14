@@ -1,6 +1,6 @@
 # Logitech TrueForce Direct-Drive Wheel Protocol Specification
 
-**Document Version**: 6.7
+**Document Version**: 7.6
 **Date**: 2026-07-06
 **Author**: Verified from USB capture analysis
 **Status**: Protocol reference for Linux driver development
@@ -385,7 +385,7 @@ Device → Host: Interrupt IN (endpoint 0x82)
 | 0x0D | `0x80A4` | AxisResponseCurve | Per-axis 64-point response curves (see 5.1) |
 | 0x0F | `0x8120` | GamingAttachments | Attachment/module management (openlogi registry name) |
 | 0x10 | `0x8123` | ForceFeedback | HID++ FFB (unused by this driver; documented at openlogi.org) |
-| 0x11 | `0x8127` | (undecoded, hidden) | fn2 result is constant across every onboard slot - not slot content; not sent by this driver (see "Onboard Profile Authoring" above) |
+| 0x11 | `0x8127` | DualClutch | Bite point and paddle assignment, set on the wheel itself and read back by `fn2` (see 12.6); constant across onboard slots because it is not slot content; not sent by this driver |
 | 0x12 | `0x8130` | **DisplayGameData** | The Dynamic OLED's transport. Hardware-confirmed by a third party, not by this driver; not touched by any sysfs attribute (see 12.3) |
 | 0x13 | `0x8132` | (undecoded) | Not touched by any sysfs attribute |
 | **0x14** | **`0x8133`** | **Damping** | Damping slider |
@@ -702,10 +702,10 @@ fault.
 
 **Feature indices pinned this session** (request/response pairing against
 a live G Hub startup capture; previously missing from the table below):
-index `0x11` = `0x8127` (a hidden feature whose fn2 result reads back
-identical across every slot, i.e. NOT part of a slot's content - some
-kind of commit/sync call G Hub issues but this driver has never needed to
-send), `0x12` = `0x8130` (DisplayGameData, the Dynamic OLED's transport;
+index `0x11` = `0x8127` (DualClutch; its fn2 result reads back identical
+across every slot because it is the wheel's own bite-point state, not part
+of a slot's content, see 12.6; this driver has never needed to send it),
+`0x12` = `0x8130` (DisplayGameData, the Dynamic OLED's transport;
 see 12.3), `0x13` = `0x8132` (undecoded; not touched by any sysfs
 attribute).
 
@@ -2378,6 +2378,59 @@ the configuration described above. It would need force moved off HID++ first,
 or evidence that this wheel behaves differently from the G PRO the finding
 came from.
 
+### 12.6 Dual clutch (Feature 0x8127, DualClutch)
+
+Decoded by @fsfarmscaper on a G923 Xbox edition (`046d:c26e`, firmware
+139.2.50, feature index `0x11`) by listening on the feature index while a
+person worked the wheel, with G HUB not running ([#97](../../issues/97),
+logs attached there). Not verified by this driver, which has no wheel with a
+dual clutch to hand. One wheel, one firmware: the page is also reported on
+the RS50 and the PS G923 and nothing below has been checked on either.
+
+**The host only reads.** The wheel configures the feature from on-wheel
+button combinations and reports the result. Writes to `fn2` and `fn3` are
+acknowledged and change nothing (28 across two sessions), so on this page an
+acknowledged write is not an applied one.
+
+| Function | Direction | Payload | Notes |
+|---|---|---|---|
+| `fn0` | read | `02` | Constant. Never moved |
+| `fn1` | read, zone in byte 0 | zone 0: `00 09 00 09`, zone 1: `00 09 00 0a` | Zones 2+ answer `INVALID_ARGUMENT (0x02)`. Never moved through setup, bite-point change, reassignment, reset, or 28 writes. Meaning unknown |
+| `fn2` | read | `[0]` `01` configured, `[1]` paddle: `00` RSB, `01` LSB, `[2]` bite point `0..100` | The state. Read `01 00 64` before a run and `01 00 5a` after ten presses of `-` |
+| `fn3` | write | accepts `00` and `01`; `02` and `03` answer `INVALID_ARGUMENT` | Two-state selector by its argument check; no observable effect |
+| `fn4` and up | - | `INVALID_FUNCTION_ID (0x07)` | |
+
+**Event.** Every change emits an unsolicited report on the feature index
+with the same fields plus a mode byte:
+
+```
+12 ff 11 00 | 01 <paddle> <bite> 00 <mode> <n>
+```
+
+`mode` is `02` while in setting mode and `00` on exit and save. The run-2
+log also shows the entry into setting mode itself: `01 ff 64 00 01 01`,
+paddle `ff` (unassigned) and bite point back at 100 with mode `01`. The
+simplest reading of that, and of the report's one open question (a bite
+point that read 90 at the end of one run and 100 at the start of the next),
+is that entering setup resets both fields, so a saved value lives only until
+the next setup entry. That reading is untested, and so is what happens
+across a power cycle.
+
+**On the wheel** (all without host involvement): hold both paddles plus LSB
+and RSB for about two seconds to enter setup (rev LEDs blue, slow flash);
+press LSB or RSB to assign the paddle (LEDs flash red); clutch and
+accelerator down, then `+` or `-` to move the bite point, one event per
+press, 100 is the ceiling; Select (dial centre) exits and saves (LEDs flash
+green to blue); both paddles plus X resets (all rev LEDs on, then off in
+sequence). `0x807A` `fn2` and `fn7` were unchanged throughout, so the page
+does not touch the rev-light state.
+
+**Method, worth reusing.** Two sessions of writing to the page produced
+nothing; one session of listening for unsolicited reports while someone
+performed the real on-device action, diffing the registers before and
+after, produced the layout above. Other pages that look inert may yield to
+the same approach.
+
 ---
 
 ## 13. Revision History
@@ -2406,3 +2459,4 @@ came from.
 | 7.3 | 2026-07-29 | Two contributions from @PeposCJ (issue #20), neither verified by this driver. `0x8130` DisplayGameData identified as the Dynamic OLED's transport, reached on hardware with static text and live iRacing telemetry on the panel (12.3); function numbers, payload layout and, critically, whether writing it disturbs the FFB stream all remain open, and `0x18A2`/`0x18B1`/`0x9315` stay unexplained rather than ruled out. Rev-light stream documented from four first-party captures (12.4): the true arm sequence is fn0/fn1/fn2/fn0 before the fn2+fn6 stream, with no `fn3` (the driver's extra `fn3` SET_EFFECT stomped the user's LIGHTSYNC effect and was removed in v0.21.0); every write draws a `0x12` acknowledgement; redline is plain `LL = 10` at ~60 Hz with no flash command; and iRacing's pit-limiter flash is only `LL` 10/0 alternating at ~416.7 ms, so a telemetry feeder can reproduce it with no new protocol support. |
 | 7.4 | 2026-07-30 | Dynamic OLED largely decoded and the HID++ endpoint's contention behaviour recorded, both from issue #20 and neither verified by this driver. `0x8130`: fn0 layout count, fn1 layout descriptor, fn2 clear pending, fn3 set layout/data; 10 layouts A-J, layout J exposing four text fields at 19/10/19/10; a typed firmware renderer rather than a framebuffer (the firmware has a 128x64 buffer but no command accepts pixels, coordinates or regions), reached at interface 1 endpoint 0 by SET_REPORT, explicitly NOT via Logitech's DirectInput Escape path whose Acquire/Unacquire lifecycle emits RESET_ALL / SET_GLOBAL_GAINS / RESET_ALL on 0x8123 (12.3). New 12.5: while any force is present on the HID++ endpoint, a non-force write to it cuts the force, independent of sender count and unimproved by pacing; a quiet-looking endpoint only means the title has native TrueForce and never writes force there ("ignored is not the same as absent"). Recorded with its consequence: the G923 Xbox edition is the only wheel here whose force rides HID++, so rev-light support for it cannot simply reuse 0x807A. |
 | 7.5 | 2026-08-08 | Force stream rates corrected throughout: the kernel driver's own stream runs at **1000 Hz** from 0.30.0, matching what games send and Logitech's stated 1 ms TRUEFORCE interval, having really run at 333 Hz before. The timer was a jiffies timer that re-armed itself for the next jiffy, and the timer wheel never fires a timer early, so the expiry always slipped to the jiffy after: measured across four nominal intervals on an RS50, every one came back a millisecond long. It is now an hrtimer, so the period is the one requested and `CONFIG_HZ` does not enter into it. Texture samples span one millisecond per tick, so a two-millisecond tick left every other millisecond unsampled and the wheel held through the gap. This did not shift pitch: measured from the steering encoder on an RS50, both the old and new builds render a requested 50 Hz and 100 Hz exactly. Feature-page names reconciled against Logitech's published HID++ 2.0 registry: `0x807A` is RPM_INDICATOR (the rev display) rather than the general LIGHTSYNC this project called it, `0x807B` is RPM_LED_PATTERN, `0x80D0` is COMBINED_PEDALS (which explains its profile-change broadcast), `0x8136` is TORQUE_LIMIT. New docs/FEATURE_MATRIX.md enumerates both wheels here against that registry: notably the RS50 and G923 use **different** response-curve pages (`0x80A4` versus the legacy `0x80A3`), and DUAL_CLUTCH `0x8127` and GAMING_ATTACHMENTS `0x8120` are present on both wheels and implemented on neither. |
+| 7.6 | 2026-09-14 | New 12.6: `0x8127` DualClutch decoded by @fsfarmscaper on a G923 Xbox edition (issue #97), not verified by this driver. The host only reads: `fn2` returns configured flag, assigned paddle (`00` RSB, `01` LSB) and bite point 0..100; every change arrives as an unsolicited event on the feature index with a mode byte (`02` setting, `00` saved, `01` on entering setup, which resets the paddle to `ff` and the bite point to 100); writes to `fn2`/`fn3` are acknowledged and applied nowhere; `fn1` has two zones that never move and `fn0` is a constant `02`. The 0x11 row in the RS50 feature table and the "pinned indices" note now name the page instead of calling it undecoded. |

@@ -67,10 +67,16 @@ means building that path for this wheel and decoding a page whose function
 layout is undocumented. Feature work, not a bug fix.
 
 **`0x8127` DUAL_CLUTCH, present on both wheels.** A clutch bite point is a
-real thing to want and nothing here offers one. Blocked on not knowing the
-page's functions: implementing it blind means guessing at commands sent to a
-wheel, and a wrong guess in a force-feedback device is not a harmless
-mistake. Needs a G HUB capture of the bite-point control.
+real thing to want and nothing here offers one. The page's functions are now
+known, from a third-party listen on a G923 Xbox edition rather than a G HUB
+capture (@fsfarmscaper, [#97](../../issues/97)): the wheel configures the
+bite point and the paddle from button combinations on the wheel itself,
+`fn2` reads the result back, and every change arrives as an unsolicited
+event on the feature index. Writes are acknowledged and change nothing, so
+the host's whole job here is to read. See PROTOCOL_SPECIFICATION.md 12.6.
+Not implemented yet: the natural form is a read-only attribute plus the
+event, and it needs a wheel with a dual clutch to verify against, which no
+wheel here has.
 
 **`0x8120` GAMING_ATTACHMENTS, present on both.** Plausibly the accessory
 reporting this driver currently infers by scanning sub-device indices, which

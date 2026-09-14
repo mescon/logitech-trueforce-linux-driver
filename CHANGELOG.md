@@ -7,6 +7,16 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**The dual clutch page is decoded, from a contributed listen.** `0x8127`
+DUAL_CLUTCH sat in the feature matrix as present on every wheel and
+understood on none. @fsfarmscaper decoded it on a G923 Xbox edition
+([#97](../../issues/97)): the wheel sets the bite point and the paddle from
+its own button combinations, `fn2` reads the result and every change is an
+unsolicited event; writes are acknowledged and applied nowhere. Recorded in
+PROTOCOL_SPECIFICATION.md 12.6 and the feature matrix; nothing in the driver
+changes yet, since a read-only attribute for it needs a wheel with a dual
+clutch to verify against.
+
 **Workflow tokens are read-only unless a job says otherwise.** The two
 workflows without a top-level permissions block ran with the repository's
 default token; both start read-only now, and only the release jobs that
