@@ -7,6 +7,22 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**Inertia no longer renders the encoder's grain, and the per-class levels
+reach past 100.** `FF_INERTIA` was fed the per-tick velocity difference,
+which on a quantised encoder is an impulse train: a rim turning smoothly
+read as a burst of full-count accelerations and came through as grain
+(issue [#89](../../issues/89), where the author of TF4ALL had met the same
+thing and suggested the cure). The estimate is now the gap between the
+velocity and a 50 ms one-pole chasing it, which returns exactly the
+acceleration under a steady one, so the effect's scale is unchanged, and
+spreads a blip into a decaying bump instead of a spike. Covered by the
+effect-math tests. The `spring_level`, `damper_level` and `friction_level`
+scales accept up to 400 instead of 100, and `inertia_level` joins them,
+because the engine's gains sit below the firmware's by amounts owners have
+measured (0.61 for damper on a G923 Xbox edition, #87; 2.25x damper and 4x
+spring on a G PRO, #89) and a cap of 100 left no way to try those numbers
+without a rebuild. Defaults are unchanged.
+
 **Every release asset is signed, and the release carries provenance.** The
 signing job only ever covered the Arch packages and their repository
 database, although the documentation said every asset; the Debian
