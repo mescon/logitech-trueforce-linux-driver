@@ -12,7 +12,8 @@ Please report suspected vulnerabilities privately, not in a public issue.
 
 - Preferred: open a private report through GitHub's **Security** tab on this
   repository (**Report a vulnerability**), which opens a private advisory
-  only the maintainer can see.
+  only the maintainer can see:
+  <https://github.com/mescon/logitech-trueforce-linux-driver/security/advisories/new>
 - If you cannot use that, open an ordinary issue that says only that you
   have a security report and how the maintainer can reach you privately;
   do not put the details in the issue.
