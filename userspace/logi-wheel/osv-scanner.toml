@@ -1,0 +1,34 @@
+# Advisories that osv-scanner (and the OpenSSF Scorecard, which runs it
+# against this directory) reports for Cargo.lock and that this project has
+# reviewed and accepted for now. Every entry says why, and expires: when
+# ignoreUntil passes the advisory is reported again and has to be reviewed
+# again, so nothing here is ignored for good. Reviewed at each release, as
+# docs/SECURITY_ASSURANCE.md requires. Verified with
+#   docker run --rm -v "$PWD:/src:ro" ghcr.io/google/osv-scanner:v2.3.2 \
+#     scan source -r /src/userspace/logi-wheel
+#
+# All four are "crate is unmaintained" notices, not vulnerabilities: no
+# code path is affected and there is nothing to fix. All four arrive
+# through Slint 1.17.1, the GUI toolkit, and none can be replaced by
+# `cargo update` because the crate that pulls each one in has no release
+# without it.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0206"
+ignoreUntil = 2026-12-31
+reason = "rustybuzz is unmaintained. Pulled in by slint 1.17.1 through resvg 0.47 / usvg. resvg 0.48 replaced it with harfrust and Slint's main branch (1.18) already depends on resvg 0.48.1, so this goes away with the next Slint release; revisit then."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0192"
+ignoreUntil = 2026-12-31
+reason = "ttf-parser is unmaintained. Pulled in by slint 1.17.1 through resvg 0.47 / usvg / fontdb. resvg 0.48 replaced it with skrifa and Slint's main branch (1.18) already depends on resvg 0.48.1, so this goes away with the next Slint release; revisit then."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2026-12-31
+reason = "paste is unmaintained (archived; the code is a finished proc macro). Pulled in by slint-build 1.17.1 through i-slint-compiler / image / exr / pulp 0.22.3, whose current release still depends on paste. Nothing to update on our side; revisit when pulp or exr move to pastey."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+ignoreUntil = 2026-12-31
+reason = "bincode is unmaintained (its team stopped development and considers the crate complete). Pulled in by slint-build 1.17.1 through i-slint-compiler, which enables the optional bincode feature of typed-index-collections 3.5.0. Nothing to update on our side; revisit when Slint or typed-index-collections drop it."

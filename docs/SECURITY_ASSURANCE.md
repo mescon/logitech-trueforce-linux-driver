@@ -84,10 +84,14 @@ Baseline criteria ask for):
   within 14 days for anything rated high or critical; a license problem is
   fixed before the next release. Advisories that do not affect the project
   (for example maintenance notices about crates that carry no
-  vulnerability) are recorded in the VEX document at
-  [../security/openvex.json](../security/openvex.json) with the reason, and
-  reviewed at each release. No release is cut with an unrecorded advisory
-  outstanding.
+  vulnerability) are recorded twice, with the reason each time: in the VEX
+  document at [../security/openvex.json](../security/openvex.json) for
+  people, and in `userspace/logi-wheel/osv-scanner.toml` for scanners
+  (osv-scanner reads that file from the lock file's directory, and so does
+  the OpenSSF Scorecard, which runs it). Every scanner entry carries an
+  expiry date, so an accepted advisory is reported again when it lapses and
+  has to be reviewed again. Both files are reviewed at each release. No
+  release is cut with an unrecorded advisory outstanding.
 - **Static analysis findings.** A CodeQL or clippy finding of a security
   weakness blocks the change that introduced it: clippy failures fail CI,
   and CodeQL alerts are triaged within 14 days and fixed before the next
