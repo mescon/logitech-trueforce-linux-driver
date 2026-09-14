@@ -7,6 +7,16 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**Reviewed dependency advisories are recorded where the scanners look.** The
+four RustSec notices against the GUI toolkit's font and image stack (bincode,
+paste, rustybuzz, ttf-parser, all "crate is unmaintained", none a
+vulnerability, none replaceable from this side) were already explained in
+the VEX document, but osv-scanner and the OpenSSF Scorecard do not read VEX
+and kept counting them. They are now also recorded in
+`userspace/logi-wheel/osv-scanner.toml`, next to the lock file where both
+tools pick the file up, each with its reason and an expiry date so that a
+lapsed entry is reported again instead of being forgotten.
+
 **The dual clutch page is decoded, from a contributed listen.** `0x8127`
 DUAL_CLUTCH sat in the feature matrix as present on every wheel and
 understood on none. @fsfarmscaper decoded it on a G923 Xbox edition

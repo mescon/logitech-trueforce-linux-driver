@@ -44,7 +44,8 @@ Coordinated disclosure, on this timetable:
 Published vulnerability data lives in the repository's Security tab
 (advisories) and in `CHANGELOG.md`; dependency advisories that do not
 affect the project are recorded with their reasons in
-[security/openvex.json](security/openvex.json).
+[security/openvex.json](security/openvex.json) and, for scanners, in
+`userspace/logi-wheel/osv-scanner.toml`.
 
 ## Supported versions, precisely
 
