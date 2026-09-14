@@ -699,6 +699,9 @@ jobs:
   provenance:
     name: Sign the provenance
     needs: hashes
+    # Without this a skipped channel job upstream makes GitHub skip this
+    # one too, however hashes fared (seen on the first provenance-only run).
+    if: ${{ !cancelled() && needs.hashes.result == 'success' }}
     permissions:
       actions: read   # the generator reads this run's metadata
       id-token: write # keyless signing through Sigstore
