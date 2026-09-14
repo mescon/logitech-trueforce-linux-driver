@@ -129,6 +129,103 @@ static void test_anti_spring_is_not_dropped(void)
 	CHECK(right == 100, "anti-spring pushes further right, clipped at +saturation (got %d)", right);
 }
 
+/* ---- acceleration filter (FF_INERTIA) ---------------------------------- */
+
+#define TAU 50
+#define TICK 1
+
+static void test_steady_acceleration_reads_as_itself(void)
+{
+	/*
+	 * The whole point of taking the gap behind a one-pole: under a
+	 * constant acceleration a0 the lag settles at a0 * tau, so the
+	 * estimate settles at a0 and the INERTIA scale needs no retuning.
+	 * Ramp the velocity by 3 counts per tick and wait ten time
+	 * constants; the result is in 1/256ths.
+	 */
+	s32 slow = 0, a = 0, vel = 0;
+	int t;
+
+	for (t = 0; t < 10 * TAU; t++) {
+		vel += 3;
+		a = hidpp_dd_accel_filter(&slow, vel, TICK, TAU);
+	}
+	CHECK(a >= 3 * 256 - 8 && a <= 3 * 256, "steady 3 counts/tick^2 reads as ~768 q8 (got %d)", a);
+}
+
+static void test_quantisation_blips_are_spread_not_spiked(void)
+{
+	/*
+	 * A rim turning at half a count per tick reads on a quantised
+	 * encoder as velocity 1, 0, 1, 0, ... The old per-tick difference
+	 * made that +1, -1, +1, -1: a full count of "acceleration" every
+	 * tick, 256 in these units, and grain on the rim. Band-limited,
+	 * the estimate never leaves a small band around zero.
+	 */
+	s32 slow = 0, a, worst = 0;
+	int t;
+
+	for (t = 0; t < 20 * TAU; t++) {
+		a = hidpp_dd_accel_filter(&slow, t & 1, TICK, TAU);
+		if (a > worst)
+			worst = a;
+		if (-a > worst)
+			worst = -a;
+	}
+	CHECK(worst <= 8, "alternating 1/0 velocity stays within 8 q8 of zero (worst %d, raw would be 256)", worst);
+}
+
+static void test_a_velocity_step_peaks_at_step_over_tau_and_decays(void)
+{
+	/*
+	 * A single step of dv shows up as a peak of dv / tau that decays
+	 * over tau, instead of a one-tick spike of dv. Step from rest to
+	 * 100 counts per tick and hold.
+	 */
+	s32 slow = 0, first, later, late;
+	int t;
+
+	first = hidpp_dd_accel_filter(&slow, 100, TICK, TAU);
+	CHECK(first > 0 && first <= 100 * 256 / TAU, "peak is at most dv/tau = 512 q8 (got %d)", first);
+	for (t = 0; t < TAU; t++)
+		later = hidpp_dd_accel_filter(&slow, 100, TICK, TAU);
+	CHECK(later < first / 2, "one tau later it has decayed below half (got %d after %d)", later, first);
+	for (t = 0; t < 10 * TAU; t++)
+		late = hidpp_dd_accel_filter(&slow, 100, TICK, TAU);
+	CHECK(late == 0, "at a steady velocity the estimate returns to exactly zero (got %d)", late);
+}
+
+static void test_rest_reads_exactly_zero(void)
+{
+	/*
+	 * After a stop the tracker snaps onto the velocity once it is
+	 * within a step of it, so a still wheel reads 0 and not the
+	 * residue of an integer division: an INERTIA effect on a parked
+	 * car must not hold a standing force.
+	 */
+	s32 slow = 0, a = 1;
+	int t;
+
+	for (t = 0; t < 2 * TAU; t++)
+		hidpp_dd_accel_filter(&slow, 40, TICK, TAU);
+	for (t = 0; t < 10 * TAU; t++)
+		a = hidpp_dd_accel_filter(&slow, 0, TICK, TAU);
+	CHECK(a == 0 && slow == 0, "rest reads zero acceleration with the tracker parked (a %d, tracker %d)", a, slow);
+}
+
+static void test_filter_is_sign_symmetric(void)
+{
+	s32 sp = 0, sn = 0, ap = 0, an = 0, vel = 0;
+	int t;
+
+	for (t = 0; t < 5 * TAU; t++) {
+		vel += 2;
+		ap = hidpp_dd_accel_filter(&sp, vel, TICK, TAU);
+		an = hidpp_dd_accel_filter(&sn, -vel, TICK, TAU);
+	}
+	CHECK(ap == -an, "turning left mirrors turning right (%d vs %d)", ap, an);
+}
+
 /* ---- wire mapping ------------------------------------------------------ */
 
 static void test_wire_mapping_is_offset_binary_and_saturates(void)
@@ -150,6 +247,11 @@ int main(void)
 	test_deadband_is_a_dead_zone();
 	test_saturation_clips_both_signs();
 	test_anti_spring_is_not_dropped();
+	test_steady_acceleration_reads_as_itself();
+	test_quantisation_blips_are_spread_not_spiked();
+	test_a_velocity_step_peaks_at_step_over_tau_and_decays();
+	test_rest_reads_exactly_zero();
+	test_filter_is_sign_symmetric();
 	test_wire_mapping_is_offset_binary_and_saturates();
 	if (failures) {
 		fprintf(stderr, "%d failure(s)\n", failures);

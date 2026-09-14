@@ -6034,14 +6034,20 @@ struct hidpp_dd_ff_data {
 	 */
 	u16 autocenter;
 	/*
-	 * Per-effect-class output scales, 0-100 percent, default 100
-	 * (the new-lg4ff / Oversteer convention: spring_level,
-	 * damper_level, friction_level files). Applied to the emulated
-	 * SPRING/DAMPER/FRICTION outputs in the effect tick.
+	 * Per-effect-class output scales in percent, default 100 (the
+	 * new-lg4ff / Oversteer convention: spring_level, damper_level,
+	 * friction_level files, plus inertia_level here). Applied to the
+	 * emulated SPRING/DAMPER/FRICTION/INERTIA outputs in the effect
+	 * tick. Up to HIDPP_DD_LEVEL_MAX rather than 100: the engine's
+	 * gains sit below what the firmware renders on the wheels measured
+	 * so far (0.61 of it for damper on a G923 Xbox edition, issue #87;
+	 * a G PRO owner runs 2.25x damper and 4x spring against theirs,
+	 * issue #89), and a cap of 100 left no way to try those numbers.
 	 */
-	u8 spring_level;
-	u8 damper_level;
-	u8 friction_level;
+	u16 spring_level;
+	u16 damper_level;
+	u16 friction_level;
+	u16 inertia_level;
 	/*
 	 * True once interface 0 has delivered at least one input report.
 	 * Until then ff->wheel_pos is its kzalloc 0 ("hard left"), and
@@ -6063,9 +6069,11 @@ struct hidpp_dd_ff_data {
 	 * input report handler at the wheel's native poll rate (roughly
 	 * 1 kHz for these wheels). The timer callback reads these lock-free
 	 * via READ_ONCE; writers use WRITE_ONCE. wheel_pos is raw encoder
-	 * 0..65535 (0x8000 == centre). wheel_vel and wheel_accel are
-	 * signed derivatives in encoder-counts per input sample, computed
-	 * inside the FFB timer tick from successive wheel_pos samples.
+	 * 0..65535 (0x8000 == centre). wheel_vel is the signed velocity
+	 * in encoder counts per tick, from successive wheel_pos samples
+	 * and the real time between them; wheel_accel is its band-limited
+	 * derivative in 1/256ths (see hidpp_dd_accel_filter). Both are
+	 * computed inside the FFB timer tick.
 	 */
 	u16 wheel_pos;			/* latest raw encoder position, 0..65535 */
 	ktime_t wheel_pos_ts;		/* when wheel_pos arrived; paired with it under wheel_pos_seq */
@@ -6084,7 +6092,8 @@ struct hidpp_dd_ff_data {
 	u16 wheel_hold_ticks;		/* ticks since wheel_pos last changed (see the timer) */
 	s32 wheel_vel;			/* encoder counts per timer tick, held between position reports */
 	s32 wheel_vel_prev;
-	s32 wheel_accel;
+	s32 wheel_vel_slow_q8;		/* the one-pole tracker behind wheel_accel, in 1/256 counts per tick */
+	s32 wheel_accel;		/* counts per tick per tick in 1/256ths, band-limited (hidpp_dd_accel_filter) */
 	bool wheel_state_primed;	/* false until the timer has seen two samples */
 	/*
 	 * "any effect is currently playing" short-circuit. When false the
@@ -6325,7 +6334,9 @@ static void hidpp_dd_ff_recompute_constant_force_locked(struct hidpp_dd_ff_data 
  * FRICTION: condition formula fed by a saturated unit velocity
  *           (±S16_MAX for any non-zero velocity, 0 otherwise). Produces
  *           constant friction opposing motion direction.
- * INERTIA:  condition formula fed by wheel_accel. Opposes acceleration.
+ * INERTIA:  condition formula fed by wheel_accel, the band-limited
+ *           acceleration estimate (hidpp_dd_accel_filter). Opposes
+ *           acceleration.
  */
 /*
  * `sub_qms` is a time offset in quarter-milliseconds, added to elapsed_ms,
@@ -6484,13 +6495,18 @@ static s32 hidpp_dd_ff_effect_tick(const struct hidpp_dd_ff_data *ff_state,
 	case FF_INERTIA:
 		/*
 		 * Acceleration is even smaller than velocity. Scale by
-		 * 4096 so a quick hand-shake reaches saturation. INERTIA
-		 * is rare in games; this is a reasonable default. Same
-		 * multiplication-not-shift rule as DAMPER above.
+		 * 4096 per count/tick^2 so a quick hand-shake reaches
+		 * saturation; wheel_accel arrives in 1/256ths, so that is
+		 * x16 here. INERTIA is rare in games; this is a reasonable
+		 * default, and the band-limited estimate keeps it (a steady
+		 * acceleration reads the same as before, only the spikes
+		 * went). Same multiplication-not-shift rule as DAMPER above.
 		 */
 		c = &eff->u.condition[0];
+		/* Global per-class scale (inertia_level). */
 		return hidpp_dd_condition_force(c,
-			clamp(wheel_accel * 4096, (s32)S16_MIN, (s32)S16_MAX));
+			clamp(wheel_accel * 16, (s32)S16_MIN, (s32)S16_MAX)) *
+			READ_ONCE(ff_state->inertia_level) / 100;
 	case FF_RAMP: {
 		/*
 		 * Linear interpolation from start_level to end_level over
@@ -6684,6 +6700,13 @@ static bool hidpp_dd_foreign_stream_active(struct hidpp_dd_ff_data *ff)
  * only once it is longer than any gap a moving wheel produces.
  */
 #define HIDPP_DD_VEL_HOLD_TICKS	8
+/*
+ * Time constant of the acceleration estimate behind FF_INERTIA, in
+ * milliseconds (see hidpp_dd_accel_filter). 50 ms band-limits it to a
+ * few hertz, which is what a rim's inertia is about; the per-tick
+ * difference it replaces was an impulse train.
+ */
+#define HIDPP_DD_ACCEL_TAU_MS	50
 
 static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 {
@@ -6730,7 +6753,7 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 		ff->wheel_hold_ticks = 0;
 		ff->wheel_vel = 0;
 		ff->wheel_vel_prev = 0;
-		ff->wheel_accel = 0;
+		ff->wheel_vel_slow_q8 = 0;
 		ff->wheel_state_primed = true;
 	} else if (cur_pos == ff->wheel_pos_prev) {
 		/*
@@ -6749,11 +6772,8 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 		if (ff->wheel_hold_ticks < U16_MAX)
 			ff->wheel_hold_ticks++;
 		if (ff->wheel_hold_ticks >= HIDPP_DD_VEL_HOLD_TICKS) {
-			ff->wheel_accel = -ff->wheel_vel;
 			ff->wheel_vel_prev = ff->wheel_vel;
 			ff->wheel_vel = 0;
-		} else {
-			ff->wheel_accel = 0;
 		}
 	} else {
 		s32 delta = (s32)(s16)(cur_pos - ff->wheel_pos_prev);
@@ -6779,13 +6799,23 @@ static enum hrtimer_restart hidpp_dd_ff_effect_timer_callback(struct hrtimer *t)
 			new_vel = delta / (s32)(ff->wheel_hold_ticks + 1);
 		if (!new_vel)
 			new_vel = delta > 0 ? 1 : -1;	/* keep the direction */
-		ff->wheel_accel = new_vel - ff->wheel_vel;
 		ff->wheel_vel_prev = ff->wheel_vel;
 		ff->wheel_vel = new_vel;
 		ff->wheel_pos_prev = cur_pos;
 		ff->wheel_pos_prev_ts = cur_ts;
 		ff->wheel_hold_ticks = 0;
 	}
+	/*
+	 * Every tick, whichever branch ran: on a tick without a report the
+	 * held velocity is the input, so a wheel that reports every 2 ms
+	 * (the G923) is filtered at the same rate as one that reports every
+	 * tick, and a stop after the hold decays over tau instead of
+	 * arriving as one tick of -wheel_vel.
+	 */
+	ff->wheel_accel = hidpp_dd_accel_filter(&ff->wheel_vel_slow_q8,
+						ff->wheel_vel,
+						HIDPP_DD_FF_TICK_MS,
+						HIDPP_DD_ACCEL_TAU_MS);
 	wheel_pos_signed = (s32)cur_pos - 0x8000;
 	wheel_vel = ff->wheel_vel;
 	wheel_accel = ff->wheel_accel;
@@ -10473,13 +10503,18 @@ static struct device_attribute dev_attr_wheel_compat_autocenter =
 	__ATTR(autocenter, 0664, wheel_autocenter_show, wheel_autocenter_store);
 
 /*
- * Oversteer-compatible per-effect-class output scales, 0-100 percent,
- * default 100 (the new-lg4ff convention): spring_level, damper_level,
- * friction_level scale the emulated FF_SPRING / FF_DAMPER /
- * FF_FRICTION outputs respectively. Note damper_level scales DAMPER
- * EFFECTS from games; the wheel's own firmware damping stays on
- * wheel_damping.
+ * Oversteer-compatible per-effect-class output scales in percent, default
+ * 100 (the new-lg4ff convention): spring_level, damper_level,
+ * friction_level and inertia_level scale the emulated FF_SPRING /
+ * FF_DAMPER / FF_FRICTION / FF_INERTIA outputs respectively. Note
+ * damper_level scales DAMPER EFFECTS from games; the wheel's own firmware
+ * damping stays on wheel_damping. new-lg4ff stops at 100; this engine
+ * accepts up to HIDPP_DD_LEVEL_MAX so that the gains owners have measured
+ * against the firmware's rendering (issues #87 and #89) can be tried
+ * without a rebuild. The summed force is clamped to the wire range after
+ * every effect is added, so a large level saturates rather than wraps.
  */
+#define HIDPP_DD_LEVEL_MAX	400
 #define HIDPP_DD_LEVEL_ATTR(_name)						\
 static ssize_t wheel_##_name##_show(struct device *dev,		\
 				    struct device_attribute *attr,	\
@@ -10517,7 +10552,7 @@ static ssize_t wheel_##_name##_store(struct device *dev,		\
 	ret = kstrtoint(buf, 10, &val);					\
 	if (ret)							\
 		return ret;						\
-	WRITE_ONCE(ff->_name, (u8)clamp(val, 0, 100));			\
+	WRITE_ONCE(ff->_name, (u16)clamp(val, 0, HIDPP_DD_LEVEL_MAX));	\
 	return count;							\
 }									\
 static struct device_attribute dev_attr_wheel_compat_##_name =		\
@@ -10526,6 +10561,7 @@ static struct device_attribute dev_attr_wheel_compat_##_name =		\
 HIDPP_DD_LEVEL_ATTR(spring_level);
 HIDPP_DD_LEVEL_ATTR(friction_level);
 HIDPP_DD_LEVEL_ATTR(damper_level);
+HIDPP_DD_LEVEL_ATTR(inertia_level);
 
 static ssize_t wheel_damping_show(struct device *dev, struct device_attribute *attr,
 				 char *buf)
@@ -15540,6 +15576,7 @@ static struct attribute *hidpp_dd_wheel_group_attrs[] = {
 	&dev_attr_wheel_compat_spring_level.attr,
 	&dev_attr_wheel_compat_damper_level.attr,
 	&dev_attr_wheel_compat_friction_level.attr,
+	&dev_attr_wheel_compat_inertia_level.attr,
 	NULL,
 };
 
@@ -15749,6 +15786,7 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->spring_level = 100;		/* per-class scales: neutral */
 	ff->damper_level = 100;
 	ff->friction_level = 100;
+	ff->inertia_level = 100;
 	ff->texture_route = HIDPP_DD_TEXTURE_ROUTE_TF;
 	ff->range_restore = true;
 	ff->range_restore_attempts = 0;

@@ -1274,15 +1274,34 @@ means games that write autocenter 0 before taking over force feedback
 correctly disable it for their session. Useful for desk-driving
 without a game, or as idle centring.
 
-### spring_level / damper_level / friction_level
+### spring_level / damper_level / friction_level / inertia_level
 **Access**: Read/Write
-**Values**: `0` to `100` (percent), default `100`
+**Values**: `0` to `400` (percent), default `100`
 
 Global output scales for the emulated `FF_SPRING` / `FF_DAMPER` /
-`FF_FRICTION` effect classes, matching the new-lg4ff semantics: 100 =
-effects play as the game commanded, lower values tame that effect
-class across all games, 0 mutes it. `damper_level` scales DAMPER
-effects from games; the wheel's own firmware damping is `wheel_damping`.
+`FF_FRICTION` / `FF_INERTIA` effect classes, matching the new-lg4ff
+semantics: 100 = effects play as the game commanded, lower values tame
+that effect class across all games, 0 mutes it. `damper_level` scales
+DAMPER effects from games; the wheel's own firmware damping is
+`wheel_damping`.
+
+new-lg4ff stops at 100. This engine accepts up to 400 because its gains sit
+below what the wheels' firmware renders for the same effect, by amounts that
+differ per wheel: a G923 Xbox edition owner measured the engine's damper at
+0.61 of the firmware's ([#87](../../issues/87)), and a G PRO owner runs
+2.25x damper and 4x spring against theirs ([#89](../../issues/89)). Until
+those measurements settle the defaults, the levels are how to try them:
+
+```bash
+echo 225 > damper_level     # the G PRO numbers from #89
+echo 400 > spring_level
+```
+
+The summed force is clamped to the motor's range after every effect is
+added, so a large level saturates instead of wrapping. `inertia_level` has
+no new-lg4ff counterpart; the engine's inertia estimate is band-limited
+(a 50 ms one-pole on the velocity), so a steady acceleration reads as
+itself and the encoder's quantisation no longer arrives as grain.
 
 ---
 

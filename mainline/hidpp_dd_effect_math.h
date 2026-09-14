@@ -175,6 +175,46 @@ static s32 hidpp_dd_condition_force(const struct ff_condition_effect *c,
 }
 
 /*
+ * Acceleration for FF_INERTIA, band-limited.
+ *
+ * The obvious estimate, this tick's velocity minus the last one, is an
+ * impulse train on a quantised encoder: the velocity moves in whole counts
+ * per millisecond, so a rim turning smoothly reads as a burst of +1/-1
+ * steps, each a full count of "acceleration" for one tick and zero the
+ * next. Fed to INERTIA that came through as grain on the rim (issue #89,
+ * where the author of another engine had met exactly the same thing).
+ *
+ * Instead, chase the velocity with a slow one-pole and take the gap:
+ *
+ *     v_slow += (v - v_slow) * dt / (tau + dt);   a = (v - v_slow) / tau
+ *
+ * The gap of a first-order lag behind a ramp settles at slope * tau, so
+ * under a steady acceleration a0 this returns exactly a0 (the INERTIA
+ * scale needs no retuning), while a one-tick blip of dv is spread into a
+ * peak of dv / tau that decays over tau instead of a spike of dv. Band
+ * limited to a few hertz, which is all inertia wants.
+ *
+ * Fixed point: velocities in counts per millisecond, the tracker and the
+ * result in 1/256ths (q8) so that sub-count accelerations survive the
+ * division by tau. Once the tracker is within one step of the velocity it
+ * snaps to it, so a wheel at rest reads an acceleration of exactly zero
+ * instead of the residue an integer division leaves behind.
+ */
+static s32 hidpp_dd_accel_filter(s32 *vel_slow_q8, s32 vel, u32 dt_ms,
+				 u32 tau_ms)
+{
+	s32 v_q8 = vel * 256;
+	s32 diff = v_q8 - *vel_slow_q8;
+	s32 span = (s32)(tau_ms + dt_ms);
+
+	if (diff > -span && diff < span)
+		*vel_slow_q8 = v_q8;
+	else
+		*vel_slow_q8 += diff * (s32)dt_ms / span;
+	return (v_q8 - *vel_slow_q8) / (s32)tau_ms;
+}
+
+/*
  * The wire form of a signed force: offset binary around 0x8000, which is
  * what the stream's cur field and the KF packet both carry. Clamped to the
  * s16 range first, so an out-of-range sum saturates at the stops rather
