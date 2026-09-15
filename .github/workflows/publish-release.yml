@@ -708,8 +708,9 @@ jobs:
       contents: write # attaches the statement to the release
     # Referenced by tag, not by commit hash, on purpose: slsa-verifier can
     # only verify the generator's ref when it is a tag (the generator's
-    # README, "Referencing SLSA builders and generators").
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    # README, "Referencing SLSA builders and generators"). The marker
+    # below tells SonarCloud's pin-by-hash rule that this one is deliberate.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0 # NOSONAR the SLSA generator must be referenced by tag
     with:
       base64-subjects: ${{ needs.hashes.outputs.hashes }}
       provenance-name: release-assets.intoto.jsonl
