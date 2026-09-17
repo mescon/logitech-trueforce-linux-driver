@@ -46,9 +46,16 @@ fn recipe_cell(g: &GameCompat, caps: WheelCaps) -> String {
     // having seen the other column say to set a variable, and needs telling
     // that doing so on their wheel is not merely pointless.
     if g.ffb == Ffb::TrueForceShim && !caps.sdk_trueforce {
-        return "Turn on simulated TrueForce<br>and leave \
-                `PROTON_ENABLE_HIDRAW` unset"
-            .to_string();
+        // Simulated TrueForce is only on offer where the game publishes
+        // telemetry to synthesise it from; a title without any has plain
+        // force feedback on this wheel and nothing to add to it.
+        return if g.simulated_tf.live_id().is_some() {
+            "Turn on simulated TrueForce<br>and leave \
+             `PROTON_ENABLE_HIDRAW` unset"
+        } else {
+            "Plain force feedback<br>leave `PROTON_ENABLE_HIDRAW` unset"
+        }
+        .to_string();
     }
     let action = match g.setup_action(caps) {
         SetupAction::InstallShim => "Install the shim",

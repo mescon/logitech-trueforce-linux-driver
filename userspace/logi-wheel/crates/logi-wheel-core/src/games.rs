@@ -494,7 +494,19 @@ impl GameCompat {
         if self.linux == Linux::Unsupported {
             return self.setup;
         }
-        if self.ffb == Ffb::TrueForceShim && !caps.sdk_trueforce {
+        if self.ffb == Ffb::TrueForceShim
+            && !caps.sdk_trueforce
+            && self.simulated_tf.live_id().is_none()
+        {
+            // An SDK title with no telemetry: the simulated route below
+            // has nothing to synthesise from, so it must not be offered.
+            "Leave PROTON_ENABLE_HIDRAW unset: on this wheel it costs you \
+             force feedback, and this game publishes no telemetry yet, so \
+             there is no simulated TrueForce to turn on either. Installing \
+             the shim WITH --proxy carries the game's own TrueForce to the \
+             wheel instead (tools/install-tf-shim.sh --proxy). Steam Input \
+             off."
+        } else if self.ffb == Ffb::TrueForceShim && !caps.sdk_trueforce {
             // Worded as "not available on this wheel" rather than "this
             // wheel has no SDK TrueForce", because it also covers the
             // unidentified wheel, about which we know only that we cannot
@@ -826,11 +838,20 @@ logi-tf-sim.",
     GameCompat {
         name: "Assetto Corsa Rally (early access)",
         linux: Linux::Proton,
-        ffb: Ffb::NativeEvdev,
-        native_trueforce: Support::No,
+        // The same SDK route as Assetto Corsa EVO. Listed as plain force
+        // feedback until 2026-09: with raw HID left off, the game did not
+        // see a G PRO at all, and with it on by hand, the stock library
+        // took the wheel and gave back only its own damping (#105). On a
+        // G923 Xbox edition with Logitech's files in the prefix and raw
+        // HID on, its force feedback and TrueForce were confirmed working
+        // (#83), which is what this route arranges.
+        ffb: Ffb::TrueForceShim,
+        native_trueforce: Support::Yes,
         simulated_tf: SimTf::No,
-        setup: "Plain force feedback; watch for telemetry as it matures.",
-        confidence: Confidence::Unknown,
+        setup: "Install the TrueForce shim once, from the app's Setup page; launch options `logi-launch %command%` (it turns raw HID on, stages the proxy that answers the SDK's rotation question, and resets the wheel first, the same recipe as Assetto Corsa EVO); turn Steam Input off. No telemetry yet, so nothing to feed the lights.",
+        // Confirmed on a G923 Xbox edition (#83); a direct-drive wheel has
+        // not yet been reported on this route.
+        confidence: Confidence::Expected,
     },
     GameCompat {
         name: "Euro Truck Simulator 2",
