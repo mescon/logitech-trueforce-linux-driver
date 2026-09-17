@@ -72,7 +72,7 @@ TF_PFX_DIR_REL="drive_c/Program Files/Logi/Trueforce"
 # their force feedback, so the copy is guarded rather than trusted.
 #
 # Sims that load Logitech's TrueForce SDK: ACC, AC EVO.
-SDK_SIM_APPIDS="805550 3058630"
+SDK_SIM_APPIDS="805550 3058630 3917090"
 # Sims driven through DirectInput, i.e. logi-ffb: rFactor 2, Le Mans Ultimate,
 # iRacing, RaceRoom. PROTON_ENABLE_HIDRAW must NOT be set for these.
 DINPUT_SIM_APPIDS="365960 2399420 266410 211500"

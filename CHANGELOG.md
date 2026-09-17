@@ -7,6 +7,17 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**Assetto Corsa Rally takes the SDK route.** The registry listed it as plain
+force feedback with nothing to do, and on a G PRO that gave nothing: with
+raw HID off the game did not see the wheel, and with it on by hand the stock
+Logitech library took the wheel and returned only its own damping
+([#105](../../issues/105)). On a G923 Xbox edition with Logitech's files in
+the prefix and raw HID on, its force feedback and TrueForce were confirmed
+working ([#83](../../issues/83)). The game now gets the same route as
+Assetto Corsa EVO: `logi-launch` turns raw HID on, stages the proxy that
+answers the SDK's rotation question and resets the wheel first, and the
+app's Setup page offers the shim install for it.
+
 **Inertia no longer renders the encoder's grain, and the per-class levels
 reach past 100.** `FF_INERTIA` was fed the per-tick velocity difference,
 which on a quantised encoder is an impulse train: a rim turning smoothly

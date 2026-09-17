@@ -56,7 +56,7 @@ instead of wrapping it.
 | Assetto Corsa (original) | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
 | Assetto Corsa Competizione | Proton | TrueForce shim | Install the shim<br>`logi-launch %command%` | Turn on simulated TrueForce<br>and leave `PROTON_ENABLE_HIDRAW` unset |
 | Assetto Corsa EVO (early access) | Proton | TrueForce shim | Install the shim<br>`logi-launch %command%` | Turn on simulated TrueForce<br>and leave `PROTON_ENABLE_HIDRAW` unset |
-| Assetto Corsa Rally (early access) * | Proton | Native FFB | Nothing to do | Nothing to do |
+| Assetto Corsa Rally (early access) * | Proton | TrueForce shim | Install the shim<br>`logi-launch %command%` | Plain force feedback<br>leave `PROTON_ENABLE_HIDRAW` unset |
 | Automobilista 2 | Proton | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
 | BeamNG.drive * | Native Linux | Native FFB | Turn on simulated TrueForce | Turn on simulated TrueForce |
 | CarX Drift Racing Online | Proton | Native FFB | Nothing to do | Nothing to do |
@@ -144,5 +144,5 @@ app's Setup page afterwards.
 
 - **verified** (4 titles): confirmed end to end by this project
 - **documented** (16 titles): documented by the vendor or a reliable community source
-- **expected** (6 titles): expected to work, not confirmed
-- **unknown** (4 titles): genuinely unknown
+- **expected** (7 titles): expected to work, not confirmed
+- **unknown** (3 titles): genuinely unknown
