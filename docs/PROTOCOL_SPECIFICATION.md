@@ -1,6 +1,6 @@
 # Logitech TrueForce Direct-Drive Wheel Protocol Specification
 
-**Document Version**: 7.6
+**Document Version**: 7.7
 **Date**: 2026-07-06
 **Author**: Verified from USB capture analysis
 **Status**: Protocol reference for Linux driver development
@@ -2160,8 +2160,9 @@ widths.
 The apparent fifth capacity entry was the layout ID being read as a
 width: decoded by @PeposCJ from the RS50's own firmware handler and
 confirmed against the same readback (issue #20, 2026-08-31). There are
-four text fields, not five. The fn3 frame byte order (layout byte first,
-field order, space padding) remains unvalidated on hardware.
+four text fields, not five. The fn3 frame byte order was then validated
+on an RS50 here (2026-09-02): the per-layout table above is what the
+panel drew, including the two traps and the two-zone rule.
 
 **Read that run's "collision retry" carefully.** 0x8130 appeared at index
 0x12 only on a second attempt, which looks like the wheel handing out a
@@ -2390,13 +2391,15 @@ the RS50 and the PS G923 and nothing below has been checked on either.
 **The host only reads.** The wheel configures the feature from on-wheel
 button combinations and reports the result. Writes to `fn2` and `fn3` are
 acknowledged and change nothing (28 across two sessions), so on this page an
-acknowledged write is not an applied one.
+acknowledged write is not an applied one. **The setting persists**: after
+mains and USB were both pulled for ten seconds, `fn2` read back the saved
+paddle and bite point unchanged (run 4).
 
 | Function | Direction | Payload | Notes |
 |---|---|---|---|
 | `fn0` | read | `02` | Constant. Never moved |
 | `fn1` | read, zone in byte 0 | zone 0: `00 09 00 09`, zone 1: `00 09 00 0a` | Zones 2+ answer `INVALID_ARGUMENT (0x02)`. Never moved through setup, bite-point change, reassignment, reset, or 28 writes. Meaning unknown |
-| `fn2` | read | `[0]` `01` configured, `[1]` paddle: `00` RSB, `01` LSB, `[2]` bite point `0..100` | The state. Read `01 00 64` before a run and `01 00 5a` after ten presses of `-` |
+| `fn2` | read | `[0]` enabled: `00` off, `01` on, `[1]` paddle: `00` RSB, `01` LSB, `[2]` bite point `0..100` | The state. Read `01 00 64` before a run and `01 00 5a` after ten presses of `-`. Byte 0 read `00` with the feature disabled, went to `01` on the Select save, held through a power cycle and went back to `00` on the on-wheel Reset (runs 3 to 5), so it is the enable flag rather than a constant |
 | `fn3` | write | accepts `00` and `01`; `02` and `03` answer `INVALID_ARGUMENT` | Two-state selector by its argument check; no observable effect |
 | `fn4` and up | - | `INVALID_FUNCTION_ID (0x07)` | |
 
@@ -2404,17 +2407,29 @@ acknowledged write is not an applied one.
 with the same fields plus a mode byte:
 
 ```
-12 ff 11 00 | 01 <paddle> <bite> 00 <mode> <n>
+12 ff 11 00 | <enabled> <paddle> <bite> 00 <mode> <n>
 ```
 
-`mode` is `02` while in setting mode and `00` on exit and save. The run-2
-log also shows the entry into setting mode itself: `01 ff 64 00 01 01`,
-paddle `ff` (unassigned) and bite point back at 100 with mode `01`. The
-simplest reading of that, and of the report's one open question (a bite
-point that read 90 at the end of one run and 100 at the start of the next),
-is that entering setup resets both fields, so a saved value lives only until
-the next setup entry. That reading is untested, and so is what happens
-across a power cycle.
+`mode` is `02` while in setting mode and `00` on exit and save. Byte 5
+(`n`) is mostly `01`, with `00` in the second of a pair when the wheel sends
+two frames ten milliseconds apart (the Reset below, the first pair on
+entering setting mode); not identified. The wheel also sends one such
+report, mode `00` with the saved values, a few seconds after the HID++
+handle opens (runs 2 and 4), so a host that listens from connect learns the
+state without asking.
+
+**Reset** (both paddles plus X) is not a full clear: it disables the feature
+and returns the bite point to 100 but keeps the paddle assignment, `01 01 50`
+becoming `00 01 64` (run 5, two events ten milliseconds apart). Runs 2
+and 3 both show the entry into setting mode itself: `01 ff 64 00 01 01`,
+paddle `ff` (unassigned) and bite point back at 100 with mode `01`, a few
+seconds before the first mode-`02` event. The simplest reading is that
+entering setup resets both fields for the session, mode `01` being the
+entry state; the link is by timing only, since the moment of entry was not
+marked in the log. The saved value itself survives (run 4 above); it is
+the next setup entry that starts over from 100. Whether `fn2` byte 1 `00`
+can also mean "unassigned" (the entry event carries `ff`) is not
+separated.
 
 **On the wheel** (all without host involvement): hold both paddles plus LSB
 and RSB for about two seconds to enter setup (rev LEDs blue, slow flash);
@@ -2460,3 +2475,4 @@ the same approach.
 | 7.4 | 2026-07-30 | Dynamic OLED largely decoded and the HID++ endpoint's contention behaviour recorded, both from issue #20 and neither verified by this driver. `0x8130`: fn0 layout count, fn1 layout descriptor, fn2 clear pending, fn3 set layout/data; 10 layouts A-J, layout J exposing four text fields at 19/10/19/10; a typed firmware renderer rather than a framebuffer (the firmware has a 128x64 buffer but no command accepts pixels, coordinates or regions), reached at interface 1 endpoint 0 by SET_REPORT, explicitly NOT via Logitech's DirectInput Escape path whose Acquire/Unacquire lifecycle emits RESET_ALL / SET_GLOBAL_GAINS / RESET_ALL on 0x8123 (12.3). New 12.5: while any force is present on the HID++ endpoint, a non-force write to it cuts the force, independent of sender count and unimproved by pacing; a quiet-looking endpoint only means the title has native TrueForce and never writes force there ("ignored is not the same as absent"). Recorded with its consequence: the G923 Xbox edition is the only wheel here whose force rides HID++, so rev-light support for it cannot simply reuse 0x807A. |
 | 7.5 | 2026-08-08 | Force stream rates corrected throughout: the kernel driver's own stream runs at **1000 Hz** from 0.30.0, matching what games send and Logitech's stated 1 ms TRUEFORCE interval, having really run at 333 Hz before. The timer was a jiffies timer that re-armed itself for the next jiffy, and the timer wheel never fires a timer early, so the expiry always slipped to the jiffy after: measured across four nominal intervals on an RS50, every one came back a millisecond long. It is now an hrtimer, so the period is the one requested and `CONFIG_HZ` does not enter into it. Texture samples span one millisecond per tick, so a two-millisecond tick left every other millisecond unsampled and the wheel held through the gap. This did not shift pitch: measured from the steering encoder on an RS50, both the old and new builds render a requested 50 Hz and 100 Hz exactly. Feature-page names reconciled against Logitech's published HID++ 2.0 registry: `0x807A` is RPM_INDICATOR (the rev display) rather than the general LIGHTSYNC this project called it, `0x807B` is RPM_LED_PATTERN, `0x80D0` is COMBINED_PEDALS (which explains its profile-change broadcast), `0x8136` is TORQUE_LIMIT. New docs/FEATURE_MATRIX.md enumerates both wheels here against that registry: notably the RS50 and G923 use **different** response-curve pages (`0x80A4` versus the legacy `0x80A3`), and DUAL_CLUTCH `0x8127` and GAMING_ATTACHMENTS `0x8120` are present on both wheels and implemented on neither. |
 | 7.6 | 2026-09-14 | New 12.6: `0x8127` DualClutch decoded by @fsfarmscaper on a G923 Xbox edition (issue #97), not verified by this driver. The host only reads: `fn2` returns configured flag, assigned paddle (`00` RSB, `01` LSB) and bite point 0..100; every change arrives as an unsolicited event on the feature index with a mode byte (`02` setting, `00` saved, `01` on entering setup, which resets the paddle to `ff` and the bite point to 100); writes to `fn2`/`fn3` are acknowledged and applied nowhere; `fn1` has two zones that never move and `fn0` is a constant `02`. The 0x11 row in the RS50 feature table and the "pinned indices" note now name the page instead of calling it undecoded. |
+| 7.7 | 2026-09-17 | 12.6 `0x8127` DualClutch, three more runs by @fsfarmscaper (issue #97): the setting survives a full power cycle; `fn2` byte 0 is the enable flag (`00` off, `01` on), not a constant; the on-wheel Reset disables and returns the bite point to 100 but keeps the paddle; the wheel reports the saved state unsolicited a few seconds after the HID++ handle opens; event byte 5 noted as unidentified. |

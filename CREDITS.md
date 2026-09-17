@@ -73,12 +73,18 @@ until the last round.
   protocol, and corrected our understanding of how Windows drives these
   wheels ([#20](../../issues/20)).
 - **[PeposCJ](https://github.com/PeposCJ)** - contributed to the same
-  protocol discussion.
+  protocol discussion, including the Dynamic OLED's transport and the
+  decode of its layout descriptor from the wheel's own firmware.
+- **[WnDTech](https://github.com/WnDTech)** - had their tester read the
+  OLED layout descriptors from an RS50, which showed the field widths are
+  self-describing rather than a table to hardcode
+  ([#20](../../issues/20)).
 - **[fsfarmscaper](https://github.com/fsfarmscaper)** - decoded the dual
   clutch page (`0x8127`) on a G923 Xbox edition by listening to the wheel
   instead of writing to it, with predictions logged before the runs that
-  tested them, and shared the raw logs ([#97](../../issues/97)). The first
-  layout for that page from any source.
+  tested them, and shared the raw logs ([#97](../../issues/97)); then
+  came back with the power-cycle and Reset runs that settled the enable
+  flag and persistence. The first layout for that page from any source.
 
 ## Sustained bug reporting
 
