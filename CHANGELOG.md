@@ -88,7 +88,7 @@ security/openvex.json records the dependency advisories that do not affect
 the project and why. The README says how to verify a release against the
 signing key. CI measures the Rust workspace's test coverage on every push
 (80% at the time of writing) and builds a CycloneDX SBOM per crate, and from
-the next release the SBOMs are attached to the release beside the binaries.
+this release the SBOMs are attached to the release beside the binaries.
 Secret-scanning push protection is on. Answers for the OpenSSF Best
 Practices badge, all levels, live in .bestpractices.json.
 
