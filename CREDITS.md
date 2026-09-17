@@ -95,6 +95,9 @@ until the last round.
   [#87](../../issues/87)). Those numbers are what the engine's condition
   forces will be calibrated against, and his wedge report on the Xbox
   edition found a detector that reset itself on every error reply.
+- **[purpleferret](https://github.com/purpleferret)** - a G PRO with no
+  force feedback in Assetto Corsa Rally, with the launcher log that showed
+  the game had been listed on the wrong route ([#105](../../issues/105)).
 - **[Lorenzoo78](https://github.com/Lorenzoo78)** - the Assetto Corsa EVO
   stutter report under the launcher ([#74](../../issues/74)).
 - **[matthiasvegh](https://github.com/matthiasvegh)** - twelve issues and

@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.42.0 - 2026-09-17
 
 **Assetto Corsa Rally takes the SDK route.** The registry listed it as plain
 force feedback with nothing to do, and on a G PRO that gave nothing: with
@@ -88,7 +88,7 @@ security/openvex.json records the dependency advisories that do not affect
 the project and why. The README says how to verify a release against the
 signing key. CI measures the Rust workspace's test coverage on every push
 (80% at the time of writing) and builds a CycloneDX SBOM per crate, and from
-the next release the SBOMs are attached to the release beside the binaries.
+this release the SBOMs are attached to the release beside the binaries.
 Secret-scanning push protection is on. Answers for the OpenSSF Best
 Practices badge, all levels, live in .bestpractices.json.
 
