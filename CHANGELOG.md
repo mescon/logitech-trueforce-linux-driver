@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.42.0 - 2026-09-17
 
 **Assetto Corsa Rally takes the SDK route.** The registry listed it as plain
 force feedback with nothing to do, and on a G PRO that gave nothing: with
