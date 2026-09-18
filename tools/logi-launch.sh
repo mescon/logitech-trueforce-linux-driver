@@ -534,6 +534,8 @@ fi
 # there is no native stream to merge into. The no-prefix case passes for
 # the same reason it does there: the prefix may simply not exist yet.
 rpm_bridge_pid=""
+# The daemon, when this session had to start it as a child (see start_tf_sim).
+tfsim_child_pid=""
 # The exact attribute paths this invocation wrote 1 to, one per line, so the
 # exit path can undo those and only those.
 merge_attrs=""
@@ -757,6 +759,30 @@ if [ "${LOGI_LAUNCH_TF_SIM:-1}" = "1" ] && [ "${want_tfsim:-1}" = "1" ]; then
 		say "note: logi-tf-sim, so both are fed. The bridge drives the texture merge and the"
 		say "note: rev lights; the daemon adds its synthesized engine note on top."
 	fi
+	# Steam runs the launch command under a subreaper, so anything this
+	# wrapper starts and leaves behind is handed to Steam when the game
+	# exits, and Steam then reports the game as still running until that
+	# process dies: a daemon started here kept DiRT Rally 2.0 "running"
+	# after exit until it was killed by hand (#105). setsid does not
+	# escape a subreaper; a transient user service does, because systemd
+	# becomes its parent. Where systemd-run is unavailable (a Flatpak
+	# Steam, a system without a user manager), the daemon runs as a child
+	# of this wrapper instead and is stopped when the game exits, which
+	# is the honest alternative: a later session starts it again.
+	start_tf_sim() {
+		if command -v systemd-run >/dev/null 2>&1 && \
+		   systemd-run --user --quiet --collect \
+			--description="logi-tf-sim (started by logi-launch)" \
+			--property=StandardOutput=append:"$LOG" \
+			--property=StandardError=append:"$LOG" \
+			env "$@" logi-tf-sim 2>/dev/null; then
+			say "logi-tf-sim runs as a user service, outside Steam's process tree"
+			return 0
+		fi
+		setsid env "$@" logi-tf-sim >>"$LOG" 2>&1 </dev/null &
+		tfsim_child_pid=$!
+		say "logi-tf-sim runs as a child of this session (no user service manager here); it stops when the game exits"
+	}
 	# A daemon left running across an update keeps serving the old build
 	# for as long as nobody stops it, and a run that then behaves like the
 	# old build reads as a driver fault (#91). A replaced binary shows up
@@ -795,10 +821,10 @@ if [ "${LOGI_LAUNCH_TF_SIM:-1}" = "1" ] && [ "${want_tfsim:-1}" = "1" ]; then
 		# on the direct-drive wheel, the haptics on the G923.
 		if [ -n "$named_wheel" ]; then
 			say "starting logi-tf-sim, aimed at $named_wheel"
-			setsid env LOGI_TF_SIM_WHEEL="$named_wheel" logi-tf-sim >>"$LOG" 2>&1 </dev/null &
+			start_tf_sim LOGI_TF_SIM_WHEEL="$named_wheel"
 		else
 			say "starting logi-tf-sim"
-			setsid logi-tf-sim >>"$LOG" 2>&1 </dev/null &
+			start_tf_sim
 		fi
 	else
 		say "logi-tf-sim is not installed; the rev lights and simulated"
@@ -1103,10 +1129,15 @@ fi
 # Everything else keeps the historical exec, which leaves no wrapper
 # process behind.
 if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_attrs" ] || \
-   [ -n "$hidraw_granted" ] || [ -n "$helper_group_pid" ]; then
+   [ -n "$hidraw_granted" ] || [ -n "$helper_group_pid" ] || \
+   [ -n "$tfsim_child_pid" ]; then
 	session_cleanup() {
 		[ -n "$native_marker" ] && rm -f "$native_marker" 2>/dev/null
 		[ -n "$rpm_bridge_pid" ] && kill "$rpm_bridge_pid" 2>/dev/null
+		if [ -n "$tfsim_child_pid" ]; then
+			kill "$tfsim_child_pid" 2>/dev/null
+			say "logi-tf-sim stopped with the session (it ran as a child of this wrapper)"
+		fi
 		if [ -n "$staged_proxy" ]; then
 			while read -r f; do
 				[ -n "$f" ] && is_our_proxy "$f" && rm -f "$f" 2>/dev/null && \
