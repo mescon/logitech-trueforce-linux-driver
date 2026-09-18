@@ -5,6 +5,21 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**Steam no longer thinks a game is still running after it exits.** Steam
+runs the launch command under a subreaper, so a process the launcher started
+and left behind was handed to Steam when the game exited, and Steam kept the
+game marked as running until that process died. The telemetry daemon was
+exactly such a process whenever the launcher had to start it, so DiRT Rally
+2.0 stayed "running" after exit until the daemon was killed by hand
+([#105](../../issues/105)); reproduced here under an emulated reaper. The
+launcher now starts the daemon as a transient user service, which systemd
+parents and Steam never sees, with its output still appended to the launcher
+log. Where no user service manager is available (a Flatpak Steam, for one),
+the daemon runs as a child of the session and is stopped when the game
+exits.
+
 ## 0.42.0 - 2026-09-17
 
 **Assetto Corsa Rally takes the SDK route.** The registry listed it as plain
