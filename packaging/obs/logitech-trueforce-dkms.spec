@@ -333,6 +333,13 @@ fi
 # Into the initramfs as well, so it registers before the in-tree driver can
 # claim a G923 at boot (#90); a no-op note when the module is not built yet.
 %{_bindir}/logi-wheel-initramfs >/dev/null 2>&1 || :
+# udev rules only reach devices that appear after they load: reload and
+# re-trigger so /dev/uhid and an already-plugged wheel pick them up now
+# rather than at the next reboot (#105). Never fatal.
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload >/dev/null 2>&1 || :
+    udevadm trigger --subsystem-match=misc --subsystem-match=hidraw --subsystem-match=input >/dev/null 2>&1 || :
+fi
 
 %preun
 dkms remove -m %{module} -v %{modver} --all --rpm_safe_upgrade >/dev/null 2>&1 || true

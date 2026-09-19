@@ -7,6 +7,20 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**The DirectInput proxy is aimed at the wheel, says why it failed, and can
+open `/dev/uhid` on a fresh package install.** Three faults from one report
+([#105](../../issues/105)). The launcher's lookup of the wheel's USB parent,
+used to aim `logi-ffb` at the session's wheel, resolved `..` through a
+sysfs symlink logically and landed in `/sys/bus/hid`, so the aim never
+fired on any machine and the proxy fell back to its own scan. Fixed with a
+real path. The proxy's messages, including the reason it refused to start,
+went to Steam's console; they now also land in the launcher log next to the
+plan that started it. And the Debian and RPM packages never reloaded udev
+after installing their rules, so `/dev/uhid` kept its root-only mode until
+the next reboot and the proxy could not create its virtual wheel; both now
+reload and re-trigger (Arch's own package hook already does this, and the
+from-source installer always did).
+
 **Steam no longer thinks a game is still running after it exits.** Steam
 runs the launch command under a subreaper, so a process the launcher started
 and left behind was handed to Steam when the game exited, and Steam kept the

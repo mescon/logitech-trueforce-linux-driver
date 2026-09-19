@@ -96,6 +96,13 @@ force-feedback device).
 
 %post -n %{kmod_name}-kmod-common
 %{_bindir}/logi-wheel-initramfs >/dev/null 2>&1 || :
+# udev rules only reach devices that appear after they load: reload and
+# re-trigger so /dev/uhid and an already-plugged wheel pick them up now
+# rather than at the next reboot (#105). Never fatal.
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload >/dev/null 2>&1 || :
+    udevadm trigger --subsystem-match=misc --subsystem-match=hidraw --subsystem-match=input >/dev/null 2>&1 || :
+fi
 
 %files -n %{kmod_name}-kmod-common
 %{_bindir}/logi-wheel-initramfs
