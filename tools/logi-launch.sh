@@ -73,6 +73,10 @@ EXTRA_HELPERS="${LOGI_LAUNCH_HELPERS:-}"
 WAIT_SECONDS="${LOGI_LAUNCH_WAIT:-120}"
 SETTLE_SECONDS="${LOGI_LAUNCH_SETTLE:-15}"
 LOG="${LOGI_LAUNCH_LOG:-/tmp/logi-launch.log}"
+# Shared with the tools this wrapper starts (logi-ffb reads it), so what
+# they have to say lands in the same file as the plan that started them
+# rather than on Steam's console, where nobody looks (#105).
+export LOGI_LAUNCH_LOG="$LOG"
 
 # Where the Windows-side pieces we stage into games live: the dinput8
 # escape proxy, the telemetry relay, the recorded init burst.
@@ -443,7 +447,11 @@ resolve_wheel() {
 	if [ -n "$wheel_dir" ]; then
 		# ../.. from the HID device directory is the USB device: the wheel's
 		# interfaces (hidraw here, input there) are siblings under it.
-		wheel_usb=$(cd "$wheel_dir/../.." 2>/dev/null && pwd -P) || wheel_usb=""
+		# readlink -f, not cd: /sys/bus/hid/devices/<id> is a symlink, and
+		# the shell's cd resolves ".." logically, so "cd <id>/../.." landed
+		# in /sys/bus/hid and nothing below matched. The proxy was never
+		# aimed on any machine and fell back to its own scan (#105).
+		wheel_usb=$(readlink -f "$wheel_dir/../.." 2>/dev/null) || wheel_usb=""
 		for e in /sys/class/input/event*; do
 			[ -d "$e/device" ] || continue
 			[ -n "$wheel_usb" ] || break

@@ -202,11 +202,11 @@ fn warn_if_virtual_wheel_hidraw_inaccessible() {
         if let Some(node) = find_virtual_wheel_hidraw_node() {
             let dev_path = format!("/dev/{node}");
             if access(dev_path.as_str(), AccessFlags::R_OK | AccessFlags::W_OK).is_err() {
-                eprintln!(
+                crate::note(&format!(
                     "logi-ffb: warning: the virtual wheel's hidraw node ({dev_path}) is not \
                      user-accessible; DirectInput force feedback will not work. Install the \
                      71-logi-ffb-uhid.rules udev rule (issue #50)."
-                );
+                ));
             }
             return;
         }
@@ -267,7 +267,7 @@ pub struct Proxy {
 fn run_sink_worker(mut sink: sink::Sink, rx: std::sync::mpsc::Receiver<pidff::EffectOp>) {
     for op in &rx {
         if let Err(e) = sink.apply(op) {
-            eprintln!("logi-ffb: failed to apply FF operation: {e}");
+            crate::note(&format!("logi-ffb: failed to apply FF operation: {e}"));
         }
     }
     sink.shutdown();

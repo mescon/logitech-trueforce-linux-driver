@@ -140,11 +140,11 @@ fn run_game(cmd: Vec<String>) -> crate::Result<ExitCode> {
         std::env::var("STEAM_COMPAT_DATA_PATH").ok().as_deref(),
     );
     match &prefix {
-        Some(p) => eprintln!("logi-ffb: hiding {name:?} from DirectInput in {p}"),
-        None => eprintln!(
+        Some(p) => crate::note(&format!("logi-ffb: hiding {name:?} from DirectInput in {p}")),
+        None => crate::note(&format!(
             "logi-ffb: no Wine prefix known (WINEPREFIX and STEAM_COMPAT_DATA_PATH unset); a DirectInput game may list the real wheel too, bind it to {:?}",
             crate::descriptor::VIRTUAL_NAME
-        ),
+        )),
     }
     steering::apply(&plan, prefix.as_deref())?;
 
@@ -181,8 +181,8 @@ fn run_game(cmd: Vec<String>) -> crate::Result<ExitCode> {
 
     match join_result {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => eprintln!("logi-ffb: proxy loop error: {e}"),
-        Err(_) => eprintln!("logi-ffb: proxy thread panicked"),
+        Ok(Err(e)) => crate::note(&format!("logi-ffb: proxy loop error: {e}")),
+        Err(_) => crate::note("logi-ffb: proxy thread panicked"),
     }
 
     Ok(ExitCode::from(status.code().unwrap_or(0) as u8))

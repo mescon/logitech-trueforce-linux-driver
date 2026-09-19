@@ -11,7 +11,7 @@ fn main() -> ExitCode {
     match logi_ffb::cli::dispatch(&args) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("logi-ffb: {e}");
+            logi_ffb::note(&format!("logi-ffb: {e}"));
             ExitCode::FAILURE
         }
     }
