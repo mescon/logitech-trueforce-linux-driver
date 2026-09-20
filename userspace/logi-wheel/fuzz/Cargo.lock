@@ -83,11 +83,11 @@ dependencies = [
 
 [[package]]
 name = "logi-build-id"
-version = "0.42.0"
+version = "0.42.1"
 
 [[package]]
 name = "logi-ffb"
-version = "0.42.0"
+version = "0.42.1"
 dependencies = [
  "libc",
  "logi-build-id",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "logi-tf-sim"
-version = "0.42.0"
+version = "0.42.1"
 dependencies = [
  "libc",
  "logi-wheel-core",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "logi-wheel-core"
-version = "0.42.0"
+version = "0.42.1"
 dependencies = [
  "logi-build-id",
 ]

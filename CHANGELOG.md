@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.42.1 - 2026-09-20
 
 **The DirectInput proxy is aimed at the wheel, says why it failed, and can
 open `/dev/uhid` on a fresh package install.** Three faults from one report
