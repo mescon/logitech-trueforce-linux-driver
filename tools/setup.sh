@@ -251,7 +251,17 @@ doctor() {
 			fi
 		fi
 	else
-		bad "hid_logitech_dd is not loaded (run: sudo ./tools/setup.sh)"
+		# The module binds on plug-in, so with no wheel on the bus "not
+		# loaded" is the machine doing exactly what it should, not a fault.
+		# The same check used to fail every doctor run on a desk without
+		# the wheel attached.
+		local pid_re_now
+		pid_re_now="$(echo "$WHEEL_PIDS $WHEEL_PIDS_CONSOLE" | tr ' ' '|')"
+		if lsusb 2>/dev/null | grep -qiE "046d:($pid_re_now)"; then
+			bad "hid_logitech_dd is not loaded although a wheel is on the bus (run: sudo ./tools/setup.sh)"
+		else
+			wrn "hid_logitech_dd is not loaded; it loads when a wheel is plugged in (none on the bus now)"
+		fi
 	fi
 	# App versions, and their absence. Reporting only the ones that are
 	# present used to hide the case that actually bites: a from-source
