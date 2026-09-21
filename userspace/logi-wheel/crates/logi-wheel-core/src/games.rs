@@ -787,7 +787,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("dirt-rally-2"),
-        setup: "Enable in-game UDP telemetry (Codemasters, port 20777); launch options `logi-launch %command%` (it starts logi-tf-sim for you); Steam Input off.",
+        setup: "Switch on the game's UDP telemetry, which is off by default: in `hardware_settings_config.xml` (under the game's documents folder in the prefix) set `<udp enabled=\"true\" ...>`, port 20777 as it ships; launch options `logi-launch %command%` (it starts logi-tf-sim for you); Steam Input off. Force feedback under Proton reaches this game only through Wine's joystick path, which on some builds does not present the wheel at all (#105); the `logi-ffb` proxy route is under test there.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -848,9 +848,10 @@ logi-tf-sim.",
         ffb: Ffb::TrueForceShim,
         native_trueforce: Support::Yes,
         simulated_tf: SimTf::No,
-        setup: "Install the TrueForce shim once, from the app's Setup page; launch options `logi-launch %command%` (it turns raw HID on, stages the proxy that answers the SDK's rotation question, and resets the wheel first, the same recipe as Assetto Corsa EVO); turn Steam Input off. No telemetry yet, so nothing to feed the lights.",
-        // Confirmed on a G923 Xbox edition (#83); a direct-drive wheel has
-        // not yet been reported on this route.
+        setup: "Install the TrueForce shim once, from the app's Setup page; launch options `logi-launch %command%` (it turns raw HID on, stages the proxy that answers the SDK's rotation question, and resets the wheel first, the same recipe as Assetto Corsa EVO); turn Steam Input off. No telemetry yet, so nothing to feed the lights. On a G PRO a USB capture showed Logitech's library loading and then sending the wheel nothing at all: the route is in place, the game does not drive it (#105).",
+        // Confirmed on a G923 Xbox edition (#83). On a G PRO the route
+        // stages correctly and the game's SDK streams nothing (#105, USB
+        // capture), so Expected rather than Verified stands.
         confidence: Confidence::Expected,
     },
     GameCompat {
