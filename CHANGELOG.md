@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.42.2 - 2026-09-21
 
 **The proxy can open `/dev/uhid` on a machine where nothing else loads
 uhid.** 0.42.1 reloaded udev after installing the rule that opens
