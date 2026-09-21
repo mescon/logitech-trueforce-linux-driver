@@ -5,6 +5,20 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The proxy can open `/dev/uhid` on a machine where nothing else loads
+uhid.** 0.42.1 reloaded udev after installing the rule that opens
+`/dev/uhid` to the session user, and it was still root-only on a Pop!_OS
+machine ([#105](../../issues/105)). The reason is older than the rule:
+`uhid` is a module, kmod creates the node root-only at boot before any
+module loads, and a udev rule only reaches a node once its device exists,
+which is when the module loads. On a machine where nothing loads it, the
+rule never fires. Every channel now loads `uhid` at boot (a modules-load.d
+file; the NixOS module lists it) and at install time, the doctor checks
+that `/dev/uhid` is actually writable rather than that the rule file is
+present, and the proxy's error says what to run.
+
 ## 0.42.1 - 2026-09-20
 
 **The DirectInput proxy is aimed at the wheel, says why it failed, and can

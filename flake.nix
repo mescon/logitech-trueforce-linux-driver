@@ -267,7 +267,9 @@
             boot.extraModulePackages = [
                 (logitechTrueforceModule {kernel = config.boot.kernelPackages.kernel; })
                 ];
-            boot.kernelModules = [ "hid-logitech-dd" ];
+            # uhid too: the logi-ffb proxy's virtual wheel needs /dev/uhid,
+            # whose udev rule only applies once the module is loaded (#105).
+            boot.kernelModules = [ "hid-logitech-dd" "uhid" ];
             # In the initrd as well, so it registers before the in-tree
             # hid-logitech-hidpp driver can claim a G923 at boot (#90); what
             # logi-wheel-initramfs does for the other channels.

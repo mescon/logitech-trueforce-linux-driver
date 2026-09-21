@@ -471,6 +471,16 @@ doctor() {
 	fi
 	if [ -f "$UDEV_FFB_DST" ] || [ -f "/usr/lib/udev/rules.d/71-logi-ffb-uhid.rules" ]; then
 		ok "logi-ffb uhid udev rule installed"
+		# The rule only reaches /dev/uhid once the uhid module is loaded;
+		# the static node it replaces is root-only (#105). Test the effect,
+		# not the file: this is what logi-ffb will hit.
+		if [ -e /dev/uhid ] && [ -w /dev/uhid ]; then
+			ok "/dev/uhid is writable (uhid loaded, rule applied)"
+		elif [ -e /dev/uhid ]; then
+			bad "/dev/uhid is not writable by you: the uhid module is not loaded, so the rule never applied. Fix now: sudo modprobe uhid; at boot: echo uhid | sudo tee /etc/modules-load.d/logitech-trueforce.conf"
+		else
+			wrn "/dev/uhid does not exist; the kernel has no uhid support, so logi-ffb cannot create its virtual wheel"
+		fi
 	else
 		wrn "logi-ffb uhid udev rule missing - logi-ffb needs sudo for /dev/uhid (run: sudo ./tools/setup.sh)"
 	fi

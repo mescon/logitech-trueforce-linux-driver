@@ -11,3 +11,5 @@ udev/73-logitech-xbox-modeswitch.rules usr/lib/udev/rules.d/
 # standalone new-lg4ff DKMS fork (files under /etc are auto-flagged as
 # conffiles by debhelper, so no explicit conffiles list is needed).
 packaging/modprobe.d/hid-logitech-dd.conf etc/modprobe.d/
+# Load uhid at boot so /dev/uhid gets the udev rule's mode (#105).
+packaging/modules-load.d/logitech-trueforce.conf usr/lib/modules-load.d/

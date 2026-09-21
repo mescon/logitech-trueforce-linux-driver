@@ -102,6 +102,10 @@ package_logitech-trueforce-dkms() {
 		"$pkgdir/usr/lib/udev/rules.d/70-logitech-trueforce.rules"
 	install -Dm644 "$_src/udev/71-logi-ffb-uhid.rules" \
 		"$pkgdir/usr/lib/udev/rules.d/71-logi-ffb-uhid.rules"
+	# Load uhid at boot: the static /dev/uhid node is root-only until the
+	# module loads and the rule above fires (#105).
+	install -Dm644 "$_src/packaging/modules-load.d/logitech-trueforce.conf" \
+		"$pkgdir/usr/lib/modules-load.d/logitech-trueforce.conf"
 	# G923 (c266/c267/c26e) driver pre-emption: reclaims the wheel from a
 	# competing driver that won the bind race, PID-scoped only.
 	install -Dm644 "$_src/udev/72-logitech-g923-rebind.rules" \
