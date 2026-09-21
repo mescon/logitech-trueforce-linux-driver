@@ -17,6 +17,10 @@ fi
 # applies to a wheel that was already plugged in. Never fatal: a system
 # without a running udev (a container, a chroot) installs fine.
 if [ "$1" = "configure" ] && command -v udevadm >/dev/null 2>&1; then
+	# uhid must be loaded for /dev/uhid to be a udev device at all: the
+	# static node kmod creates at boot is root-only and no rule reaches
+	# it (#105). Loaded at boot from modules-load.d from now on; now too.
+	modprobe uhid 2>/dev/null || true
 	udevadm control --reload 2>/dev/null || true
 	udevadm trigger --subsystem-match=misc --subsystem-match=hidraw --subsystem-match=input 2>/dev/null || true
 fi

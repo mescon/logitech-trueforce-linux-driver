@@ -371,8 +371,20 @@ impl Device {
     /// descriptor from [`descriptor`], so enumeration steering never hides
     /// it behind the real wheel.
     pub fn create() -> Result<Device> {
-        let fd = open(UHID_PATH, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())
-            .map_err(|e| Error::Io(format!("open {UHID_PATH}"), std::io::Error::from(e)))?;
+        let fd = open(UHID_PATH, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty()).map_err(|e| {
+            let hint = match e {
+                // The static node is root-only until the uhid module loads
+                // and the udev rule fires (#105); say what to do, not
+                // just what failed.
+                nix::errno::Errno::EACCES | nix::errno::Errno::EPERM => {
+                    " (the uhid module is not loaded, so its udev rule never applied: \
+                     run `sudo modprobe uhid`, and put `uhid` in /etc/modules-load.d/ for the next boot)"
+                }
+                nix::errno::Errno::ENOENT => " (this kernel has no uhid support)",
+                _ => "",
+            };
+            Error::Io(format!("open {UHID_PATH}{hint}"), std::io::Error::from(e))
+        })?;
 
         let event = encode_create2(
             descriptor::VIRTUAL_NAME,

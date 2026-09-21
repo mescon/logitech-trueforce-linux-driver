@@ -192,6 +192,17 @@ if [ -f "$UDEV_SRC" ]; then
 	fi
 fi
 
+# uhid at boot: /dev/uhid is created root-only by kmod's static nodes
+# before any module loads, and the rule below only reaches it once the
+# uhid device exists, i.e. once the module is loaded (#105).
+MODLOAD_SRC="$REPO_ROOT/packaging/modules-load.d/logitech-trueforce.conf"
+MODLOAD_DST="/etc/modules-load.d/logitech-trueforce.conf"
+if [ -f "$MODLOAD_SRC" ] && ! cmp -s "$MODLOAD_SRC" "$MODLOAD_DST"; then
+	echo "== installing $MODLOAD_DST (loads uhid at boot) =="
+	install -m 0644 "$MODLOAD_SRC" "$MODLOAD_DST"
+	modprobe uhid 2>/dev/null || true
+fi
+
 # Same for the logi-ffb rule, which opens /dev/uhid to the "input" group
 # so the DirectInput FFB proxy can create its virtual wheel without sudo.
 if [ -f "$UDEV_FFB_SRC" ]; then
@@ -199,6 +210,7 @@ if [ -f "$UDEV_FFB_SRC" ]; then
 		echo "== installing udev rule to $UDEV_FFB_DST =="
 		install -m 0644 "$UDEV_FFB_SRC" "$UDEV_FFB_DST"
 		udevadm control --reload
+		modprobe uhid 2>/dev/null || true
 		udevadm trigger --subsystem-match=misc
 	else
 		echo "udev rule up to date ($UDEV_FFB_DST)"

@@ -100,6 +100,7 @@ force-feedback device).
 # re-trigger so /dev/uhid and an already-plugged wheel pick them up now
 # rather than at the next reboot (#105). Never fatal.
 if command -v udevadm >/dev/null 2>&1; then
+    modprobe uhid >/dev/null 2>&1 || :
     udevadm control --reload >/dev/null 2>&1 || :
     udevadm trigger --subsystem-match=misc --subsystem-match=hidraw --subsystem-match=input >/dev/null 2>&1 || :
 fi
@@ -108,6 +109,7 @@ fi
 %{_bindir}/logi-wheel-initramfs
 %{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules
 %{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
+%{_prefix}/lib/modules-load.d/logitech-trueforce.conf
 %{_prefix}/lib/udev/rules.d/72-logitech-g923-rebind.rules
 %{_prefix}/lib/udev/rules.d/73-logitech-xbox-modeswitch.rules
 %config(noreplace) %{_sysconfdir}/modprobe.d/hid-logitech-dd.conf
@@ -246,6 +248,10 @@ install -D -m 0644 udev/70-logitech-trueforce.rules \
     "%{buildroot}%{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules"
 install -D -m 0644 udev/71-logi-ffb-uhid.rules \
     "%{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules"
+# Load uhid at boot: the static /dev/uhid node is root-only until the
+# module loads and the rule above fires (#105).
+install -D -m 0644 packaging/modules-load.d/logitech-trueforce.conf \
+    %{buildroot}%{_prefix}/lib/modules-load.d/logitech-trueforce.conf
 install -D -m 0644 udev/72-logitech-g923-rebind.rules \
     "%{buildroot}%{_prefix}/lib/udev/rules.d/72-logitech-g923-rebind.rules"
 # Lists hid-logitech-dd for dracut so the module registers before the
