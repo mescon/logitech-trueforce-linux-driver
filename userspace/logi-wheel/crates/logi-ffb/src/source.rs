@@ -131,22 +131,27 @@ pub fn map_event(report: &mut InputReport, ev: &input_event) -> bool {
             }
         }
         EV_KEY if ev.code >= BTN_TRIGGER => {
-            // Two button blocks: the joystick range (BTN_TRIGGER..) maps
-            // to bits 0-15, and the wheel's extended controls (encoders,
-            // G1, GL, GR - BTN_TRIGGER_HAPPY range) map to bits 16-31,
-            // so DirectInput sims can bind them too (issue #50).
-            // The wheel's extended block starts at BTN_TRIGGER_HAPPY6
-            // (0x2c5, the first code it actually uses); 0x2c0-0x2c4 are
-            // unused and dropped to avoid an underflow.
+            // The kernel numbers a joystick's buttons BTN_TRIGGER+0..15 and
+            // then BTN_TRIGGER_HAPPY+0.. for the seventeenth onward. The
+            // layout here keeps every bit the RS50's DirectInput users have
+            // already bound (issue #50): the joystick range on bits 0-15,
+            // the RS50's extended block from BTN_TRIGGER_HAPPY6 (0x2c5, its
+            // first used code: encoders, G1, GL, GR) on bits 16-31. The
+            // five codes below it, buttons 17-21, were dropped as "unused"
+            // because the RS50 never emits them; a G PRO with a shifter
+            // does, and its higher gears could not be bound (#105). They
+            // now take bits 32-36, and anything past the RS50 block's
+            // sixteen bits continues from 37, in a 64-button report.
             const EXT_FIRST: u16 = BTN_TRIGGER_HAPPY + 5;
-            let bit = if ev.code >= EXT_FIRST {
-                16 + (ev.code - EXT_FIRST)
-            } else if ev.code < BTN_TRIGGER_HAPPY {
-                ev.code - BTN_TRIGGER
+            let bit: u32 = if ev.code < BTN_TRIGGER_HAPPY {
+                (ev.code - BTN_TRIGGER) as u32
+            } else if ev.code >= EXT_FIRST {
+                let n = (ev.code - EXT_FIRST) as u32;
+                if n < 16 { 16 + n } else { 37 + (n - 16) }
             } else {
-                32 // unused 0x2c0-0x2c4: outside both blocks
+                32 + (ev.code - BTN_TRIGGER_HAPPY) as u32
             };
-            if bit < 32 {
+            if bit < 64 {
                 if ev.value != 0 {
                     report.buttons |= 1 << bit;
                 } else {
@@ -242,9 +247,20 @@ mod tests {
         assert!(r.buttons & (1 << 16) != 0, "R Encoder CW is bit 16");
         assert!(!map_event(&mut r, &ev(EV_KEY, 0x2cd, 1)));
         assert!(r.buttons & (1 << 24) != 0, "GR is bit 24");
+        // Buttons 17-21 (0x2c0-0x2c4), which the RS50 never emits but a
+        // G PRO with a shifter does (#105), land above the RS50 block so
+        // nothing already bound moves.
         assert!(!map_event(&mut r, &ev(EV_KEY, 0x2c0, 1)));
-        assert_eq!(r.buttons & 0xFFFF_0000, (1 << 16) | (1 << 24),
-            "unused 0x2c0-0x2c4 codes map to nothing");
+        assert!(r.buttons & (1 << 32) != 0, "button 17 (0x2c0) is bit 32");
+        assert!(!map_event(&mut r, &ev(EV_KEY, 0x2c4, 1)));
+        assert!(r.buttons & (1 << 36) != 0, "button 21 (0x2c4) is bit 36");
+        assert_eq!(r.buttons & 0xFFFF_0000, (1 << 16) | (1 << 24), "the RS50 block is unchanged");
+        // Past the RS50 block's sixteen codes the numbering continues after
+        // those five, and the report's 64 bits are the ceiling.
+        assert!(!map_event(&mut r, &ev(EV_KEY, 0x2d5, 1)));
+        assert!(r.buttons & (1 << 37) != 0, "0x2d5 is bit 37");
+        assert!(!map_event(&mut r, &ev(EV_KEY, 0x2f0, 1)));
+        assert_eq!(r.buttons >> 38, 0, "a code past 64 buttons is dropped, not wrapped");
         assert_eq!(r.steering, 0x4000);
         assert!(map_event(&mut r, &ev(EV_SYN, SYN_REPORT, 0)));
     }

@@ -381,11 +381,11 @@ impl Proxy {
                         if debug {
                             let report_id = bytes.first().copied().unwrap_or(0);
                             let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
-                            eprintln!(
+                            crate::note(&format!(
                                 "logi-ffb: debug: uhid Output len={} report_id={report_id:#04x} bytes={}",
                                 bytes.len(),
                                 hex.join(" ")
-                            );
+                            ));
                         }
                         if let Some(op) = pidff::decode(&bytes) {
                             self.dispatch(op);
@@ -404,7 +404,7 @@ impl Proxy {
                     // we simply skip creating a block for it.
                     Ok(uhid::Event::SetReport { rnum: 0x54, rtype, data, id }) => {
                         if debug {
-                            eprintln!("logi-ffb: debug: uhid SetReport rnum=0x54 rtype={rtype}");
+                            crate::note(&format!("logi-ffb: debug: uhid SetReport rnum=0x54 rtype={rtype}"));
                         }
                         if let Some(kind) = data.get(1).and_then(|&b| pidff::effect_kind_from_type_byte(b)) {
                             let block = assign_block(&mut self.next_block);
@@ -430,7 +430,7 @@ impl Proxy {
                     // ack regardless so the kernel is never left waiting.
                     Ok(uhid::Event::SetReport { rnum, rtype, data, id }) => {
                         if debug {
-                            eprintln!("logi-ffb: debug: uhid SetReport rnum={rnum:#04x} rtype={rtype}");
+                            crate::note(&format!("logi-ffb: debug: uhid SetReport rnum={rnum:#04x} rtype={rtype}"));
                         }
                         if let Some(op) = pidff::decode(&data) {
                             self.dispatch(op);
@@ -445,7 +445,7 @@ impl Proxy {
                     // RAM pool so the host does not treat us as full.
                     Ok(uhid::Event::GetReport { rnum: 0x56, rtype, id }) => {
                         if debug {
-                            eprintln!("logi-ffb: debug: uhid GetReport rnum=0x56 rtype={rtype}");
+                            crate::note(&format!("logi-ffb: debug: uhid GetReport rnum=0x56 rtype={rtype}"));
                         }
                         let reply = pidff::pid_block_load_reply(self.last_created_block);
                         if let Err(e) = self.device.send_get_report_reply(id, 0, &reply) {
@@ -459,7 +459,7 @@ impl Proxy {
                     // was derived and what is still unconfirmed).
                     Ok(uhid::Event::GetReport { rnum: 0x57, rtype, id }) => {
                         if debug {
-                            eprintln!("logi-ffb: debug: uhid GetReport rnum=0x57 rtype={rtype}");
+                            crate::note(&format!("logi-ffb: debug: uhid GetReport rnum=0x57 rtype={rtype}"));
                         }
                         let reply = pidff::pid_pool_reply();
                         if let Err(e) = self.device.send_get_report_reply(id, 0, &reply) {
@@ -474,7 +474,7 @@ impl Proxy {
                     // shifted into the report-id position.
                     Ok(uhid::Event::GetReport { rnum, rtype, id }) => {
                         if debug {
-                            eprintln!("logi-ffb: debug: uhid GetReport rnum={rnum:#04x} rtype={rtype}");
+                            crate::note(&format!("logi-ffb: debug: uhid GetReport rnum={rnum:#04x} rtype={rtype}"));
                         }
                         if let Err(e) = self.device.send_get_report_reply(id, 0, &[rnum]) {
                             break Err(e);
@@ -483,13 +483,13 @@ impl Proxy {
 
                     Ok(uhid::Event::Open) => {
                         if debug {
-                            eprintln!("logi-ffb: debug: uhid Open");
+                            crate::note("logi-ffb: debug: uhid Open");
                         }
                     }
 
                     Ok(uhid::Event::Close) => {
                         if debug {
-                            eprintln!("logi-ffb: debug: uhid Close");
+                            crate::note("logi-ffb: debug: uhid Close");
                         }
                     }
 
