@@ -15,7 +15,7 @@ pub const PRODUCT: u16 = 0xc276;
 pub const VIRTUAL_PRODUCT: u16 = 0xc2dd;
 pub const VIRTUAL_NAME: &str = "logi-ffb Virtual Wheel";
 pub const INPUT_REPORT_ID: u8 = 0x01;
-pub const INPUT_REPORT_LEN: usize = 14;
+pub const INPUT_REPORT_LEN: usize = 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputReport {
@@ -23,7 +23,7 @@ pub struct InputReport {
     pub throttle: u16,
     pub brake: u16,
     pub clutch: u16,
-    pub buttons: u32,
+    pub buttons: u64,
     pub hat: u8,
     /// Raw hat axis states (-1/0/1), tracked so either axis event can
     /// re-derive the 8-way POV value in `hat`; not serialized.
@@ -80,9 +80,9 @@ const JOYSTICK_PREFIX: &[u8] = &[
     0xC0, //                   End Collection (Physical)
     0x05, 0x09, //             Usage Page (Button)
     0x19, 0x01, //             Usage Min (Button 1)
-    0x29, 0x20, //             Usage Max (Button 32)
+    0x29, 0x40, //             Usage Max (Button 64)
     0x15, 0x00, 0x25, 0x01, // Logical 0..1
-    0x75, 0x01, 0x95, 0x20, // 1 bit x 32
+    0x75, 0x01, 0x95, 0x40, // 1 bit x 64
     0x81, 0x02, //             Input (buttons)
     0x05, 0x01, //             Usage Page (Generic Desktop)
     0x09, 0x39, //             Usage (Hat switch)

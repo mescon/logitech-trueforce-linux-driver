@@ -5,6 +5,19 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The DirectInput proxy's virtual wheel has 64 buttons, and its debug
+trace reaches the log.** The virtual wheel exposed 32 buttons and dropped
+the kernel's codes for buttons 17 to 21, which the RS50 never emits but a
+G PRO with a shifter does: the higher gears could not be bound in DiRT Rally
+2.0 ([#105](../../issues/105)). The report now carries 64 buttons; the
+bits the RS50's DirectInput users have already bound stay where they were,
+the five recovered buttons follow them, and anything beyond continues from
+there. With `LOGI_FFB_DEBUG` set, the proxy's report-level trace now lands
+in the launcher log as well as on stderr, which under Steam is the only
+place it can be read.
+
 ## 0.42.2 - 2026-09-21
 
 **The proxy can open `/dev/uhid` on a machine where nothing else loads
