@@ -7,6 +7,23 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**The launcher says when the running module is older than the apps, and
+sends nothing a session did not earn.** A package update installs the new
+module but cannot swap the one the kernel is running while a wheel is
+plugged in, so the apps move on and the module stays behind until a reload
+or a reboot; the log showed "module v0.41.0, logi-tf-sim 0.42.0" for a day
+of tests before anyone read it that way ([#105](../../issues/105)). The
+launcher now says so in words, with the reload command. A session that ran
+as a child of the launcher only because it had to start the daemon itself
+(no user service manager) no longer gets the TrueForce teardown pair at
+exit, which is for sessions that could have left the wheel's engine
+started. The doctor no longer fails the kernel-module check when no wheel
+is attached: the module loads when one is plugged in, and the check said
+"not loaded" as a failure on a machine doing exactly what it should. And
+`logi-wheel --launch-plan` prints the plan for a wheel class named with
+`--wheel` even with no wheel attached, so the recipe can be read and
+tested without one.
+
 **The DirectInput proxy's virtual wheel has 64 buttons, and its debug
 trace reaches the log.** The virtual wheel exposed 32 buttons and dropped
 the kernel's codes for buttons 17 to 21, which the RS50 never emits but a

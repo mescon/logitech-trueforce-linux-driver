@@ -344,12 +344,6 @@ fn launch_plan(
     // when it is not and the answer is ambiguous, the harmful half is
     // withheld rather than guessed.
     let wheels = logi_wheel_core::Device::discover_all();
-    if wheels.is_empty() {
-        println!("wheel=none");
-        return Ok(());
-    }
-    let mut kinds: Vec<games::WheelCaps> = wheels.iter().map(|d| d.wheel_caps()).collect();
-    kinds.dedup();
     let forced = match wheel_arg.as_deref() {
         Some("dd") | Some("direct-drive") | Some("rs50") | Some("gpro") => Some(games::WheelCaps::direct_drive()),
         Some("xbox") | Some("g923-xbox") => Some(games::WheelCaps::xbox_sdk()),
@@ -360,8 +354,22 @@ fn launch_plan(
         }
         None => None,
     };
+    // With no wheel attached and none named there is nothing honest to
+    // say (see above). Named, the class is enough: the recipe is per class,
+    // and printing it lets the docs, the tests and a wrapper started before
+    // the wheel is plugged in see what a session would get; the one thing
+    // it cannot carry is a raw-HID scope, which needs the attached wheel.
+    if wheels.is_empty() && forced.is_none() {
+        println!("wheel=none");
+        return Ok(());
+    }
+    let mut kinds: Vec<games::WheelCaps> = wheels.iter().map(|d| d.wheel_caps()).collect();
+    kinds.dedup();
     let ambiguous = forced.is_none() && kinds.len() > 1;
     let caps = forced.unwrap_or_else(|| wheels[0].wheel_caps());
+    if wheels.is_empty() {
+        println!("note=no wheel attached; this is the plan for the class you named");
+    }
     if ambiguous {
         println!("wheel=mixed");
         println!("note=several kinds of wheel attached and the game picks one, not us");

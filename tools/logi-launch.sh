@@ -120,6 +120,24 @@ native_marker_id() { printf '%s' "$1" | tr -c 'A-Za-z0-9._\n-' '-'; }
 # First line of every run: which builds are in play. A daemon older than
 # the module reads like a driver fault in every log after this one.
 say "versions: module $(cat /sys/module/hid_logitech_dd/version 2>/dev/null || echo 'not loaded'), $(logi-tf-sim --version 2>/dev/null || echo 'logi-tf-sim not on PATH'), $(logi-ffb --version 2>/dev/null || echo 'logi-ffb not on PATH')"
+# A package update installs the new module but cannot swap the one the
+# kernel is running while a wheel is plugged in, so the apps move on and
+# the module stays behind until a reload or a reboot. That log line above
+# showed "module v0.41.0, logi-tf-sim 0.42.0" for a whole day of tests
+# before anyone noticed (#105). Say it in words.
+mod_ver=$(cat /sys/module/hid_logitech_dd/version 2>/dev/null || true)
+app_ver=$(logi-tf-sim --version 2>/dev/null | awk '{print $2}')
+case "$mod_ver" in
+v*)
+	mod_plain=${mod_ver#v}; mod_plain=${mod_plain%%-*}
+	if [ -n "$app_ver" ] && [ "$mod_plain" != "$app_ver" ]; then
+		say "note: the loaded module is $mod_ver but the apps are $app_ver. The new module"
+		say "note: is installed but not running: unplug the wheel and run"
+		say "note:   sudo modprobe -r hid_logitech_dd && sudo modprobe hid_logitech_dd"
+		say "note: or reboot. Until then this log describes the old driver."
+	fi
+	;;
+esac
 
 # `logi-launch --game <name> %command%` names the title explicitly, for when
 # the appid cannot identify it: a non-Steam shortcut (whose id Steam
@@ -209,7 +227,7 @@ fi
 user_conf="${XDG_CONFIG_HOME:-$HOME/.config}/logi-wheel/games.conf"
 this_app="${SteamAppId:-${SteamGameId:-0}}"
 if [ -r "$user_conf" ]; then
-	user_line=$(sed -n "s/^[[:space:]]*$this_app[[:space:]]\+//p" "$user_conf" | head -1)
+	user_line=$(sed -n "s/^[[:space:]]*${this_app}[[:space:]]\+//p" "$user_conf" | head -1)
 	if [ -n "$user_line" ]; then
 		say "using your games.conf entry for appid $this_app"
 		# plan_get below takes the FIRST match for a key, so the user's
@@ -1183,7 +1201,16 @@ if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_attrs" ] || \
 			$merge_attrs
 			MERGEATTRS
 		fi
-		send_teardown_pair
+		# The pair is for sessions that could have left the wheel's
+		# TrueForce engine started: raw HID, the texture merge, the
+		# bridge or an in-prefix helper. A session that ran as a child
+		# only because it had to start the daemon (no user service
+		# manager) had none of those, and gets no packets it never asked
+		# for.
+		if [ -n "$hidraw_granted" ] || [ -n "$merge_attrs" ] || \
+		   [ -n "$rpm_bridge_pid" ] || [ -n "$helper_group_pid" ]; then
+			send_teardown_pair
+		fi
 	}
 	trap session_cleanup EXIT
 	# Signal hardening: a bare "$@" would make SIGTERM/SIGINT hit only
