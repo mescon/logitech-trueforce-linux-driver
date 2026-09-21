@@ -207,7 +207,6 @@ install -D -m 0644 udev/70-logitech-trueforce.rules \
     %{buildroot}%{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules
 install -D -m 0644 udev/71-logi-ffb-uhid.rules \
     %{buildroot}%{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
-%{_prefix}/lib/modules-load.d/logitech-trueforce.conf
 # Load uhid at boot: the static /dev/uhid node is root-only until the
 # module loads and the rule above fires (#105).
 install -D -m 0644 packaging/modules-load.d/logitech-trueforce.conf \
@@ -297,6 +296,7 @@ ln -s logi-wheel-gui %{buildroot}%{_bindir}/logi-dd-gui
 %{_usrsrc}/%{module}-%{modver}/
 %{_prefix}/lib/udev/rules.d/70-logitech-trueforce.rules
 %{_prefix}/lib/udev/rules.d/71-logi-ffb-uhid.rules
+%{_prefix}/lib/modules-load.d/logitech-trueforce.conf
 %{_prefix}/lib/udev/rules.d/72-logitech-g923-rebind.rules
 %{_prefix}/lib/udev/rules.d/73-logitech-xbox-modeswitch.rules
 %config(noreplace) %{_sysconfdir}/modprobe.d/hid-logitech-dd.conf
