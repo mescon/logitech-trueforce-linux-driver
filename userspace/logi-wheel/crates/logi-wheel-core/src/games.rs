@@ -787,7 +787,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("dirt-rally-2"),
-        setup: "Switch on the game's UDP telemetry, which is off by default: in `hardware_settings_config.xml` (under the game's documents folder in the prefix) set `<udp enabled=\"true\" ...>`, port 20777 as it ships; launch options `logi-launch %command%` (it starts logi-tf-sim for you); Steam Input off. Force feedback under Proton reaches this game only through Wine's joystick path, which on some builds does not present the wheel at all (#105); the `logi-ffb` proxy route is under test there.",
+        setup: "Switch on the game's UDP telemetry, which is off by default: in `hardware_settings_config.xml` (under the game's documents folder in the prefix) set `<udp enabled=\"true\" extradata=\"3\" ...>` (the daemon needs the `extradata=\"3\"` packet; the default 0 is too short to synthesise from), port 20777 as it ships; launch options `logi-launch %command%` (it starts logi-tf-sim for you); Steam Input off. Force feedback under Proton reaches this game only through Wine's joystick path, which on some builds does not present the wheel at all (#105); the `logi-ffb` proxy route is under test there.",
         confidence: Confidence::Documented,
     },
     GameCompat {
