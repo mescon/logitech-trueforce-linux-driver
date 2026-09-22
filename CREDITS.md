@@ -95,9 +95,15 @@ until the last round.
   [#87](../../issues/87)). Those numbers are what the engine's condition
   forces will be calibrated against, and his wedge report on the Xbox
   edition found a detector that reset itself on every error reply.
-- **[purpleferret](https://github.com/purpleferret)** - a G PRO with no
-  force feedback in Assetto Corsa Rally, with the launcher log that showed
-  the game had been listed on the wrong route ([#105](../../issues/105)).
+- **[purpleferret](https://github.com/purpleferret)** - a G PRO through
+  the whole DirectInput proxy route on DiRT Rally 2.0
+  ([#105](../../issues/105)): the report that put Assetto Corsa Rally on
+  the right route, then a run of precise logs and USB captures that found
+  four faults nothing here could have shown (the proxy never aimed at the
+  wheel, its errors going nowhere a Steam user can read, `/dev/uhid`
+  root-only where uhid is not loaded, and a shifter's gears dropped for
+  want of buttons past 32), and finally the debug trace proving the game
+  sent the wheel nothing until it was given an identity the game knew.
 - **[Lorenzoo78](https://github.com/Lorenzoo78)** - the Assetto Corsa EVO
   stutter report under the launcher ([#74](../../issues/74)).
 - **[matthiasvegh](https://github.com/matthiasvegh)** - twelve issues and

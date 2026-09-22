@@ -5,6 +5,18 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The DiRT Rally 2.0 recipe is written down, end to end.** With the proxy
+turned on (`690790 ffb=proxy`), the telemetry set to `extradata="3"`, and a
+one-line `device_defines.xml` entry that gives the stand-in wheel an
+identity the game knows, a G PRO gets force feedback, the rev LEDs and the
+wheel-base display in that game under Proton, confirmed by a reporter
+([#105](../../issues/105)). The exact steps are in the registry setup text
+and on the wiki. The game keys force feedback on the wheel's USB id and the
+stand-in's was new to it, which is why it sent nothing until told; a
+built-in way to present a known identity is a candidate for later.
+
 ## 0.42.3 - 2026-09-22
 
 **The launcher says when the running module is older than the apps, and
