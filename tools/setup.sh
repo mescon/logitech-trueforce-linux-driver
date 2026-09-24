@@ -625,7 +625,13 @@ doctor() {
 		# that, the four calls the shim answers itself keep working and
 		# the fifty-four it forwards do not, which is a wheel that steers
 		# to full lock and produces no force at all (issue #27).
-		local proxied=0 orphaned=0
+		#
+		# ACC and AC EVO check the library's signature before loading it
+		# and refuse the unsigned proxy outright, so there the shim costs
+		# the game its TrueForce and every force the library would have
+		# sent, with nothing in any log to say why (measured on AC EVO,
+		# 2026-09-24; docs/DINPUT_ESCAPE.md).
+		local proxied=0 orphaned=0 refused="" refused_n=0
 		while IFS= read -r root; do
 			for appid in $SDK_SIM_APPIDS; do
 				local d; d=$(ls -d "$root/steamapps/compatdata/$appid/pfx/$TF_PFX_DIR_REL/"*/ 2>/dev/null | tail -1)
@@ -636,12 +642,23 @@ doctor() {
 				grep -aq "trueforce_real" "$d/trueforce_sdk_x64.dll" 2>/dev/null || continue
 				proxied=$((proxied+1))
 				[ -f "$d/trueforce_real.dll" ] || orphaned=$((orphaned+1))
+				case $appid in
+				805550|3058630)
+					refused_n=$((refused_n+1))
+					refused="$refused$root/steamapps/compatdata/$appid/pfx
+" ;;
+				esac
 			done
 		done <<< "$roots"
+		local pfx
+		while IFS= read -r pfx; do
+			[ -n "$pfx" ] || continue
+			bad "rotation shim installed in $pfx, a game that refuses it: no TrueForce and no force from Logitech's library there (fix: ./tools/install-tf-shim.sh --uninstall-prefix \"$pfx\", then --prefix \"$pfx\" without --proxy)"
+		done <<< "$refused"
 		if [ "$orphaned" -gt 0 ]; then
 			bad "rotation shim installed in $orphaned prefix(es) without Logitech's library beside it - those games get no force feedback (re-run: ./tools/install-tf-shim.sh --all-steam --range-proxy)"
-		elif [ "$proxied" -gt 0 ]; then
-			ok "rotation shim installed in $proxied SDK sim(s), with Logitech's library beside it"
+		elif [ "$proxied" -gt "$refused_n" ]; then
+			ok "rotation shim installed in $((proxied-refused_n)) SDK sim(s), with Logitech's library beside it"
 		fi
 	fi
 

@@ -502,9 +502,7 @@ impl GameCompat {
             // has nothing to synthesise from, so it must not be offered.
             "Leave PROTON_ENABLE_HIDRAW unset: on this wheel it costs you \
              force feedback, and this game publishes no telemetry yet, so \
-             there is no simulated TrueForce to turn on either. Installing \
-             the shim WITH --proxy carries the game's own TrueForce to the \
-             wheel instead (tools/install-tf-shim.sh --proxy). Steam Input \
+             there is no simulated TrueForce to turn on either. Steam Input \
              off."
         } else if self.ffb == Ffb::TrueForceShim && !caps.sdk_trueforce {
             // Worded as "not available on this wheel" rather than "this
@@ -515,11 +513,7 @@ impl GameCompat {
              force feedback. For haptics, turn this game on under Simulated \
              TrueForce; logi-launch puts the telemetry relay in the game's \
              prefix and starts the daemon for you, and that route is \
-             confirmed working on a G923. Installing the shim WITH --proxy \
-             carries the game's own TrueForce to the wheel instead, the same \
-             proxy that ships the 90-degree rotation fix; the apps install \
-             the plain shim, so use tools/install-tf-shim.sh --proxy. Steam \
-             Input off."
+             confirmed working on a G923. Steam Input off."
         } else {
             self.setup
         }

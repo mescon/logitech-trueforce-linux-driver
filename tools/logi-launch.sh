@@ -302,6 +302,16 @@ if [ -n "$prefix_root" ]; then
 		[ -f "$f" ] && have_tf_proxy=1 && break
 	done
 fi
+# ACC and AC EVO check the library's signature before loading it and
+# refuse the unsigned proxy, so there it answers nothing: the SDK never
+# loads, the game falls back to DirectInput, and raw HID would then take
+# that force feedback away as well (AC EVO, 2026-09-24).
+tf_proxy_refused=0
+if [ "$have_tf_proxy" = "1" ]; then
+	case "${SteamAppId:-${SteamGameId:-0}}" in
+	805550|3058630) tf_proxy_refused=1; have_tf_proxy=0 ;;
+	esac
+fi
 
 # Nonzero when the plan granted the game raw HID access (an SDK title):
 # those sessions can leave the wheel's TrueForce engine started, so they
@@ -360,7 +370,16 @@ case "$want_hidraw" in
 	   [ -r "$(share_file dinput8-escape.dll 2>/dev/null || echo /nonexistent)" ]; then
 		can_stage_proxy=1
 	fi
-	if [ "$have_tf_files" = "1" ] && [ "$have_tf_proxy" = "0" ] && \
+	if [ "$tf_proxy_refused" = "1" ]; then
+		export PROTON_ENABLE_HIDRAW=0
+		say "NOT setting PROTON_ENABLE_HIDRAW: this prefix has the SDK proxy"
+		say "(logi-shim --proxy), and this game checks the library's"
+		say "signature and refuses it, so the SDK never loads here and raw HID"
+		say "would only take away the force feedback you have. To get the"
+		say "game's TrueForce back, reinstall the shim without the proxy:"
+		say "  logi-shim --uninstall-prefix \"$prefix_root/pfx\""
+		say "  logi-shim --prefix \"$prefix_root/pfx\"   (tools/install-tf-shim.sh from a checkout)"
+	elif [ "$have_tf_files" = "1" ] && [ "$have_tf_proxy" = "0" ] && \
 	   [ "$can_stage_proxy" = "0" ]; then
 		export PROTON_ENABLE_HIDRAW=0
 		say "NOT setting PROTON_ENABLE_HIDRAW: Logitech's TrueForce files are in"
