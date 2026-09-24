@@ -261,14 +261,15 @@ Options:
   --sdk-dir <path>             Directory holding your Logitech SDK DLLs
                                (default: \$LOGITECH_TRUEFORCE_SDK_DIR, the repo
                                sdk/ tree, or $(default_sdk_dir))
-  --proxy                      Also install this project's SDK proxy. It does
-                               two things: answers the rotation question so a
-                               game stops clamping the wheel to 90 degrees
-                               (#27), and carries the game's own TrueForce to
-                               a wheel Logitech's SDK will not drive, which is
-                               how a G923 gets TrueForce in ACC and AC EVO.
-                               Spelled --range-proxy before it did the second
-                               job; both names still work.
+  --proxy                      Also install this project's SDK proxy, which
+                               answers the rotation question (#27) and copies
+                               TrueForce samples a game hands the library to
+                               logi-tf-sim. It is unsigned, and games that
+                               check the library's signature refuse it: ACC
+                               and AC EVO then run with no TrueForce and no
+                               force from the library at all, so do not use
+                               it for them. Spelled --range-proxy before it
+                               did the second job; both names still work.
   --oem-ffb                    Also install G HUB's DirectInput force-feedback
                                driver (hidpp_forcefeedback), from a "Logitech"
                                folder beside the "Logi" one. Windows routes
@@ -377,6 +378,15 @@ install_in_prefix() {
 			mv -f "$tf_dir/trueforce_sdk_x64.dll" "$tf_dir/trueforce_real.dll"
 			install -m 0644 "$proxy" "$tf_dir/trueforce_sdk_x64.dll"
 			echo "  rotation shim installed in $prefix"
+			# These two verify the library's signature before loading it,
+			# and the proxy is unsigned (docs/DINPUT_ESCAPE.md).
+			case $prefix in
+			*/compatdata/805550/pfx|*/compatdata/805550/pfx/|*/compatdata/3058630/pfx|*/compatdata/3058630/pfx/)
+				echo "  WARNING: this game checks the library's signature and refuses the proxy:" >&2
+				echo "           it will run with no TrueForce and no force from the library." >&2
+				echo "           Undo: $0 --uninstall-prefix \"$prefix\", then --prefix without --proxy." >&2
+				;;
+			esac
 		else
 			echo "  WARNING: --range-proxy asked for but tf-range-proxy.dll was not found" >&2
 			echo "           in the checkout or /usr/share/logitech-trueforce/." >&2

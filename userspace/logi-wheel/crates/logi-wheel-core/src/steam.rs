@@ -331,8 +331,8 @@ pub fn resolve_sdk_dir(field: &str, installer: Option<&Path>) -> Option<PathBuf>
 /// The plain shim, without the SDK proxy: the rotation question the SDK
 /// must have answered under Proton is answered by the dinput8 escape
 /// proxy `logi-launch` stages for every native-TrueForce session. The SDK
-/// proxy (`--proxy`) stays a by-hand route; ACC on an RS50 would not load
-/// it at all (2026-09-05), while it is what carries TrueForce to a G923.
+/// proxy (`--proxy`) stays a by-hand route: it is unsigned, and ACC and
+/// AC EVO check the library's signature and refuse it outright.
 pub fn shim_install_args(prefix: &str, sdk_dir: Option<&Path>) -> Vec<String> {
     let mut args = vec!["--prefix".to_string(), prefix.to_string()];
     if let Some(dir) = sdk_dir {

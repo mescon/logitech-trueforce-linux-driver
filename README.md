@@ -434,10 +434,9 @@ generated from the same registry the app uses, so the two cannot disagree.
   Proton prefix (the app's Setup page, or `tools/install-tf-shim.sh`), and
   launch with `logi-launch %command%`, which turns raw HID on for the
   wheels that want it and stages the proxy that answers the SDK's rotation
-  question. Set `PROTON_ENABLE_HIDRAW=1` by hand only with something
-  answering that question (`tools/install-tf-shim.sh --proxy`): with
-  Logitech's stock library alone the game's steering and force feedback
-  stop on track, and the launcher refuses to set it in that state. The
+  question. Leave `PROTON_ENABLE_HIDRAW` to the launcher: with Logitech's
+  stock library alone the game's steering and force feedback stop on
+  track, and the launcher refuses to set it in that state. The
   DLLs are the one part nobody can automate, because Logitech's files cannot
   be redistributed. The one-time recipe is on the
   [Force feedback in games](https://github.com/mescon/logitech-trueforce-linux-driver/wiki/Force-Feedback-in-Games)
@@ -447,12 +446,12 @@ generated from the same registry the app uses, so the two cannot disagree.
   **On a G923 the recipe is different, not absent.** That wheel does not
   answer the TrueForce SDK, so `PROTON_ENABLE_HIDRAW` must stay unset: there
   it does not add TrueForce, it takes away the force feedback you already
-  had. Install the shim with `--proxy` instead. That puts this project's own
-  SDK proxy in the game's path, where it copies the TrueForce the game is
-  already producing and streams it to the wheel directly, so a G923 gets the
-  game's real haptics without the SDK needing to cooperate. The same proxy
-  answers the game's rotation question, which is the packaged fix for the
-  90-degree clamp (#27). See [G923 support](#g923-support).
+  had. For haptics, turn the game on under Simulated TrueForce instead:
+  `logi-tf-sim` synthesizes an engine note from the game's own telemetry,
+  confirmed working on a G923 in ACC and AC EVO. The shim's `--proxy`
+  option does not help in those two: both check the library's signature
+  and refuse the unsigned proxy, so it carries nothing there. See
+  [G923 support](#g923-support).
 
   **Where the SDK files go.** Copy the `Logi` folder out of a Windows G HUB
   install into `~/.local/share/logitech-trueforce/sdk`, keeping its own

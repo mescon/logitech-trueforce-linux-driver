@@ -7,6 +7,23 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**The SDK proxy is no longer recommended where it cannot load, and the
+tools catch it.** ACC and AC EVO check the signature of Logitech's library
+before loading it, and the proxy `logi-shim --proxy` puts in its place is
+unsigned, so there the game drops TrueForce and every force the library
+carries, silently. The README, the game setup guide and the apps' setup
+hints recommended the proxy to G923 owners in exactly those two games; they
+now point to Simulated TrueForce. `logi-shim --proxy` warns when it is
+installed for either game, `setup.sh doctor` fails on a prefix that has it,
+and `logi-launch` no longer grants raw HID on the strength of it there,
+since raw HID would then take away the DirectInput force feedback as well.
+It prints the two commands that put Logitech's own library back.
+
+**`logi-launch` starts the `logi-tf-sim` it reports.** The daemon runs as a
+user service, and the user manager looked the binary up on its own PATH, so
+a copy earlier on the game's PATH was named in the log's versions line while
+the installed one ran. The launcher now resolves the binary itself.
+
 **The DiRT Rally 2.0 recipe is written down, end to end.** With the proxy
 turned on (`690790 ffb=proxy`), the telemetry set to `extradata="3"`, and a
 one-line `device_defines.xml` entry that gives the stand-in wheel an

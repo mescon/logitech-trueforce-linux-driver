@@ -35,13 +35,11 @@ game's own telemetry, read out of its shared memory by a small relay
 (`docs/SHARED_MEMORY_RELAY.md`). Confirmed working on a G923 in
 Assetto Corsa Competizione and EVO.
 
-There is a second route that carries the real thing: installing the
-shim with `--proxy` puts this project's own SDK proxy in the game's
-path, where it copies the TrueForce the game is already producing
-and streams it to the wheel. It is the same proxy that ships the
-packaged fix for the 90-degree rotation clamp, so it loads and
-works; the apps do not install it yet, so
-`tools/install-tf-shim.sh --proxy` is how to turn it on.
+The shim's `--proxy` option is not a second route in these games.
+Both check the library's signature before loading it and refuse the
+unsigned proxy, so it carries nothing, and on a wheel that uses
+Logitech's library it costs the game that library's force feedback
+too. `./tools/setup.sh doctor` flags a prefix that has it.
 
 Launch options go in Steam under the game's Properties. Paste them
 exactly, `%command%` included: it is the placeholder Steam replaces
@@ -136,7 +134,7 @@ app's Setup page afterwards.
 ## What each recipe means
 
 - **Install the shim.** Stage Logitech's signed SDK DLLs into the game's Proton prefix, from the app's Setup page or `tools/install-tf-shim.sh`. Install the TrueForce shim once, from the app's Setup page; launch options `logi-launch %command%` (it turns raw HID on, stages the proxy that answers the SDK's rotation question, without which the stock library stops steering and force on track, and everything else this game needs); turn Steam Input off. No engine-note texture merge here: ACC produces its own TrueForce audio, so the merge is not wired for it.
-- **On a wheel with no SDK TrueForce.** Leave PROTON_ENABLE_HIDRAW unset: on this wheel it costs you force feedback. For haptics, turn this game on under Simulated TrueForce; logi-launch puts the telemetry relay in the game's prefix and starts the daemon for you, and that route is confirmed working on a G923. Installing the shim WITH --proxy carries the game's own TrueForce to the wheel instead, the same proxy that ships the 90-degree rotation fix; the apps install the plain shim, so use tools/install-tf-shim.sh --proxy. Steam Input off.
+- **On a wheel with no SDK TrueForce.** Leave PROTON_ENABLE_HIDRAW unset: on this wheel it costs you force feedback. For haptics, turn this game on under Simulated TrueForce; logi-launch puts the telemetry relay in the game's prefix and starts the daemon for you, and that route is confirmed working on a G923. Steam Input off.
 - **Launch via logi-ffb.** Launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off. Simulated TrueForce also needs the community rF2SharedMemoryMapPlugin installed in the game.
 - **Nothing to do.** The wheel is an ordinary Linux force feedback device and the game drives it directly.
 

@@ -302,6 +302,16 @@ if [ -n "$prefix_root" ]; then
 		[ -f "$f" ] && have_tf_proxy=1 && break
 	done
 fi
+# ACC and AC EVO check the library's signature before loading it and
+# refuse the unsigned proxy, so there it answers nothing: the SDK never
+# loads, the game falls back to DirectInput, and raw HID would then take
+# that force feedback away as well (AC EVO, 2026-09-24).
+tf_proxy_refused=0
+if [ "$have_tf_proxy" = "1" ]; then
+	case "${SteamAppId:-${SteamGameId:-0}}" in
+	805550|3058630) tf_proxy_refused=1; have_tf_proxy=0 ;;
+	esac
+fi
 
 # Nonzero when the plan granted the game raw HID access (an SDK title):
 # those sessions can leave the wheel's TrueForce engine started, so they
@@ -360,7 +370,16 @@ case "$want_hidraw" in
 	   [ -r "$(share_file dinput8-escape.dll 2>/dev/null || echo /nonexistent)" ]; then
 		can_stage_proxy=1
 	fi
-	if [ "$have_tf_files" = "1" ] && [ "$have_tf_proxy" = "0" ] && \
+	if [ "$tf_proxy_refused" = "1" ]; then
+		export PROTON_ENABLE_HIDRAW=0
+		say "NOT setting PROTON_ENABLE_HIDRAW: this prefix has the SDK proxy"
+		say "(logi-shim --proxy), and this game checks the library's"
+		say "signature and refuses it, so the SDK never loads here and raw HID"
+		say "would only take away the force feedback you have. To get the"
+		say "game's TrueForce back, reinstall the shim without the proxy:"
+		say "  logi-shim --uninstall-prefix \"$prefix_root/pfx\""
+		say "  logi-shim --prefix \"$prefix_root/pfx\"   (tools/install-tf-shim.sh from a checkout)"
+	elif [ "$have_tf_files" = "1" ] && [ "$have_tf_proxy" = "0" ] && \
 	   [ "$can_stage_proxy" = "0" ]; then
 		export PROTON_ENABLE_HIDRAW=0
 		say "NOT setting PROTON_ENABLE_HIDRAW: Logitech's TrueForce files are in"
@@ -795,17 +814,21 @@ if [ "${LOGI_LAUNCH_TF_SIM:-1}" = "1" ] && [ "${want_tfsim:-1}" = "1" ]; then
 	# Steam, a system without a user manager), the daemon runs as a child
 	# of this wrapper instead and is stopped when the game exits, which
 	# is the honest alternative: a later session starts it again.
+	# The service is started by the user manager, which searches its own
+	# PATH, not this session's; the binary is resolved here so the daemon
+	# that runs is the one the versions line above reported.
 	start_tf_sim() {
+		tfsim_bin=$(command -v logi-tf-sim 2>/dev/null || echo logi-tf-sim)
 		if command -v systemd-run >/dev/null 2>&1 && \
 		   systemd-run --user --quiet --collect \
 			--description="logi-tf-sim (started by logi-launch)" \
 			--property=StandardOutput=append:"$LOG" \
 			--property=StandardError=append:"$LOG" \
-			env "$@" logi-tf-sim 2>/dev/null; then
+			env "$@" "$tfsim_bin" 2>/dev/null; then
 			say "logi-tf-sim runs as a user service, outside Steam's process tree"
 			return 0
 		fi
-		setsid env "$@" logi-tf-sim >>"$LOG" 2>&1 </dev/null &
+		setsid env "$@" "$tfsim_bin" >>"$LOG" 2>&1 </dev/null &
 		tfsim_child_pid=$!
 		say "logi-tf-sim runs as a child of this session (no user service manager here); it stops when the game exits"
 	}
