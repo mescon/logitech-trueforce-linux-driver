@@ -7,6 +7,11 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**`logi-launch` starts the `logi-tf-sim` it reports.** The daemon runs as a
+user service, and the user manager looked the binary up on its own PATH, so
+a copy earlier on the game's PATH was named in the log's versions line while
+the installed one ran. The launcher now resolves the binary itself.
+
 **An experimental route for the game's own TrueForce that skips Wine's
 device path.** Assetto Corsa EVO and ACC stutter under `logi-launch` on
 some direct-drive setups ([#74](../../issues/74), [#121](../../issues/121)).
