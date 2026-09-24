@@ -43,7 +43,9 @@ until the last round.
   also found that the installer shipped a udev rule without the helper it
   calls, which left the wheel looking dead, and produced the Wine log that
   root-caused the 90 degree steering lock: the TrueForce SDK looking for a
-  G HUB that does not exist under Proton.
+  G HUB that does not exist under Proton. The stutter report and USB
+  capture in [#121](../../issues/121) started the hardware session that
+  found the SDK proxy silently blocking ACC and AC EVO.
 - **[pokesl0w](https://github.com/pokesl0w)** - the first confirmed Steam
   Deck install, and the G923 Xbox edition's button and pedal layouts,
   captured button by button from his own wheel ([#68](../../issues/68)).
