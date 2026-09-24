@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.42.4 - 2026-09-24
 
 **The SDK proxy is no longer recommended where it cannot load, and the
 tools catch it.** ACC and AC EVO check the signature of Logitech's library
