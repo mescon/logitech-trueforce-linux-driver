@@ -249,13 +249,45 @@ want_texture=$(plan_get texture)
 # (LOGI_REV_MODE=shift in the bridge's environment, below). The app
 # persists the choice in launch.conf and states it in the plan.
 want_revleds=$(plan_get revleds)
+# The capture route (`tfroute=capture`, a games.conf key for now): the
+# game's own TrueForce, carried to the wheel without Logitech's library.
+#
+# On the default route that library drives the wheel through Proton's raw
+# HID: a stream of 1,000 packets a second, each answered by the wheel, and
+# every packet and answer crosses Wine's device process and wineserver.
+# Measured on an RS50 setup that roughly doubles wineserver's load, and a
+# busy wineserver stalls the game's own requests: the stutter in #74 and
+# #121. The raw joystick path is not the cost; that library's stream is.
+#
+# On this route raw HID stays off, so the library never opens the wheel and
+# none of that traffic exists. Force feedback reaches the driver's engine
+# the normal way, through DirectInput. The TrueForce the game hands the
+# library is copied, sample block by sample block, by the SDK proxy
+# (install-tf-shim.sh --proxy) to logi-tf-sim over a local socket, and the
+# daemon streams it natively, with the engine's force merged into the same
+# packets. The game's own haptics, not a synthesis: the daemon is told so
+# by a session marker and synthesises nothing for this game.
+want_tfroute=$(plan_get tfroute)
+if [ "$want_tfroute" = "capture" ]; then
+	want_hidraw=0
+	want_texture=none
+	want_tfsim=1
+	# The relay supplies the telemetry for the rev lights and the screen.
+	# The default direct-drive plan has none for an SDK title, since the
+	# library drove the lights there; on this route nothing else does.
+	if [ -z "$want_relay" ] || [ "$want_relay" = "none" ]; then
+		want_relay=$(relay_game_for "${SteamAppId:-${SteamGameId:-0}}")
+		[ -n "$want_relay" ] || want_relay=none
+	fi
+	export LOGI_TF_CAPTURE=1
+fi
 # The tfsim default is 1 in BOTH places it is read (here and at the start
 # below), because a plan that states nothing means no plan was produced at
 # all, and an unidentified game still gets the daemon: it idles when nothing
 # is streaming, and withholding it would leave every UDP-telemetry title
 # unserved (`LaunchPlan::unknown`). This line said 0 while the code did 1,
 # so the log contradicted the behaviour for exactly those games.
-say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-unset} ffb=${want_ffb:-native} relay=${want_relay:-none} tfsim=${want_tfsim:-1} texture=${want_texture:-none} revleds=${want_revleds:-bar}"
+say "plan: wheel=$(plan_get wheel) game=$(plan_get game) hidraw=${want_hidraw:-unset} ffb=${want_ffb:-native} relay=${want_relay:-none} tfsim=${want_tfsim:-1} texture=${want_texture:-none} revleds=${want_revleds:-bar} tfroute=${want_tfroute:-sdk}"
 
 # TrueForce in an SDK title needs the game to reach the wheel's raw HID
 # interface. Set here so nobody has to remember it, and NEVER guessed: on a
@@ -301,6 +333,15 @@ if [ -n "$prefix_root" ]; then
 	for f in "$shim_dir"/*/trueforce_real.dll; do
 		[ -f "$f" ] && have_tf_proxy=1 && break
 	done
+fi
+# The capture route copies the game's TrueForce out of the SDK proxy; with
+# Logitech's library alone in the prefix there is nothing to copy it, and
+# the session runs with force feedback but no TrueForce. Said plainly
+# rather than left for someone to notice on track.
+if [ "$want_tfroute" = "capture" ] && [ -n "$prefix_root" ] && [ "$have_tf_proxy" = "0" ]; then
+	say "capture route: the SDK proxy is not installed in this prefix, so the game's"
+	say "TrueForce has nothing to carry it; force feedback still works. Install it once:"
+	say "  logi-shim --prefix \"$prefix_root/pfx\" --proxy"
 fi
 
 # Nonzero when the plan granted the game raw HID access (an SDK title):
@@ -746,6 +787,7 @@ fi
 # Written whenever raw HID is granted, whether or not this launch is the
 # one starting the daemon: the marker describes the session, not that.
 native_marker=""
+captured_marker=""
 if [ -n "${LOGI_WHEEL_RUNTIME_DIR:-}" ]; then
 	marker_dir="$LOGI_WHEEL_RUNTIME_DIR"
 elif [ -n "${XDG_RUNTIME_DIR:-}" ]; then
@@ -763,6 +805,16 @@ if [ -n "$want_relay" ] && [ "$want_relay" != "none" ]; then
 	else
 		want_relay_marker=1
 		rm -f "$marker_dir/native.$safe_id" 2>/dev/null
+	fi
+	rm -f "$marker_dir/captured.$safe_id" 2>/dev/null
+	if [ "$want_tfroute" = "capture" ] && [ "$want_relay_marker" = 1 ]; then
+		mkdir -p "$marker_dir" 2>/dev/null
+		if : > "$marker_dir/captured.$safe_id" 2>/dev/null; then
+			captured_marker="$marker_dir/captured.$safe_id"
+			say "marked this session as the capture route ($captured_marker); the daemon streams the game's own TrueForce and synthesises nothing"
+		else
+			say "could not write $marker_dir/captured.$safe_id; the daemon will keep the captured TrueForce off this wheel"
+		fi
 	fi
 	if [ -n "$hidraw_granted" ] && [ "$want_relay_marker" = 1 ]; then
 		mkdir -p "$marker_dir" 2>/dev/null
@@ -1156,9 +1208,10 @@ fi
 # process behind.
 if [ -n "$rpm_bridge_pid" ] || [ -n "$merge_attrs" ] || \
    [ -n "$hidraw_granted" ] || [ -n "$helper_group_pid" ] || \
-   [ -n "$tfsim_child_pid" ]; then
+   [ -n "$tfsim_child_pid" ] || [ -n "$captured_marker" ]; then
 	session_cleanup() {
 		[ -n "$native_marker" ] && rm -f "$native_marker" 2>/dev/null
+		[ -n "$captured_marker" ] && rm -f "$captured_marker" 2>/dev/null
 		[ -n "$rpm_bridge_pid" ] && kill "$rpm_bridge_pid" 2>/dev/null
 		if [ -n "$tfsim_child_pid" ]; then
 			kill "$tfsim_child_pid" 2>/dev/null

@@ -494,10 +494,33 @@ fn native_trueforce_here_in(cfg: &Config, id: &str, marker_dir: &std::path::Path
     if crate::native_session::marker_path_in(marker_dir, id).exists() {
         return true;
     }
+    // The capture route keeps Logitech's library off the wheel, so the
+    // game's TrueForce is not on it through the SDK, whatever the wheel.
+    if captured_route_here_in(id, marker_dir) {
+        return false;
+    }
     if !targets_direct_drive(cfg) {
         return false;
     }
     by_live_id(id).is_some_and(|g| g.native_trueforce_reaches(WheelCaps::direct_drive()))
+}
+
+/// Whether this game's session is on the capture route (see
+/// `native_session::captured_marker_path_in`): its TrueForce reaches the
+/// wheel only as samples the SDK proxy copies here, and nothing may be
+/// synthesised for it.
+fn captured_route_here(id: &str) -> bool {
+    captured_route_here_in(id, &crate::lease::dir())
+}
+
+fn captured_route_here_in(id: &str, marker_dir: &std::path::Path) -> bool {
+    crate::native_session::captured_marker_path_in(marker_dir, id).exists()
+}
+
+/// Whether any session is on the capture route. Captured samples carry no
+/// game id, so the open their first burst triggers can ask only this.
+fn captured_route_any() -> bool {
+    crate::native_session::any_captured_in(&crate::lease::dir())
 }
 
 /// Whether the captured-TrueForce path may open a stream this tick.
@@ -571,6 +594,11 @@ struct Active {
     /// The retry runs per iteration, and one line per 50 ms is a log nobody
     /// can read.
     warned_busy: bool,
+    /// Whether this session may synthesise haptics from telemetry. False on
+    /// the capture route, where the only haptics the wheel may get are the
+    /// game's own captured samples: when they pause (menus, loading) the
+    /// stream parks rather than filling in with an engine note.
+    synth: bool,
 }
 
 fn bind(port: u16) -> Result<UdpSocket> {
@@ -804,6 +832,11 @@ pub fn run(cfg: &Config) -> Result<()> {
         }
 
         if let Some((id, tel)) = latest {
+            // On the capture route the game's TrueForce arrives on its own
+            // socket and needs a real stream to land in, whichever of the
+            // two reaches this daemon first; the lights-only openings below
+            // would drop it.
+            let captured_route = captured_route_here(id);
             if cfg.game_enabled(id) {
                 match &mut active {
                     Some(a) => {
@@ -822,6 +855,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                     // something a driver who set the strength to zero asked
                     // for. Nothing to do at all when the lights are off too.
                     None if now >= next_open_attempt
+                        && !captured_route
                         && (!wants_haptics(cfg, id) || native_trueforce_here(cfg, id))
                         && cfg.leds
                         && crate::leds::other_owner().is_none() =>
@@ -858,6 +892,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                                 lease: None,
                                 lease_key: String::new(),
                                 warned_busy: false,
+                                synth: true,
                             });
                         } else {
                             next_open_attempt = now + OPEN_RETRY;
@@ -867,15 +902,22 @@ pub fn run(cfg: &Config) -> Result<()> {
                     // gets a stream, whatever the strength says; with the
                     // lights off too (or owned elsewhere) there is nothing
                     // for this daemon to do for it.
-                    None if now >= next_open_attempt && native_trueforce_here(cfg, id) => {
+                    None if now >= next_open_attempt && !captured_route && native_trueforce_here(cfg, id) => {
                         next_open_attempt = now + OPEN_RETRY;
                     }
                     None if now >= next_open_attempt => match open_wheel_stream_with_leds(cfg) {
                         Ok(OpenWheel { stream, led_owner, lease, lease_key }) => {
-                            eprintln!(
-                                "logi-tf-sim: stream start ({id}, rpm {:.0}/{:.0}, speed {:.0} m/s)",
-                                tel.rpm, tel.max_rpm, tel.speed
-                            );
+                            if captured_route {
+                                eprintln!(
+                                    "logi-tf-sim: stream start ({id}, capture route: the game's own \
+                                     TrueForce only, nothing synthesised)"
+                                );
+                            } else {
+                                eprintln!(
+                                    "logi-tf-sim: stream start ({id}, rpm {:.0}/{:.0}, speed {:.0} m/s)",
+                                    tel.rpm, tel.max_rpm, tel.speed
+                                );
+                            }
                             // One rev-display writer per session. When the
                             // texture merge's bridge is up it owns the
                             // strip and drives it from the game's own
@@ -928,6 +970,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                                 lease: Some(lease),
                                 lease_key,
                                 warned_busy: false,
+                                synth: !captured_route,
                             });
                         }
                         // A wheel that cannot take the stream at all, and
@@ -965,6 +1008,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                                         lease: None,
                                         lease_key: String::new(),
                                         warned_busy: false,
+                                        synth: true,
                                     });
                                 }
                                 None => next_open_attempt = now + OPEN_RETRY,
@@ -1027,10 +1071,24 @@ pub fn run(cfg: &Config) -> Result<()> {
                 }
             } else if now >= next_open_attempt && captured_stream_wanted(cfg, latest) {
                 match open_wheel_stream(cfg) {
-                    Ok(OpenWheel { stream, lease, lease_key, .. }) => {
+                    Ok(OpenWheel { stream, lease, lease_key, led_owner, .. }) => {
+                        // On the capture route nothing else drives the rev
+                        // display: Logitech's library is kept off the wheel,
+                        // so the lights are this daemon's, from the relay's
+                        // telemetry once it arrives.
+                        let route = captured_route_any();
                         eprintln!(
-                            "logi-tf-sim: stream start (captured TrueForce from the game's own SDK)"
+                            "logi-tf-sim: stream start (captured TrueForce from the game's own SDK{})",
+                            if route { ", capture route" } else { "" }
                         );
+                        let leds = if route && cfg.leds && crate::leds::other_owner().is_none() {
+                            match led_owner.as_deref() {
+                                Some(owner) => RevLeds::discover_for(owner),
+                                None => RevLeds::discover(),
+                            }
+                        } else {
+                            None
+                        };
                         // No mixer and no rev display: this path carries the
                         // game's finished haptics, and the game drives its
                         // own rev lights through the SDK it is already
@@ -1054,12 +1112,13 @@ pub fn run(cfg: &Config) -> Result<()> {
                             last_gen: now,
                             samples: Vec::with_capacity(MAX_GEN_MS as usize * crate::synth::SAMPLES_PER_MS),
                             last_captured: Some(now),
-                            leds: None,
-                            screen: None,
+                            leds,
+                            screen: if route && cfg.screen { crate::screen::Screen::discover() } else { None },
                             gate: SilenceGate::default(),
                             lease: Some(lease),
                             lease_key,
                             warned_busy: false,
+                            synth: !route,
                         });
                     }
                     Err(e) => {
@@ -1099,7 +1158,15 @@ pub fn run(cfg: &Config) -> Result<()> {
                     // including the over-redline cap the synth call used to
                     // apply here: an effect's reading of the sample is the
                     // effect's business.
-                    a.mixer.render(&a.tel, intensity, plan.samples, &mut a.samples);
+                    if a.synth {
+                        a.mixer.render(&a.tel, intensity, plan.samples, &mut a.samples);
+                    } else {
+                        // Capture route: silence while the game's own
+                        // samples pause, so the gate parks the stream and
+                        // the next captured burst resumes it.
+                        a.samples.clear();
+                        a.samples.resize(plan.samples, 0.0);
+                    }
                     // Menus: telemetry keeps flowing while the mixer emits
                     // exact zeros. Past the grace period the stream parks
                     // (teardown pair + silence) instead of holding an open
@@ -1527,6 +1594,37 @@ mod lights_only_tests {
         std::fs::write(crate::native_session::marker_path_in(&dir, "ac-evo"), b"").unwrap();
         assert!(native_trueforce_here_in(&g923, "ac-evo", &dir));
         assert!(!native_trueforce_here_in(&g923, "assetto", &dir), "another title is unaffected");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The capture route on a direct-drive wheel: Logitech's library is kept
+    /// off the wheel, so the game's TrueForce is NOT already there, and the
+    /// captured samples are wanted. Without the marker the direct-drive rule
+    /// keeps them out, which is the guard against two writers when the SDK
+    /// does drive the wheel.
+    #[test]
+    fn the_capture_route_marker_admits_captured_trueforce_on_a_direct_drive_wheel() {
+        let dir = std::env::temp_dir().join(format!("logi-capture-route-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dd = Config { wheel: logi_wheel_core::tfsim::WheelChoice::DirectDrive, ..Config::default() };
+        let evo = Some(("ac-evo", Telemetry::default()));
+
+        assert!(native_trueforce_here_in(&dd, "ac-evo", &dir), "default: the SDK drives a DD wheel");
+        assert!(!captured_stream_wanted_in(&dd, evo, &dir), "so a captured copy would be a second writer");
+        assert!(!captured_route_here_in("ac-evo", &dir));
+
+        std::fs::write(crate::native_session::captured_marker_path_in(&dir, "ac-evo"), b"").unwrap();
+        assert!(captured_route_here_in("ac-evo", &dir));
+        assert!(!native_trueforce_here_in(&dd, "ac-evo", &dir), "the route keeps the SDK off the wheel");
+        assert!(captured_stream_wanted_in(&dd, evo, &dir), "and the game's own samples are the TrueForce");
+        assert!(native_trueforce_here_in(&dd, "acc", &dir), "another game on the default route is unaffected");
+        assert!(!captured_route_here_in("acc", &dir));
+
+        // A native marker means a raw-HID SDK session has the wheel; that
+        // must still refuse captured samples, route marker or not.
+        std::fs::write(crate::native_session::marker_path_in(&dir, "ac-evo"), b"").unwrap();
+        assert!(native_trueforce_here_in(&dd, "ac-evo", &dir), "the native marker wins");
+        assert!(!captured_stream_wanted_in(&dd, evo, &dir));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

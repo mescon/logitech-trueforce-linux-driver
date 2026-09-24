@@ -7,6 +7,24 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**An experimental route for the game's own TrueForce that skips Wine's
+device path.** Assetto Corsa EVO and ACC stutter under `logi-launch` on
+some direct-drive setups ([#74](../../issues/74), [#121](../../issues/121)).
+A USB capture showed the wire clean, and measured in isolation the cause is
+Logitech's library driving the wheel through Proton's raw HID: 1,000
+packets a second, each answered by the wheel, every one crossing Wine's
+device process and wineserver, which roughly doubles wineserver's load.
+The raw joystick path costs the same as the normal one and is not it. A
+new `tfroute=capture` games.conf key keeps raw HID off, so the library
+never opens the wheel, and carries the game's own TrueForce another way:
+the SDK proxy copies the samples the game hands the library to
+`logi-tf-sim`, which streams them natively with the driver's force merged
+in. Force feedback reaches the driver the normal way. A new session marker
+tells the daemon this game's TrueForce arrives captured on a direct-drive
+wheel and that it must synthesise nothing, so what the wheel gets is the
+game's own haptics or silence. Experimental until it has been felt against
+the default route.
+
 **The DiRT Rally 2.0 recipe is written down, end to end.** With the proxy
 turned on (`690790 ffb=proxy`), the telemetry set to `extradata="3"`, and a
 one-line `device_defines.xml` entry that gives the stand-in wheel an
