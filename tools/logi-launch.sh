@@ -795,17 +795,21 @@ if [ "${LOGI_LAUNCH_TF_SIM:-1}" = "1" ] && [ "${want_tfsim:-1}" = "1" ]; then
 	# Steam, a system without a user manager), the daemon runs as a child
 	# of this wrapper instead and is stopped when the game exits, which
 	# is the honest alternative: a later session starts it again.
+	# The service is started by the user manager, which searches its own
+	# PATH, not this session's; the binary is resolved here so the daemon
+	# that runs is the one the versions line above reported.
 	start_tf_sim() {
+		tfsim_bin=$(command -v logi-tf-sim 2>/dev/null || echo logi-tf-sim)
 		if command -v systemd-run >/dev/null 2>&1 && \
 		   systemd-run --user --quiet --collect \
 			--description="logi-tf-sim (started by logi-launch)" \
 			--property=StandardOutput=append:"$LOG" \
 			--property=StandardError=append:"$LOG" \
-			env "$@" logi-tf-sim 2>/dev/null; then
+			env "$@" "$tfsim_bin" 2>/dev/null; then
 			say "logi-tf-sim runs as a user service, outside Steam's process tree"
 			return 0
 		fi
-		setsid env "$@" logi-tf-sim >>"$LOG" 2>&1 </dev/null &
+		setsid env "$@" "$tfsim_bin" >>"$LOG" 2>&1 </dev/null &
 		tfsim_child_pid=$!
 		say "logi-tf-sim runs as a child of this session (no user service manager here); it stops when the game exits"
 	}

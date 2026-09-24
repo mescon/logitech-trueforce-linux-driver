@@ -7,6 +7,11 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**`logi-launch` starts the `logi-tf-sim` it reports.** The daemon runs as a
+user service, and the user manager looked the binary up on its own PATH, so
+a copy earlier on the game's PATH was named in the log's versions line while
+the installed one ran. The launcher now resolves the binary itself.
+
 **The DiRT Rally 2.0 recipe is written down, end to end.** With the proxy
 turned on (`690790 ffb=proxy`), the telemetry set to `extradata="3"`, and a
 one-line `device_defines.xml` entry that gives the stand-in wheel an
