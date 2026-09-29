@@ -5,6 +5,14 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**DiRT Rally 2.0's setup text carries the `device_defines.xml` line
+itself.** It pointed to the wiki for the exact line, and that wiki page had
+been emptied by a bad edit (restored), so an RS50 owner used the wheel's
+own id and the game sent no force ([#125](../../issues/125)). The line
+names the proxy's virtual wheel, `{C2DD046D-...}`, on every wheel.
+
 ## 0.42.4 - 2026-09-24
 
 **The SDK proxy is no longer recommended where it cannot load, and the
