@@ -7,6 +7,22 @@ the contract is "it works on RS50 and G Pro as listed here".
 
 ## Unreleased
 
+**A kernel panic on the G923 Xbox edition during long AC and AC EVO
+sessions, fixed.** The driver's answer matcher took a held send mutex to
+mean a command was waiting for its reply, and matched every incoming HID++
+report against the last reply buffer, which lives on the stack of whoever
+sent the last command. Four senders in this driver (the OLED frame worker
+and its handback, the rev-light level sender and the G923 rev-light
+worker, which sleeps while it holds the mutex) hold that mutex without a
+reply buffer of their own, so a report arriving during their hold was
+compared against a stack frame that was long gone; once the process that
+owned it had exited (session restarts spawn short-lived helpers that write
+sysfs) the read faulted inside the USB interrupt and the kernel panicked,
+leaving nothing in the journal. Caught on screen by a reporter after weeks
+of hunting ([#128](../../issues/128), [#90](../../issues/90)). The reply
+pointer is now cleared before the mutex is released, and the matcher only
+runs with a live one.
+
 **DiRT Rally 2.0's setup text carries the `device_defines.xml` line
 itself.** It pointed to the wiki for the exact line, and that wiki page had
 been emptied by a bad edit (restored), so an RS50 owner used the wheel's
