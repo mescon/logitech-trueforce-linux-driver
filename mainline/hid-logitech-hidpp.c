@@ -705,7 +705,7 @@ static int __do_hidpp_send_message_sync(struct hidpp_device *hidpp,
 
 	__must_hold(&hidpp->send_mutex);
 
-	hidpp->send_receive_buf = response;
+	WRITE_ONCE(hidpp->send_receive_buf, response);
 	hidpp->answer_available = false;
 
 	/*
@@ -879,6 +879,16 @@ static int hidpp_send_message_sync_timeout(struct hidpp_device *hidpp,
 	} while (--max_retries);
 
 	hidpp_note_sync_result(hidpp, ret);
+	/*
+	 * The response lives on this caller's stack. Drop the pointer
+	 * before the mutex goes, or the next holder that is not a sync
+	 * sender (the OLED and rev-light workers lock it to serialise
+	 * their writes) leaves the raw-event path matching incoming
+	 * reports against a frame that is gone, and once that stack is
+	 * unmapped the match faults in interrupt context and the kernel
+	 * panics (#128, the freeze #90 chased).
+	 */
+	WRITE_ONCE(hidpp->send_receive_buf, NULL);
 	mutex_unlock(&hidpp->send_mutex);
 	return ret;
 
@@ -18487,17 +18497,19 @@ static int hidpp_input_configured(struct hid_device *hdev,
 static int hidpp_raw_hidpp_event(struct hidpp_device *hidpp, u8 *data,
 		int size)
 {
-	struct hidpp_report *question = hidpp->send_receive_buf;
-	struct hidpp_report *answer = hidpp->send_receive_buf;
+	struct hidpp_report *question = READ_ONCE(hidpp->send_receive_buf);
+	struct hidpp_report *answer = question;
 	struct hidpp_report *report = (struct hidpp_report *)data;
 	int ret;
 	int last_online;
 
 	/*
-	 * If the mutex is locked then we have a pending answer from a
-	 * previously sent command.
+	 * A pending answer needs a sync sender waiting on it, and the
+	 * mutex alone does not say there is one: the OLED and rev-light
+	 * workers hold it too, with no buffer to answer into. Only a
+	 * live buffer is a question (#128).
 	 */
-	if (unlikely(mutex_is_locked(&hidpp->send_mutex))) {
+	if (unlikely(question && mutex_is_locked(&hidpp->send_mutex))) {
 		/*
 		 * Check for a correct hidpp20 answer or the corresponding
 		 * error
