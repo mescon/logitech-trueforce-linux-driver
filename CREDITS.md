@@ -30,7 +30,10 @@ until the last round.
   name, an SDK left believing a tiny rotation range, a proxy that re-entered
   the SDK, and an installer that kept old apps ([#91](../../issues/91)). He
   then compared the result against Windows on the same car. AC Rally
-  ([#83](../../issues/83)) is his too.
+  ([#83](../../issues/83)) is his too. And after weeks of a freeze that
+  left nothing in any log, he disabled his iGPU to see the panic on screen
+  and photographed it, which named the stale reply buffer fixed in 0.42.5
+  ([#128](../../issues/128)).
 - **[DaveDos95](https://github.com/DaveDos95)** - RaceRoom on an RS50 under
   SteamOS ([#92](../../issues/92)): read the game's own profile file to rule
   out the first diagnosis, then produced the proxy logs that proved the real

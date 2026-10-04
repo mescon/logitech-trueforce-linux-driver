@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.42.5 - 2026-10-04
 
 **A kernel panic on the G923 Xbox edition during long AC and AC EVO
 sessions, fixed.** The driver's answer matcher took a held send mutex to
