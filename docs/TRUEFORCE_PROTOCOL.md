@@ -129,6 +129,42 @@ what each index means:
 | `0x1d` | 4.0 | New samples per packet (matches the streaming `0x04` constant) |
 | `0x33` | 350.0 | Crossover frequency? |
 
+## Device Replies During Set-up (endpoint `0x83` -> host)
+
+Read from a Windows capture of G HUB and iRacing on an RS50 (2026-07-27),
+which carries both directions of interface 2 through a complete session
+start; the mid-stream captures elsewhere in this project only show the
+`0x01`/`0x02` pair. Header `01 00 00 00` stripped, bytes after the payload
+zero.
+
+| Host sends | Wheel answers |
+|---|---|
+| `05 <seq> <index>` | `05 <seq> <index> 09 <index> <float32 LE> <byte>`: the wheel's **current value** for that index, not an echo. G HUB sent every `0x05` with a zero payload and still got `00` -> 2.0, `30` -> 3.0, `01` -> 1.0, `02` -> 32768.0, `03` -> 65535.0, the values in the table above. The last byte varies like byte 17 of a status report. |
+| `07 <seq> 00` | `07 <seq> 06` then six triples `<slot> 01 <flag>` (`01 01 01`, `02 01 01`, `03 01 01`, `04 01 01`, `05 01 00`, `06 01 01`) and a trailing byte: the six effect slots and their state. |
+| `06 <seq> 01 01` | a type `10` report with the same seq, laid out like a status report but with `ff ff ff ff` where the position pair sits. |
+| `0e <seq> <float>` | a type `11` and a type `14` report, status layout, with the range float where the position pair sits. |
+| `04 <seq>`, `03 <seq>` | type `02` status reports carrying that seq, which then continue at the stream rate. |
+| `09`, `0c` | no reply of their own; the `02` stream continues. |
+
+A set-up exchange from that capture, in order:
+
+```
+OUT 05 01 00         IN 05 01 00 09 00 00 00 00 40 b1 00
+OUT 05 02 30         IN 05 02 30 09 30 00 00 40 40 10 00
+OUT 05 03 01         IN 05 03 01 09 01 00 00 80 3f 2e 00
+OUT 05 04 02         IN 05 04 02 09 02 00 00 00 47 a3 00
+OUT 05 05 03         IN 05 05 03 09 03 00 ff 7f 47 22 00
+OUT 07 34 00         IN 07 34 06 01 01 01 02 01 01 03 01 01 04 01 01 05 01 00 06 01 01 9f
+OUT 06 36 01 01      IN 10 36 cd bf 03 00 80 00 80 82 b3 1d 0a ff ff ff ff 00 00 80 07 00 00 1d 95 00 00 1d 95 e8
+OUT 04 43 00         IN 02 43 ca bf 03 00 80 00 80 b4 30 1e 0a 13 00 00 80 00 00 80 07 00 00 1d 95 00 00 1d 95 a5
+OUT 03 44 00         IN 02 43 ca bf 03 00 80 00 80 52 38 1e 0a 81 00 00 80 00 00 80 07 00 00 1d 95 00 00 1d 95 91
+```
+
+Each `0x05` reply arrived about 2 ms after its question, and G HUB waited
+for it before sending the next, so a host that expects the wheel to answer
+every parameter (a PlayStation 5 does, per [#131](../../issues/131)) is
+expecting exactly this.
+
 ## Audio Data Stream (Type `0x01`)
 
 ```

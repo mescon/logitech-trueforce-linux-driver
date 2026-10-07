@@ -5,6 +5,17 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**The wheel's replies during TrueForce set-up are documented.** Every
+earlier capture here showed interface 2 mid-stream only; the Windows
+iRacing capture carries a whole session start in both directions, and it
+answers what a host emulating one of these wheels has to send back: each
+parameter upload is answered with the wheel's current value for that
+index, the handshake with the six effect slots, and the slot and range
+packets with status-style reports. Asked by a PlayStation 5 emulation
+project ([#131](../../issues/131)).
+
 ## 0.42.5 - 2026-10-04
 
 **A kernel panic on the G923 Xbox edition during long AC and AC EVO
