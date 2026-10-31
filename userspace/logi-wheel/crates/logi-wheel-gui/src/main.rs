@@ -925,6 +925,10 @@ fn apply_test_snapshot(app: &App, snap: &testio::Snapshot, model: WheelModel, wh
         .map(|(label, i)| TestAxis { label: (*label).into(), value: snap.axes[*i] })
         .collect();
     app.set_test_axes(slint::ModelRc::new(slint::VecModel::from(axes)));
+    app.set_test_gear(snap.gear);
+    app.set_test_gear_name(evtest::gear_name(snap.gear).into());
+    app.set_test_shifter_connected(snap.shifter_connected);
+    app.set_test_shifter_mode(snap.shifter_mode.as_str().into());
 }
 
 /// Stop (and join) the Test page's reader thread, if one is running.

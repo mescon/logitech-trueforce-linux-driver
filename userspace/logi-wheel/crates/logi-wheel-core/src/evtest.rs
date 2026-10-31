@@ -638,6 +638,109 @@ pub fn scan_wheel_input_under(sysfs_input: &Path, usb: &Path) -> Option<WheelInp
     None
 }
 
+/// Whether `name` looks like a Logitech H-pattern shifter
+/// (standalone USB RS H-Shifter `046d:c26b` or Driving Force Shifter).
+pub fn is_shifter_name(name: &str) -> bool {
+    let upper = name.to_uppercase();
+    upper.contains("RS H-SHIFTER") || upper.contains("DRIVING FORCE SHIFTER") || upper.contains("H-SHIFTER")
+}
+
+/// Scan `sysfs_input` for `event*` entries whose device name satisfies `predicate`.
+pub fn scan_input_by_name<F>(sysfs_input: &Path, predicate: F) -> Option<WheelInput>
+where
+    F: Fn(&str) -> bool,
+{
+    let mut files: Vec<fs::DirEntry> = fs::read_dir(sysfs_input)
+        .ok()?
+        .filter_map(Result::ok)
+        .collect();
+    files.sort_by_cached_key(|f| event_index(&f.file_name().to_string_lossy()));
+
+    files.into_iter().find_map(|f| {
+        let ename = f.file_name().into_string().ok()?;
+        if !ename.starts_with("event") {
+            return None;
+        }
+        let dev_name = fs::read_to_string(f.path().join("device/name")).ok()?;
+        let trimmed = dev_name.trim();
+        predicate(trimmed).then(|| WheelInput {
+            event_path: format!("/dev/input/{ename}"),
+            name: trimmed.to_string(),
+        })
+    })
+}
+
+/// Scan `sysfs_input` for `event*` entries matching [`is_shifter_name`].
+pub fn scan_shifter_input(sysfs_input: &Path) -> Option<WheelInput> {
+    scan_input_by_name(sysfs_input, is_shifter_name)
+}
+
+/// Find a standalone USB shifter's evdev node, or `None` if not connected via USB.
+pub fn discover_shifter_input() -> Option<WheelInput> {
+    scan_shifter_input(Path::new("/sys/class/input"))
+}
+
+/// Evdev button codes and labels for the Logitech RS H-Shifter when attached
+/// to a direct-drive base (sub-device 03, hardware-verified 2026-10-29).
+pub const RS_SHIFTER_WHEEL_BUTTONS: &[(u16, &str)] = &[
+    (0x12c, "Gear 1"),
+    (0x12d, "Gear 2"),
+    (0x12e, "Gear 3"),
+    (0x12f, "Gear 4"),
+    (0x2c0, "Gear 5"),
+    (0x2c1, "Gear 6"),
+    (0x2c2, "Gear 7"),
+    (0x2c3, "Reverse"),
+];
+
+/// Decode a gear index (1..=7, 8 for Reverse) from a wheel evdev button code
+/// (when the RS H-Shifter is connected via the RS50 / G PRO base or G923).
+pub fn gear_from_wheel_code(code: u16) -> Option<u8> {
+    match code {
+        0x12c => Some(1),
+        0x12d => Some(2),
+        0x12e => Some(3),
+        0x12f => Some(4),
+        0x2c0 => Some(5),
+        0x2c1 => Some(6),
+        0x2c2 => Some(7),
+        0x2c3 | 0x2c4 => Some(8), // Reverse (R): 0x2c3 (RS50 Base wire Byte 3 bit 0 / BTN_TRIGGER_HAPPY4)
+        0x12b => Some(8), // Reverse (R) on G923 Xbox
+        _ => None,
+    }
+}
+
+/// Decode a gear index (1..=7, 8 for Reverse) from a standalone USB shifter
+/// (`046d:c26b`).
+pub fn gear_from_standalone_code(code: u16) -> Option<u8> {
+    match code {
+        0x120 | 0x2c0 => Some(1),
+        0x121 | 0x2c1 => Some(2),
+        0x122 | 0x2c2 => Some(3),
+        0x123 | 0x2c3 => Some(4),
+        0x124 | 0x2c4 => Some(5),
+        0x125 | 0x2c5 => Some(6),
+        0x126 | 0x2c6 => Some(7),
+        0x127 | 0x2c7 => Some(8), // Reverse (R)
+        _ => None,
+    }
+}
+
+/// Human-readable label for a gear (0 = Neutral "N", 1..7 = "1st".."7th", 8 = "R").
+pub fn gear_name(gear: i32) -> &'static str {
+    match gear {
+        1 => "1st",
+        2 => "2nd",
+        3 => "3rd",
+        4 => "4th",
+        5 => "5th",
+        6 => "6th",
+        7 => "7th",
+        8 => "R",
+        _ => "N",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,5 +1115,54 @@ mod xbox_button_tests {
             button_label_for_name(WheelModel::Rs50, rs50, 0x120),
             button_label_for_model(WheelModel::Rs50, 0x120)
         );
+    }
+}
+
+#[cfg(test)]
+mod shifter_tests {
+    use super::*;
+
+    #[test]
+    fn shifter_name_matching() {
+        assert!(is_shifter_name("Logitech RS H-Shifter"));
+        assert!(is_shifter_name("Logitech Driving Force Shifter USB"));
+        assert!(is_shifter_name("Generic H-Shifter"));
+        assert!(!is_shifter_name("Logitech RS50 Base"));
+        assert!(!is_shifter_name("G923 Racing Wheel"));
+    }
+
+    #[test]
+    fn shifter_gear_decoding_from_wheel_base() {
+        assert_eq!(gear_from_wheel_code(0x12c), Some(1));
+        assert_eq!(gear_from_wheel_code(0x12d), Some(2));
+        assert_eq!(gear_from_wheel_code(0x12e), Some(3));
+        assert_eq!(gear_from_wheel_code(0x12f), Some(4));
+        assert_eq!(gear_from_wheel_code(0x2c0), Some(5));
+        assert_eq!(gear_from_wheel_code(0x2c1), Some(6));
+        assert_eq!(gear_from_wheel_code(0x2c2), Some(7));
+        assert_eq!(gear_from_wheel_code(0x2c3), Some(8));
+        assert_eq!(gear_from_wheel_code(0x2c4), Some(8));
+        assert_eq!(gear_from_wheel_code(0x12b), Some(8));
+        assert_eq!(gear_from_wheel_code(0x120), None);
+    }
+
+    #[test]
+    fn shifter_gear_decoding_from_standalone() {
+        assert_eq!(gear_from_standalone_code(0x120), Some(1));
+        assert_eq!(gear_from_standalone_code(0x121), Some(2));
+        assert_eq!(gear_from_standalone_code(0x122), Some(3));
+        assert_eq!(gear_from_standalone_code(0x123), Some(4));
+        assert_eq!(gear_from_standalone_code(0x124), Some(5));
+        assert_eq!(gear_from_standalone_code(0x125), Some(6));
+        assert_eq!(gear_from_standalone_code(0x126), Some(7));
+        assert_eq!(gear_from_standalone_code(0x127), Some(8));
+    }
+
+    #[test]
+    fn gear_names() {
+        assert_eq!(gear_name(0), "N");
+        assert_eq!(gear_name(1), "1st");
+        assert_eq!(gear_name(7), "7th");
+        assert_eq!(gear_name(8), "R");
     }
 }

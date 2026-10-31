@@ -48,7 +48,29 @@ sequential after G1).
 The D-pad reports as a hat switch (`ABS_HAT0X` / `ABS_HAT0Y`), not as four
 buttons - diagram callout "D".
 
-Indices 12 to 20 are gaps in the HID descriptor (unused).
+## RS H-Shifter (046d:c26b)
+
+### Connected to the Wheel Base
+
+When connected to the wheel base accessory port (sub-device 03), gears 1–7 and Reverse report on DirectInput button indices 12 to 19 (hardware-verified 2026-10-29). Index 20 is unused.
+
+| Index | Button / Gear | evdev Code | Wire bitmask (Report 0x08) |
+|---|---|---|---|
+| 12 | RS H-Shifter: Gear 1 | `0x12c` (`BTN_BASE`) | Byte 2 bit 0 (`0x01`) |
+| 13 | RS H-Shifter: Gear 2 | `0x12d` (`BTN_BASE2`) | Byte 2 bit 1 (`0x02`) |
+| 14 | RS H-Shifter: Gear 3 | `0x12e` (`BTN_BASE3`) | Byte 2 bit 2 (`0x04`) |
+| 15 | RS H-Shifter: Gear 4 | `0x12f` (`BTN_BASE4`) | Byte 2 bit 3 (`0x08`) |
+| 16 | RS H-Shifter: Gear 5 | `0x2c0` (`BTN_TRIGGER_HAPPY1`) | Byte 2 bit 4 (`0x10`) |
+| 17 | RS H-Shifter: Gear 6 | `0x2c1` (`BTN_TRIGGER_HAPPY2`) | Byte 2 bit 5 (`0x20`) |
+| 18 | RS H-Shifter: Gear 7 | `0x2c2` (`BTN_TRIGGER_HAPPY3`) | Byte 2 bit 6 (`0x40`) |
+| 19 | RS H-Shifter: Reverse | `0x2c3` (`BTN_TRIGGER_HAPPY4`) | Byte 3 bit 0 (`0x01`) |
+| 20 | Unused | `0x2c4` (`BTN_TRIGGER_HAPPY5`) | - |
+
+### Connected Directly to PC via USB
+
+When connected directly to the PC via USB (`046d:c26b Logitech RS H-Shifter`), it enumerates as an independent joystick reporting 8 digital buttons:
+- Buttons 0 to 6 (`0x120`..`0x126`): 1st through 7th gear
+- Button 7 (`0x127`): Reverse (R)
 
 ## G923
 
