@@ -165,25 +165,32 @@ impl Drop for Reader {
 /// Poll standalone USB RS H-Shifter events, updating gear and connection status.
 fn poll_standalone_shifter(s_file: &mut std::fs::File, snapshot: &mut Snapshot) -> bool {
     let mut s_buf = [0u8; EVENT_SIZE * 32];
+    let n = match s_file.read(&mut s_buf) {
+        Ok(n) if n > 0 => n,
+        _ => return false,
+    };
+
     let mut changed = false;
-    if let Ok(n) = s_file.read(&mut s_buf) {
-        if n > 0 {
-            let (events, _partial) = s_buf[..n].as_chunks::<EVENT_SIZE>();
-            for chunk in events {
-                if let Some(TestEvent::Button { code, pressed }) = evtest::parse_event(chunk) {
-                    if let Some(gear) = evtest::gear_from_standalone_code(code) {
-                        if pressed {
-                            snapshot.gear = gear as i32;
-                            snapshot.shifter_connected = true;
-                            snapshot.shifter_mode = "Direct USB".to_string();
-                            changed = true;
-                        } else if snapshot.gear == gear as i32 {
-                            snapshot.gear = 0;
-                            changed = true;
-                        }
-                    }
-                }
-            }
+    let (events, _partial) = s_buf[..n].as_chunks::<EVENT_SIZE>();
+    for chunk in events {
+        let (code, pressed) = match evtest::parse_event(chunk) {
+            Some(TestEvent::Button { code, pressed }) => (code, pressed),
+            _ => continue,
+        };
+
+        let gear = match evtest::gear_from_standalone_code(code) {
+            Some(g) => g as i32,
+            None => continue,
+        };
+
+        if pressed {
+            snapshot.gear = gear;
+            snapshot.shifter_connected = true;
+            snapshot.shifter_mode = "Direct USB".to_string();
+            changed = true;
+        } else if snapshot.gear == gear {
+            snapshot.gear = 0;
+            changed = true;
         }
     }
     changed
