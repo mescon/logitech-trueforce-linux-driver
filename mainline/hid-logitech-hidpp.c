@@ -5414,6 +5414,8 @@ static void hidpp_ff_retry_work(struct work_struct *work)
  */
 #define HIDPP_DD_PEDAL_BASE_AXIS(pedal)		((pedal) + 1)
 #define HIDPP_DD_PAGE_CALIBRATE		0x812C	/* Centre calibration (G Pro sub-device 0x05) */
+#define HIDPP_DD_PAGE_ATTACHMENTS	0x8120	/* GAMING_ATTACHMENTS accessory slot routing */
+#define HIDPP_DD_PAGE_RS_H_SHIFTER	0x812D	/* RS H-Shifter capabilities (sub-device) */
 #define HIDPP_DD_PAGE_SYNC			0x1BC0	/* Unknown sync/prepare feature */
 /*
  * BANDED_AXIS and DEVICE_MODE: names are first-party (Solaar's HID++ 2.0
@@ -5932,6 +5934,9 @@ struct hidpp_dd_ff_data {
 	u8 idx_shifter_curve;		/* Feature index for 0x80A4 on the accessory (dev shifter_dev_idx, axis 0 = handbrake) */
 	u8 idx_shifter_banded;		/* Feature index for 0x80B1 BANDED_AXIS on the accessory */
 	u8 idx_shifter_mode;		/* Feature index for 0x1B30 DEVICE_MODE on the accessory */
+	u8 h_shifter_dev_idx;		/* HID++ dev index of RS H-Shifter */
+	u8 idx_h_shifter;		/* Feature index for 0x812D RS_H_SHIFTER */
+	u8 idx_attachments;		/* Feature index for 0x8120 GAMING_ATTACHMENTS */
 	struct work_struct accessory_rescan_work; /* re-checks accessory presence off the sysfs read path */
 	unsigned long accessory_rescan_next;	/* jiffies before which no further rescan is queued */
 	u8 accessory_scan_cursor;	/* next candidate index a presence rescan will try */
@@ -8748,6 +8753,9 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	ff->idx_shifter_curve = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_shifter_banded = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_shifter_mode = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->h_shifter_dev_idx = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_h_shifter = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_attachments = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->accessory_name[0] = '\0';
 	/*
 	 * Explicitly now, not the kzalloc'd 0: jiffies starts at INITIAL_JIFFIES
@@ -8968,6 +8976,26 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 			hidpp_dd_query_accessory_name(ff, cand);
 		}
 	}
+
+	/* Discover RS H-Shifter (0x812D) across candidate sub-devices */
+	for (i = 0; i < ARRAY_SIZE(hidpp_dd_pedal_dev_candidates); i++) {
+		u8 cand = hidpp_dd_pedal_dev_candidates[i];
+		u8 cand_idx;
+
+		if (cand == ff->pedal_dev_idx || cand == ff->shifter_dev_idx)
+			continue;
+
+		ret = hidpp_root_get_feature_on_device_timeout(hidpp, cand,
+							       HIDPP_DD_PAGE_RS_H_SHIFTER,
+							       &cand_idx, HIDPP_DD_PROBE_TIMEOUT);
+		if (ret == 0) {
+			ff->h_shifter_dev_idx = cand;
+			ff->idx_h_shifter = cand_idx;
+			dd_info(hid, "RS H-Shifter at dev 0x%02x (idx 0x%02x)\n",
+				cand, cand_idx);
+			break;
+		}
+	}
 	if (ff->pedal_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
 		dd_dbg(hid, "Pedal response curve feature at index 0x%02x (dev 0x%02x)\n",
 		       ff->idx_pedal_curve, ff->pedal_dev_idx);
@@ -9181,6 +9209,10 @@ static void hidpp_dd_discover_lightsync_features(struct hidpp_dd_ff_data *ff)
 	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_SYNC, &ff->idx_sync);
 	if (ret == 0)
 		dd_dbg(hid, "Sync feature at index 0x%02x\n", ff->idx_sync);
+
+	ret = hidpp_root_get_feature(hidpp, HIDPP_DD_PAGE_ATTACHMENTS, &ff->idx_attachments);
+	if (ret == 0)
+		dd_dbg(hid, "Attachments feature at index 0x%02x\n", ff->idx_attachments);
 }
 
 /*
@@ -9204,6 +9236,61 @@ static void hidpp_dd_ff_discover_features(struct hidpp_dd_ff_data *ff)
 	hidpp_dd_log_features(ff->hidpp, HIDPP_DD_FEATURE_LOG_BUDGET);
 	hidpp_dd_discover_lightsync_features(ff);
 	dd_dbg(hid, "Feature discovery completed\n");
+}
+
+/*
+ * Desktop mode shifter enablement.
+ *
+ * In Desktop mode (profile 0), the RS50 base suppresses sub-device
+ * gate reporting (gears 1-6 and Reverse) unless G HUB's slot routing,
+ * sync and accessory enable commands are sent. In Onboard mode (profiles
+ * 1-5), the base routes all gates automatically.
+ */
+static void hidpp_dd_enable_desktop_shifter(struct hidpp_dd_ff_data *ff)
+{
+	static const u8 slot_routing[16] = {
+		0x0a, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a
+	};
+	struct hidpp_device *hidpp = ff->hidpp;
+	struct hid_device *hid = hidpp->hid_dev;
+	struct hidpp_report response;
+	u8 params[16];
+	int ret;
+
+	if (ff->h_shifter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND)
+		return;
+
+	/* 1. Feature 0x8120 GAMING_ATTACHMENTS on base */
+	if (ff->idx_attachments != HIDPP_DD_FEATURE_NOT_FOUND) {
+		memset(params, 0, sizeof(params));
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_attachments,
+						  0x00 /* fn0 */, params, 0, &response);
+		if (ret)
+			dd_warn(hid, "Desktop shifter: attachments fn0 failed: %d\n", ret);
+
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_attachments,
+						  0x20 /* fn2 */, (u8 *)slot_routing,
+						  sizeof(slot_routing), &response);
+		if (ret)
+			dd_warn(hid, "Desktop shifter: attachments fn2 failed: %d\n", ret);
+
+		memset(params, 0, sizeof(params));
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_attachments,
+						  0x10 /* fn1 */, params, 0, &response);
+		if (ret)
+			dd_warn(hid, "Desktop shifter: attachments fn1 failed: %d\n", ret);
+	}
+
+	/* 2. Feature 0x1BC0 SYNC on base: sync notify (fn2) */
+	if (ff->idx_sync != HIDPP_DD_FEATURE_NOT_FOUND) {
+		memset(params, 0, sizeof(params));
+		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_sync,
+						  0x20 /* fn2 */, params, 0, &response);
+		if (ret)
+			dd_warn(hid, "Desktop shifter: base sync fn2 failed: %d\n", ret);
+	}
+
+	dd_dbg(hid, "Desktop mode shifter enablement completed\n");
 }
 
 /*
@@ -9559,6 +9646,16 @@ static void hidpp_dd_ff_query_settings(struct hidpp_dd_ff_data *ff)
 			}
 		}
 	}
+
+	/*
+	 * Enable accessory slot routing in Desktop mode (profile 0)
+	 * when an RS H-Shifter is present.
+	 * Must run after LIGHTSYNC initialization so the LED sync
+	 * sequence does not clobber attachment routing.
+	 */
+	if (ff->current_mode == 0 &&
+	    ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
+		hidpp_dd_enable_desktop_shifter(ff);
 }
 
 /*
@@ -11691,6 +11788,10 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 		int ok = 0;
 
 		for (i = 0; i < ARRAY_SIZE(desktop_sync_zones); i++) {
+			/* Skip GAMING_ATTACHMENTS (0x8120) so sync does not reset slot routing */
+			if (desktop_sync_zones[i] == ff->idx_attachments)
+				continue;
+
 			sync_params[0] = 0x01;
 			sync_params[1] = 0x00;
 			sync_params[2] = 0x09;
