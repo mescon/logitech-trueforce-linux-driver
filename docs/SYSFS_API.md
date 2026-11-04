@@ -993,10 +993,12 @@ Include this output in bug reports - firmware-dependent behaviour
 **Values**: accessory device name, or `none`
 
 Presence signal for the base's optional accessories: the **RS Shifter &
-Handbrake** and the **RS H-Shifter**, which plug into the base's USB-A
-ports. Reports the RS Shifter & Handbrake's own HID++ device name, or
-`RS H-Shifter`, or `none` when neither is attached. With both attached it
-names the RS Shifter & Handbrake. Unlike the pedal/handbrake attributes
+Handbrake**, the **RS H-Shifter**, and the **Logitech Racing Adapter**, which
+plug into the base's USB-A ports. Reports the attached accessory's name
+(`RS Shifter & Handbrake`, `RS H-Shifter`, or `Racing Adapter`), a
+comma-separated list when multiple accessories are attached (e.g.
+`RS Shifter & Handbrake, RS H-Shifter` or `RS Shifter & Handbrake, Racing Adapter`),
+or `none` when none is attached. Unlike the pedal/handbrake attributes
 below, this never returns an error: it exists precisely so apps can check
 for an accessory without inferring presence from another attribute's error
 code.
