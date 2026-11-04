@@ -66,6 +66,35 @@ fn open_standalone_shifter(wheel_path: &str) -> Option<std::fs::File> {
         .ok()
 }
 
+/// Read and fold wheel events from `file` into `snapshot`.
+/// Returns `Ok(true)` if anything changed, `Ok(false)` if no visible change or would block,
+/// or `Err(())` if the device was disconnected (EOF or fatal error).
+fn poll_wheel_events(
+    file: &mut std::fs::File,
+    buf: &mut [u8; EVENT_SIZE * 64],
+    snapshot: &mut Snapshot,
+    codes: &[u16],
+    axes: evtest::PedalAxes,
+    model: WheelModel,
+) -> Result<bool, ()> {
+    match file.read(buf) {
+        Ok(0) => Err(()), // A closed/unplugged evdev node reads EOF.
+        Ok(n) => {
+            let mut changed = false;
+            let (events, _partial) = buf[..n].as_chunks::<EVENT_SIZE>();
+            for chunk in events {
+                if apply_event(snapshot, chunk, codes, axes, model) {
+                    changed = true;
+                }
+            }
+            Ok(changed)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(false),
+        Err(_) => Err(()),
+    }
+}
+
 impl Reader {
     /// Open `path` and start the read loop, tracking `codes` (see
     /// `evtest::button_codes_for_model`; `snapshot.buttons` stays parallel
@@ -111,26 +140,13 @@ impl Reader {
                         dirty = true;
                     }
                 }
-                match file.read(&mut buf) {
-                    // A closed/unplugged evdev node reads EOF.
-                    Ok(0) => {
-                        on_gone();
-                        return;
-                    }
-                    Ok(n) => {
-                        // as_chunks over chunks_exact: the size is a
-                        // constant, so the compiler knows each slice is a
-                        // whole event rather than checking per iteration.
-                        let (events, _partial) = buf[..n].as_chunks::<EVENT_SIZE>();
-                        for chunk in events {
-                            if apply_event(&mut snapshot, chunk, &codes, axes, model) {
-                                dirty = true;
-                            }
+                match poll_wheel_events(&mut file, &mut buf, &mut snapshot, &codes, axes, model) {
+                    Ok(changed) => {
+                        if changed {
+                            dirty = true;
                         }
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => {
+                    Err(()) => {
                         on_gone();
                         return;
                     }
