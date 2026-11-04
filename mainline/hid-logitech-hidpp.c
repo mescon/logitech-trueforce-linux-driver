@@ -12714,6 +12714,8 @@ static void hidpp_dd_oled_handback(struct hidpp_device *hidpp, struct hidpp_dd_f
 	mutex_lock(&hidpp->send_mutex);
 	hidpp_dd_oled_send(hidpp, ff->idx_display, 0x2, NULL, 0);
 	mutex_unlock(&hidpp->send_mutex);
+	if (ff->current_mode == 0)
+		hidpp_dd_enable_desktop_shifter(ff);
 }
 
 /*
@@ -12801,6 +12803,7 @@ static ssize_t wheel_oled_store(struct device *dev, struct device_attribute *att
 	struct hidpp_device *hidpp = hid_get_drvdata(to_hid_device(dev));
 	struct hidpp_dd_ff_data *ff = hidpp ? hidpp->private_data : NULL;
 	u8 frame[HIDPP_DD_OLED_FRAME];
+	bool was_active;
 	int ret;
 
 	if (!ff)
@@ -12823,6 +12826,7 @@ static ssize_t wheel_oled_store(struct device *dev, struct device_attribute *att
 		return ret;
 
 	mutex_lock(&ff->oled_lock);
+	was_active = ff->oled_active;
 	memcpy(ff->oled_frame, frame, sizeof(frame));
 	strscpy(ff->oled_text, buf, sizeof(ff->oled_text));
 	strim(ff->oled_text);
@@ -12830,6 +12834,8 @@ static ssize_t wheel_oled_store(struct device *dev, struct device_attribute *att
 	mutex_unlock(&ff->oled_lock);
 	/* Now, not on the next tick: the first frame is what the user is waiting for. */
 	mod_delayed_work(ff->wq, &ff->oled_work, 0);
+	if (ff->current_mode == 0 && !was_active)
+		hidpp_dd_enable_desktop_shifter(ff);
 	return count;
 }
 
