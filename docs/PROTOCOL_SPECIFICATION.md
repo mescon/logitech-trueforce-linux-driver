@@ -73,7 +73,7 @@ The RS50 presents **3 HID interfaces** to the host:
 Offset  Size  Type      Description
 ------  ----  ----      -----------
 0-1     2     uint16    Button bitmask, buttons 0-15 (little-endian)
-2-3     2     -         Button bitmask high bytes (byte 3 bit 7 = G button; otherwise 0)
+2-3     2     -         Button bitmask high bytes (Byte 2: RS H-Shifter Gears 1-7; Byte 3 bit 0: Reverse, bit 7: G button)
 4-5     2     uint16    Wheel position (little-endian)
 6-7     2     uint16    Accelerator pedal (little-endian)
 8-9     2     uint16    Brake pedal (little-endian)
@@ -108,9 +108,22 @@ Button state is encoded in bytes 0-3 of the input report.
 | 6   | `0x40` | **LB** (Left Bumper) |
 | 7   | `0x80` | **RB** (Right Bumper) |
 
+**Byte 2 (RS H-Shifter, Sub-Device 03):**
+| Bit | Mask   | Button |
+|-----|--------|--------|
+| 0   | `0x01` | **Gear 1** |
+| 1   | `0x02` | **Gear 2** |
+| 2   | `0x04` | **Gear 3** |
+| 3   | `0x08` | **Gear 4** |
+| 4   | `0x10` | **Gear 5** |
+| 5   | `0x20` | **Gear 6** |
+| 6   | `0x40` | **Gear 7** |
+| 7   | `0x80` | Unused |
+
 **Byte 3:**
 | Bit | Mask   | Button |
 |-----|--------|--------|
+| 0   | `0x01` | **Reverse (RS H-Shifter)** |
 | 7   | `0x80` | **G Button** (Logitech logo) |
 
 ### D-pad Encoding (Byte 0 low nibble, bits 0-3) - standard HID hat

@@ -228,6 +228,10 @@ export component App inherits Window {
     in property <string> test-hat: "centered";
     in property <[TestAxis]> test-axes: [];
     in property <[TestCallout]> test-callouts: [];
+    in property <int> test-gear: 0;
+    in property <string> test-gear-name: "N";
+    in property <bool> test-shifter-connected: false;
+    in property <string> test-shifter-mode: "";
     in property <bool> test-sim-running: false;
     in property <string> test-sim-error: "";
     // The running (or just-finished) sequence's one-line summary (set
@@ -779,6 +783,10 @@ export component App inherits Window {
                     hat: root.test-hat;
                     axes: root.test-axes;
                     callouts: root.test-callouts;
+                    gear: root.test-gear;
+                    gear-name: root.test-gear-name;
+                    shifter-connected: root.test-shifter-connected;
+                    shifter-mode: root.test-shifter-mode;
                     sim-running: root.test-sim-running;
                     sim-error: root.test-sim-error;
                     sim-status: root.test-sim-status;
