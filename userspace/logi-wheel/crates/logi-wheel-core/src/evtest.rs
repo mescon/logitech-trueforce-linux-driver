@@ -709,7 +709,7 @@ pub fn gear_from_wheel_code(model: WheelModel, code: u16) -> Option<u8> {
             0x2c0 => Some(5),
             0x2c1 => Some(6),
             0x2c2 => Some(7),
-            0x2c3 | 0x2c4 => Some(8), // Reverse (R): 0x2c3 / 0x2c4 (RS50 Base wire Byte 3 bit 0 / BTN_TRIGGER_HAPPY4/5)
+            0x2c3 => Some(8), // Reverse (R): 0x2c3 (Wheel base wire Byte 3 bit 0 / BTN_TRIGGER_HAPPY4)
             _ => None,
         },
         _ => None,
@@ -1160,7 +1160,7 @@ mod shifter_tests {
             (0x2c1, Some(6)), // Gear 6 (BTN_TRIGGER_HAPPY2)
             (0x2c2, Some(7)), // Gear 7 (BTN_TRIGGER_HAPPY3)
             (0x2c3, Some(8)), // Reverse (BTN_TRIGGER_HAPPY4)
-            (0x2c4, Some(8)), // Reverse wire alias
+            (0x2c4, None),    // Unused / padding index
             (0x12b, None),    // Wheel rim LSB button
             (0x120, None),    // Wheel rim button A
         ];

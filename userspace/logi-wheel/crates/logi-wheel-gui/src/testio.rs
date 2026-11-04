@@ -54,6 +54,18 @@ pub struct Reader {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
+fn open_standalone_shifter(wheel_path: &str) -> Option<std::fs::File> {
+    let s = evtest::discover_shifter_input()?;
+    if s.event_path == wheel_path {
+        return None;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&s.event_path)
+        .ok()
+}
+
 impl Reader {
     /// Open `path` and start the read loop, tracking `codes` (see
     /// `evtest::button_codes_for_model`; `snapshot.buttons` stays parallel
@@ -72,17 +84,7 @@ impl Reader {
             .read(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
             .open(path)?;
-        let mut standalone_shifter = evtest::discover_shifter_input().and_then(|s| {
-            if s.event_path != path {
-                std::fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-                    .open(&s.event_path)
-                    .ok()
-            } else {
-                None
-            }
-        });
+        let mut standalone_shifter = open_standalone_shifter(path);
         let standalone_detected = standalone_shifter.is_some();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
@@ -222,7 +224,7 @@ fn apply_event(
                     snapshot.gear = gear as i32;
                     snapshot.shifter_connected = true;
                     if snapshot.shifter_mode.is_empty() {
-                        snapshot.shifter_mode = "RS50 Base".to_string();
+                        snapshot.shifter_mode = "Wheel base".to_string();
                     }
                     changed = true;
                 } else if snapshot.gear == gear as i32 {

@@ -8991,6 +8991,7 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 		if (ret == 0) {
 			ff->h_shifter_dev_idx = cand;
 			ff->idx_h_shifter = cand_idx;
+			strscpy(ff->accessory_name, "RS H-Shifter", sizeof(ff->accessory_name));
 			dd_info(hid, "RS H-Shifter at dev 0x%02x (idx 0x%02x)\n",
 				cand, cand_idx);
 			break;
@@ -9241,7 +9242,7 @@ static void hidpp_dd_ff_discover_features(struct hidpp_dd_ff_data *ff)
 /*
  * Desktop mode shifter enablement.
  *
- * In Desktop mode (profile 0), the RS50 base suppresses sub-device
+ * In Desktop mode (profile 0), direct-drive wheel bases suppress sub-device
  * gate reporting (gears 1-6 and Reverse) unless G HUB's slot routing,
  * sync and accessory enable commands are sent. In Onboard mode (profiles
  * 1-5), the base routes all gates automatically.
@@ -11790,7 +11791,8 @@ static int hidpp_dd_lightsync_apply_slot(struct hidpp_device *hidpp,
 
 		for (i = 0; i < ARRAY_SIZE(desktop_sync_zones); i++) {
 			/* Skip GAMING_ATTACHMENTS (0x8120) so sync does not reset slot routing */
-			if (desktop_sync_zones[i] == ff->idx_attachments)
+			if (ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
+			    desktop_sync_zones[i] == ff->idx_attachments)
 				continue;
 
 			sync_params[0] = 0x01;
@@ -12715,6 +12717,8 @@ static void hidpp_dd_oled_handback(struct hidpp_device *hidpp, struct hidpp_dd_f
 	mutex_lock(&hidpp->send_mutex);
 	hidpp_dd_oled_send(hidpp, ff->idx_display, 0x2, NULL, 0);
 	mutex_unlock(&hidpp->send_mutex);
+	if (atomic_read_acquire(&ff->stopping))
+		return;
 	if (ff->current_mode == 0)
 		hidpp_dd_enable_desktop_shifter(ff);
 }
@@ -15237,7 +15241,8 @@ static ssize_t wheel_accessory_show(struct device *dev,
 			   jiffies + HIDPP_DD_ACCESSORY_RESCAN_INTERVAL);
 		queue_work(ff->wq, &ff->accessory_rescan_work);
 	}
-	if (READ_ONCE(ff->shifter_dev_idx) == HIDPP_DD_FEATURE_NOT_FOUND ||
+	if ((READ_ONCE(ff->shifter_dev_idx) == HIDPP_DD_FEATURE_NOT_FOUND &&
+	     READ_ONCE(ff->h_shifter_dev_idx) == HIDPP_DD_FEATURE_NOT_FOUND) ||
 	    !ff->accessory_name[0])
 		return sysfs_emit(buf, "none\n");
 	return sysfs_emit(buf, "%s\n", ff->accessory_name);
