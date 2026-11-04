@@ -992,12 +992,20 @@ Include this output in bug reports - firmware-dependent behaviour
 **Access**: Read-only
 **Values**: accessory device name, or `none`
 
-Presence signal for the **RS Shifter & Handbrake**, an optional accessory
-that plugs into the base's USB-A port. Reports the accessory's own HID++
-device name when one is discovered at probe time, or `none` when absent.
-Unlike the pedal/handbrake attributes below, this never returns an error:
-it exists precisely so apps can check for the accessory without inferring
-presence from another attribute's error code.
+Presence signal for the base's optional accessories: the **RS Shifter &
+Handbrake** and the **RS H-Shifter**, which plug into the base's USB-A
+ports. Reports the RS Shifter & Handbrake's own HID++ device name, or
+`RS H-Shifter`, or `none` when neither is attached. With both attached it
+names the RS Shifter & Handbrake. Unlike the pedal/handbrake attributes
+below, this never returns an error: it exists precisely so apps can check
+for an accessory without inferring presence from another attribute's error
+code.
+
+Both accessories are found at probe time and re-checked on demand: a read
+queues a presence re-check in the background, so an accessory plugged in or
+pulled after the module loaded shows up within a few reads. An RS H-Shifter
+that arrives this way in desktop mode gets its gate routing enabled at the
+same time, as it would have at probe.
 
 ```bash
 cat wheel_accessory

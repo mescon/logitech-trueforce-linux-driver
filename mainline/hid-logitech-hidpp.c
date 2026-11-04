@@ -6049,7 +6049,7 @@ struct hidpp_dd_ff_data {
 	char serial[13];		/* 12-char Base34 serial + NUL */
 	char fw_main[16];		/* base firmware, e.g. "U1 65.03.B0038" */
 	char fw_motor[16];		/* motor firmware (sub-device 0x05) */
-	char accessory_name[32];	/* RS Shifter & Handbrake's own 0x0005 name; empty if not discovered */
+	char accessory_name[32];	/* wheel_accessory text; empty with no accessory */
 	u8 led_effect;			/* LED effect mode (1-5, 5=custom) */
 
 	/* LIGHTSYNC per-slot configuration (full RGB control) */
@@ -8727,6 +8727,56 @@ static void hidpp_dd_query_accessory_name(struct hidpp_dd_ff_data *ff, u8 dev_id
 }
 
 /*
+ * Record a confirmed RS Shifter & Handbrake at @cand: its response-curve
+ * index, its BANDED_AXIS index, its DEVICE_MODE index (left absent when the
+ * accessory does not answer for it) and its queried device name. The caller
+ * publishes shifter_dev_idx itself, last, because that is what the readers
+ * gate on.
+ */
+static void hidpp_dd_adopt_shifter_handbrake(struct hidpp_dd_ff_data *ff,
+					     u8 cand, u8 curve_idx, u8 banded_idx)
+{
+	struct hidpp_device *hidpp = ff->hidpp;
+
+	ff->idx_shifter_curve = curve_idx;
+	ff->idx_shifter_banded = banded_idx;
+	if (hidpp_root_get_feature_on_device(hidpp, cand,
+					     HIDPP_DD_PAGE_DEVICE_MODE,
+					     &ff->idx_shifter_mode))
+		ff->idx_shifter_mode = HIDPP_DD_FEATURE_NOT_FOUND;
+	else
+		dd_dbg(hidpp->hid_dev, "Accessory mode feature at index 0x%02x\n",
+		       ff->idx_shifter_mode);
+	hidpp_dd_query_accessory_name(ff, cand);
+}
+
+/*
+ * Probe one candidate sub-device for the RS H-Shifter. It answers
+ * ROOT.GetFeature(0x812D) on the index of the port it is plugged into, and
+ * no other sub-device carries that page (contributor-verified on an RS50,
+ * 2026-10-29). Only called for a candidate already known to answer, so the
+ * normal transport timeout is fine: a silent index never gets this far.
+ *
+ * On a hit this records the feature index and, unless an accessory with a
+ * queried name already owns it, the wheel_accessory text. The caller
+ * publishes h_shifter_dev_idx itself, last, because that is what the
+ * readers gate on.
+ */
+static bool hidpp_dd_probe_h_shifter(struct hidpp_dd_ff_data *ff, u8 cand)
+{
+	u8 idx;
+
+	if (hidpp_root_get_feature_on_device(ff->hidpp, cand,
+					     HIDPP_DD_PAGE_RS_H_SHIFTER, &idx))
+		return false;
+	ff->idx_h_shifter = idx;
+	if (!ff->accessory_name[0])
+		strscpy(ff->accessory_name, "RS H-Shifter",
+			sizeof(ff->accessory_name));
+	return true;
+}
+
+/*
  * Discover HID++ feature indices for the "settings" surface: per-wheel
  * tuning exposed as wheel_* sysfs attributes, plus profile / mode /
  * calibrate. These features are shared between RS50 and G Pro (though
@@ -8932,69 +8982,57 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	 * free. 0x1B30 (DEVICE_MODE) is resolved the same way once the
 	 * accessory is confirmed; it is not itself part of the confirmation
 	 * since its cross-device uniqueness has not been verified.
+	 *
+	 * The RS H-Shifter rides the same pass. It has no response curve, so
+	 * its port answers the presence check with -ENOENT (present, page
+	 * unknown) in a few milliseconds instead of timing out, and that
+	 * answer, or a curve with an axis count this driver cannot place, is
+	 * what sends a candidate to hidpp_dd_probe_h_shifter(). A silent
+	 * index is never asked twice, so a bare wheel pays nothing for this
+	 * beyond the one probe per candidate it already paid.
 	 */
 	for (i = 0; i < ARRAY_SIZE(hidpp_dd_pedal_dev_candidates); i++) {
 		u8 cand = hidpp_dd_pedal_dev_candidates[i];
-		u8 cand_idx, axes;
+		u8 cand_idx, axes, banded_idx;
 
 		if (ff->pedal_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
-		    ff->shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
+		    ff->shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
+		    ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
 			break;
 
 		ret = hidpp_root_get_feature_on_device_timeout(hidpp, cand,
 						       HIDPP_DD_PAGE_RESPONSE_CURVE,
 						       &cand_idx, HIDPP_DD_PROBE_TIMEOUT);
-		if (ret)
+		if (ret && ret != -ENOENT)
 			continue;
-		if (hidpp_dd_pedal_axis_count(hidpp, cand, cand_idx, &axes))
-			continue;
-
-		if (axes == HIDPP_DD_PEDAL_AXIS_COUNT &&
-		    ff->pedal_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND) {
-			ff->pedal_dev_idx = cand;
-			ff->idx_pedal_curve = cand_idx;
-			continue;
-		}
-
-		if (axes == HIDPP_DD_SHIFTER_AXIS_COUNT &&
-		    ff->shifter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND) {
-			u8 banded_idx;
-
-			if (hidpp_root_get_feature_on_device(hidpp, cand,
-							     HIDPP_DD_PAGE_BANDED_AXIS,
-							     &banded_idx))
+		if (ret == 0 &&
+		    hidpp_dd_pedal_axis_count(hidpp, cand, cand_idx, &axes) == 0) {
+			if (axes == HIDPP_DD_PEDAL_AXIS_COUNT) {
+				if (ff->pedal_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND) {
+					ff->pedal_dev_idx = cand;
+					ff->idx_pedal_curve = cand_idx;
+				}
 				continue;
-			ff->shifter_dev_idx = cand;
-			ff->idx_shifter_curve = cand_idx;
-			ff->idx_shifter_banded = banded_idx;
-			ret = hidpp_root_get_feature_on_device(hidpp, cand,
-							       HIDPP_DD_PAGE_DEVICE_MODE,
-							       &ff->idx_shifter_mode);
-			if (ret == 0)
-				dd_dbg(hid, "Accessory mode feature at index 0x%02x\n",
-				       ff->idx_shifter_mode);
-			hidpp_dd_query_accessory_name(ff, cand);
+			}
+			if (axes == HIDPP_DD_SHIFTER_AXIS_COUNT &&
+			    hidpp_root_get_feature_on_device(hidpp, cand,
+							     HIDPP_DD_PAGE_BANDED_AXIS,
+							     &banded_idx) == 0) {
+				if (ff->shifter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND) {
+					hidpp_dd_adopt_shifter_handbrake(ff, cand,
+									 cand_idx, banded_idx);
+					ff->shifter_dev_idx = cand;
+				}
+				continue;
+			}
 		}
-	}
 
-	/* Discover RS H-Shifter (0x812D) across candidate sub-devices */
-	for (i = 0; i < ARRAY_SIZE(hidpp_dd_pedal_dev_candidates); i++) {
-		u8 cand = hidpp_dd_pedal_dev_candidates[i];
-		u8 cand_idx;
-
-		if (cand == ff->pedal_dev_idx || cand == ff->shifter_dev_idx)
-			continue;
-
-		ret = hidpp_root_get_feature_on_device_timeout(hidpp, cand,
-							       HIDPP_DD_PAGE_RS_H_SHIFTER,
-							       &cand_idx, HIDPP_DD_PROBE_TIMEOUT);
-		if (ret == 0) {
+		/* Answers, but is neither the pedals nor the RS Shifter & Handbrake. */
+		if (ff->h_shifter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND &&
+		    hidpp_dd_probe_h_shifter(ff, cand)) {
 			ff->h_shifter_dev_idx = cand;
-			ff->idx_h_shifter = cand_idx;
-			strscpy(ff->accessory_name, "RS H-Shifter", sizeof(ff->accessory_name));
 			dd_info(hid, "RS H-Shifter at dev 0x%02x (idx 0x%02x)\n",
-				cand, cand_idx);
-			break;
+				cand, ff->idx_h_shifter);
 		}
 	}
 	if (ff->pedal_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
@@ -15082,10 +15120,11 @@ static DEVICE_ATTR(wheel_firmware, 0444, wheel_firmware_show, NULL);
  * up yet: their wire protocol is uncaptured.
  */
 /*
- * Re-check whether the RS Shifter & Handbrake is attached.
+ * Re-check which accessories are attached: the RS Shifter & Handbrake and
+ * the RS H-Shifter.
  *
- * Discovery runs once at probe, but the accessory plugs into the base's own
- * USB-A port, so it can arrive or leave while the driver is loaded and the
+ * Discovery runs once at probe, but an accessory plugs into the base's own
+ * USB-A ports, so it can arrive or leave while the driver is loaded and the
  * wheel never re-enumerates. Without this, a wheel that came up bare reports
  * "none" for as long as the module stays loaded, and everything keyed on
  * wheel_accessory stays wrong with it (hardware-verified 2026-07-28: plugging
@@ -15107,18 +15146,15 @@ static void hidpp_dd_rescan_accessory(struct hidpp_dd_ff_data *ff)
 	struct hid_device *hid = hidpp->hid_dev;
 	u8 idx;
 
-	if (ff->shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND) {
+	if (ff->shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
+	    hidpp_root_get_feature_on_device_timeout(hidpp, ff->shifter_dev_idx,
+					HIDPP_DD_PAGE_BANDED_AXIS, &idx,
+					HIDPP_DD_PROBE_TIMEOUT)) {
 		/*
 		 * Believed present, so one GetFeature on the index we already
 		 * know is enough to notice it has been unplugged: a sub-device
 		 * that is really there answers in about 2.5 ms.
-		 */
-		if (hidpp_root_get_feature_on_device_timeout(hidpp,
-					ff->shifter_dev_idx,
-					HIDPP_DD_PAGE_BANDED_AXIS, &idx,
-					HIDPP_DD_PROBE_TIMEOUT) == 0)
-			return;
-		/*
+		 *
 		 * Retire the index first: wheel_accessory_show gates on it, so
 		 * clearing it before the name means a concurrent reader sees
 		 * "none" rather than a half-erased name.
@@ -15128,13 +15164,30 @@ static void hidpp_dd_rescan_accessory(struct hidpp_dd_ff_data *ff)
 		ff->idx_shifter_banded = HIDPP_DD_FEATURE_NOT_FOUND;
 		ff->idx_shifter_mode = HIDPP_DD_FEATURE_NOT_FOUND;
 		ff->accessory_name[0] = '\0';
+		/* The attribute keeps naming whatever is still attached. */
+		if (ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
+			strscpy(ff->accessory_name, "RS H-Shifter",
+				sizeof(ff->accessory_name));
 		dd_info(hid, "RS Shifter & Handbrake removed\n");
-		return;
 	}
+	if (ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
+	    hidpp_root_get_feature_on_device_timeout(hidpp, ff->h_shifter_dev_idx,
+					HIDPP_DD_PAGE_RS_H_SHIFTER, &idx,
+					HIDPP_DD_PROBE_TIMEOUT)) {
+		/* Same order as above: index first, then the name. */
+		WRITE_ONCE(ff->h_shifter_dev_idx, HIDPP_DD_FEATURE_NOT_FOUND);
+		ff->idx_h_shifter = HIDPP_DD_FEATURE_NOT_FOUND;
+		if (!strcmp(ff->accessory_name, "RS H-Shifter"))
+			ff->accessory_name[0] = '\0';
+		dd_info(hid, "RS H-Shifter removed\n");
+	}
+	if (ff->shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
+	    ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
+		return;
 
 	/*
-	 * Believed absent: spend each pass on ONE candidate, round-robin,
-	 * classified exactly as discovery does.
+	 * Something is believed absent: spend each pass on ONE candidate,
+	 * round-robin, classified exactly as discovery does.
 	 *
 	 * Sweeping the whole list every pass would be the obvious thing and the
 	 * wrong one: a silent candidate costs HIDPP_DD_PROBE_TIMEOUT, so a bare
@@ -15155,55 +15208,75 @@ static void hidpp_dd_rescan_accessory(struct hidpp_dd_ff_data *ff)
 	{
 		u8 cand = hidpp_dd_pedal_dev_candidates[ff->accessory_scan_cursor];
 		u8 cand_idx, axes, banded_idx;
+		int ret;
 
 		ff->accessory_scan_cursor = (ff->accessory_scan_cursor + 1) %
 				ARRAY_SIZE(hidpp_dd_pedal_dev_candidates);
-		if (hidpp_root_get_feature_on_device_timeout(hidpp, cand,
+		/* Just confirmed above; nothing new can sit on that port. */
+		if (cand == ff->shifter_dev_idx || cand == ff->h_shifter_dev_idx)
+			return;
+		ret = hidpp_root_get_feature_on_device_timeout(hidpp, cand,
 					HIDPP_DD_PAGE_RESPONSE_CURVE, &cand_idx,
-					HIDPP_DD_PROBE_TIMEOUT))
+					HIDPP_DD_PROBE_TIMEOUT);
+		if (ret && ret != -ENOENT)
 			return;
-		if (hidpp_dd_pedal_axis_count(hidpp, cand, cand_idx, &axes))
-			return;
-		/*
-		 * A sub-device index belongs to the base's physical port, not to
-		 * whatever is plugged into it (hardware-verified 2026-07-28:
-		 * moving the accessory to the pedals' port made it report on the
-		 * pedals' index). So the pedal index is not a safe thing to skip
-		 * over here, and it is not a safe thing to keep believing either:
-		 * classify whatever actually answers, and correct the cached
-		 * pedal index when the wheel disagrees with it.
-		 */
-		if (axes == HIDPP_DD_PEDAL_AXIS_COUNT) {
-			if (ff->pedal_dev_idx != cand) {
-				ff->pedal_dev_idx = cand;
-				ff->idx_pedal_curve = cand_idx;
-				dd_info(hid, "Pedals now at dev 0x%02x (curve idx 0x%02x)\n",
-					cand, cand_idx);
+		if (ret == 0 &&
+		    hidpp_dd_pedal_axis_count(hidpp, cand, cand_idx, &axes) == 0) {
+			/*
+			 * A sub-device index belongs to the base's physical port,
+			 * not to whatever is plugged into it (hardware-verified
+			 * 2026-07-28: moving the accessory to the pedals' port
+			 * made it report on the pedals' index). So the pedal
+			 * index is not a safe thing to skip over here, and it is
+			 * not a safe thing to keep believing either: classify
+			 * whatever actually answers, and correct the cached pedal
+			 * index when the wheel disagrees with it.
+			 */
+			if (axes == HIDPP_DD_PEDAL_AXIS_COUNT) {
+				if (ff->pedal_dev_idx != cand) {
+					ff->pedal_dev_idx = cand;
+					ff->idx_pedal_curve = cand_idx;
+					dd_info(hid, "Pedals now at dev 0x%02x (curve idx 0x%02x)\n",
+						cand, cand_idx);
+				}
+				return;
 			}
-			return;
+			if (axes == HIDPP_DD_SHIFTER_AXIS_COUNT &&
+			    ff->shifter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND &&
+			    hidpp_root_get_feature_on_device(hidpp, cand,
+							     HIDPP_DD_PAGE_BANDED_AXIS,
+							     &banded_idx) == 0) {
+				hidpp_dd_adopt_shifter_handbrake(ff, cand, cand_idx,
+								 banded_idx);
+				/*
+				 * Publish the index last, for the same reason removal
+				 * clears it first: it is what the reader gates on, so
+				 * everything it will then go on to read is already in
+				 * place.
+				 */
+				WRITE_ONCE(ff->shifter_dev_idx, cand);
+				dd_info(hid, "RS Shifter & Handbrake at dev 0x%02x (curve idx 0x%02x, banded idx 0x%02x)\n",
+					cand, ff->idx_shifter_curve, ff->idx_shifter_banded);
+				return;
+			}
 		}
-		if (axes != HIDPP_DD_SHIFTER_AXIS_COUNT)
+
+		/* Answers, but is neither the pedals nor the RS Shifter & Handbrake. */
+		if (ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND ||
+		    !hidpp_dd_probe_h_shifter(ff, cand))
 			return;
-		if (hidpp_root_get_feature_on_device(hidpp, cand,
-						     HIDPP_DD_PAGE_BANDED_AXIS,
-						     &banded_idx))
-			return;
-		ff->idx_shifter_curve = cand_idx;
-		ff->idx_shifter_banded = banded_idx;
-		if (hidpp_root_get_feature_on_device(hidpp, cand,
-						     HIDPP_DD_PAGE_DEVICE_MODE,
-						     &ff->idx_shifter_mode))
-			ff->idx_shifter_mode = HIDPP_DD_FEATURE_NOT_FOUND;
-		hidpp_dd_query_accessory_name(ff, cand);
+		WRITE_ONCE(ff->h_shifter_dev_idx, cand);
+		dd_info(hid, "RS H-Shifter at dev 0x%02x (idx 0x%02x)\n",
+			cand, ff->idx_h_shifter);
 		/*
-		 * Publish the index last, for the same reason removal clears it
-		 * first: it is what the reader gates on, so everything it will
-		 * then go on to read is already in place.
+		 * Desktop mode only routes the gates once G HUB's enablement
+		 * sequence has been sent (hidpp_dd_enable_desktop_shifter). At
+		 * probe that happens from hidpp_dd_ff_query_settings; a shifter
+		 * that arrives later needs it now. Onboard profiles route the
+		 * gates on their own.
 		 */
-		WRITE_ONCE(ff->shifter_dev_idx, cand);
-		dd_info(hid, "RS Shifter & Handbrake at dev 0x%02x (curve idx 0x%02x, banded idx 0x%02x)\n",
-			cand, ff->idx_shifter_curve, ff->idx_shifter_banded);
-		return;
+		if (ff->current_mode == 0)
+			hidpp_dd_enable_desktop_shifter(ff);
 	}
 }
 
