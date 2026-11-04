@@ -15,6 +15,7 @@
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -35,14 +36,22 @@ pub struct Snapshot {
     pub hat: (i32, i32),
     pub axes: [i32; 4],
     pub gear: i32,
+    pub adapter_gear: i32,
     pub shifter_connected: bool,
     pub shifter_mode: String,
+    pub seq_shift_up: bool,
+    pub seq_shift_down: bool,
+    pub handbrake_connected: bool,
+    pub adapter_connected: bool,
+    pub base_adapter_connected: bool,
 }
 
 /// How often the reader pushes a fresh [`Snapshot`] at most.
 const PUSH_INTERVAL: Duration = Duration::from_millis(33);
 /// The idle sleep between non-blocking read sweeps.
 const POLL_SLEEP: Duration = Duration::from_millis(5);
+/// How often the reader re-checks USB and wheel-base accessory hotplug state.
+const HOTPLUG_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The Test page's reader thread: owns the wheel's evdev node opened
 /// read-only and non-blocking, decodes events, and pushes throttled
@@ -64,6 +73,152 @@ fn open_standalone_shifter(wheel_path: &str) -> Option<std::fs::File> {
         .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(&s.event_path)
         .ok()
+}
+
+fn open_standalone_handbrake(wheel_path: &str) -> Option<std::fs::File> {
+    let s = evtest::discover_handbrake_input()?;
+    if s.event_path == wheel_path {
+        return None;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&s.event_path)
+        .ok()
+}
+
+fn open_standalone_adapter(wheel_path: &str) -> Option<std::fs::File> {
+    let s = evtest::discover_racing_adapter_input()?;
+    if s.event_path == wheel_path {
+        return None;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&s.event_path)
+        .ok()
+}
+
+fn probe_base_accessories(sysfs_dir: Option<&Path>) -> (bool, bool, bool) {
+    let Some(dir) = sysfs_dir else {
+        return (false, false, false);
+    };
+    let acc_path = dir.join("wheel_accessory");
+    let Ok(name) = std::fs::read_to_string(acc_path) else {
+        return (false, false, false);
+    };
+    let base_hb = name.contains("Handbrake");
+    let base_hs = name.contains("RS H-Shifter");
+    let base_ad = name.contains("Racing Adapter");
+    (base_hb, base_hs, base_ad)
+}
+
+fn read_nonblocking(file: &mut std::fs::File, buf: &mut [u8]) -> Result<usize, ()> {
+    match file.read(buf) {
+        Ok(0) => Err(()),
+        Ok(n) => Ok(n),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(0),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(0),
+        Err(_) => Err(()),
+    }
+}
+
+/// Read standalone accessories (shifter, handbrake, adapter) and fold into `snapshot`.
+fn poll_standalone_devices(
+    shifter: &mut Option<std::fs::File>,
+    handbrake: &mut Option<std::fs::File>,
+    adapter: &mut Option<std::fs::File>,
+    snapshot: &mut Snapshot,
+    right_paddle_idx: Option<usize>,
+    left_paddle_idx: Option<usize>,
+) -> bool {
+    let mut changed = false;
+    if let Some(ref mut s_file) = shifter {
+        match poll_standalone_shifter(s_file, snapshot) {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(()) => *shifter = None,
+        }
+    }
+    if let Some(ref mut hb_file) = handbrake {
+        match poll_standalone_handbrake(hb_file, snapshot, right_paddle_idx, left_paddle_idx) {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(()) => *handbrake = None,
+        }
+    }
+    if let Some(ref mut ad_file) = adapter {
+        match poll_standalone_adapter(ad_file, snapshot) {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(()) => *adapter = None,
+        }
+    }
+    changed
+}
+
+fn refresh_accessories(
+    wheel_path: &str,
+    sysfs_dir: Option<&Path>,
+    shifter: &mut Option<std::fs::File>,
+    handbrake: &mut Option<std::fs::File>,
+    adapter: &mut Option<std::fs::File>,
+    snapshot: &mut Snapshot,
+) -> bool {
+    if shifter.is_none() {
+        *shifter = open_standalone_shifter(wheel_path);
+    }
+    if handbrake.is_none() {
+        *handbrake = open_standalone_handbrake(wheel_path);
+    }
+    if adapter.is_none() {
+        *adapter = open_standalone_adapter(wheel_path);
+    }
+    let (base_hb, base_hs, base_ad) = probe_base_accessories(sysfs_dir);
+    let s_usb = shifter.is_some();
+    let hb_usb = handbrake.is_some();
+    let ad_usb = adapter.is_some();
+
+    let new_handbrake = hb_usb || base_hb;
+    let new_base_adapter = base_ad && !base_hs;
+    let new_shifter = s_usb || base_hs || (snapshot.shifter_connected && !snapshot.base_adapter_connected);
+    let new_adapter = ad_usb || new_base_adapter || (snapshot.adapter_connected && snapshot.base_adapter_connected);
+
+    let new_mode = if s_usb || hb_usb {
+        "Direct USB".to_string()
+    } else if base_hs || base_hb || base_ad || snapshot.shifter_connected || snapshot.adapter_connected {
+        if !snapshot.shifter_mode.is_empty() {
+            snapshot.shifter_mode.clone()
+        } else {
+            "Wheel base".to_string()
+        }
+    } else if ad_usb {
+        "Logitech Racing Adapter".to_string()
+    } else {
+        String::new()
+    };
+
+    let changed = snapshot.handbrake_connected != new_handbrake
+        || snapshot.shifter_connected != new_shifter
+        || snapshot.adapter_connected != new_adapter
+        || snapshot.base_adapter_connected != new_base_adapter
+        || snapshot.shifter_mode != new_mode;
+    snapshot.handbrake_connected = new_handbrake;
+    snapshot.shifter_connected = new_shifter;
+    snapshot.adapter_connected = new_adapter;
+    snapshot.base_adapter_connected = new_base_adapter;
+    snapshot.shifter_mode = new_mode;
+    if !new_handbrake {
+        snapshot.seq_shift_up = false;
+        snapshot.seq_shift_down = false;
+    }
+    if !new_shifter {
+        snapshot.gear = 0;
+    }
+    if !new_adapter {
+        snapshot.adapter_gear = 0;
+    }
+    changed
 }
 
 /// Read and fold wheel events from `file` into `snapshot`.
@@ -95,6 +250,43 @@ fn poll_wheel_events(
     }
 }
 
+fn initial_snapshot(
+    num_buttons: usize,
+    standalone_shifter: bool,
+    standalone_handbrake: bool,
+    standalone_adapter: bool,
+    base_handbrake: bool,
+    base_h_shifter: bool,
+    base_adapter: bool,
+) -> Snapshot {
+    let shifter_connected = standalone_shifter || base_h_shifter;
+    let handbrake_connected = standalone_handbrake || base_handbrake;
+    let base_adapter_connected = base_adapter && !base_h_shifter;
+    let adapter_connected = standalone_adapter || base_adapter_connected;
+    let shifter_mode = if standalone_shifter || standalone_handbrake {
+        "Direct USB".to_string()
+    } else if base_h_shifter || base_handbrake || base_adapter {
+        "Wheel base".to_string()
+    } else if standalone_adapter {
+        "Logitech Racing Adapter".to_string()
+    } else {
+        String::new()
+    };
+    Snapshot {
+        // A wheel at rest sends no reports at all, so seed the
+        // steering at center rather than showing full left lock
+        // until the first real event arrives.
+        steering_raw: evtest::AXIS_MAX / 2,
+        buttons: vec![false; num_buttons],
+        shifter_connected,
+        shifter_mode,
+        handbrake_connected,
+        adapter_connected,
+        base_adapter_connected,
+        ..Snapshot::default()
+    }
+}
+
 impl Reader {
     /// Open `path` and start the read loop, tracking `codes` (see
     /// `evtest::button_codes_for_model`; `snapshot.buttons` stays parallel
@@ -104,6 +296,7 @@ impl Reader {
     pub fn start(
         path: &str,
         model: WheelModel,
+        sysfs_dir: Option<std::path::PathBuf>,
         codes: Vec<u16>,
         axes: evtest::PedalAxes,
         on_snapshot: impl Fn(Snapshot) + Send + 'static,
@@ -113,32 +306,59 @@ impl Reader {
             .read(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
             .open(path)?;
-        let mut standalone_shifter = open_standalone_shifter(path);
+        let wheel_path = path.to_string();
+        let mut standalone_shifter = open_standalone_shifter(&wheel_path);
+        let mut standalone_handbrake = open_standalone_handbrake(&wheel_path);
+        let mut standalone_adapter = open_standalone_adapter(&wheel_path);
+        let (base_handbrake, base_h_shifter, base_adapter) =
+            probe_base_accessories(sysfs_dir.as_deref());
         let standalone_detected = standalone_shifter.is_some();
+        let handbrake_detected = standalone_handbrake.is_some();
+        let adapter_detected = standalone_adapter.is_some();
+        let right_paddle_idx = codes.iter().position(|c| *c == 0x124);
+        let left_paddle_idx = codes.iter().position(|c| *c == 0x125);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let handle = std::thread::spawn(move || {
-            let mut snapshot = Snapshot {
-                // A wheel at rest sends no reports at all, so seed the
-                // steering at center rather than showing full left lock
-                // until the first real event arrives.
-                steering_raw: evtest::AXIS_MAX / 2,
-                buttons: vec![false; codes.len()],
-                shifter_connected: standalone_detected,
-                shifter_mode: if standalone_detected { "Direct USB".to_string() } else { String::new() },
-                ..Snapshot::default()
-            };
+            let mut snapshot = initial_snapshot(
+                codes.len(),
+                standalone_detected,
+                handbrake_detected,
+                adapter_detected,
+                base_handbrake,
+                base_h_shifter,
+                base_adapter,
+            );
             let mut buf = [0u8; EVENT_SIZE * 64];
             let mut dirty = true; // push the initial all-idle state once
             let mut last_push = Instant::now() - PUSH_INTERVAL;
+            let mut last_hotplug = Instant::now();
             loop {
                 if thread_stop.load(Ordering::Relaxed) {
                     return;
                 }
-                if let Some(ref mut s_file) = standalone_shifter {
-                    if poll_standalone_shifter(s_file, &mut snapshot) {
+                if last_hotplug.elapsed() >= HOTPLUG_INTERVAL {
+                    if refresh_accessories(
+                        &wheel_path,
+                        sysfs_dir.as_deref(),
+                        &mut standalone_shifter,
+                        &mut standalone_handbrake,
+                        &mut standalone_adapter,
+                        &mut snapshot,
+                    ) {
                         dirty = true;
                     }
+                    last_hotplug = Instant::now();
+                }
+                if poll_standalone_devices(
+                    &mut standalone_shifter,
+                    &mut standalone_handbrake,
+                    &mut standalone_adapter,
+                    &mut snapshot,
+                    right_paddle_idx,
+                    left_paddle_idx,
+                ) {
+                    dirty = true;
                 }
                 match poll_wheel_events(&mut file, &mut buf, &mut snapshot, &codes, axes, model) {
                     Ok(changed) => {
@@ -181,12 +401,12 @@ impl Drop for Reader {
 }
 
 /// Poll standalone USB RS H-Shifter events, updating gear and connection status.
-fn poll_standalone_shifter(s_file: &mut std::fs::File, snapshot: &mut Snapshot) -> bool {
+fn poll_standalone_shifter(s_file: &mut std::fs::File, snapshot: &mut Snapshot) -> Result<bool, ()> {
     let mut s_buf = [0u8; EVENT_SIZE * 32];
-    let n = match s_file.read(&mut s_buf) {
-        Ok(n) if n > 0 => n,
-        _ => return false,
-    };
+    let n = read_nonblocking(s_file, &mut s_buf)?;
+    if n == 0 {
+        return Ok(false);
+    }
 
     let mut changed = false;
     let (events, _partial) = s_buf[..n].as_chunks::<EVENT_SIZE>();
@@ -211,7 +431,135 @@ fn poll_standalone_shifter(s_file: &mut std::fs::File, snapshot: &mut Snapshot) 
             changed = true;
         }
     }
-    changed
+    Ok(changed)
+}
+
+/// Poll standalone RS Handbrake / Sequential Shifter events.
+fn poll_standalone_handbrake(
+    hb_file: &mut std::fs::File,
+    snapshot: &mut Snapshot,
+    right_paddle_idx: Option<usize>,
+    left_paddle_idx: Option<usize>,
+) -> Result<bool, ()> {
+    let mut hb_buf = [0u8; EVENT_SIZE * 32];
+    let n = read_nonblocking(hb_file, &mut hb_buf)?;
+    if n == 0 {
+        return Ok(false);
+    }
+
+    let mut changed = false;
+    let (events, _partial) = hb_buf[..n].as_chunks::<EVENT_SIZE>();
+    for chunk in events {
+        let event = match evtest::parse_event(chunk) {
+            Some(e) => e,
+            None => continue,
+        };
+
+        match event {
+            TestEvent::Axis { code: evtest::ABS_Z, value } => {
+                // Scale 10-bit analog handbrake (0..1023) to wheel pedal scale (0..65535)
+                snapshot.axes[3] = ((value as i64 * 65535) / 1023) as i32;
+                changed = true;
+            }
+            TestEvent::Button { code: 0x120, pressed } => { // BTN_TRIGGER / 288 (Shift Up)
+                snapshot.seq_shift_up = pressed;
+                if let Some(idx) = right_paddle_idx {
+                    if idx < snapshot.buttons.len() {
+                        snapshot.buttons[idx] = pressed;
+                    }
+                }
+                changed = true;
+            }
+            TestEvent::Button { code: 0x121, pressed } => { // BTN_THUMB / 289 (Shift Down)
+                snapshot.seq_shift_down = pressed;
+                if let Some(idx) = left_paddle_idx {
+                    if idx < snapshot.buttons.len() {
+                        snapshot.buttons[idx] = pressed;
+                    }
+                }
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+    Ok(changed)
+}
+
+/// Poll standalone Logitech Racing Adapter events, updating pedal axes and legacy shifter gates.
+fn poll_standalone_adapter(ad_file: &mut std::fs::File, snapshot: &mut Snapshot) -> Result<bool, ()> {
+    let mut ad_buf = [0u8; EVENT_SIZE * 32];
+    let n = read_nonblocking(ad_file, &mut ad_buf)?;
+    if n == 0 {
+        return Ok(false);
+    }
+
+    let mut changed = false;
+    let (events, _partial) = ad_buf[..n].as_chunks::<EVENT_SIZE>();
+    for chunk in events {
+        let event = match evtest::parse_event(chunk) {
+            Some(e) => e,
+            None => continue,
+        };
+
+        match event {
+            TestEvent::Axis { code, value } => {
+                // Scale 12-bit pedal axes (0..4095) to wheel pedal scale (0..65535)
+                let scaled = ((value as i64 * 65535) / 4095) as i32;
+                match code {
+                    evtest::ABS_Y => {
+                        snapshot.axes[0] = scaled; // Throttle
+                        changed = true;
+                    }
+                    evtest::ABS_Z => {
+                        snapshot.axes[1] = scaled; // Brake
+                        changed = true;
+                    }
+                    evtest::ABS_RX => {
+                        snapshot.axes[2] = scaled; // Clutch
+                        changed = true;
+                    }
+                    _ => {}
+                }
+            }
+            TestEvent::Button { code, pressed } => {
+                let gear = match evtest::gear_from_adapter_code(code) {
+                    Some(g) => g as i32,
+                    None => continue,
+                };
+
+                if pressed {
+                    snapshot.adapter_gear = gear;
+                    snapshot.adapter_connected = true;
+                    if snapshot.shifter_mode.is_empty() {
+                        snapshot.shifter_mode = "Logitech Racing Adapter".to_string();
+                    }
+                    changed = true;
+                } else if snapshot.adapter_gear == gear {
+                    snapshot.adapter_gear = 0;
+                    changed = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(changed)
+}
+
+fn update_base_sequential(snapshot: &mut Snapshot, code: u16, pressed: bool) -> bool {
+    if !snapshot.handbrake_connected {
+        return false;
+    }
+    match code {
+        0x124 => {
+            snapshot.seq_shift_up = pressed;
+            true
+        }
+        0x125 => {
+            snapshot.seq_shift_down = pressed;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Fold one raw event into `snapshot`; true if anything shown changed.
@@ -235,8 +583,24 @@ fn apply_event(
                 snapshot.buttons[i] = pressed;
                 changed = true;
             }
+            if update_base_sequential(snapshot, code, pressed) {
+                changed = true;
+            }
             if let Some(gear) = evtest::gear_from_wheel_code(model, code) {
-                if pressed {
+                if snapshot.base_adapter_connected {
+                    let ad_gear = gear as i32;
+                    if pressed {
+                        snapshot.adapter_gear = ad_gear;
+                        snapshot.adapter_connected = true;
+                        if snapshot.shifter_mode.is_empty() {
+                            snapshot.shifter_mode = "Wheel base".to_string();
+                        }
+                        changed = true;
+                    } else if snapshot.adapter_gear == ad_gear {
+                        snapshot.adapter_gear = 0;
+                        changed = true;
+                    }
+                } else if pressed {
                     snapshot.gear = gear as i32;
                     snapshot.shifter_connected = true;
                     if snapshot.shifter_mode.is_empty() {
@@ -424,7 +788,6 @@ pub fn run_test_sequence(
     fftest::run_sequence(&mut device, steps, model, cancel, on_event)
 }
 
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;
