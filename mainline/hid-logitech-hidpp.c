@@ -9268,8 +9268,9 @@ static void hidpp_dd_enable_desktop_shifter(struct hidpp_dd_ff_data *ff)
 		if (ret)
 			dd_warn(hid, "Desktop shifter: attachments fn0 failed: %d\n", ret);
 
+		memcpy(params, slot_routing, sizeof(slot_routing));
 		ret = hidpp_send_fap_command_sync(hidpp, ff->idx_attachments,
-						  0x20 /* fn2 */, (u8 *)slot_routing,
+						  0x20 /* fn2 */, params,
 						  sizeof(slot_routing), &response);
 		if (ret)
 			dd_warn(hid, "Desktop shifter: attachments fn2 failed: %d\n", ret);
