@@ -33,7 +33,10 @@ until the last round.
   ([#83](../../issues/83)) is his too. And after weeks of a freeze that
   left nothing in any log, he disabled his iGPU to see the panic on screen
   and photographed it, which named the stale reply buffer fixed in 0.42.5
-  ([#128](../../issues/128)).
+  ([#128](../../issues/128)). The Windows captures in
+  [#134](../../issues/134) and [#135](../../issues/135) then showed that the
+  wire traffic is the same on both systems, which put the pedal inversion
+  on the Windows side and closed a long thread with evidence.
 - **[DaveDos95](https://github.com/DaveDos95)** - RaceRoom on an RS50 under
   SteamOS ([#92](../../issues/92)): read the game's own profile file to rule
   out the first diagnosis, then produced the proxy logs that proved the real
@@ -93,6 +96,10 @@ until the last round.
 
 ## Sustained bug reporting
 
+- **[kangaro0](https://github.com/kangaro0)** - an RS50 that never showed
+  up on first power-up ([#141](../../issues/141)). The kernel log in that report
+  named the real cause, a front-panel USB port failing the link before any
+  driver ran, which is now a troubleshooting entry for everyone after him.
 - **[Ismael-Torresan](https://github.com/Ismael-Torresan)** - the only
   quantitative measurements the force engine has: a fixed push over a fixed
   travel, timed, for damper, friction and inertia on both the firmware's

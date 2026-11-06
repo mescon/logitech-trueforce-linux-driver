@@ -1,32 +1,37 @@
 # Logitech's real TrueForce texture, extracted from Windows captures
 
 Source: `dev/captures/rs50_acc_2026-04-21/2026-04-21_trueforce_ace.pcapng`
-(AC EVO on Windows, RS50, G HUB present). 119,028 stream packets, 250,140
-audio samples at ~3983 Hz, analysed 2026-08-12. Parsing: type-0x01 packets,
-new samples = last `byte[10]` slots of the 13-slot window at bytes 12+4i,
-u16 LE offset-binary.
+(AC EVO on Windows, RS50, G HUB present). The capture holds 119,028 stream
+packets and 250,140 audio samples at ~3983 Hz. It was analysed on 2026-08-12.
+TrueForce is Logitech's high-rate haptic channel. Its texture is the fine
+engine buzz the wheel plays on top of the base force. Parsing: type-0x01
+packets, new samples = last `byte[10]` slots of the 13-slot window at bytes
+12+4i, u16 LE offset-binary.
 
 ## What Windows sends that Proton does not
 
-On Windows the ep3 stream carries BOTH the base force (`cur`, 1 kHz) and
+On Windows the ep3 stream (USB endpoint 3, the TrueForce output channel)
+carries two things. It carries the base force (`cur`, 1 kHz). It also carries
 real audio texture (`byte[10]=4` in 62,535 of 119,028 packets). Under Proton
-the SDK's stream carries `cur` only, `byte[10]=0` always. The missing texture
-is the audio slots.
+(the Wine-based Windows compatibility layer in Steam) the SDK's stream carries
+`cur` only, and `byte[10]=0` always. The missing texture is the audio slots.
 
 **Who injects it (corrected 2026-08-13):** the injector is **G HUB the running
-process**, synthesising the engine note from the game's Escape RPM and merging
-it into ep3. It is NOT Logitech's OEM DirectInput driver
-(`hidpp_forcefeedback_x64.dll`): this capture is on `c276` (native mode), and
+process**. G HUB synthesises the engine note from the game's Escape RPM
+(engine speed the game passes through a DirectInput call) and merges it into
+ep3. It is NOT Logitech's OEM DirectInput driver
+(`hidpp_forcefeedback_x64.dll`). This capture is on `c276` (native mode), and
 that driver does not claim c276 at all (only c262/c268/c26e/c272; it
 null-derefs on c276). The game itself calls `SetTorqueTF*` zero times. So the
-texture is G HUB's synthesis, and there is no G HUB on Linux and no
-non-synthesised signal to obtain - reproducing it means synthesising like G HUB
-and fitting to this capture. The compat-mode(c272)/OEM-driver path is a dead
-end for AC EVO texture (and c272 needs a physical wheel-OLED switch).
+texture is G HUB's synthesis. There is no G HUB on Linux and no
+non-synthesised signal to obtain. To reproduce it, synthesise like G HUB and
+fit the result to this capture. The compat-mode(c272)/OEM-driver path is a
+dead end for AC EVO texture (and c272 needs a physical wheel-OLED switch).
 
 ## The texture recipe (the tuning table)
 
-An engine-firing-frequency harmonic stack, amplitude subtle:
+The texture is a harmonic stack on the engine firing frequency, at a subtle
+amplitude:
 
 | f0 (firing freq) | h2/h1 | h3/h1 | h4/h1 | h5/h1 |
 |---|---|---|---|---|
@@ -36,18 +41,18 @@ An engine-firing-frequency harmonic stack, amplitude subtle:
 | 290-360 Hz | 0.28 | 0.33 | 0.08 | 0.07 |
 
 - Amplitude: rms ~ 72 + 1.13 * f0 counts, i.e. **0.7% of fullscale at low
-  revs rising to ~1.5% at high revs**. Occasional transients to ~2.3%.
+  revs rising to ~1.5% at high revs**. Occasional transients reach ~2.3%.
 - Harmonic falloff is much steeper than logi-tf-sim's current
-  `HARMONIC_GAINS [1.0, 0.5, 0.25]`: the real h2 is ~0.2-0.3 and h3
+  `HARMONIC_GAINS [1.0, 0.5, 0.25]`. The real h2 is ~0.2-0.3 and h3 is
   ~0.1-0.33 (h3 RISES with revs). Our synth is too bright and too loud
-  relative to the real thing unless intensity is well below 100.
+  next to the real thing unless intensity is well below 100.
 - At idle the fundamental may be suppressed (peaks at 2x/3x/4x of ~56.5 Hz
-  for a ~850 rpm V8); at mid/high revs the fundamental dominates.
+  for a ~850 rpm V8). At mid/high revs the fundamental dominates.
 
 ### Rigorous re-measurement 2026-08-13 (2048-pt windowed FFT, FS=3983 Hz)
 
-251,299 samples reconstructed; overall rms **1.48% FS**, 88% non-zero.
-Fundamental (firing freq) ranges 41-385 Hz. Median harmonic ratios and
+251,299 samples were reconstructed. Overall rms is **1.48% FS**, 88% non-zero.
+The fundamental (firing freq) ranges 41-385 Hz. Median harmonic ratios and
 amplitude, binned by f0:
 
 | f0 band (Hz) | rms (%FS) | h2/h1 | h3/h1 | h4/h1 | h5/h1 |
@@ -58,28 +63,28 @@ amplitude, binned by f0:
 | 240-290 | 1.27 | 0.23 | 0.13 | 0.08 | 0.07 |
 | 290-360 | 1.61 | 0.27 | 0.25 | 0.07 | 0.05 |
 
-Confirms the earlier table: h2 rises ~0.11->0.27 and h3 ~0.08->0.25 with revs,
-amplitude climbs ~0.5%->1.6% FS. The idle band's high ratios reflect the
+This confirms the earlier table. h2 rises ~0.11->0.27 and h3 ~0.08->0.25 with
+revs. Amplitude climbs ~0.5%->1.6% FS. The idle band's high ratios reflect the
 suppressed fundamental (energy sits at 2x/3x). Extraction:
 `/tmp/tex_samples.txt` from the awk+numpy pipeline in the 2026-08-13 session.
 
 BeamNG on Windows (`g_pro_tf_2026-04-19/2026-04-19_trueforce_beamng.pcapng`)
-carries 46,883 sample-packets and can cross-check the model on a second
+carries 46,883 sample-packets. It can cross-check the model on a second
 title.
 
 ## Where to inject under Proton (resolved: kernel-side merge)
 
-The SDK owns the ep3 stream (single writer) and fills only `cur`. Options
-considered:
+The SDK owns the ep3 stream (single writer) and fills only `cur`. Two options
+were considered:
 
 1. **Kernel-side merge**: the stream passes through the kernel (hidraw
-   write path); rewrite passing type-0x01 packets to add synth samples +
-   count, exactly where Windows merges them. Base force stays bit-identical
-   SDK output; texture is ours, tuned from this recipe, fed RPM via
-   `wheel_texture_rpm`, written by `logi-rpm-bridge` from the proxy's
-   telemetry relay.
+   write path). Rewrite passing type-0x01 packets to add synth samples and
+   a count, exactly where Windows merges them. The base force stays
+   bit-identical SDK output. The texture is ours, tuned from this recipe.
+   It gets RPM via `wheel_texture_rpm`, which `logi-rpm-bridge` writes from
+   the proxy's telemetry relay.
 2. **Own the stream**: drop the SDK, forward KF through libtrueforce and
-   mix texture in userspace. Simpler layering, but replaces the SDK's
+   mix texture in userspace. This is simpler layering. It replaces the SDK's
    bit-identical cur with our reconstruction.
 
 **Resolved**: option 1 was implemented and hardware-validated (2026-08-14,

@@ -5,6 +5,40 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.43.0 - Unreleased
+
+**The Logitech RS H-Shifter works on the RS50 and the G PRO.** Plug it into
+an accessory port on the wheel base. The driver finds it when the module
+loads and when you plug it in later. The seven gates and reverse report as
+buttons 12 to 19. In desktop mode, with no game running, the driver turns
+on the base's routing for the shifter, so the gates also work on the
+desktop. The Info page in logi-wheel shows the gate that is in, and whether
+the shifter sits on the base or on its own USB cable. Written and tested on
+real hardware by gonzaloadrio ([#140](../../pull/140)).
+
+**`wheel_accessory` now names the H-Shifter.** A read of the attribute
+re-checks the accessory ports, so a shifter plugged in after boot shows up
+on the next read. With an RS Shifter & Handbrake and an H-Shifter attached
+at the same time, the attribute names the Shifter & Handbrake. Showing both
+is tracked in [#144](../../issues/144).
+
+**Module load did not get slower.** The H-Shifter probe runs inside the one
+accessory pass that already existed, so a wheel without accessories pays
+nothing extra.
+
+**pulldown-cmark 0.13.6** clears advisory RUSTSEC-2026-0414 in the Rust
+workspace ([#142](../../pull/142)).
+
+**Troubleshooting now covers a wheel that never enumerates.** A front-panel
+USB port can fail the USB link before any driver runs. The kernel log shows
+`disabled by hub (EMI?)` or `error -71`. A rear port fixes it
+([#141](../../issues/141)).
+
+Thanks to gonzaloadrio for the shifter work and the hot-plug test runs, to
+kangaro0 for the first power-up report that found the port problem, and to
+fenixadam for the Windows captures in
+[#134](../../issues/134) and [#135](../../issues/135).
+
 ## 0.42.6 - 2026-10-22
 
 **A kernel oops on the G923 PS edition when the wheel is unplugged or the
