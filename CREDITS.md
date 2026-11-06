@@ -156,7 +156,10 @@ the work to prove it.
 Commit authors appear in
 [the contributors graph](../../graphs/contributors), including
 **[aderumier](https://github.com/aderumier)**, whose pull request is in the
-tree.
+tree, and **[gonzaloadrio](https://github.com/gonzaloadrio)**, who wrote the
+RS H-Shifter support ([#140](../../pull/140)) and its desktop-mode gate
+routing, then tested every revision on their own RS50, including the hot-plug
+path nobody here could try.
 
 Upstream projects this driver is built on are credited in the
 [README](README.md#acknowledgments).
