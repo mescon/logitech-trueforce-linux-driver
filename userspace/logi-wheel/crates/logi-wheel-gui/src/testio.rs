@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use logi_wheel_core::evtest::{self, TestEvent, EVENT_SIZE};
+use logi_wheel_core::WheelModel;
 
 /// One UI push worth of live wheel state. `buttons` is parallel to
 /// whichever code list `Reader::start` was given (see
@@ -33,6 +34,9 @@ pub struct Snapshot {
     pub buttons: Vec<bool>,
     pub hat: (i32, i32),
     pub axes: [i32; 4],
+    pub gear: i32,
+    pub shifter_connected: bool,
+    pub shifter_mode: String,
 }
 
 /// How often the reader pushes a fresh [`Snapshot`] at most.
@@ -50,6 +54,47 @@ pub struct Reader {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
+fn open_standalone_shifter(wheel_path: &str) -> Option<std::fs::File> {
+    let s = evtest::discover_shifter_input()?;
+    if s.event_path == wheel_path {
+        return None;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&s.event_path)
+        .ok()
+}
+
+/// Read and fold wheel events from `file` into `snapshot`.
+/// Returns `Ok(true)` if anything changed, `Ok(false)` if no visible change or would block,
+/// or `Err(())` if the device was disconnected (EOF or fatal error).
+fn poll_wheel_events(
+    file: &mut std::fs::File,
+    buf: &mut [u8; EVENT_SIZE * 64],
+    snapshot: &mut Snapshot,
+    codes: &[u16],
+    axes: evtest::PedalAxes,
+    model: WheelModel,
+) -> Result<bool, ()> {
+    match file.read(buf) {
+        Ok(0) => Err(()), // A closed/unplugged evdev node reads EOF.
+        Ok(n) => {
+            let mut changed = false;
+            let (events, _partial) = buf[..n].as_chunks::<EVENT_SIZE>();
+            for chunk in events {
+                if apply_event(snapshot, chunk, codes, axes, model) {
+                    changed = true;
+                }
+            }
+            Ok(changed)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(false),
+        Err(_) => Err(()),
+    }
+}
+
 impl Reader {
     /// Open `path` and start the read loop, tracking `codes` (see
     /// `evtest::button_codes_for_model`; `snapshot.buttons` stays parallel
@@ -58,6 +103,7 @@ impl Reader {
     /// in a dead page.
     pub fn start(
         path: &str,
+        model: WheelModel,
         codes: Vec<u16>,
         axes: evtest::PedalAxes,
         on_snapshot: impl Fn(Snapshot) + Send + 'static,
@@ -67,6 +113,8 @@ impl Reader {
             .read(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
             .open(path)?;
+        let mut standalone_shifter = open_standalone_shifter(path);
+        let standalone_detected = standalone_shifter.is_some();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let handle = std::thread::spawn(move || {
@@ -76,6 +124,8 @@ impl Reader {
                 // until the first real event arrives.
                 steering_raw: evtest::AXIS_MAX / 2,
                 buttons: vec![false; codes.len()],
+                shifter_connected: standalone_detected,
+                shifter_mode: if standalone_detected { "Direct USB".to_string() } else { String::new() },
                 ..Snapshot::default()
             };
             let mut buf = [0u8; EVENT_SIZE * 64];
@@ -85,26 +135,18 @@ impl Reader {
                 if thread_stop.load(Ordering::Relaxed) {
                     return;
                 }
-                match file.read(&mut buf) {
-                    // A closed/unplugged evdev node reads EOF.
-                    Ok(0) => {
-                        on_gone();
-                        return;
+                if let Some(ref mut s_file) = standalone_shifter {
+                    if poll_standalone_shifter(s_file, &mut snapshot) {
+                        dirty = true;
                     }
-                    Ok(n) => {
-                        // as_chunks over chunks_exact: the size is a
-                        // constant, so the compiler knows each slice is a
-                        // whole event rather than checking per iteration.
-                        let (events, _partial) = buf[..n].as_chunks::<EVENT_SIZE>();
-                        for chunk in events {
-                            if apply_event(&mut snapshot, chunk, &codes, axes) {
-                                dirty = true;
-                            }
+                }
+                match poll_wheel_events(&mut file, &mut buf, &mut snapshot, &codes, axes, model) {
+                    Ok(changed) => {
+                        if changed {
+                            dirty = true;
                         }
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => {
+                    Err(()) => {
                         on_gone();
                         return;
                     }
@@ -138,6 +180,40 @@ impl Drop for Reader {
     }
 }
 
+/// Poll standalone USB RS H-Shifter events, updating gear and connection status.
+fn poll_standalone_shifter(s_file: &mut std::fs::File, snapshot: &mut Snapshot) -> bool {
+    let mut s_buf = [0u8; EVENT_SIZE * 32];
+    let n = match s_file.read(&mut s_buf) {
+        Ok(n) if n > 0 => n,
+        _ => return false,
+    };
+
+    let mut changed = false;
+    let (events, _partial) = s_buf[..n].as_chunks::<EVENT_SIZE>();
+    for chunk in events {
+        let (code, pressed) = match evtest::parse_event(chunk) {
+            Some(TestEvent::Button { code, pressed }) => (code, pressed),
+            _ => continue,
+        };
+
+        let gear = match evtest::gear_from_standalone_code(code) {
+            Some(g) => g as i32,
+            None => continue,
+        };
+
+        if pressed {
+            snapshot.gear = gear;
+            snapshot.shifter_connected = true;
+            snapshot.shifter_mode = "Direct USB".to_string();
+            changed = true;
+        } else if snapshot.gear == gear {
+            snapshot.gear = 0;
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Fold one raw event into `snapshot`; true if anything shown changed.
 /// `codes` is the same list `snapshot.buttons` is parallel to (see
 /// `Reader::start`).
@@ -146,19 +222,34 @@ fn apply_event(
     chunk: &[u8],
     codes: &[u16],
     axes: evtest::PedalAxes,
+    model: WheelModel,
 ) -> bool {
     match evtest::parse_event(chunk) {
         Some(TestEvent::Steering(raw)) => {
             snapshot.steering_raw = raw;
             true
         }
-        Some(TestEvent::Button { code, pressed }) => match codes.iter().position(|c| *c == code) {
-            Some(i) => {
+        Some(TestEvent::Button { code, pressed }) => {
+            let mut changed = false;
+            if let Some(i) = codes.iter().position(|c| *c == code) {
                 snapshot.buttons[i] = pressed;
-                true
+                changed = true;
             }
-            None => false,
-        },
+            if let Some(gear) = evtest::gear_from_wheel_code(model, code) {
+                if pressed {
+                    snapshot.gear = gear as i32;
+                    snapshot.shifter_connected = true;
+                    if snapshot.shifter_mode.is_empty() {
+                        snapshot.shifter_mode = "Wheel base".to_string();
+                    }
+                    changed = true;
+                } else if snapshot.gear == gear as i32 {
+                    snapshot.gear = 0;
+                    changed = true;
+                }
+            }
+            changed
+        }
         Some(TestEvent::Axis { code, value }) => match code {
             evtest::ABS_HAT0X => {
                 snapshot.hat.0 = value;
@@ -339,9 +430,19 @@ mod tests {
     use super::*;
     use logi_wheel_core::device::WheelModel;
 
+    /// Helper for tests against a specific wheel model layout.
+    fn apply_event_for(
+        model: WheelModel,
+        snapshot: &mut Snapshot,
+        chunk: &[u8],
+        codes: &[u16],
+    ) -> bool {
+        apply_event(snapshot, chunk, codes, evtest::pedal_axes(model, None), model)
+    }
+
     /// The direct-drive layout, which these tests were written against.
     fn apply_event_dd(snapshot: &mut Snapshot, chunk: &[u8], codes: &[u16]) -> bool {
-        apply_event(snapshot, chunk, codes, evtest::pedal_axes(WheelModel::Rs50, None))
+        apply_event_for(WheelModel::Rs50, snapshot, chunk, codes)
     }
 
     /// A G923's brake reaches the brake bar rather than the handbrake one.
@@ -357,7 +458,7 @@ mod tests {
         let codes = evtest::button_codes_for_model(WheelModel::G923);
         let mut s = Snapshot { buttons: vec![false; codes.len()], ..Default::default() };
         let xbox = evtest::pedal_axes(WheelModel::G923, Some(0xc26e));
-        assert!(apply_event(&mut s, &ev(3, evtest::ABS_Z, 200), &codes, xbox), "brake moved");
+        assert!(apply_event(&mut s, &ev(3, evtest::ABS_Z, 200), &codes, xbox, WheelModel::G923), "brake moved");
         assert_eq!(s.axes[1], 200, "ABS_Z is the brake on this wheel, not the handbrake");
         assert_eq!(s.axes[3], 0, "and nothing should reach the handbrake bar");
     }
@@ -408,7 +509,10 @@ mod tests {
         assert!(apply_event_dd(&mut s, &ev(3, evtest::ABS_HAT0Y, -1), &codes), "hat up");
         assert_eq!(s.hat, (0, -1));
         assert!(!apply_event_dd(&mut s, &ev(0, 0, 0), &codes), "SYN is not shown state");
-        assert!(!apply_event_dd(&mut s, &ev(1, 0x12c, 1), &codes), "phantom button ignored (RS50)");
+        assert!(!apply_event_dd(&mut s, &ev(1, 0x1ff, 1), &codes), "unknown button ignored (RS50)");
+        assert!(apply_event_dd(&mut s, &ev(1, 0x12c, 1), &codes), "shifter gear 1 tracked (RS50)");
+        assert_eq!(s.gear, 1);
+        assert!(s.shifter_connected);
     }
 
     #[test]
@@ -427,11 +531,14 @@ mod tests {
         let codes: Vec<u16> =
             logi_wheel_core::evtest::button_codes_for_model(logi_wheel_core::WheelModel::G923);
         let mut s = Snapshot { buttons: vec![false; codes.len()], ..Snapshot::default() };
-        assert!(apply_event_dd(&mut s, &ev(1, 0x2c3, 1), &codes), "tracked on a G923");
-        assert!(apply_event_dd(&mut s, &ev(1, 0x2c4, 1), &codes), "tracked on a G923");
+        assert!(apply_event_for(WheelModel::G923, &mut s, &ev(1, 0x2c3, 1), &codes), "tracked on a G923");
+        assert_eq!(s.gear, 0, "G923 Plus must not be decoded as shifter gear");
+        assert!(!s.shifter_connected, "shifter must not be marked connected on G923");
+        assert!(apply_event_for(WheelModel::G923, &mut s, &ev(1, 0x2c4, 1), &codes), "tracked on a G923");
+        assert_eq!(s.gear, 0, "G923 Minus must not be decoded as shifter gear");
         // A descriptor-gap code the live G923 never actually sends is now
         // correctly absent from its own code list, so it is ignored - the
         // same as any code neither the wheel nor the code list knows.
-        assert!(!apply_event_dd(&mut s, &ev(1, 0x12c, 1), &codes), "gap code not tracked");
+        assert!(!apply_event_for(WheelModel::G923, &mut s, &ev(1, 0x12c, 1), &codes), "gap code not tracked");
     }
 }
