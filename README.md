@@ -164,8 +164,8 @@ cancelable force tests.
 
 ## What works
 
-Force feedback, TrueForce haptics, LEDs, pedals, the RS Shifter & Handbrake, and
-the full set of G HUB wheel settings all work. The RS50 is the development
+Force feedback, TrueForce haptics, LEDs, pedals, the RS Shifter & Handbrake,
+the RS H-Shifter, and the full set of G HUB wheel settings all work. The RS50 is the development
 hardware and is verified directly; the G PRO runs the same code path and is
 expected to work, with a few items awaiting an owner's confirmation.
 
@@ -181,6 +181,7 @@ to work · 🟡 needs a tester · `-` not applicable.
 | Rotation range (90 to 2700°), strength, damping, filters | ✅ | 🟢 |
 | Pedal response curves, sensitivity, deadzones, combined pedals | ✅ | 🟢 |
 | RS Shifter & Handbrake (shift, digital + analog handbrake) | ✅ | 🟢 |
+| RS H-Shifter (7 gates + reverse, works on the desktop, hot-plug) | ✅ | 🟢 |
 | LIGHTSYNC RGB LEDs (slots, colors, direction; edits apply live) | ✅ (faceplate strip, see note) | 🟡 (rev lights) |
 | RPM rev-light display (level fill; drawn center-out by default - the strip's pattern comes from the wheel's stored display config, separate from the level itself) | ✅ | 🟡 |
 | Native texture merge + telemetry rev lights in AC EVO (relay triple -> logi-rpm-bridge -> wheel) | ✅ | 🟢 |
@@ -627,6 +628,13 @@ handbrake curve is live while the two trigger points are not.
 
 ![logi-wheel-gui RS Shifter and Handbrake settings](docs/images/logi-wheel-accessory.png)
 
+The **RS H-Shifter** works the same way. Plug it into an accessory port on
+the base and its seven gates and reverse appear as buttons 12 to 19. The
+driver also turns on the base's routing for it in desktop mode, so the gates
+work outside a game. The Info / Testing page shows which gate is in. Plug
+the shifter straight into the computer by USB instead and the page reads it
+there too, with the mode shown next to the gate.
+
 The Info / Testing page doubles as a live input tester (does this button
 reach the computer?), and the Setup page manages the game helpers:
 
@@ -670,6 +678,21 @@ keeping hands clear during AC EVO map loads) are covered under
 ```bash
 logi-wheel --report
 ```
+
+### The wheel never shows up, or drops off the bus
+
+If the wheel is missing from `lsusb`, or appears and vanishes, read the
+kernel log before you suspect the driver:
+
+```bash
+sudo dmesg | grep -i usb | tail -n 30
+```
+
+Lines like `disabled by hub (EMI?)`, `device descriptor read/64, error -71`
+or `unable to enumerate USB device` mean the USB link itself failed. That
+happens before any driver runs. The usual cause is a front-panel USB port or
+a hub. Move the wheel to a port on the back of the computer, on the
+mainboard, and power the wheel off and on ([#141](../../issues/141)).
 
 ### No force feedback once the raw HID interface is on
 

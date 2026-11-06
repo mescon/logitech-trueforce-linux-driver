@@ -14,8 +14,9 @@ HID++ features (base): 8040=0A 807A=0B 807B=0C 80A4=0D 80D0=0E ...
 ## Read this before drawing conclusions from it
 
 **These are BASE-DEVICE answers.** HID++ sub-devices answer separately: the
-RS Shifter & Handbrake reports at device index `0x04`, and its features
-error out here rather than reporting themselves. `0x80B1 BANDED_AXIS` and
+RS Shifter & Handbrake reports at device index `0x04`, the RS H-Shifter
+(`0x812D RS_H_SHIFTER`) at the index of the port it is plugged into, and
+their features error out here rather than reporting themselves. `0x80B1 BANDED_AXIS` and
 `0x812C WHEEL_CENTER_POSITION` show as absent on the RS50 below and the
 driver demonstrably uses both. Absence in this table means "not on the base
 device", not "not on the wheel".
