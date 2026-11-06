@@ -1,14 +1,15 @@
 # Simulated TrueForce for sims that publish to shared memory
 
-Most sims broadcast telemetry over UDP, which `logi-tf-sim` reads directly.
-A few do not: iRacing, RaceRoom, the Assetto Corsa family, rFactor 2
-and Le Mans Ultimate publish into a named Windows shared-memory section that
-only the game's own SDK reads. Nothing on the Linux side can see it.
+Most sims broadcast telemetry over UDP, and `logi-tf-sim` reads that
+directly. A few do not. iRacing, RaceRoom, the Assetto Corsa family, rFactor 2
+and Le Mans Ultimate publish into a named Windows shared-memory section.
+Shared memory is a memory region two programs read and write together. Only
+the game's own SDK reads that section. Nothing on the Linux side can see it.
 
-`logi-tf-relay` is a small Windows executable that runs inside the game's
-Proton prefix, reads that section with the ordinary Win32 API (which Wine
-implements), and forwards engine speed, redline, throttle and gear to the
-daemon over localhost UDP.
+`logi-tf-relay` is a small Windows executable. It runs inside the game's
+Proton prefix (the per-game Wine environment Steam creates). It reads that
+section with the ordinary Win32 API, which Wine implements. It then forwards
+engine speed, redline, throttle and gear to the daemon over localhost UDP.
 
 ## What works today
 
@@ -22,74 +23,74 @@ daemon over localhost UDP.
 | rFactor 2 | Decoder written. Unconfirmed against a live session. |
 | Le Mans Ultimate | Decoder written. Unconfirmed against a live session. |
 
-What separates these is not difficulty, it is whether the layout can be
+What separates these is not difficulty. It is whether the layout can be
 trusted without a capture. Each earned that trust a different way.
 
 **iRacing's telemetry is self-describing.** The section starts with a small
-header pointing at a table of variable descriptors, each carrying a
-variable's name next to its offset and type, so the decoder looks up `RPM`,
-`Throttle` and `Gear` by name at runtime. Nothing about where those values
-live is guessed.
+header. The header points at a table of variable descriptors. Each descriptor
+carries a variable's name next to its offset and type. So the decoder looks up
+`RPM`, `Throttle` and `Gear` by name at runtime. Nothing about where those
+values live is guessed.
 
 **RaceRoom's layout is published by the people who write it.** KW Studios
-ship `r3e.h` at `github.com/sector3studios/r3e-api`, in the public domain,
-and they own both ends of the interface with no plugin in between. The struct
-is byte-packed, so no compiler can disagree about where a field sits, and it
-opens with a major version number the decoder checks before reading anything
-else.
+ship `r3e.h` at `github.com/sector3studios/r3e-api`, in the public domain.
+They own both ends of the interface, with no plugin in between. The struct
+is byte-packed, so no compiler can disagree about where a field sits. It
+opens with a major version number, and the decoder checks that number before
+it reads anything else.
 
 **Assetto Corsa only needs the head of its struct.** Kunos have appended
-fields to the physics block for a decade, but appending does not move what
-came before, and throttle, gear and rpm have been in its first 32 bytes since
-1.0. The redline comes from a second block where the offset is less obviously
-safe, so the decoder verifies that block's layout in-band before trusting it.
-Competizione publishes the same section names and the same layout, byte for
-byte through every field used, so it is read by the same decoder.
+fields to the physics block for a decade. Appending does not move what came
+before, and throttle, gear and rpm have been in its first 32 bytes since 1.0.
+The redline comes from a second block, where the offset is less obviously
+safe. So the decoder verifies that block's layout in-band before it trusts
+it. Competizione publishes the same section names and the same layout, byte
+for byte through every field used. The same decoder reads it.
 
-EVO is the one that changed. Kunos renamed every section and took the car
-spec sheet out of the static block, so the redline the older two read there
-does not exist. Its replacement, `currentMaxRpm`, sits in the physics block
-and is republished every tick. That leaves EVO with one section and no layout
-guard, so the check is the value itself: a redline is a distinctive number,
-and a wrong offset in a physics block lands on a temperature, a pressure or a
-pedal, none of which comes near one.
+EVO is the one that changed. Kunos renamed every section. They also took the
+car spec sheet out of the static block, so the redline the older two read
+there does not exist. Its replacement, `currentMaxRpm`, sits in the physics
+block and is republished every tick. That leaves EVO with one section and no
+layout guard. So the check is the value itself. A redline is a distinctive
+number. A wrong offset in a physics block lands on a temperature, a pressure
+or a pedal, and none of those comes near one.
 
 Confirmed on a live session on 2026-08-06: `acevo_pmf_physics` opened while
-`acpmf_physics` stayed absent, which is itself evidence the rename is real,
-and offset 588 read 6200 next to an engine turning 4662 in first gear. A
-number that plausible, that consistent with its neighbours, is not a
-temperature read by accident.
+`acpmf_physics` stayed absent. That is itself evidence the rename is real.
+Offset 588 read 6200 next to an engine turning 4662 in first gear. A number
+that plausible, and that consistent with its neighbours, is not a temperature
+read by accident.
 
 **rFactor 2 and Le Mans Ultimate say whether a read was good.** Their layout
-comes from a community plugin rather than a vendor, which is why they were
+comes from a community plugin rather than a vendor. That is why they were
 written last: the struct depends on which fork and build the user installed.
-What makes them decodable anyway is that the format carries its own
-consistency state. Each buffer is preceded by a pair of counters the plugin
-bumps before and after writing, so a read that caught a write in progress is
-detectable and gets dropped. And the player's car is found by matching a slot
-id between two independently written buffers, which a misaligned read fails
-rather than passes with plausible numbers.
+They are decodable anyway, because the format carries its own consistency
+state. Each buffer is preceded by a pair of counters. The plugin bumps them
+before and after writing, so a read that caught a write in progress is
+detectable and gets dropped. The player's car is found by matching a slot id
+between two independently written buffers. A misaligned read fails that
+match rather than passing with plausible numbers.
 
 Assetto Corsa Competizione was confirmed end to end on 2026-08-06, on a
-G923. Both sections opened; the physics head read a coherent live car; the
-static block's UTF-16 guard passed on real bytes; and `maxRpm` at offset 412
+G923. Both sections opened. The physics head read a coherent live car. The
+static block's UTF-16 guard passed on real bytes. `maxRpm` at offset 412
 read 8650, a genuine GT3 redline rather than plausible garbage.
 
 Then the whole chain was run: game shared memory, relay wire format, daemon,
 synth, wheel. With the car **stationary in the pit box** and the engine
 revving, the wheel produced an engine note. That is the test worth repeating,
-because force feedback cannot fake it: a parked car generates no tyre or
-suspension force, so anything felt while stationary came from telemetry. Same
-offsets confirm Assetto Corsa, which shares this layout.
+because force feedback cannot fake it. A parked car generates no tyre or
+suspension force, so anything felt while stationary came from telemetry. The
+same offsets confirm Assetto Corsa, which shares this layout.
 
 The rest have not been run against a live game. Every read in them is bounds
-checked and range gated, and each drops a sample it cannot vouch for rather
-than sending a wrong number, but that is a design argument, not evidence.
+checked and range gated. Each drops a sample it cannot vouch for rather than
+send a wrong number. But that is a design argument, not evidence.
 
 ## Get it
 
 **You normally do not have to place this yourself.** `sudo ./tools/setup.sh`
-puts it in every Proton prefix, and the settings app has an "Install relay"
+puts it in every Proton prefix. The settings app has an "Install relay"
 button on each game that needs one (in the terminal app, `h` on the selected
 game). It lands at the prefix's drive root, which
 makes the in-prefix path `C:\logi-tf-relay.exe`.
@@ -102,7 +103,7 @@ copy is at:
 ```
 
 It is a Windows executable, so it lives in the shared data directory rather
-than in `bin`: you do not run it directly, you run it inside a game's Proton
+than in `bin`. You do not run it directly. You run it inside a game's Proton
 prefix. It ships prebuilt because no distro builder has a Rust Windows
 target, the same reason `tf-range-proxy.dll` is prebuilt.
 
@@ -118,7 +119,7 @@ tools/build-relay.sh
 ```
 
 If `cargo` comes from your distribution rather than rustup, put rustup's
-first: a system cargo usually has only the host target, and the failure is
+first. A system cargo usually has only the host target, and the failure is
 an unhelpful "can't find crate for `core`".
 
 ```bash
@@ -127,16 +128,16 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 Do not try to satisfy it by unpacking an upstream `rust-std` into the system
 `/usr/lib/rustlib`. A precompiled std has to come from the exact rustc build
-that will use it, and a distribution's patched rustc is not that build; the
+that will use it. A distribution's patched rustc is not that build. The
 result is E0514, "found crate `core` compiled by an incompatible version of
 rustc".
 
-That uses the `relay-dist` cargo profile, which is what keeps the committed
+The build uses the `relay-dist` cargo profile, which keeps the committed
 binary small, and writes `tools/logi-tf-relay.exe`. Refresh it that way
-rather than by hand: CI runs `tools/build-relay.sh --check` and fails if the
+rather than by hand. CI runs `tools/build-relay.sh --check` and fails if the
 committed binary is older than the sources it was built from, so a packaged
-relay cannot silently lag the code. The build needs a MinGW linker, no
-Windows machine and no Wine.
+relay cannot silently lag the code. The build needs a MinGW linker. It needs
+no Windows machine and no Wine.
 
 ## Run it
 
@@ -153,20 +154,20 @@ running. The prefix is named after the game's Steam appid:
 | rFactor 2 | `rf2` | 365960 | `rF2SharedMemoryMapPlugin` |
 | Le Mans Ultimate | `lmu` | 2399420 | `rF2SharedMemoryMapPlugin` |
 
-The easy way is to let the game start it, by putting this in the game's
+The easy way is to let the game start it. Put this in the game's
 Steam launch options:
 
 ```
 logi-launch %command%
 ```
 
-That starts the relay inside the prefix once the game is up, and works out
+That starts the relay inside the prefix once the game is up. It works out
 which game it is from the appid, so there is nothing else to set. See
 [LAUNCH_OPTIONS.md](LAUNCH_OPTIONS.md).
 
 **Starting it by hand is fiddlier than it looks, and the obvious command is
-a trap.** `WINEPREFIX=... wine ...` uses your distribution's wine, which is
-a different build from the one Proton made the prefix with: it runs prefix
+a trap.** `WINEPREFIX=... wine ...` uses your distribution's wine. That is
+a different build from the one Proton made the prefix with. It runs prefix
 initialisation, prompts to install wine-mono, and can convert the prefix.
 Use the prefix's own wine instead, and only while the game is already
 running, because Proton waits for any existing wineserver to exit before it
@@ -183,15 +184,15 @@ what it finds to `logi-tf-sim`, which must also be running. Then turn the
 game on in the app's Setup page under Simulated TrueForce.
 
 **Competizione and EVO are special cases.** Both have real TrueForce of
-their own, and on a direct-drive wheel that is the route to use: install the
+their own. On a direct-drive wheel that is the route to use: install the
 shim and skip the relay entirely. The relay is here for the G923, which
-cannot receive the SDK's TrueForce at all, so a synthesized engine note is
-the difference between haptics and silence rather than a second-best.
+cannot receive the SDK's TrueForce at all. For that wheel a synthesized
+engine note is the difference between haptics and silence, not a second-best.
 
-None of these needs anything switched on inside the game: unlike the UDP
+None of these needs anything switched on inside the game. Unlike the UDP
 titles, the shared memory is always published. rFactor 2 and Le Mans Ultimate
 do need the community `rF2SharedMemoryMapPlugin` in the game's `Plugins`
-directory, though, or the game publishes nothing at all.
+directory, though. Without it the game publishes nothing at all.
 
 If your Steam library is on another drive, `./tools/setup.sh doctor` prints
 the roots it found.
@@ -204,8 +205,9 @@ LOGI_TF_SIM_RELAY_PORT=20999 wine logi-tf-relay.exe --game iracing
 
 ## Capture a fixture
 
-Every decoder here is written against a published layout, and none has yet
-been confirmed against a running game. If one of them stays silent, or sends
+Every decoder here is written against a published layout. Only the RaceRoom,
+Assetto Corsa Competizione and AC EVO ones are confirmed against a running
+game (see the table at the top). If one of the others stays silent, or sends
 something obviously wrong, a dump is what turns that into a fix.
 
 With the game running and a session actually **live** (sitting in the menus
@@ -216,32 +218,32 @@ WINEPREFIX=<the game's prefix> \
   wine logi-tf-relay.exe --game lmu --dump lmu-dump.bin
 ```
 
-Attach `lmu-dump.bin` to an issue, saying which game and which build. The
-dump is what a decoder gets re-tested against, so a real one settles a
+Attach `lmu-dump.bin` to an issue. Say which game and which build. The
+dump is what a decoder gets re-tested against. A real one settles a
 question that no amount of reading headers can.
 
 The dump contains vehicle telemetry for the session that was running. It
-carries no account details, no keys and no personal data, but it does reflect
+carries no account details, no keys and no personal data. It does reflect
 what you were driving at that moment.
 
 ## The relay datagram is a generic RPM contract
 
-Everything above describes the producers this project ships, but the port
+Everything above describes the producers this project ships. But the port
 is a contract, not a private channel: **any** telemetry producer that emits
 the LTFR datagram to `127.0.0.1:20780` plugs into the same consumers. That
 includes `logi-rpm-bridge`, which forwards `rpm max_rpm` into the driver's
-`wheel_texture_rpm` sysfs attribute and therefore feeds the native
-TrueForce texture merge - so a homegrown bridge for an unlisted sim gets
-the on-wheel engine texture for its title as soon as the game's recipe
-grants `texture=merge` (the registry in
-`userspace/logi-wheel/crates/logi-wheel-core/src/games.rs`; today only
-AC EVO, because grants ride hardware evidence).
+`wheel_texture_rpm` sysfs attribute. That feeds the native TrueForce texture
+merge. So a homegrown bridge for an unlisted sim gets the on-wheel engine
+texture for its title as soon as the game's recipe grants `texture=merge`.
+The recipe registry is in
+`userspace/logi-wheel/crates/logi-wheel-core/src/games.rs`. Today only
+AC EVO has the grant, because grants ride hardware evidence.
 
 **One socket gets the datagrams, every reader gets the telemetry.** The
-port takes any number of producers, but a unicast datagram is delivered to
-exactly one socket, whatever options the listeners set (`SO_REUSEADDR` only
-lets both bind while the kernel still picks one winner; `SO_REUSEPORT`
-load-balances, which splits a stream rather than duplicating it). The
+port takes any number of producers. But a unicast datagram is delivered to
+exactly one socket, whatever options the listeners set. `SO_REUSEADDR` only
+lets both bind while the kernel still picks one winner. `SO_REUSEPORT`
+load-balances, which splits a stream rather than duplicating it. The
 kernel will not deliver to both, so the readers do it themselves:
 
 - Whoever binds 20780 is the **hub**. It forwards every datagram it
@@ -249,27 +251,27 @@ kernel will not deliver to both, so the readers do it themselves:
   20783 and 20784. (20781 is skipped: that is the captured-TrueForce port,
   where a copy of engine telemetry would be read as finished haptics.)
 - Whoever finds 20780 taken reads the first free fan-out port instead, and
-  is fed by the hub. It says so at startup, naming both ports, because a
+  is fed by the hub. It says so at startup, naming both ports. Otherwise a
   program listening on 20782 with nothing configured to say so would read
   as a misconfiguration in a bug report.
 - A follower keeps trying to take 20780, about every two seconds. When the
-  hub exits, the survivor is promoted, so telemetry aimed where every
-  producer sends it keeps arriving and the next program to start finds a
+  hub exits, the survivor is promoted. So telemetry aimed where every
+  producer sends it keeps arriving, and the next program to start finds a
   working hub.
 
-Forwarding only ever goes upward, from 20780 to the fan-out ports, so no
+Forwarding only ever goes upward, from 20780 to the fan-out ports. So no
 arrangement of these programs can make a datagram circulate. Nothing needs
 to be stopped, and no port needs moving, for `logi-rpm-bridge` and
 `logi-tf-sim` to run at the same time. `LOGI_RPM_PORT` and the daemon's
 `port.relay` still move the whole block (the fan-out is derived from
-whatever the relay port is), which is what a third-party producer on a
+whatever the relay port is). That is what a third-party producer on a
 different port wants.
 
 The rules are implemented twice, in `logi_wheel_core::relay::RelayListener`
 and in `tools/logi-rpm-bridge.c`, because the two readers are written in
 different languages. A change to one belongs in the other.
 
-`logi-rpm-bridge` is also the rev-light feeder: besides
+`logi-rpm-bridge` is also the rev-light feeder. Besides
 `wheel_texture_rpm`, it drives `wheel_rev_level` from the same datagrams.
 The default mapping is a full rev bar (LED 1 as soon as rpm > 0, all 10 at
 the limiter; works for 28-byte senders too). `LOGI_REV_MODE=shift`
@@ -277,27 +279,27 @@ selects the dash band instead: dark below the first-shift-light rpm,
 level 1 exactly there, 10 at the limiter (needs the 32-byte form below).
 `LOGI_REV_SYSFS` overrides the LED target attribute and `LOGI_RPM_PORT`
 the UDP port. The strip darkens on telemetry loss (1 s) and on bridge
-exit. The strip has one feeder per session: `logi-tf-sim` drives it from
+exit. The strip has one feeder per session. `logi-tf-sim` drives it from
 telemetry too, so while a bridge is running the daemon leaves the rev
-display alone (it says so in its log) rather than writing a second mapping
+display alone (it says so in its log) rather than write a second mapping
 over the top of it.
 
-**Which wheel it writes to.** Left alone the bridge finds a wheel itself,
-which is right with one attached and a coin toss with two: its rev target
+**Which wheel it writes to.** Left alone, the bridge finds a wheel itself.
+That is right with one attached and a coin toss with two. Its rev target
 is the neighbour of the texture attribute, so an unscoped bridge can feed
 one wheel's texture and light the other one's strip. `logi-launch` therefore
 passes `LOGI_RPM_SYSFS=<that wheel's>/wheel_texture_rpm` for the wheel it
-resolved for the session, and the rev target is taken from the same
+resolved for the session. The rev target is taken from the same
 directory unless `LOGI_REV_SYSFS` says otherwise. If a write fails with the
 errors that mean the device moved (`ENOENT`, `ENODEV`), the bridge resolves
-again rather than writing into a stale path for the rest of the session, so
+again rather than write into a stale path for the rest of the session. So
 a wheel that is replugged mid-game is picked up without restarting anything.
 
-The wire format, LTFR version 2 (40 bytes since 2026-09-05, 32 since
-2026-08-14, little-endian, append-only - the first 28 bytes are the
-original version-2 layout, the version byte is unchanged, and old consumers
-keep reading just what they know; the authoritative copy lives in
-`logi-wheel-core`'s `relay.rs`):
+The wire format is LTFR version 2. It is 40 bytes since 2026-09-05, and was
+32 since 2026-08-14. It is little-endian and append-only: the first 28 bytes
+are the original version-2 layout, the version byte is unchanged, and old
+consumers keep reading just what they know. The authoritative copy lives in
+`logi-wheel-core`'s `relay.rs`:
 
 | offset | field    | type   | notes |
 |---|---|---|---|
@@ -313,7 +315,7 @@ keep reading just what they know; the authoritative copy lives in
 | 32 | speed    | f32 LE  | car speed, m/s; 0 = the sender cannot tell (appended 2026-09-05, for the base's screen) |
 | 36 | brake    | f32 LE  | 0.0-1.0; 0 = the sender cannot tell (appended with speed) |
 
-Send at roughly 60 Hz; consumers rate-limit on their side, and
+Send at roughly 60 Hz. Consumers rate-limit on their side, and
 `logi-rpm-bridge` drops packets whose rpm is not in `[0, 30000)`. Fields a
 producer cannot supply are zero, which the format defines as "the sender
 cannot tell".
@@ -321,10 +323,10 @@ cannot tell".
 ## Troubleshooting
 
 **"not readable yet"** repeated: the relay is running but the game is not
-publishing. Check the game is actually in a session, and for rFactor 2 and Le
-Mans Ultimate that the shared-memory plugin is installed.
+publishing. Check that the game is actually in a session. For rFactor 2 and
+Le Mans Ultimate, check that the shared-memory plugin is installed.
 
-**Nothing happens although the relay says it is streaming**: check
+**Nothing happens although the relay says it is streaming**: check that
 `logi-tf-sim` is running, that the game is switched on in the Setup page, and
 that both agree on the port.
 
