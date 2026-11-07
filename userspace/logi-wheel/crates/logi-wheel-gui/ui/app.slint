@@ -230,8 +230,14 @@ export component App inherits Window {
     in property <[TestCallout]> test-callouts: [];
     in property <int> test-gear: 0;
     in property <string> test-gear-name: "N";
+    in property <int> test-adapter-gear: 0;
+    in property <string> test-adapter-gear-name: "N";
     in property <bool> test-shifter-connected: false;
     in property <string> test-shifter-mode: "";
+    in property <bool> test-seq-shift-up: false;
+    in property <bool> test-seq-shift-down: false;
+    in property <bool> test-handbrake-connected: false;
+    in property <bool> test-adapter-connected: false;
     in property <bool> test-sim-running: false;
     in property <string> test-sim-error: "";
     // The running (or just-finished) sequence's one-line summary (set
@@ -785,8 +791,14 @@ export component App inherits Window {
                     callouts: root.test-callouts;
                     gear: root.test-gear;
                     gear-name: root.test-gear-name;
+                    adapter-gear: root.test-adapter-gear;
+                    adapter-gear-name: root.test-adapter-gear-name;
                     shifter-connected: root.test-shifter-connected;
                     shifter-mode: root.test-shifter-mode;
+                    seq-shift-up: root.test-seq-shift-up;
+                    seq-shift-down: root.test-seq-shift-down;
+                    handbrake-connected: root.test-handbrake-connected;
+                    adapter-connected: root.test-adapter-connected;
                     sim-running: root.test-sim-running;
                     sim-error: root.test-sim-error;
                     sim-status: root.test-sim-status;

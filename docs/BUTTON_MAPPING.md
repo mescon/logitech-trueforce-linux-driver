@@ -72,6 +72,69 @@ When connected directly to the PC via USB (`046d:c26b Logitech RS H-Shifter`), i
 - Buttons 0 to 6 (`0x120`..`0x126`): 1st through 7th gear
 - Button 7 (`0x127`): Reverse (R)
 
+## RS Shifter & Handbrake (046d:c278)
+
+Dual-mode sim accessory featuring a physical toggle switch between progressive analog handbrake mode and dual-direction sequential shifter mode.
+
+### Connected to the Wheel Base
+
+When connected to a direct-drive wheel base accessory port (RS50 / G PRO, sub-device 02):
+- **Handbrake Mode**: Reports as the wheel base's handbrake axis (progressive 0–100%).
+- **Sequential Shifter Mode**: Shift Up (pull back) and Shift Down (push forward) are routed directly by base firmware to the wheel paddle button codes:
+  - Shift Up: Right Paddle (`0x124`, `BTN_TOP2`)
+  - Shift Down: Left Paddle (`0x125`, `BTN_PINKIE`)
+
+### Connected Directly to PC via USB
+
+When connected directly to the PC via USB-C (`046d:c278 Logitech RS Shifter & Handbrake`), it enumerates as a standalone joystick:
+- **Handbrake Mode**: Progressive 10-bit analog axis:
+  - `ABS_Z`: Handbrake lever travel (`0` relaxed .. `1023` fully pulled).
+- **Sequential Shifter Mode**: Two digital momentary buttons:
+  - Button 0 (`0x120`, `BTN_TRIGGER`): Shift Up (pull back)
+  - Button 1 (`0x121`, `BTN_THUMB`): Shift Down (push forward)
+
+## Logitech G Racing Adapter (046d:c273)
+
+USB adapter connecting legacy G29/G920/G923 3-pedal sets and 6+R DB9 Driving Force shifters.
+
+### Pedals (12-bit Analog Axes)
+
+Connected via the adapter's dedicated pedal port:
+| Pedal | evdev Axis | Raw Range | Notes |
+|-------|------------|-----------|-------|
+| Throttle | `ABS_Y` | `0`..`4095` | Full travel 12-bit progressive |
+| Brake | `ABS_Z` | `0`..`4095` | Full travel 12-bit progressive |
+| Clutch | `ABS_RX` | `0`..`4095` | Full travel 12-bit progressive |
+
+### DB9 Driving Force Shifter (Digital Buttons)
+
+Connected via the adapter's DB9 shifter port when the adapter is plugged directly into the PC via USB:
+| Gear | evdev Code | DirectInput Button |
+|------|------------|--------------------|
+| 1st Gear | `0x120` (`BTN_TRIGGER`) | Button 0 |
+| 2nd Gear | `0x121` (`BTN_THUMB`) | Button 1 |
+| 3rd Gear | `0x122` (`BTN_THUMB2`) | Button 2 |
+| 4th Gear | `0x123` (`BTN_TOP`) | Button 3 |
+| 5th Gear | `0x124` (`BTN_TOP2`) | Button 4 |
+| 6th Gear | `0x125` (`BTN_PINKIE`) | Button 5 |
+| Reverse (Push-down + 6th) | `0x126` (`BTN_BASE`) | Button 6 |
+
+### Connected to the Wheel Base
+
+When the Racing Adapter is plugged into an RS50 / G PRO wheel base USB port (`wheel_accessory` reports `Racing Adapter`):
+- **Pedals**: Routed through the wheel base's standard pedal axes (`ABS_RX` Throttle, `ABS_RY` Brake, `ABS_RZ` Clutch).
+- **DB9 Driving Force Shifter**: Routed through the wheel base's standard H-shifter button slots (`0x12c`..`0x12f` for 1st–4th, `0x2c0`..`0x2c1` for 5th–6th, and `0x2c3` for Reverse). In Desktop mode (`profile 0`), the kernel driver automatically enables `0x8120` (`GAMING_ATTACHMENTS`) slot routing and `0x1BC0` (`SYNC`) when the Racing Adapter sub-device is detected.
+
+## Pedals Connected to Wheel Base
+
+When pedals (and optional RS Shifter & Handbrake) are connected to a wheel base's ports, the evdev axis assignment depends on the wheel model (matching `pedal_axes` in `logi_wheel_core::evtest` and `HIDPP_DD_PEDAL_BASE_AXIS` in `hid-logitech-hidpp.c`):
+| Axis | RS50 / G PRO | G923 (PlayStation `0xc266`/`0xc267`) | G923 (Xbox `0xc26e`) |
+|------|--------------|--------------------------------------|----------------------|
+| Throttle | `ABS_RX` | `ABS_Z` | `ABS_Y` |
+| Brake | `ABS_RY` | `ABS_RZ` | `ABS_Z` |
+| Clutch | `ABS_RZ` | `ABS_Y` | `ABS_RZ` |
+| Handbrake | `ABS_Z` | - | - |
+
 ## G923
 
 The G923's own button layout, hardware-captured 2026-07-27 by a guided live

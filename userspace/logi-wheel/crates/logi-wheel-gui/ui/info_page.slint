@@ -150,8 +150,14 @@ export component InfoPage inherits Rectangle {
     in property <[TestAxis]> axes: [];
     in property <int> gear: 0;
     in property <string> gear-name: "N";
+    in property <int> adapter-gear: 0;
+    in property <string> adapter-gear-name: "N";
     in property <bool> shifter-connected: false;
     in property <string> shifter-mode: "";
+    in property <bool> seq-shift-up: false;
+    in property <bool> seq-shift-down: false;
+    in property <bool> handbrake-connected: false;
+    in property <bool> adapter-connected: false;
     // The layout image's callout boxes, tinted while pressed; see
     // `TestCallout`. Only meaningful over the RS50's numbered layout photo
     // (`wheel-kind` 0): the G PRO/G923 photos are plain product shots with
@@ -711,148 +717,369 @@ export component InfoPage inherits Rectangle {
                             VerticalLayout {
                                 spacing: 2px;
                                 Text {
-                                    text: "H-Pattern Shifter (Logitech G RS H-Shifter)";
+                                    text: "Shifter & Handbrake (Logitech RS & G Series)";
                                     font-size: 15px;
                                     font-weight: 700;
                                     color: Theme.text-color;
                                 }
                                 Text {
-                                    text: root.shifter-connected 
+                                    text: (root.shifter-connected || root.handbrake-connected || root.adapter-connected)
                                         ? ("Status: Connected (" + root.shifter-mode + ")") 
                                         : "Status: Waiting for gear input or USB connection...";
                                     font-size: 11px;
-                                    color: root.shifter-connected ? Theme.ok-color : Theme.muted-text-color;
+                                    color: (root.shifter-connected || root.handbrake-connected || root.adapter-connected) ? Theme.ok-color : Theme.muted-text-color;
                                 }
                             }
-                            Rectangle {
-                                width: 145px;
-                                height: 32px;
-                                border-radius: 6px;
-                                background: root.gear == 0 
-                                    ? Palette.alternate-background 
-                                    : (root.gear == 8 ? #e0524a26 : Palette.accent-background.with-alpha(0.2));
-                                border-width: 1px;
-                                border-color: root.gear == 0 
-                                    ? Theme.panel-border 
-                                    : (root.gear == 8 ? #e0524a : Palette.accent-background);
-
-                                Text {
-                                    text: root.gear == 0 
-                                        ? "Neutral (N)" 
-                                        : (root.gear == 8 ? "Reverse (R)" : ("Gear " + root.gear-name));
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                    color: root.gear == 0 
-                                        ? Theme.text-color 
+                            HorizontalLayout {
+                                spacing: 8px;
+                                if root.shifter-connected || (!root.handbrake-connected && !root.adapter-connected) : Rectangle {
+                                    width: 155px;
+                                    height: 32px;
+                                    border-radius: 6px;
+                                    background: root.gear == 0 
+                                        ? Palette.alternate-background 
+                                        : (root.gear == 8 ? #e0524a26 : Palette.accent-background.with-alpha(0.2));
+                                    border-width: 1px;
+                                    border-color: root.gear == 0 
+                                        ? Theme.panel-border 
                                         : (root.gear == 8 ? #e0524a : Palette.accent-background);
+
+                                    Text {
+                                        text: (root.adapter-connected ? "RS: " : "") + (root.gear == 0 
+                                            ? "Neutral (N)" 
+                                            : (root.gear == 8 ? "Reverse (R)" : ("Gear " + root.gear-name)));
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        color: root.gear == 0 
+                                            ? Theme.text-color 
+                                            : (root.gear == 8 ? #e0524a : Palette.accent-background);
+                                    }
+                                }
+                                if root.adapter-connected : Rectangle {
+                                    width: 175px;
+                                    height: 32px;
+                                    border-radius: 6px;
+                                    background: root.adapter-gear == 0 
+                                        ? Palette.alternate-background 
+                                        : (root.adapter-gear == 8 ? #e0524a26 : Palette.accent-background.with-alpha(0.2));
+                                    border-width: 1px;
+                                    border-color: root.adapter-gear == 0 
+                                        ? Theme.panel-border 
+                                        : (root.adapter-gear == 8 ? #e0524a : Palette.accent-background);
+
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 6px;
+                                        alignment: center;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 7px;
+                                                height: 7px;
+                                                border-radius: 3.5px;
+                                                background: Theme.ok-color;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: "Adapter: " + (root.adapter-gear == 0 
+                                                ? "Neutral (N)" 
+                                                : (root.adapter-gear == 8 ? "Reverse (R)" : ("Gear " + root.adapter-gear-name)));
+                                            font-size: 12px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                            color: root.adapter-gear == 0 
+                                                ? Theme.text-color 
+                                                : (root.adapter-gear == 8 ? #e0524a : Palette.accent-background);
+                                        }
+                                    }
                                 }
                             }
                         }
 
-                        // Interactive 7-speed + Reverse H-gate pattern:
-                        HorizontalLayout {
+                        // Interactive H-gate patterns (RS 7+R and/or Racing Adapter 6+R):
+                        if root.shifter-connected || root.adapter-connected || !root.handbrake-connected : HorizontalLayout {
                             alignment: center;
-                            Rectangle {
-                                width: 330px;
-                                height: 160px;
-                                border-radius: 10px;
-                                background: Theme.control-background;
-                                border-width: 1px;
-                                border-color: Theme.panel-border;
+                            spacing: 16px;
 
-                                // Neutral center rail:
-                                Rectangle {
-                                    x: 35px;
-                                    y: 74px;
-                                    width: 260px;
-                                    height: 12px;
-                                    border-radius: 6px;
-                                    background: root.gear == 0 
-                                        ? Palette.accent-background.with-alpha(0.35) 
-                                        : Palette.alternate-background;
+                            if root.shifter-connected || (!root.handbrake-connected && !root.adapter-connected) : VerticalLayout {
+                                spacing: 4px;
+                                if root.shifter-connected && root.adapter-connected : Text {
+                                    text: "RS H-Shifter (7+R)";
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    color: Theme.muted-text-color;
                                 }
-
-                                // 4 vertical slots:
-                                // Gate 1-2
                                 Rectangle {
-                                    x: 48px;
-                                    y: 24px;
-                                    width: 12px;
-                                    height: 112px;
-                                    border-radius: 6px;
-                                    background: (root.gear == 1 || root.gear == 2) 
-                                        ? Palette.accent-background.with-alpha(0.35) 
-                                        : Palette.alternate-background;
-                                }
-                                // Gate 3-4
-                                Rectangle {
-                                    x: 123px;
-                                    y: 24px;
-                                    width: 12px;
-                                    height: 112px;
-                                    border-radius: 6px;
-                                    background: (root.gear == 3 || root.gear == 4) 
-                                        ? Palette.accent-background.with-alpha(0.35) 
-                                        : Palette.alternate-background;
-                                }
-                                // Gate 5-6
-                                Rectangle {
-                                    x: 198px;
-                                    y: 24px;
-                                    width: 12px;
-                                    height: 112px;
-                                    border-radius: 6px;
-                                    background: (root.gear == 5 || root.gear == 6) 
-                                        ? Palette.accent-background.with-alpha(0.35) 
-                                        : Palette.alternate-background;
-                                }
-                                // Gate 7-R
-                                Rectangle {
-                                    x: 270px;
-                                    y: 24px;
-                                    width: 12px;
-                                    height: 112px;
-                                    border-radius: 6px;
-                                    background: (root.gear == 7 || root.gear == 8) 
-                                        ? (root.gear == 8 ? #e0524a40 : Palette.accent-background.with-alpha(0.35))
-                                        : Palette.alternate-background;
-                                }
+                                    width: 330px;
+                                    height: 160px;
+                                    border-radius: 10px;
+                                    background: Theme.control-background;
+                                    border-width: 1px;
+                                    border-color: Theme.panel-border;
 
-                                // Gear badges:
-                                // Top row (1, 3, 5, 7):
-                                GateBadge { x: 35px;  y: 12px; label: "1"; active: root.gear == 1; }
-                                GateBadge { x: 110px; y: 12px; label: "3"; active: root.gear == 3; }
-                                GateBadge { x: 185px; y: 12px; label: "5"; active: root.gear == 5; }
-                                GateBadge { x: 257px; y: 12px; label: "7"; active: root.gear == 7; }
-
-                                // Bottom row (2, 4, 6, R):
-                                GateBadge { x: 35px;  y: 110px; label: "2"; active: root.gear == 2; }
-                                GateBadge { x: 110px; y: 110px; label: "4"; active: root.gear == 4; }
-                                GateBadge { x: 185px; y: 110px; label: "6"; active: root.gear == 6; }
-                                GateBadge { x: 257px; y: 110px; label: "R"; active: root.gear == 8; is-reverse: true; }
-
-                                // Neutral (N) badge:
-                                Rectangle {
-                                    x: 147px;
-                                    y: 62px;
-                                    width: 36px;
-                                    height: 36px;
-                                    border-radius: 18px;
-                                    border-width: 2px;
-                                    border-color: root.gear == 0 ? Palette.accent-background : Theme.panel-border;
-                                    background: root.gear == 0 ? Palette.accent-background : Theme.control-background;
-                                    animate background { duration: 100ms; }
-
-                                    Text {
-                                        text: "N";
-                                        font-size: 13px;
-                                        font-weight: root.gear == 0 ? 800 : 500;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                        color: root.gear == 0 ? Palette.accent-foreground : Theme.muted-text-color;
+                                    // Neutral center rail:
+                                    Rectangle {
+                                        x: 35px;
+                                        y: 74px;
+                                        width: 260px;
+                                        height: 12px;
+                                        border-radius: 6px;
+                                        background: root.gear == 0 
+                                            ? Palette.accent-background.with-alpha(0.35) 
+                                            : Palette.alternate-background;
                                     }
+
+                                    // 4 vertical slots:
+                                    // Gate 1-2
+                                    Rectangle {
+                                        x: 48px;
+                                        y: 24px;
+                                        width: 12px;
+                                        height: 112px;
+                                        border-radius: 6px;
+                                        background: (root.gear == 1 || root.gear == 2) 
+                                            ? Palette.accent-background.with-alpha(0.35) 
+                                            : Palette.alternate-background;
+                                    }
+                                    // Gate 3-4
+                                    Rectangle {
+                                        x: 123px;
+                                        y: 24px;
+                                        width: 12px;
+                                        height: 112px;
+                                        border-radius: 6px;
+                                        background: (root.gear == 3 || root.gear == 4) 
+                                            ? Palette.accent-background.with-alpha(0.35) 
+                                            : Palette.alternate-background;
+                                    }
+                                    // Gate 5-6
+                                    Rectangle {
+                                        x: 198px;
+                                        y: 24px;
+                                        width: 12px;
+                                        height: 112px;
+                                        border-radius: 6px;
+                                        background: (root.gear == 5 || root.gear == 6) 
+                                            ? Palette.accent-background.with-alpha(0.35) 
+                                            : Palette.alternate-background;
+                                    }
+                                    // Gate 7-R
+                                    Rectangle {
+                                        x: 270px;
+                                        y: 24px;
+                                        width: 12px;
+                                        height: 112px;
+                                        border-radius: 6px;
+                                        background: (root.gear == 7 || root.gear == 8) 
+                                            ? (root.gear == 8 ? #e0524a40 : Palette.accent-background.with-alpha(0.35))
+                                            : Palette.alternate-background;
+                                    }
+
+                                    // Gear badges:
+                                    // Top row (1, 3, 5, 7):
+                                    GateBadge { x: 35px;  y: 12px; label: "1"; active: root.gear == 1; }
+                                    GateBadge { x: 110px; y: 12px; label: "3"; active: root.gear == 3; }
+                                    GateBadge { x: 185px; y: 12px; label: "5"; active: root.gear == 5; }
+                                    GateBadge { x: 257px; y: 12px; label: "7"; active: root.gear == 7; }
+
+                                    // Bottom row (2, 4, 6, R):
+                                    GateBadge { x: 35px;  y: 110px; label: "2"; active: root.gear == 2; }
+                                    GateBadge { x: 110px; y: 110px; label: "4"; active: root.gear == 4; }
+                                    GateBadge { x: 185px; y: 110px; label: "6"; active: root.gear == 6; }
+                                    GateBadge { x: 257px; y: 110px; label: "R"; active: root.gear == 8; is-reverse: true; }
+
+                                    // Neutral (N) badge:
+                                    Rectangle {
+                                        x: 147px;
+                                        y: 62px;
+                                        width: 36px;
+                                        height: 36px;
+                                        border-radius: 18px;
+                                        border-width: 2px;
+                                        border-color: root.gear == 0 ? Palette.accent-background : Theme.panel-border;
+                                        background: root.gear == 0 ? Palette.accent-background : Theme.control-background;
+                                        animate background { duration: 100ms; }
+
+                                        Text {
+                                            text: "N";
+                                            font-size: 13px;
+                                            font-weight: root.gear == 0 ? 800 : 500;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            color: root.gear == 0 ? Palette.accent-foreground : Theme.muted-text-color;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.adapter-connected : VerticalLayout {
+                                spacing: 4px;
+                                if root.shifter-connected : Text {
+                                    text: "Racing Adapter (6+R)";
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    color: Theme.muted-text-color;
+                                }
+                                Rectangle {
+                                    width: 330px;
+                                    height: 160px;
+                                    border-radius: 10px;
+                                    background: Theme.control-background;
+                                    border-width: 1px;
+                                    border-color: Theme.panel-border;
+
+                                    // Neutral center rail:
+                                    Rectangle {
+                                        x: 35px;
+                                        y: 74px;
+                                        width: 260px;
+                                        height: 12px;
+                                        border-radius: 6px;
+                                        background: root.adapter-gear == 0 
+                                            ? Palette.accent-background.with-alpha(0.35) 
+                                            : Palette.alternate-background;
+                                    }
+
+                                    // 3 full vertical slots + 1 bottom half-slot for Reverse:
+                                    // Gate 1-2
+                                    Rectangle {
+                                        x: 48px;
+                                        y: 24px;
+                                        width: 12px;
+                                        height: 112px;
+                                        border-radius: 6px;
+                                        background: (root.adapter-gear == 1 || root.adapter-gear == 2) 
+                                            ? Palette.accent-background.with-alpha(0.35) 
+                                            : Palette.alternate-background;
+                                    }
+                                    // Gate 3-4
+                                    Rectangle {
+                                        x: 123px;
+                                        y: 24px;
+                                        width: 12px;
+                                        height: 112px;
+                                        border-radius: 6px;
+                                        background: (root.adapter-gear == 3 || root.adapter-gear == 4) 
+                                            ? Palette.accent-background.with-alpha(0.35) 
+                                            : Palette.alternate-background;
+                                    }
+                                    // Gate 5-6
+                                    Rectangle {
+                                        x: 198px;
+                                        y: 24px;
+                                        width: 12px;
+                                        height: 112px;
+                                        border-radius: 6px;
+                                        background: (root.adapter-gear == 5 || root.adapter-gear == 6) 
+                                            ? Palette.accent-background.with-alpha(0.35) 
+                                            : Palette.alternate-background;
+                                    }
+                                    // Gate R (bottom half only on 6+R Driving Force Shifter)
+                                    Rectangle {
+                                        x: 270px;
+                                        y: 74px;
+                                        width: 12px;
+                                        height: 62px;
+                                        border-radius: 6px;
+                                        background: root.adapter-gear == 8 
+                                            ? #e0524a40 
+                                            : Palette.alternate-background;
+                                    }
+
+                                    // Gear badges:
+                                    // Top row (1, 3, 5):
+                                    GateBadge { x: 35px;  y: 12px; label: "1"; active: root.adapter-gear == 1; }
+                                    GateBadge { x: 110px; y: 12px; label: "3"; active: root.adapter-gear == 3; }
+                                    GateBadge { x: 185px; y: 12px; label: "5"; active: root.adapter-gear == 5; }
+
+                                    // Bottom row (2, 4, 6, R):
+                                    GateBadge { x: 35px;  y: 110px; label: "2"; active: root.adapter-gear == 2; }
+                                    GateBadge { x: 110px; y: 110px; label: "4"; active: root.adapter-gear == 4; }
+                                    GateBadge { x: 185px; y: 110px; label: "6"; active: root.adapter-gear == 6; }
+                                    GateBadge { x: 257px; y: 110px; label: "R"; active: root.adapter-gear == 8; is-reverse: true; }
+
+                                    // Neutral (N) badge:
+                                    Rectangle {
+                                        x: 147px;
+                                        y: 62px;
+                                        width: 36px;
+                                        height: 36px;
+                                        border-radius: 18px;
+                                        border-width: 2px;
+                                        border-color: root.adapter-gear == 0 ? Palette.accent-background : Theme.panel-border;
+                                        background: root.adapter-gear == 0 ? Palette.accent-background : Theme.control-background;
+                                        animate background { duration: 100ms; }
+
+                                        Text {
+                                            text: "N";
+                                            font-size: 13px;
+                                            font-weight: root.adapter-gear == 0 ? 800 : 500;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            color: root.adapter-gear == 0 ? Palette.accent-foreground : Theme.muted-text-color;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // RS Sequential Shifter status:
+                        if root.handbrake-connected : HorizontalLayout {
+                            alignment: center;
+                            spacing: 12px;
+                            Rectangle {
+                                width: 140px;
+                                height: 32px;
+                                border-radius: 6px;
+                                background: root.seq-shift-up 
+                                    ? Palette.accent-background 
+                                    : Palette.alternate-background;
+                                border-width: 1px;
+                                border-color: root.seq-shift-up 
+                                    ? Palette.accent-background 
+                                    : Theme.panel-border;
+                                animate background { duration: 80ms; }
+
+                                Text {
+                                    text: "▲  Shift Up";
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    color: root.seq-shift-up 
+                                        ? Palette.accent-foreground 
+                                        : Theme.text-color;
+                                }
+                            }
+                            Rectangle {
+                                width: 140px;
+                                height: 32px;
+                                border-radius: 6px;
+                                background: root.seq-shift-down 
+                                    ? Palette.accent-background 
+                                    : Palette.alternate-background;
+                                border-width: 1px;
+                                border-color: root.seq-shift-down 
+                                    ? Palette.accent-background 
+                                    : Theme.panel-border;
+                                animate background { duration: 80ms; }
+
+                                Text {
+                                    text: "▼  Shift Down";
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    color: root.seq-shift-down 
+                                        ? Palette.accent-foreground 
+                                        : Theme.text-color;
                                 }
                             }
                         }

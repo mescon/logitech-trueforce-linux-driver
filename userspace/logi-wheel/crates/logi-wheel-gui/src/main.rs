@@ -927,8 +927,14 @@ fn apply_test_snapshot(app: &App, snap: &testio::Snapshot, model: WheelModel, wh
     app.set_test_axes(slint::ModelRc::new(slint::VecModel::from(axes)));
     app.set_test_gear(snap.gear);
     app.set_test_gear_name(evtest::gear_name(snap.gear).into());
+    app.set_test_adapter_gear(snap.adapter_gear);
+    app.set_test_adapter_gear_name(evtest::gear_name(snap.adapter_gear).into());
     app.set_test_shifter_connected(snap.shifter_connected);
     app.set_test_shifter_mode(snap.shifter_mode.as_str().into());
+    app.set_test_seq_shift_up(snap.seq_shift_up);
+    app.set_test_seq_shift_down(snap.seq_shift_down);
+    app.set_test_handbrake_connected(snap.handbrake_connected);
+    app.set_test_adapter_connected(snap.adapter_connected);
 }
 
 /// Stop (and join) the Test page's reader thread, if one is running.
