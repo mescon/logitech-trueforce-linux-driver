@@ -822,6 +822,18 @@ impl<S: SysfsIo> Device<S> {
         }
     }
 
+    pub fn accessory_name(&self) -> Option<String> {
+        if !self.io.exists("wheel_accessory") {
+            return None;
+        }
+        let raw = self.io.read("wheel_accessory").ok()?;
+        let t = raw.trim();
+        if t.is_empty() || t == "none" {
+            return None;
+        }
+        Some(t.to_string())
+    }
+
     pub fn accessory_attached(&self) -> Option<bool> {
         if !self.io.exists("wheel_accessory") {
             return None;

@@ -1026,26 +1026,32 @@ Include this output in bug reports. Firmware-dependent behaviour
 
 ### wheel_accessory
 **Access**: Read-only
-**Values**: accessory device name, or `none`
+**Values**: comma-separated list of active accessory names (e.g. `RS Shifter & Handbrake, RS H-Shifter, Racing Adapter`), or `none`
 
 Presence signal for the base's optional accessories: the **RS Shifter &
-Handbrake** and the **RS H-Shifter**. They plug into the base's USB-A
-ports. The attribute reports the RS Shifter & Handbrake's own HID++
-device name, or `RS H-Shifter`, or `none` when neither is attached. With
-both attached, it names the RS Shifter & Handbrake. Unlike the
+Handbrake**, the **RS H-Shifter** and the **Logitech Racing Adapter**. They
+plug into the base's USB-A ports. The attribute lists the attached
+accessories by name, separated by commas, always in this order: the RS
+Shifter & Handbrake (its own HID++ device name), `RS H-Shifter`, `Racing
+Adapter`. It reads `none` when no accessory is attached. Unlike the
 pedal/handbrake attributes below, this never returns an error. It exists
 precisely so apps can check for an accessory without inferring presence
 from another attribute's error code.
 
-The driver finds both accessories at probe time and re-checks on demand.
-A read queues a presence re-check in the background. So an accessory
-plugged in or pulled after the module loaded shows up within a few reads.
-An RS H-Shifter that arrives this way in desktop mode gets its gate
-routing enabled at the same time, as it would have at probe.
+The driver finds all three accessories at probe time and re-checks on
+demand. A read queues a presence re-check in the background. So an
+accessory plugged in or pulled after the module loaded shows up within a
+few reads. An RS H-Shifter or a Racing Adapter that arrives this way in
+desktop mode gets the base's gate routing enabled at the same time, as it
+would have at probe.
 
 ```bash
 cat wheel_accessory
 # RS Shifter & Handbrake
+
+# with an H-Shifter and a Racing Adapter on the base as well:
+cat wheel_accessory
+# RS Shifter & Handbrake, RS H-Shifter, Racing Adapter
 ```
 
 The driver exposes all three of the accessory's G HUB settings:

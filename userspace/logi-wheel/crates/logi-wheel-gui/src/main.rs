@@ -927,8 +927,14 @@ fn apply_test_snapshot(app: &App, snap: &testio::Snapshot, model: WheelModel, wh
     app.set_test_axes(slint::ModelRc::new(slint::VecModel::from(axes)));
     app.set_test_gear(snap.gear);
     app.set_test_gear_name(evtest::gear_name(snap.gear).into());
+    app.set_test_adapter_gear(snap.adapter_gear);
+    app.set_test_adapter_gear_name(evtest::gear_name(snap.adapter_gear).into());
     app.set_test_shifter_connected(snap.shifter_connected);
     app.set_test_shifter_mode(snap.shifter_mode.as_str().into());
+    app.set_test_seq_shift_up(snap.seq_shift_up);
+    app.set_test_seq_shift_down(snap.seq_shift_down);
+    app.set_test_handbrake_connected(snap.handbrake_connected);
+    app.set_test_adapter_connected(snap.adapter_connected);
 }
 
 /// Stop (and join) the Test page's reader thread, if one is running.
@@ -971,16 +977,30 @@ fn start_test_monitor(
         // `wheel_range`; the G923's classic engine has no `wheel_` prefix
         // at all, so read whichever of the two this device's own registry
         // actually has.
-        let (model, range) = match logi_wheel_core::Device::discover() {
-            Ok(d) => {
+        let selected_device = {
+            let all = logi_wheel_core::Device::discover_all();
+            if let Some(ref usb_path) = usb {
+                all.into_iter().find(|d| {
+                    d.sysfs_key()
+                        .as_deref()
+                        .and_then(logi_wheel_core::device::usb_device_dir)
+                        .as_ref()
+                        == Some(usb_path)
+                })
+            } else {
+                all.into_iter().next()
+            }
+        };
+        let (model, range, sysfs_dir) = match selected_device {
+            Some(ref d) => {
                 let attr = if d.available("wheel_range") { "wheel_range" } else { "range" };
                 let range = match d.read(attr).ok() {
                     Some(Value::Int(n)) => u32::try_from(n).unwrap_or(900),
                     _ => 900,
                 };
-                (d.model(), range)
+                (d.model(), range, d.sysfs_key())
             }
-            Err(_) => (WheelModel::default(), 900),
+            None => (WheelModel::default(), 900, None),
         };
         *model_cell.lock().unwrap() = model;
         let _ = slint::invoke_from_event_loop(move || {
@@ -1012,6 +1032,7 @@ fn start_test_monitor(
             match testio::Reader::start(
                 &wheel.event_path,
                 model,
+                sysfs_dir,
                 evtest::button_codes_for_name(model, &wheel.name),
                 // The wheel's own pedal layout, from the name its input
                 // node reports (issue #68).
