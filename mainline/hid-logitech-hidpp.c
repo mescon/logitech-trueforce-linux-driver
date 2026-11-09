@@ -5936,6 +5936,7 @@ struct hidpp_dd_ff_data {
 	u8 idx_shifter_mode;		/* Feature index for 0x1B30 DEVICE_MODE on the accessory */
 	u8 h_shifter_dev_idx;		/* HID++ dev index of RS H-Shifter */
 	u8 idx_h_shifter;		/* Feature index for 0x812D RS_H_SHIFTER */
+	u8 adapter_dev_idx;		/* HID++ dev index of Racing Adapter attached to base */
 	u8 idx_attachments;		/* Feature index for 0x8120 GAMING_ATTACHMENTS */
 	struct work_struct accessory_rescan_work; /* re-checks accessory presence off the sysfs read path */
 	unsigned long accessory_rescan_next;	/* jiffies before which no further rescan is queued */
@@ -8688,6 +8689,41 @@ static int hidpp_dd_pedal_axis_count(struct hidpp_device *hidpp, u8 dev_idx,
 }
 
 /*
+ * Read a sub-device's own DeviceNameType (0x0005) name into @buf.
+ * Returns 0 on success, negative errno on error.
+ */
+static int hidpp_dd_read_device_name(struct hidpp_device *hidpp, u8 dev_idx,
+				     char *buf, size_t buf_size)
+{
+	u8 name_idx, name_length;
+	unsigned int index = 0;
+	int ret;
+
+	buf[0] = '\0';
+	if (hidpp_root_get_feature_on_device(hidpp, dev_idx,
+					     HIDPP_PAGE_GET_DEVICE_NAME_TYPE,
+					     &name_idx))
+		return -ENOENT;
+	if (hidpp_devicenametype_get_count_on_device(hidpp, dev_idx, name_idx,
+						     &name_length))
+		return -EIO;
+
+	while (index < name_length && index < buf_size - 1) {
+		ret = hidpp_devicenametype_get_device_name_on_device(hidpp,
+			dev_idx, name_idx, index,
+			buf + index,
+			buf_size - 1 - index);
+		if (ret <= 0) {
+			buf[index] = '\0';
+			return -EIO;
+		}
+		index += ret;
+	}
+	buf[index] = '\0';
+	return 0;
+}
+
+/*
  * Read the RS Shifter & Handbrake accessory's own DeviceNameType (0x0005)
  * name into ff->accessory_name, once the accessory has been confirmed at
  * dev_idx (see hidpp_dd_discover_settings_features). Best-effort: any
@@ -8697,33 +8733,8 @@ static int hidpp_dd_pedal_axis_count(struct hidpp_device *hidpp, u8 dev_idx,
  */
 static void hidpp_dd_query_accessory_name(struct hidpp_dd_ff_data *ff, u8 dev_idx)
 {
-	struct hidpp_device *hidpp = ff->hidpp;
-	u8 name_idx, name_length;
-	unsigned int index = 0;
-	int ret;
-
-	ff->accessory_name[0] = '\0';
-
-	if (hidpp_root_get_feature_on_device(hidpp, dev_idx,
-					     HIDPP_PAGE_GET_DEVICE_NAME_TYPE,
-					     &name_idx))
-		return;
-	if (hidpp_devicenametype_get_count_on_device(hidpp, dev_idx, name_idx,
-						     &name_length))
-		return;
-
-	while (index < name_length && index < sizeof(ff->accessory_name) - 1) {
-		ret = hidpp_devicenametype_get_device_name_on_device(hidpp,
-			dev_idx, name_idx, index,
-			ff->accessory_name + index,
-			sizeof(ff->accessory_name) - 1 - index);
-		if (ret <= 0) {
-			ff->accessory_name[index] = '\0';
-			return;
-		}
-		index += ret;
-	}
-	ff->accessory_name[index] = '\0';
+	hidpp_dd_read_device_name(ff->hidpp, dev_idx, ff->accessory_name,
+				  sizeof(ff->accessory_name));
 }
 
 /*
@@ -8770,10 +8781,22 @@ static bool hidpp_dd_probe_h_shifter(struct hidpp_dd_ff_data *ff, u8 cand)
 					     HIDPP_DD_PAGE_RS_H_SHIFTER, &idx))
 		return false;
 	ff->idx_h_shifter = idx;
-	if (!ff->accessory_name[0])
-		strscpy(ff->accessory_name, "RS H-Shifter",
-			sizeof(ff->accessory_name));
 	return true;
+}
+
+static bool hidpp_dd_probe_adapter(struct hidpp_dd_ff_data *ff, u8 cand)
+{
+	char name[32];
+	u8 idx;
+
+	if (hidpp_root_get_feature_on_device(ff->hidpp, cand,
+					     HIDPP_DD_PAGE_ATTACHMENTS, &idx))
+		return false;
+
+	if (hidpp_dd_read_device_name(ff->hidpp, cand, name, sizeof(name)))
+		return false;
+
+	return !strcmp(name, "Racing Adapter");
 }
 
 /*
@@ -8805,6 +8828,7 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 	ff->idx_shifter_mode = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->h_shifter_dev_idx = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_h_shifter = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->adapter_dev_idx = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_attachments = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->accessory_name[0] = '\0';
 	/*
@@ -8997,7 +9021,8 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 
 		if (ff->pedal_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
 		    ff->shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
-		    ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
+		    ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
+		    ff->adapter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
 			break;
 
 		ret = hidpp_root_get_feature_on_device_timeout(hidpp, cand,
@@ -9033,6 +9058,12 @@ static void hidpp_dd_discover_settings_features(struct hidpp_dd_ff_data *ff)
 			ff->h_shifter_dev_idx = cand;
 			dd_info(hid, "RS H-Shifter at dev 0x%02x (idx 0x%02x)\n",
 				cand, ff->idx_h_shifter);
+			continue;
+		}
+		if (ff->adapter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND &&
+		    hidpp_dd_probe_adapter(ff, cand)) {
+			ff->adapter_dev_idx = cand;
+			dd_info(hid, "Racing Adapter at dev 0x%02x\n", cand);
 		}
 	}
 	if (ff->pedal_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
@@ -9296,7 +9327,8 @@ static void hidpp_dd_enable_desktop_shifter(struct hidpp_dd_ff_data *ff)
 	u8 params[16];
 	int ret;
 
-	if (ff->h_shifter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND)
+	if (ff->h_shifter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND &&
+	    ff->adapter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND)
 		return;
 
 	/* 1. Feature 0x8120 GAMING_ATTACHMENTS on base */
@@ -9689,12 +9721,11 @@ static void hidpp_dd_ff_query_settings(struct hidpp_dd_ff_data *ff)
 
 	/*
 	 * Enable accessory slot routing in Desktop mode (profile 0)
-	 * when an RS H-Shifter is present.
+	 * when an RS H-Shifter or Racing Adapter is present.
 	 * Must run after LIGHTSYNC initialization so the LED sync
 	 * sequence does not clobber attachment routing.
 	 */
-	if (ff->current_mode == 0 &&
-	    ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
+	if (ff->current_mode == 0)
 		hidpp_dd_enable_desktop_shifter(ff);
 }
 
@@ -15164,10 +15195,6 @@ static void hidpp_dd_rescan_accessory(struct hidpp_dd_ff_data *ff)
 		ff->idx_shifter_banded = HIDPP_DD_FEATURE_NOT_FOUND;
 		ff->idx_shifter_mode = HIDPP_DD_FEATURE_NOT_FOUND;
 		ff->accessory_name[0] = '\0';
-		/* The attribute keeps naming whatever is still attached. */
-		if (ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
-			strscpy(ff->accessory_name, "RS H-Shifter",
-				sizeof(ff->accessory_name));
 		dd_info(hid, "RS Shifter & Handbrake removed\n");
 	}
 	if (ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
@@ -15177,12 +15204,18 @@ static void hidpp_dd_rescan_accessory(struct hidpp_dd_ff_data *ff)
 		/* Same order as above: index first, then the name. */
 		WRITE_ONCE(ff->h_shifter_dev_idx, HIDPP_DD_FEATURE_NOT_FOUND);
 		ff->idx_h_shifter = HIDPP_DD_FEATURE_NOT_FOUND;
-		if (!strcmp(ff->accessory_name, "RS H-Shifter"))
-			ff->accessory_name[0] = '\0';
 		dd_info(hid, "RS H-Shifter removed\n");
 	}
+	if (ff->adapter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
+	    hidpp_root_get_feature_on_device_timeout(hidpp, ff->adapter_dev_idx,
+					HIDPP_DD_PAGE_ATTACHMENTS, &idx,
+					HIDPP_DD_PROBE_TIMEOUT)) {
+		WRITE_ONCE(ff->adapter_dev_idx, HIDPP_DD_FEATURE_NOT_FOUND);
+		dd_info(hid, "Racing Adapter removed\n");
+	}
 	if (ff->shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
-	    ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
+	    ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND &&
+	    ff->adapter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND)
 		return;
 
 	/*
@@ -15213,7 +15246,8 @@ static void hidpp_dd_rescan_accessory(struct hidpp_dd_ff_data *ff)
 		ff->accessory_scan_cursor = (ff->accessory_scan_cursor + 1) %
 				ARRAY_SIZE(hidpp_dd_pedal_dev_candidates);
 		/* Just confirmed above; nothing new can sit on that port. */
-		if (cand == ff->shifter_dev_idx || cand == ff->h_shifter_dev_idx)
+		if (cand == ff->shifter_dev_idx || cand == ff->h_shifter_dev_idx ||
+		    cand == ff->adapter_dev_idx)
 			return;
 		ret = hidpp_root_get_feature_on_device_timeout(hidpp, cand,
 					HIDPP_DD_PAGE_RESPONSE_CURVE, &cand_idx,
@@ -15262,21 +15296,29 @@ static void hidpp_dd_rescan_accessory(struct hidpp_dd_ff_data *ff)
 		}
 
 		/* Answers, but is neither the pedals nor the RS Shifter & Handbrake. */
-		if (ff->h_shifter_dev_idx != HIDPP_DD_FEATURE_NOT_FOUND ||
-		    !hidpp_dd_probe_h_shifter(ff, cand))
+		if (ff->h_shifter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND &&
+		    hidpp_dd_probe_h_shifter(ff, cand)) {
+			WRITE_ONCE(ff->h_shifter_dev_idx, cand);
+			dd_info(hid, "RS H-Shifter at dev 0x%02x (idx 0x%02x)\n",
+				cand, ff->idx_h_shifter);
+			/*
+			 * Desktop mode only routes the gates once G HUB's enablement
+			 * sequence has been sent (hidpp_dd_enable_desktop_shifter). At
+			 * probe that happens from hidpp_dd_ff_query_settings; a shifter
+			 * that arrives later needs it now. Onboard profiles route the
+			 * gates on their own.
+			 */
+			if (ff->current_mode == 0)
+				hidpp_dd_enable_desktop_shifter(ff);
 			return;
-		WRITE_ONCE(ff->h_shifter_dev_idx, cand);
-		dd_info(hid, "RS H-Shifter at dev 0x%02x (idx 0x%02x)\n",
-			cand, ff->idx_h_shifter);
-		/*
-		 * Desktop mode only routes the gates once G HUB's enablement
-		 * sequence has been sent (hidpp_dd_enable_desktop_shifter). At
-		 * probe that happens from hidpp_dd_ff_query_settings; a shifter
-		 * that arrives later needs it now. Onboard profiles route the
-		 * gates on their own.
-		 */
-		if (ff->current_mode == 0)
-			hidpp_dd_enable_desktop_shifter(ff);
+		}
+		if (ff->adapter_dev_idx == HIDPP_DD_FEATURE_NOT_FOUND &&
+		    hidpp_dd_probe_adapter(ff, cand)) {
+			WRITE_ONCE(ff->adapter_dev_idx, cand);
+			dd_info(hid, "Racing Adapter at dev 0x%02x\n", cand);
+			if (ff->current_mode == 0)
+				hidpp_dd_enable_desktop_shifter(ff);
+		}
 	}
 }
 
@@ -15296,6 +15338,8 @@ static ssize_t wheel_accessory_show(struct device *dev,
 	struct hid_device *hid = to_hid_device(dev);
 	struct hidpp_device *hidpp = hid_get_drvdata(hid);
 	struct hidpp_dd_ff_data *ff;
+	bool has_shifter, has_h_shifter, has_adapter;
+	ssize_t len = 0;
 
 	if (!hidpp)
 		return -ENODEV;
@@ -15314,11 +15358,20 @@ static ssize_t wheel_accessory_show(struct device *dev,
 			   jiffies + HIDPP_DD_ACCESSORY_RESCAN_INTERVAL);
 		queue_work(ff->wq, &ff->accessory_rescan_work);
 	}
-	if ((READ_ONCE(ff->shifter_dev_idx) == HIDPP_DD_FEATURE_NOT_FOUND &&
-	     READ_ONCE(ff->h_shifter_dev_idx) == HIDPP_DD_FEATURE_NOT_FOUND) ||
-	    !ff->accessory_name[0])
+	has_shifter = READ_ONCE(ff->shifter_dev_idx) != HIDPP_DD_FEATURE_NOT_FOUND &&
+		      ff->accessory_name[0];
+	has_h_shifter = READ_ONCE(ff->h_shifter_dev_idx) != HIDPP_DD_FEATURE_NOT_FOUND;
+	has_adapter = READ_ONCE(ff->adapter_dev_idx) != HIDPP_DD_FEATURE_NOT_FOUND;
+	if (!has_shifter && !has_h_shifter && !has_adapter)
 		return sysfs_emit(buf, "none\n");
-	return sysfs_emit(buf, "%s\n", ff->accessory_name);
+	if (has_shifter)
+		len += sysfs_emit_at(buf, len, "%s", ff->accessory_name);
+	if (has_h_shifter)
+		len += sysfs_emit_at(buf, len, "%sRS H-Shifter", len ? ", " : "");
+	if (has_adapter)
+		len += sysfs_emit_at(buf, len, "%sRacing Adapter", len ? ", " : "");
+	len += sysfs_emit_at(buf, len, "\n");
+	return len;
 }
 static DEVICE_ATTR(wheel_accessory, 0444, wheel_accessory_show, NULL);
 
@@ -16045,6 +16098,16 @@ static int hidpp_dd_ff_init(struct hidpp_device *hidpp)
 	ff->idx_brakeforce = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_filter = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_response_curve = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_pedal_curve = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->pedal_dev_idx = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->shifter_dev_idx = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_shifter_curve = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_shifter_banded = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_shifter_mode = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->h_shifter_dev_idx = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_h_shifter = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->adapter_dev_idx = HIDPP_DD_FEATURE_NOT_FOUND;
+	ff->idx_attachments = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_brightness = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_lightsync = HIDPP_DD_FEATURE_NOT_FOUND;
 	ff->idx_rgb_config = HIDPP_DD_FEATURE_NOT_FOUND;
