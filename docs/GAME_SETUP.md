@@ -1,50 +1,65 @@
 # Game setup, per game and per wheel
 
-**Generated file. Do not edit.** It is rendered from the
-compatibility registry in
-`userspace/logi-wheel/crates/logi-wheel-core/src/games.rs` by
-`tests/game_setup_doc.rs`, which fails if this file drifts from it.
-The settings app resolves your own installed games against that same
-registry, so what you read here is what the app will tell you.
+**Generated file. Do not edit.** The compatibility registry in
+`userspace/logi-wheel/crates/logi-wheel-core/src/games.rs` is the
+source. `tests/game_setup_doc.rs` renders this file from it. The test
+fails if this file drifts from the registry. The settings app checks
+your own installed games against that same registry. So what you
+read here is what the app will tell you.
 
-**Most people need none of this.** `logi-launch %command%` in a
-game's Steam launch options works the whole recipe out for the game
-being launched and the wheel attached, and applies it: the raw-HID
-setting only where that wheel wants it, the logi-ffb proxy for the
-DirectInput games, the telemetry daemon, and the relay inside the
-game's prefix for the sims that need one. A game with its own
-TrueForce keeps it, and nothing is layered on top. See
+**Most people need none of this.** Put `logi-launch %command%` in a
+game's Steam launch options. Launch options are the command Steam
+runs to start a game. `logi-launch` works out the whole recipe for
+the game and the attached wheel, and applies it. It sets the raw-HID
+setting only where that wheel wants it. (Raw HID gives a game direct
+access to the wheel's USB reports.) It starts the logi-ffb proxy for
+the DirectInput games. (DirectInput is the older Windows
+force-feedback interface. The proxy is a virtual wheel that forwards
+force to the real one.) It starts the telemetry daemon. (Telemetry
+is the live data a game publishes about the car: rpm, gear, speed.)
+It puts the relay inside the game's prefix for the sims that need
+one. (The prefix is the private Windows folder that Proton, Steam's
+layer for running Windows games, makes for each game.) A game with
+its own TrueForce keeps it. Nothing is layered on top. See
 LAUNCH_OPTIONS.md.
 
-**This table is for doing it by hand**, or for working out what went
-wrong. Read on for why the answer differs per wheel.
+**This table is for doing it by hand**, or for finding out what went
+wrong. Read on to see why the answer differs per wheel.
 
 What a game needs depends on the wheel as well as the game. The
-direct-drive wheels answer Logitech's TrueForce SDK, so a sim with
-built-in TrueForce reaches them through the staged SDK DLLs, and
-`PROTON_ENABLE_HIDRAW=1` is what lets it.
+direct-drive wheels answer Logitech's TrueForce SDK. (The SDK is
+Logitech's library that a game loads to send TrueForce haptics.) A
+sim with built-in TrueForce reaches them through the staged SDK
+DLLs. `PROTON_ENABLE_HIDRAW` is what lets it, and `logi-launch` sets it
+scoped to the wheel, never the bare `1`.
 
 The G923 does not answer that SDK. Setting the variable there does
-not add TrueForce, it diverts the game to raw HID reports the wheel
-cannot drive force feedback through, so it costs you the force
+not add TrueForce. It diverts the game to raw HID reports. The wheel
+cannot drive force feedback through those. So it costs you the force
 feedback you already had. Leave it unset.
 
-That wheel is still capable of haptics in those games, by a
-different route: `logi-tf-sim` synthesizes an engine note from the
-game's own telemetry, read out of its shared memory by a small relay
-(`docs/SHARED_MEMORY_RELAY.md`). Confirmed working on a G923 in
-Assetto Corsa Competizione and EVO.
+That wheel can still have haptics in those games, by a different
+route. `logi-tf-sim` synthesizes an engine note from the game's own
+telemetry. A small relay reads that telemetry out of the game's
+shared memory (`docs/SHARED_MEMORY_RELAY.md`). This is confirmed
+working on a G923 in Assetto Corsa Competizione and EVO.
 
 The shim's `--proxy` option is not a second route in these games.
-Both check the library's signature before loading it and refuse the
-unsigned proxy, so it carries nothing, and on a wheel that uses
-Logitech's library it costs the game that library's force feedback
-too. `./tools/setup.sh doctor` flags a prefix that has it.
+(The shim is the set of Logitech SDK files staged into a game's
+prefix.) Both games check the library's signature before they load
+it. They refuse the unsigned proxy, so it carries nothing. On a wheel
+that uses Logitech's library, it also costs the game that library's
+force feedback. `./tools/setup.sh doctor` flags a prefix that has
+it.
 
-Launch options go in Steam under the game's Properties. Paste them
-exactly, `%command%` included: it is the placeholder Steam replaces
-with the game itself, so without it the line replaces the game
-instead of wrapping it.
+To set launch options:
+
+1. In Steam, open the game's Properties.
+2. Paste the line into Launch Options, exactly, `%command%`
+included.
+
+`%command%` is the placeholder Steam replaces with the game itself.
+Without it, the line replaces the game instead of wrapping it.
 
 ## Recipes
 
@@ -81,31 +96,32 @@ instead of wrapping it.
 | TOCA Race Driver 3 | Proton | Native FFB | Nothing to do | Nothing to do |
 | Wreckfest | Proton | Native FFB | Nothing to do | Nothing to do |
 
-Rows marked `*` are not confirmed on this driver yet: expected or
-documented rather than tested end to end.
+Rows marked `*` are not confirmed on this driver yet. They are
+expected or documented, not tested end to end.
 
 ## Simulated TrueForce
 
 Games with no TrueForce of their own can still have engine haptics
-and rev lights, synthesized by `logi-tf-sim` from whatever telemetry
-the game publishes. This works on every supported wheel, including
-the G923: it is ordinary force feedback driven from telemetry, not
-the SDK.
+and rev lights. `logi-tf-sim` synthesizes them from whatever
+telemetry the game publishes. This works on every supported wheel,
+including the G923. It is ordinary force feedback driven from
+telemetry, not the SDK.
 
-How the telemetry reaches the daemon depends on the game. Most
-broadcast it over UDP and only need that switched on in their own
-settings. Euro Truck Simulator 2 and American Truck Simulator use a
-plugin instead (`docs/SCS_PLUGIN.md`), and iRacing publishes to
-shared memory that a small in-prefix relay forwards
-(`docs/SHARED_MEMORY_RELAY.md`). Either way, enable the game in the
-app's Setup page afterwards.
+How the telemetry reaches the daemon depends on the game. Most games
+broadcast it over UDP. (UDP is a simple network protocol. The game
+sends packets to a port.) Those games only need that switched on in
+their own settings. Euro Truck Simulator 2 and American Truck
+Simulator use a plugin instead (`docs/SCS_PLUGIN.md`). iRacing
+publishes to shared memory, and a small in-prefix relay forwards it
+(`docs/SHARED_MEMORY_RELAY.md`). In every case, enable the game in
+the app's Setup page afterwards.
 
 | Game | Simulated TrueForce |
 |---|---|
 | American Truck Simulator | supported today |
 | Assetto Corsa (original) | supported today |
-| Assetto Corsa Competizione | the game's own TrueForce is the route to use; on a direct-drive wheel the helper never adds haptics of its own, and where it runs beside the game it drives the rev lights and the screen only; simulated haptics are the fallback for a wheel that cannot receive the real thing |
-| Assetto Corsa EVO (early access) | the game's own TrueForce is the route to use; on a direct-drive wheel the helper never adds haptics of its own, and where it runs beside the game it drives the rev lights and the screen only; simulated haptics are the fallback for a wheel that cannot receive the real thing |
+| Assetto Corsa Competizione | use the game's own TrueForce; on a direct-drive wheel the helper adds no haptics of its own, and where it runs beside the game it drives only the rev lights and the screen; simulated haptics are the fallback for a wheel that cannot receive the real thing |
+| Assetto Corsa EVO (early access) | use the game's own TrueForce; on a direct-drive wheel the helper adds no haptics of its own, and where it runs beside the game it drives only the rev lights and the screen; simulated haptics are the fallback for a wheel that cannot receive the real thing |
 | Assetto Corsa Rally (early access) | no usable telemetry |
 | Automobilista 2 | supported today |
 | BeamNG.drive | supported today |
@@ -136,7 +152,7 @@ app's Setup page afterwards.
 - **Install the shim.** Stage Logitech's signed SDK DLLs into the game's Proton prefix, from the app's Setup page or `tools/install-tf-shim.sh`. Install the TrueForce shim once, from the app's Setup page; launch options `logi-launch %command%` (it turns raw HID on, stages the proxy that answers the SDK's rotation question, without which the stock library stops steering and force on track, and everything else this game needs); turn Steam Input off. No engine-note texture merge here: ACC produces its own TrueForce audio, so the merge is not wired for it.
 - **On a wheel with no SDK TrueForce.** Leave PROTON_ENABLE_HIDRAW unset: on this wheel it costs you force feedback. For haptics, turn this game on under Simulated TrueForce; logi-launch puts the telemetry relay in the game's prefix and starts the daemon for you, and that route is confirmed working on a G923. Steam Input off.
 - **Launch via logi-ffb.** Launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off. Simulated TrueForce also needs the community rF2SharedMemoryMapPlugin installed in the game.
-- **Nothing to do.** The wheel is an ordinary Linux force feedback device and the game drives it directly.
+- **Nothing to do.** The wheel is an ordinary Linux force feedback device. The game drives it directly.
 
 ## Confidence
 

@@ -8,22 +8,26 @@
 
 **Applies to**: the `hid-logitech-dd` driver in this repository.
 
-Most of the attributes documented here are shared between the RS50 and G Pro (the two wheels share the settings code path). Attributes that are currently G Pro-only or RS50-only are called out inline.
+This document lists the driver's sysfs attributes. Sysfs is the kernel's settings file tree under `/sys`. Each attribute is a small file. You read a file to get a value and write to it to set one.
 
-The **G923 is different**: none of the `wheel_*` attributes below exist on it. Its classic force-feedback engine has its own, smaller attribute set (`range`, `gain`, `autocenter`, `combine_pedals`, `ffb_output`) plus rev-LED devices under `/sys/class/leds/`; see [G923 Attributes](#g923-attributes-playstation-edition-c266c267) below.
+The RS50 and the G Pro share most of the attributes here, because the two wheels share the settings code path. Where an attribute is G Pro-only or RS50-only, the text says so.
+
+The **G923 is different**. None of the `wheel_*` attributes below exist on it. Its classic force-feedback engine has its own, smaller attribute set: `range`, `gain`, `autocenter`, `combine_pedals` and `ffb_output`. It also has rev-LED devices under `/sys/class/leds/`. See [G923 Attributes](#g923-attributes-playstation-edition-c266c267) below.
 
 ---
 
 ## Overview
 
-The driver exposes wheel configuration through sysfs attributes located at:
+The driver puts the wheel settings in sysfs attributes under this directory:
 ```
 /sys/bus/hid/devices/<DEVICE_ID>/
 ```
 
-Where `<DEVICE_ID>` is typically `0003:046D:C276.XXXX` (RS50), `0003:046D:C272.XXXX` (G Pro Xbox/PC), or `0003:046D:C268.XXXX` (G Pro PS/PC).
+`<DEVICE_ID>` is typically `0003:046D:C276.XXXX` (RS50), `0003:046D:C272.XXXX` (G Pro Xbox/PC), or `0003:046D:C268.XXXX` (G Pro PS/PC).
 
-To find your device path:
+The driver talks to the wheel with HID++, Logitech's configuration protocol over USB. Each HID++ setting lives in a feature, named by a hex id such as `0x8137`. A feature has numbered functions, written `fn` in this document.
+
+To find your device path, run one of these commands:
 ```bash
 find /sys/bus/hid/devices -name "*046D*C276*" 2>/dev/null   # RS50
 find /sys/bus/hid/devices -name "*046D*C27[28]*" 2>/dev/null # G Pro (c272 or c268)
@@ -37,10 +41,10 @@ find /sys/bus/hid/devices -name "*046D*C27[28]*" 2>/dev/null # G Pro (c272 or c2
 **Access**: Read/Write
 **Values**: `desktop`, `onboard`
 
-Controls the operating mode of the wheel base.
+Selects the operating mode of the wheel base.
 
-- **Desktop mode** (profile 0): Settings controlled by host software. Sensitivity available.
-- **Onboard mode** (profiles 1-5): Settings stored in wheel profiles. Brake force available.
+- **Desktop mode** (profile 0): The host software controls the settings. Sensitivity is available.
+- **Onboard mode** (profiles 1-5): The wheel stores the settings in its profiles. Brake force is available.
 
 ```bash
 # Read current mode
@@ -58,7 +62,7 @@ echo "desktop" > wheel_mode
 **Access**: Read/Write
 **Values**: `0` (desktop), `1-5` (onboard profiles)
 
-Controls the active profile. Profile 0 is desktop mode; profiles 1-5 are onboard profiles.
+Selects the active profile. Profile 0 is desktop mode. Profiles 1-5 are onboard profiles.
 
 ```bash
 # Read current profile
@@ -74,17 +78,13 @@ echo 0 > wheel_profile
 
 ### Editing an onboard slot
 
-There is no separate "write a whole profile" attribute or protocol. A slot
-is authored by making it active (write `wheel_profile`) and then writing
-the same per-setting attrs everything else on this page uses -
-`wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`,
-`wheel_ffb_filter`/`wheel_ffb_filter_auto`, `wheel_brake_force`,
-`wheel_led_effect`/`wheel_led_brightness`, and `wheel_profile_names` for
-the slot's own name. The wheel persists each write to the active slot's
-own storage **immediately**, exactly like every other write on this page;
-there is no commit/save step afterwards. See
-`docs/PROTOCOL_SPECIFICATION.md`'s "Onboard Profile Authoring" section for
-the wire-level evidence.
+There is no separate "write a whole profile" attribute or protocol. To edit a slot:
+
+1. Make the slot active: write its number to `wheel_profile`.
+2. Write the per-setting attributes that the rest of this page uses: `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`, `wheel_ffb_filter`/`wheel_ffb_filter_auto`, `wheel_brake_force`, `wheel_led_effect`/`wheel_led_brightness`.
+3. Write the slot's own name with `wheel_profile_names`.
+
+The wheel saves each write to the active slot's own storage **immediately**. This is the same as every other write on this page. There is no commit or save step afterwards. See the "Onboard Profile Authoring" section of `docs/PROTOCOL_SPECIFICATION.md` for the wire-level evidence.
 
 ```bash
 # Author slot 3: activate it, then set its values one at a time.
@@ -94,27 +94,28 @@ echo 80 > wheel_strength
 echo "3:RACE NITE" > wheel_profile_names
 ```
 
-Two things follow directly from "immediate write, no commit step":
+Two things follow from "immediate write, no commit step":
 
-- **Activating a slot changes the wheel's live feel right away.** The
-  moment `wheel_profile` lands on a slot, the motor runs whatever
-  strength/damping/range that slot already has stored, before you write
+- **Activating a slot changes the wheel's live feel right away.** As soon
+  as `wheel_profile` lands on a slot, the motor runs the strength, damping
+  and range that the slot already has stored. This happens before you write
   anything else. Never do this while driving.
 - **A half-finished edit cannot be rolled back on the wire.** If a script
-  or tool is interrupted partway through authoring a slot, whatever was
-  written so far stays written; there is nothing to "cancel". A caller
-  that wants an undo path has to read every value it is about to touch
-  *before* writing anything, so it has something to write back if it needs
-  to revert. `logi-wheel`'s GUI/TUI "Edit onboard slot" flow does exactly
-  this (snapshot on entry, an explicit Revert action that replays it); see
-  `logi_wheel_core::onboard` in the userspace crate for the reusable
-  implementation.
+  or tool stops partway through a slot edit, everything written so far
+  stays written. There is nothing to "cancel". A caller that wants an undo
+  path must read every value it is about to touch *before* it writes
+  anything. It then has something to write back if it needs to revert.
+  The "Edit onboard slot" flow in the `logi-wheel` GUI and TUI does exactly
+  this: it takes a snapshot on entry, and an explicit Revert action replays
+  it. See `logi_wheel_core::onboard` in the userspace crate for the
+  reusable implementation.
 
-Also worth knowing when scripting this: the wheel can be switched to a
-different slot from its own OLED menu at any time, including in the
-middle of a multi-attribute edit like the one above. Re-read `wheel_profile`
-before trusting that a write landed on the slot you intended, rather than
-assuming nothing changed underneath you.
+One more thing matters when you script this. The wheel can switch to a
+different slot from its own OLED menu at any time. (The OLED is the small
+display on the wheel base.) This can happen in the middle of a
+multi-attribute edit like the one above. Re-read `wheel_profile` before
+you trust that a write landed on the slot you intended. Do not assume
+nothing changed underneath you.
 
 ---
 
@@ -123,8 +124,8 @@ assuming nothing changed underneath you.
 ### wheel_profile_names
 **Access**: Read/Write
 
-The five onboard slots' names, queried live from the wheel. Use this to
-know which slot number `wheel_profile` should get.
+The names of the five onboard slots, read live from the wheel. Use this
+to find the slot number to write to `wheel_profile`.
 
 ```bash
 cat wheel_profile_names
@@ -135,20 +136,21 @@ cat wheel_profile_names
 # 5: PROFILE 5
 ```
 
-Writing renames one slot, as `<slot>:<name>` (feature `0x8137` fn4). The
-wheel persists the name to its own NVM on the write; there is no separate
-save step.
+A write renames one slot. The format is `<slot>:<name>` (feature `0x8137`
+fn4). The wheel saves the name to its own NVM (non-volatile memory, the
+wheel's permanent storage) on the write. There is no separate save step.
 
 ```bash
 # Rename slot 3
 echo "3:RACE" > wheel_profile_names
 ```
 
-Slot is 1-5. On an RS50 the name may be up to **9 characters** (the same
-length as its stock `PROFILE 3`), may contain spaces, and is stored
-**uppercased** - `echo "3:Race"` reads back as `3: RACE`. A longer name is
-refused by the wheel itself and surfaces as `-EIO`; a bad slot, an empty
-name, or one over the 14-byte HID++ payload gives `-EINVAL`.
+The slot is 1-5. On an RS50 the name may be up to **9 characters**, the
+same length as its stock `PROFILE 3`. It may contain spaces. The wheel
+stores it **uppercased**: `echo "3:Race"` reads back as `3: RACE`. The
+wheel itself refuses a longer name, and the write returns `-EIO`. A bad
+slot, an empty name, or a name over the 14-byte HID++ payload gives
+`-EINVAL`.
 
 ### wheel_range
 **Access**: Read/Write
@@ -165,83 +167,100 @@ cat wheel_range
 echo 540 > wheel_range
 ```
 
-On the G923 Xbox edition under `g923_xbox_dd_engine=1` the range is read
-from and written to the wheel's classic force-feedback feature (0x8123),
-the same one the default path uses, and is clamped to `180` to `900`: it
-is a gear-driven wheel. The attribute reports what the wheel answered at
-probe, not a direct-drive default.
+On the G923 Xbox edition under `g923_xbox_dd_engine=1`, the driver reads
+and writes the range through the wheel's classic force-feedback feature
+(0x8123). The default path uses the same feature. The range is clamped to
+`180` to `900`, because it is a gear-driven wheel. The attribute reports
+what the wheel answered at probe, not a direct-drive default. (Probe is the
+moment the driver first binds to the wheel.)
 
-This governs the ordinary DirectInput/evdev axis and the soft endstop. It
-does **not** constrain the axis Logitech's TrueForce SDK exposes over raw
-HID: that path always presents the wheel's full mechanical range (2700 on
-the RS50), whatever this is set to. So in a game running with TrueForce
-(raw HID on), set the game's steer lock / rotation to the wheel's maximum
-and let the game apply each car's own ratio, which is the usual direct-drive
-setup; matching this value in the game is only correct on the non-TrueForce
-path.
+This range governs the ordinary DirectInput/evdev axis and the soft
+endstop. (DirectInput is the Windows game input API. Evdev is the Linux
+input event interface.) It does **not** limit the axis that Logitech's
+TrueForce SDK sees over raw HID. (TrueForce is Logitech's audio-driven
+haptic channel. The SDK is the software kit games use to drive it. Raw
+HID, or hidraw, is direct device access that bypasses the input layer.)
+That path always presents the wheel's full mechanical range, 2700 on the
+RS50, whatever this attribute is set to. So in a game that runs with TrueForce (raw HID
+on), set the game's steer lock or rotation to the wheel's maximum. Then
+let the game apply each car's own ratio. That is the usual direct-drive
+setup. Matching this value in the game is only correct on the
+non-TrueForce path.
 
-On the G PRO PID (`046d:c272` / `046d:c268`) - both real G PRO and
-RS50-in-compat - the standard HID++ range feature is not advertised
-at the index the native code expects; the driver falls back to
-feature `0x8138` (index 0x18, fn 2) captured from G Hub. See
-`docs/PROTOCOL_SPECIFICATION.md` section 5.1. The fallback
-write only takes effect while the wheel is in desktop mode; the
-wheel boots in onboard mode, so write `0` to `wheel_profile` first
-to enter desktop mode and have subsequent range writes take effect
-on the motor.
+On the G PRO PID (`046d:c272` / `046d:c268`), the standard HID++ range
+feature is not advertised at the index the native code expects. This
+applies both to a real G PRO and to an RS50 in compat mode. (Compat mode
+is when the RS50 enumerates with the G PRO's product id.) The driver falls
+back to feature `0x8138` (index 0x18, fn 2), captured from G Hub. (G Hub
+is Logitech's Windows configuration app.) See
+`docs/PROTOCOL_SPECIFICATION.md` section 5.1. The fallback write only
+takes effect while the wheel is in desktop mode. The wheel boots in
+onboard mode. So write `0` to `wheel_profile` first to enter desktop mode.
+Range writes after that take effect on the motor.
 
-**External-change detection**: some game launches (observed with
-Assetto Corsa EVO under Proton) reset the wheel's physical range to
-90 degrees without any HID++ notification. The driver re-reads the
-true range from the wheel every 20 seconds (paused while force
-feedback is actively playing, so the synchronous query can never
-stall the force stream; it catches up within one interval of the
-effects stopping); if it changed externally,
-the reported `wheel_range` value is updated to the real one, the
-change is logged in dmesg (`rotation range changed externally`), and
-`poll()`ers on the attribute are notified via `sysfs_notify()`.
-When the external value is exactly 90 (the known SDK session-init
-pathology - see `wheel_range_restore` below), the driver also
-restores the previous range automatically.
+**External-change detection**: some game launches reset the wheel's
+physical range to 90 degrees without any HID++ notification. This was
+observed with Assetto Corsa EVO under Proton. (Proton is Valve's
+Wine-based layer that runs Windows games on Linux.) The driver re-reads
+the true range from the wheel every 20 seconds. It pauses this while force
+feedback is actively playing, so the synchronous query can never stall the
+force stream. It catches up within one interval after the effects stop.
+If the range changed externally, the driver does three things:
+
+1. It updates the reported `wheel_range` value to the real one.
+2. It logs the change in dmesg, the kernel log (`rotation range changed externally`).
+3. It wakes any program that waits on the attribute with `poll()`, via `sysfs_notify()`.
+
+When the external value is exactly 90, the driver also restores the
+previous range automatically. The value 90 is the known SDK session-init
+problem; see `wheel_range_restore` below.
 
 ### wheel_range_restore
 **Access**: Read/Write
 **Values**: `0` or `1`
 **Default**: `1`
 
-Automatic recovery from the launch-time 90-degree reset. Root cause
-(usbmon-verified): some games' SDK sessions push an operating range
-of 90 degrees once at session start via a TrueForce interface-2
-packet, invisible to HID++. With this enabled, the driver restores
-the pre-reset range automatically. Verified end-to-end against a
-faithful reproduction of the game traffic: detection to restore in
-under 100 ms once the poll samples the change.
+Automatic recovery from the launch-time 90-degree reset. The root cause
+is verified with usbmon, the kernel's USB traffic capture. Some games'
+SDK sessions push an operating range of 90 degrees once at session start.
+They send it as a TrueForce interface-2 packet, which HID++ cannot see.
+With this attribute enabled, the driver restores the pre-reset range
+automatically. This is verified end-to-end against a faithful
+reproduction of the game traffic. Detection to restore takes under 100 ms
+once the poll samples the change.
 
-Safety gates, each earned from a real incident:
-- fires only for an EXTERNAL silent change landing exactly on 90;
-  any other externally-set value (a game applying its configured
-  steering lock: 540, 850, ...) is respected as legitimate intent;
-- desktop mode only, and never an automatic mode switch;
-- the wheel must be stationary (two encoder reads 50 ms apart);
-  restores only ever widen the range, which cannot snap the wheel;
-- at most 3 restores per session, then the driver logs and yields
-  (`an external writer keeps changing the rotation range`);
-- an explicit `wheel_range` write supersedes any pending restore
-  and resets the strike counter.
+Safety gates, each one earned from a real incident:
+- The restore fires only for an EXTERNAL silent change that lands
+  exactly on 90. The driver respects any other externally-set value as
+  legitimate intent, for example a game applying its configured steering
+  lock (540, 850, ...).
+- It works in desktop mode only. It never switches the mode automatically.
+- The wheel must be stationary (two encoder reads 50 ms apart). The
+  encoder is the sensor that measures the wheel's position. A restore
+  only ever widens the range, which cannot snap the wheel.
+- The driver does at most 3 restores per session. Then it logs
+  `an external writer keeps changing the rotation range` and yields.
+- An explicit `wheel_range` write supersedes any pending restore and
+  resets the strike counter.
 
-`0` = detect-and-report only: the
-change is still logged and `wheel_range` stays honest, but recovery
-is manual (`wheel_profile=0` then `wheel_range=<degrees>` once FFB
-is idle). The same opt-out also governs the push-triggered one-shot
-restore performed when the interceptor sees the SDK's type-`0x0e`
-range push directly (`docs/TRUEFORCE_PROTOCOL.md`): `0` means
-detect-only for both mechanisms, not just the poll-based one.
+`0` = detect-and-report only. The driver still logs the change, and
+`wheel_range` stays honest. Recovery is manual. To recover by hand:
 
-Both mechanisms act only on a push of exactly 90 degrees, the value the
-SDK sends when nothing answered its rotation question. Any other pushed
-value is a game applying its own steering lock through an SDK that was
-answered (the launcher's proxy does that), and it is left in place so the
-game's setting moves the wheel as it does on Windows.
+1. Wait until FFB (force feedback) is idle.
+2. Write `0` to `wheel_profile`.
+3. Write the degrees you want to `wheel_range`.
+
+The same opt-out also governs the push-triggered one-shot restore. The
+driver performs that restore when the interceptor sees the SDK's
+type-`0x0e` range push directly (`docs/TRUEFORCE_PROTOCOL.md`). So `0`
+means detect-only for both mechanisms, not just the poll-based one.
+
+Both mechanisms act only on a push of exactly 90 degrees. That is the
+value the SDK sends when nothing answered its rotation question. Any other
+pushed value is a game applying its own steering lock through an SDK that
+was answered (the launcher's proxy does that). The driver leaves such a
+value in place. The game's setting then moves the wheel as it does on
+Windows.
 
 ### wheel_strength
 **Access**: Read/Write
@@ -249,9 +268,9 @@ game's setting moves the wheel as it does on Windows.
 
 Sets the force feedback strength.
 
-**Internal encoding**: The driver converts percentage to a 16-bit value where:
+**Internal encoding**: The driver converts the percentage to a 16-bit value:
 - 0% = 0x0000
-- 100% = 0xFFFF (corresponds to 8.0 Nm max torque)
+- 100% = 0xFFFF (this is the 8.0 Nm maximum torque)
 
 ```bash
 # Read current strength
@@ -266,9 +285,9 @@ echo 50 > wheel_strength
 **Access**: Read/Write
 **Values**: `0` to `100` (percentage)
 
-Sets the wheel damping (resistance when turning).
+Sets the wheel damping, the resistance you feel when you turn the wheel.
 
-**Internal encoding**: The driver scales the 0-100 percentage to a 16-bit big-endian value (`value = percentage * 65535 / 100`) and writes it to page `0x8133` with SET fn=1. See `docs/PROTOCOL_SPECIFICATION.md` section 5.
+**Internal encoding**: The driver scales the 0-100 percentage to a 16-bit big-endian value (`value = percentage * 65535 / 100`). It writes the value to page `0x8133` with SET fn=1. See `docs/PROTOCOL_SPECIFICATION.md` section 5.
 
 ```bash
 # Read current damping
@@ -282,7 +301,7 @@ echo 25 > wheel_damping
 **Access**: Read/Write
 **Values**: `0` to `100` (percentage)
 
-Sets the TRUEFORCE bass shaker intensity.
+Sets the TRUEFORCE bass shaker intensity. This is the strength of the vibration the wheel plays from TrueForce audio.
 
 ```bash
 # Read current TRUEFORCE level
@@ -300,9 +319,9 @@ echo 0 > wheel_trueforce
 **Values**: `0` to `100` (percentage)
 **Mode Restriction**: **Onboard mode only**
 
-Sets the brake pedal force threshold (load cell sensitivity).
+Sets the brake pedal force threshold. This is the sensitivity of the load cell, the pressure sensor in the brake pedal.
 
-**Note**: Returns `-EPERM` (Permission denied) in desktop mode.
+**Note**: A write returns `-EPERM` (Permission denied) in desktop mode.
 
 ```bash
 # Set brake force to 75% (must be in onboard mode)
@@ -315,21 +334,24 @@ echo 75 > wheel_brake_force
 **Values**: `0` to `100` (percentage)
 **Mode Restriction**: Writes only accepted in **desktop mode**; reads always succeed.
 
-Bends the steering response curve via feature `0x80A4`
-(AxisResponseCurve): a 64-point cubic Bezier from (0,0) to (1,1) with
-control points P1=(1-s, s), P2=(s, 1-s) for s = value/100. Values below
-`50` soften the response near centre; values above `50` sharpen it. `50`
-is the identity curve, so the driver reverts to the wheel's built-in
-curve (as G Hub does) rather than uploading a flat line.
+Bends the steering response curve through feature `0x80A4`
+(AxisResponseCurve). A response curve maps the wheel's real position to
+the position it reports. The curve is a 64-point cubic Bezier from (0,0)
+to (1,1). (A Bezier is a smooth curve defined by control points.) The
+control points are P1=(1-s, s) and P2=(s, 1-s), where s = value/100.
+Values below `50` soften the response near centre. Values above `50`
+sharpen it. `50` is the identity curve. For `50` the driver reverts to
+the wheel's built-in curve, as G Hub does, instead of uploading a flat
+line.
 
-This is unrelated to LED brightness. Feature `0x8040` (behind
-`wheel_led_brightness`) is brightness only; sensitivity and brightness are
-fully independent.
+This is unrelated to LED brightness. Feature `0x8040`, behind
+`wheel_led_brightness`, is brightness only. Sensitivity and brightness
+are fully independent.
 
-Reads return the last value written, defaulting to `50`. The wheel has no
-read-back for the slider, so this is a write-through cache. Writes in
-onboard mode fail with `-EPERM`; if the wheel does not expose the
-response-curve feature, writes return `-EOPNOTSUPP`.
+A read returns the last value written. The default is `50`. The wheel has
+no read-back for the slider, so this is a write-through cache. A write in
+onboard mode fails with `-EPERM`. If the wheel does not expose the
+response-curve feature, a write returns `-EOPNOTSUPP`.
 
 ```bash
 # Sharpen the centre response (must be in desktop mode)
@@ -341,9 +363,9 @@ echo 65 > wheel_sensitivity
 **Access**: Read/Write
 **Values**: `1` to `15` (filter level)
 
-Sets the force feedback smoothing/filtering level. G Hub's labels are roughly Minimum (1), Low (7), Medium (11), Maximum (15).
+Sets the force feedback smoothing (filter) level. G Hub's labels are roughly Minimum (1), Low (7), Medium (11), Maximum (15).
 
-Values outside `1..15` are clamped to that range.
+The driver clamps values outside `1..15` to that range.
 
 ```bash
 # Read current filter level
@@ -357,9 +379,9 @@ echo 11 > wheel_ffb_filter
 **Access**: Read/Write
 **Values**: `0` (manual), `1` (auto)
 
-Enables automatic FFB filter adjustment based on game output.
+Enables automatic FFB filter adjustment based on the game's output.
 
-The driver splits the two on-wire meanings of the filter flag byte across two sysfs writes: writing to `wheel_ffb_filter` stamps the "user set this level right now" bit, writing here toggles only the "auto mode" bit. See `docs/PROTOCOL_SPECIFICATION.md` section 5 (FFB Filter) for the bitfield decode.
+The filter flag byte on the wire has two meanings. The driver splits them across two sysfs writes. A write to `wheel_ffb_filter` stamps the "user set this level right now" bit. A write here toggles only the "auto mode" bit. See `docs/PROTOCOL_SPECIFICATION.md` section 5 (FFB Filter) for the bitfield decode.
 
 ```bash
 # Enable auto filter
@@ -371,15 +393,17 @@ echo 0 > wheel_ffb_filter_auto
 
 ### wheel_ffb_game_gain
 
-Read-only. The force-feedback strength the running game has asked for, as
-a percentage, which is `FF_GAIN` arriving through evdev when a game's own
-force-feedback slider moves. 100 until a game lowers it.
+Read-only. The force-feedback strength the running game has asked for,
+as a percentage. This is the `FF_GAIN` value that arrives through evdev
+when a game's own force-feedback slider moves. It is 100 until a game
+lowers it.
 
-Not a setting, and not the wheel's own strength: this is the game's, and
-it is published so that everything the wheel does on that game's behalf
-can follow it. `logi-tf-sim` scales its synthesized haptics by this, so a
-title with no TrueForce of its own still obeys the slider a driver
-reaches for (`follow_game_gain` in `tf-sim.conf` turns that off).
+This is not a setting, and it is not the wheel's own strength. It is the
+game's value. The driver publishes it so that everything the wheel does on
+that game's behalf can follow it. `logi-tf-sim` scales its synthesized
+haptics by this value. So a title with no TrueForce of its own still obeys
+the slider a driver reaches for. `follow_game_gain` in `tf-sim.conf` turns
+that off.
 
 ```bash
 cat "$H/wheel_ffb_game_gain"     # 100 with nothing running
@@ -390,45 +414,46 @@ cat "$H/wheel_ffb_game_gain"     # 100 with nothing running
 **Values**: `0` or `1`
 **Default**: `1`
 
-Controls whether the driver inverts the sign of every `FF_CONSTANT`
-level before sending it to the wheel. This single toggle is what makes
-the driver's FFB feel right under both Wine/Proton games and native
-Linux apps - the two paths disagree on sign by one flip somewhere in
-Wine's DirectInput-to-evdev translation layer, and the driver can't
-tell them apart at runtime.
+Selects whether the driver inverts the sign of every `FF_CONSTANT`
+level before it sends the level to the wheel. (`FF_CONSTANT` is the evdev
+constant-force effect type.) This single toggle makes the driver's FFB
+feel right under both Wine/Proton games and native Linux apps. The two
+paths disagree on sign by one flip somewhere in Wine's
+DirectInput-to-evdev translation layer. The driver cannot tell them apart
+at runtime.
 
 - `1` (default) - invert. Correct for Wine/Proton running Windows
   games (Assetto Corsa Competizione, etc.). If `FF_CONSTANT` feels
   like centring forces push the wheel *away* from centre instead of
   back toward it, the toggle is at the wrong setting.
 - `0` - pass-through. Correct for native Linux evdev apps that
-  upload effects with the convention documented in
-  `Documentation/input/ff.rst` (direction=0x4000 east, positive
-  level = rightward force). `fftest`, `ffcfstress`, and direct
-  EVIOCSFF uploads from custom tools are in this category.
+  upload effects with the convention in `Documentation/input/ff.rst`
+  (direction=0x4000 east, positive level = rightward force).
+  `fftest`, `ffcfstress`, and direct EVIOCSFF uploads from custom
+  tools are in this category.
 
-Only affects `FF_CONSTANT`. All other effect types (`FF_SPRING`,
+This only affects `FF_CONSTANT`. All other effect types (`FF_SPRING`,
 `FF_DAMPER`, `FF_FRICTION`, `FF_INERTIA`, `FF_RAMP`, `FF_PERIODIC`,
 `FF_RUMBLE`) feel identical at either toggle value.
 
-**Caveat for reverse driving**: the inversion is unconditional - it
-does not look at the wheel's velocity or the car's gear. In sims that
-correctly model the self-aligning torque flipping sign at negative
-longitudinal velocity (most modern racing sims do), the chain is
-"sim physics-inverts for reverse → Wine inverts again → driver inverts
-again", which lands as physics-correct destabilising FFB the user
-feels as the wheel actively pushing away from centre when reversing.
-That is the real-car behaviour and not a driver bug, but it can feel
-violent compared to a wheel without TF / direct-drive force. Lowering
-`wheel_strength` is the only knob from the driver side; switching the
-sign toggle off would make forward driving feel wrong without fixing
-the reverse case.
+**Caveat for reverse driving**: the inversion is unconditional. It does
+not look at the wheel's velocity or the car's gear. Most modern racing
+sims correctly model the self-aligning torque flipping sign at negative
+longitudinal velocity. In those sims the chain is: the sim physics
+inverts for reverse, then Wine inverts again, then the driver inverts
+again. The result is physics-correct destabilising FFB. The user feels
+it as the wheel actively pushing away from centre when reversing. That is
+the real-car behaviour and not a driver bug. But it can feel violent
+compared to a wheel without TF / direct-drive force. Lowering
+`wheel_strength` is the only knob on the driver side. Switching the sign
+toggle off would make forward driving feel wrong without fixing the
+reverse case.
 
-A contributor cross-checked this on Windows (issue #8, AC EVO and AC):
-the FFB "gets pretty violent in reverse" there too, with the same wheel
+A contributor cross-checked this on Windows (issue #8, AC EVO and AC).
+The FFB "gets pretty violent in reverse" there too, with the same wheel
 and game settings. So the strong reverse force is the sim's physics
-surfacing through the wheel, identical to the Windows G Hub path, not a
-sign error or double-inversion on our side.
+surfacing through the wheel. It is identical to the Windows G Hub path.
+It is not a sign error or a double inversion on our side.
 
 ```bash
 # Playing Wine/Proton racing games: leave default
@@ -438,9 +463,9 @@ cat wheel_ffb_constant_sign    # -> 1
 echo 0 | sudo tee wheel_ffb_constant_sign
 ```
 
-The inversion is confirmed empirically on Assetto Corsa Competizione with this
-wheel; a test harness in `tests/ff_matrix_test.c` cross-checks each toggle value
-against native evdev expectations.
+The inversion is confirmed by testing on Assetto Corsa Competizione with
+this wheel. A test harness in `tests/ff_matrix_test.c` cross-checks each
+toggle value against native evdev expectations.
 
 ### wheel_spring_damping
 **Access**: Read/Write
@@ -448,19 +473,20 @@ against native evdev expectations.
 **Default**: `25`
 **Availability**: all direct-drive wheels (RS50 native/compat and real G PRO - every family PID runs the same `hidpp_dd_ff_*` FFB path).
 
-Synthetic damping applied to emulated `FF_SPRING` effects, as a
-percentage of a `FF_DAMPER` running the spring's own coefficient.
+Synthetic damping that the driver applies to emulated `FF_SPRING`
+effects. It is a percentage of a `FF_DAMPER` that runs at the spring's
+own coefficient.
 
-The driver emulates condition effects host-side: it samples the wheel
-position and pushes the computed force back over USB. That loop
-latency on a low-friction direct-drive motor makes a stiff, undamped
-game-uploaded spring ring - a growing back-and-forth oscillation that
-ends with the wheel's over-torque failsafe cutting power (observed
-live with Assetto Corsa EVO's map-load centring spring). Real wheels
-damp the spring inside the firmware servo loop; this knob restores
-that behaviour. `0` disables it. The damping
-scales with the spring's own coefficient, so stiff springs get
-proportionally stronger damping.
+The driver emulates condition effects on the host side. It samples the
+wheel position and pushes the computed force back over USB. That loop
+has latency. On a low-friction direct-drive motor, the latency makes a
+stiff, undamped spring from a game ring. The ring is a growing
+back-and-forth oscillation. It ends when the wheel's over-torque
+failsafe cuts power. This was observed live with Assetto Corsa EVO's
+map-load centring spring. Real wheels damp the spring inside the
+firmware servo loop. This knob restores that behaviour. `0` disables it.
+The damping scales with the spring's own coefficient, so stiff springs
+get proportionally stronger damping.
 
 ```bash
 cat wheel_spring_damping     # -> 25
@@ -473,52 +499,52 @@ echo 40 > wheel_spring_damping
 **Default**: `tf`
 **Availability**: all direct-drive wheels (RS50 native/compat and real G PRO - every family PID runs the same `hidpp_dd_ff_*` FFB path).
 
-Selects where vibration-class effects - `FF_RUMBLE` and periodic
-effects at 20 Hz or faster (period <= 50 ms) - are actuated:
+Selects where the driver plays vibration-class effects. These are
+`FF_RUMBLE` and periodic effects at 20 Hz or faster (period <= 50 ms).
 
 - `tf` (default) - the driver streams them on the wheel's TrueForce
-  audio-haptic channel (interface 2, ~1 kHz sample rate), the same
-  physical path the Windows SDK uses for texture. Steering-shaping
+  audio-haptic channel (interface 2, ~1 kHz sample rate). This is the
+  same physical path the Windows SDK uses for texture. Steering
   effects (`FF_CONSTANT`, conditions, slow periodics) stay on the
-  force channel, so rumble does not modulate the steering axis.
-  This matches the Windows KF/TF split; the "gritty/notchy steering
+  force channel. So rumble does not modulate the steering axis.
+  This matches the Windows KF/TF split. The "gritty/notchy steering
   under rumble" reported in issue #8 is the `kf` behaviour.
-- `kf` - legacy: everything is summed into the single steering
-  force. Kept as a fallback and for A/B comparison.
+- `kf` - legacy. The driver sums everything into the single steering
+  force. It is kept as a fallback and for A/B comparison.
 
-The TrueForce session is brought up lazily: the first time a
+The driver brings up the TrueForce session lazily. The first time a
 texture-class effect actually plays, the driver replays the captured
-68-packet init sequence twice (G Hub behaviour) and then streams
-unified packets at 500 Hz while texture effects are active - each
-packet carries the steering-force sum in its preamble and four
-texture-audio window slots (2 kHz slot rate), the same layout AC EVO
-streams (dmesg: `TrueForce texture channel ready`). Wheels that never see texture
-effects never see TF traffic. If the init fails, texture effects
-fall back to the steering channel - degraded feel, never lost - and
-the driver retries on a later texture playback (up to 3 attempts per
-session, logged in dmesg).
+68-packet init sequence twice. This is G Hub behaviour. It then streams
+unified packets at 1 kHz while texture effects are active. Each packet
+carries the steering-force sum in its preamble and four texture-audio
+window slots (2 kHz slot rate). This is the same layout AC EVO streams.
+The kernel log shows `TrueForce texture channel ready`. A wheel that
+never sees texture effects never sees TF traffic. If the init fails,
+texture effects fall back to the steering channel. The feel is degraded,
+never lost. The driver retries on a later texture playback, up to 3
+attempts per session, and logs each attempt in dmesg.
 
-An effect's channel is decided when its playback starts and held for
-the whole play cycle, so re-parametrising a playing effect across the
-20 Hz crossover (or the session init completing mid-play) never yanks
-a live effect between channels. Playbacks started before the session
-is ready ride the steering channel for their duration; the next
-playback moves to the TF stream.
+The driver decides an effect's channel when its playback starts. It holds
+that channel for the whole play cycle. So re-parametrising a playing
+effect across the 20 Hz crossover never yanks a live effect between
+channels. The same is true when the session init completes mid-play.
+Playbacks that start before the session is ready ride the steering
+channel for their duration. The next playback moves to the TF stream.
 
-Texture amplitude respects `FF_GAIN` and `wheel_strength` (the wheel
-firmware scales steering forces by the strength setting itself but
-plays TF samples at face value, so the driver applies strength to
-texture in software for consistency), and is additionally capped at
-half of full scale: above roughly 0.5-0.7 FS the wheel's DSP crosses
-from vibration into pulling the steering axis, so the cap keeps a
-synthetic full-scale rumble from hijacking steering torque. Real
-games stream texture far below the cap.
+Texture amplitude respects `FF_GAIN` and `wheel_strength`. The wheel
+firmware scales steering forces by the strength setting itself, but it
+plays TF samples at face value. So the driver applies strength to texture
+in software for consistency. The amplitude is also capped at half of
+full scale. Above roughly 0.5-0.7 FS the wheel's DSP (its signal
+processor) crosses from vibration into pulling the steering axis. The
+cap keeps a synthetic full-scale rumble from hijacking steering torque.
+Real games stream texture far below the cap.
 
-Note for SDK games (ACC, AC EVO with the TrueForce shim): those
-stream TrueForce themselves via hidraw and normally do not send
-evdev rumble at the same time, so the two streams do not meet. If a
-game somehow does both, set `kf` to keep the wheel's TF input to a
-single writer.
+Note for SDK games (ACC, AC EVO with the TrueForce shim): those games
+stream TrueForce themselves via hidraw. They normally do not send evdev
+rumble at the same time, so the two streams do not meet. If a game
+somehow does both, set `kf`. That keeps the wheel's TF input to a single
+writer.
 
 ```bash
 cat wheel_texture_route      # -> tf
@@ -529,16 +555,17 @@ echo kf > wheel_texture_route   # A/B back to the legacy mixing
 **Access**: Read/Write
 **Values**: `0` or `1`
 **Default**: `0`
-**Availability**: all direct-drive wheels (RS50 native/compat and real G PRO - every family PID runs the same `hidpp_dd_ff_*` FFB path). Backed by the native texture-merge interceptor on interface 2: if it is not installed (interface 2 not yet bound, or already torn down), reads back `0` and writes fail with `-ENODEV`.
+**Availability**: all direct-drive wheels (RS50 native/compat and real G PRO - every family PID runs the same `hidpp_dd_ff_*` FFB path). Backed by the native texture-merge interceptor on interface 2. If the interceptor is not installed (interface 2 not yet bound, or already torn down), reads give `0` and writes fail with `-ENODEV`.
 
-Master switch for the native texture merge. When `1`, outgoing SDK
-stream packets on interface 2 that carry no audio samples get engine
-texture spliced in (synthesised from `wheel_texture_rpm`, fitted to
-the Windows capture in `docs/TF_TEXTURE_RECIPE.md`). The base force
-bytes are never modified. With no fresh RPM (200 ms staleness window)
-or below 300 rpm the stream passes through untouched. Turning it off
-also zeroes the internal sample-debt counter, so re-enabling starts
-clean rather than bursting queued samples.
+Master switch for the native texture merge. When `1`, the driver splices
+engine texture into outgoing SDK stream packets on interface 2 that
+carry no audio samples. The texture is synthesised from
+`wheel_texture_rpm` and fitted to the Windows capture in
+`docs/TF_TEXTURE_RECIPE.md`. The driver never modifies the base force
+bytes. With no fresh RPM (200 ms staleness window), or below 300 rpm,
+the stream passes through untouched. Turning the switch off also zeroes
+the internal sample-debt counter. So re-enabling starts clean instead of
+bursting queued samples.
 
 ```bash
 cat wheel_tf_merge           # -> 0
@@ -551,22 +578,21 @@ echo 1 > wheel_tf_merge
 **Default**: `0 0 0`
 **Availability**: same as `wheel_tf_merge`, including the NULL-shim fallback (reads back `0 0 0`, writes fail with `-ENODEV`).
 
-Live engine RPM feed for the texture merge. Normally written by
-logi-rpm-bridge at roughly 60 Hz from the game's telemetry relay;
-writable by hand for bench tests. `age_ms` on read is how long ago the
-value was last written, and is what `wheel_tf_merge` checks against
-its 200 ms staleness window.
+Live engine RPM feed for the texture merge. Normally logi-rpm-bridge
+writes it at roughly 60 Hz from the game's telemetry relay. You can also
+write it by hand for bench tests. `age_ms` on read is how long ago the
+value was last written. `wheel_tf_merge` checks this age against its
+200 ms staleness window.
 
-Besides writing `rpm max_rpm` here, logi-rpm-bridge also drives
-`wheel_rev_level` from the same telemetry. The default mapping is a
-full rev bar: LED 1 lights as soon as rpm > 0 and all 10 are lit at
-the limiter (works for legacy 28-byte relay senders too).
-`LOGI_REV_MODE=shift` selects the dash band instead: dark below the
-first-shift-light rpm, level 1 exactly there, 10 at the limiter (needs
-the 32-byte relay form that carries the first-shift-light rpm).
-`LOGI_REV_SYSFS` overrides the LED target attribute and
-`LOGI_RPM_PORT` the UDP port. The strip darkens on telemetry loss
-(1 s) and on bridge exit.
+logi-rpm-bridge also drives `wheel_rev_level` from the same telemetry.
+The default mapping is a full rev bar: LED 1 lights as soon as rpm > 0,
+and all 10 are lit at the limiter. This works for legacy 28-byte relay
+senders too. `LOGI_REV_MODE=shift` selects the dash band instead: dark
+below the first-shift-light rpm, level 1 exactly there, 10 at the
+limiter. The dash band needs the 32-byte relay form that carries the
+first-shift-light rpm. `LOGI_REV_SYSFS` overrides the LED target
+attribute. `LOGI_RPM_PORT` overrides the UDP port. The strip darkens on
+telemetry loss (1 s) and on bridge exit.
 
 ```bash
 cat wheel_texture_rpm        # -> 6500 14000 12
@@ -580,7 +606,7 @@ echo "6500 14000" > wheel_texture_rpm
 **Availability**: same as `wheel_tf_merge`, including the NULL-shim fallback (reads back `0`, writes fail with `-ENODEV`).
 
 Texture amplitude as a percentage of the capture fit. `0` silences
-the texture, `200` doubles it.
+the texture. `200` doubles it.
 
 ```bash
 cat wheel_texture_intensity  # -> 100
@@ -593,11 +619,11 @@ echo 150 > wheel_texture_intensity
 **Default**: `4`
 **Availability**: same as `wheel_tf_merge`, including the NULL-shim fallback (reads back `0`, writes fail with `-ENODEV`).
 
-Cylinder count for the firing-frequency model driving the texture
-synthesis (`f0 = rpm/60 * cylinders/2`). Treat it as a feel knob, not
-a realism setting: rim excursion falls as 1/f^2, so higher counts push
-the firing frequency across the rev range above what a direct-drive
-rim can physically express, and the texture fades out of reach.
+Cylinder count for the firing-frequency model that drives the texture
+synthesis (`f0 = rpm/60 * cylinders/2`). Treat it as a feel knob, not a
+realism setting. Rim excursion falls as 1/f^2. So higher counts push the
+firing frequency, across the rev range, above what a direct-drive rim can
+physically express. The texture then fades out of reach.
 
 ```bash
 cat wheel_texture_cylinders  # -> 4
@@ -609,17 +635,19 @@ echo 6 > wheel_texture_cylinders
 **Values**: `0` to `65535` (raw encoder position)
 **Availability**: RS50 and G Pro. Returns `-EOPNOTSUPP` if the wheel does not expose page `0x812C` on sub-device `0x05` (no known variant lacks it, but the driver does not assume).
 
-Low-level primitive: writes the given raw 16-bit encoder value to adopt
-as the new centre. The driver sends `10 05 <idx> 3D <hi> <lo> 00` to
-HID++ sub-device `0x05`, feature page `0x812C` (see
-`docs/PROTOCOL_SPECIFICATION.md` section 5 for the wire format).
-Verified on RS50 from `2026-04-22_re_calibrate.pcapng`.
+Low-level primitive. It writes the given raw 16-bit encoder value, which
+the wheel adopts as the new centre. The driver sends
+`10 05 <idx> 3D <hi> <lo> 00` to HID++ sub-device `0x05`, feature page
+`0x812C`. (A sub-device is a HID++ address for one part of the wheel,
+such as the motor unit.) See `docs/PROTOCOL_SPECIFICATION.md` section 5
+for the wire format. Verified on RS50 from
+`2026-04-22_re_calibrate.pcapng`.
 
-Use this only if you already have the raw encoder value you want to
-make the centre (e.g., you read it via a HID++ GET yourself, or you
-want to seed a specific reference value). For the common case ("make
-the wheel's current physical position the new centre") use
-`wheel_calibrate_here` below, which does the GET+SET internally.
+Use this only if you already have the raw encoder value you want as the
+centre. For example, you read it via a HID++ GET yourself, or you want
+to seed a specific reference value. For the common case, "make the
+wheel's current physical position the new centre", use
+`wheel_calibrate_here` below. It does the GET+SET internally.
 
 ```bash
 # Low-level: you already have the raw encoder number you want.
@@ -632,28 +660,30 @@ echo 32768 > wheel_calibrate
 **Availability**: same as `wheel_calibrate`
 
 One-shot "use the wheel's current physical position as the new centre".
-The driver issues fn=1 GET to read the current raw encoder value, then
-fn=3 SET with that value. Mirrors what G Hub does when the user clicks
-Calibrate on Windows. Hold the wheel at the desired centre (typically
-true centre), then write to this attribute.
+The driver issues fn=1 GET to read the current raw encoder value. It
+then issues fn=3 SET with that value. This mirrors what G Hub does when
+the user clicks Calibrate on Windows. To use it:
+
+1. Hold the wheel at the centre you want (typically true centre).
+2. Write to this attribute.
 
 ```bash
 # Hold the wheel at true physical centre, then:
 echo 1 > wheel_calibrate_here
 ```
 
-No state is stored in the driver; the wheel's firmware persists the new
-centre across power cycles (same as G Hub on Windows).
+The driver stores no state. The wheel's firmware keeps the new centre
+across power cycles, the same as G Hub on Windows.
 
 ---
 
 ## LIGHTSYNC LED Control
 
-The RS50 has 10 RGB LEDs in a horizontal strip across the upper faceplate (an engine-RPM / shift indicator). The driver provides per-slot configuration with 5 custom slots (0-4).
+The RS50 has 10 RGB LEDs in a horizontal strip across the upper faceplate. (RGB means each LED mixes red, green and blue, so it can show any colour.) The strip is an engine-RPM / shift indicator. The driver provides per-slot configuration with 5 custom slots (0-4).
 
-> **Per-model availability**: the `wheel_led_*` LIGHTSYNC attributes exist on the RS50 in both native and G-PRO-compat enumeration (the RS50's faceplate LED-strip hardware doesn't change with the PID; verified live 2026-04-29). On a **real G PRO Racing Wheel** they are hidden: that rim has level-based rev lights with no per-LED RGB, exposed as `wheel_rev_level` instead (see its entry below).
+> **Per-model availability**: the `wheel_led_*` LIGHTSYNC attributes exist on the RS50 in both native and G-PRO-compat enumeration. The RS50's faceplate LED-strip hardware does not change with the PID (the USB product id). Verified live 2026-04-29. On a **real G PRO Racing Wheel** they are hidden. That rim has level-based rev lights with no per-LED RGB. The driver exposes them as `wheel_rev_level` instead (see its entry below).
 >
-> **G PRO PID (`046d:c272` / `046d:c268`)**: covers both real G PRO Racing Wheel and RS50-in-G-PRO-compat-mode. Both run through the same `hidpp_dd_ff_*` code path and expose the same wheel-config surface; the LED attributes differ per rim (see the per-model note above - the driver tells the two apart by USB product string). On the RS50 in compat mode, LIGHTSYNC works the same way as native - feature `0x807A` is advertised at the same index discovery picks up in native, and `wheel_led_*` writes drive the LED strip end-to-end (verified against the live wheel 2026-04-29). Wheel-config attributes that work via fallback feature paths (see `docs/PROTOCOL_SPECIFICATION.md` section 5.1): `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`, `wheel_ffb_filter`, `wheel_profile` (write `0` to enter desktop mode), and `wheel_calibrate`. The remaining attributes (`wheel_brake_force`, `wheel_ffb_filter_auto`, `wheel_sensitivity`) are unsupported by this firmware: once their mode gating is satisfied the store returns `-EOPNOTSUPP` (note `wheel_brake_force` still returns `-EPERM` in desktop mode and `wheel_sensitivity` in onboard mode before that check). For those, configure via the wheel's OLED menu or via Windows G Hub on a Windows host.
+> **G PRO PID (`046d:c272` / `046d:c268`)**: covers both the real G PRO Racing Wheel and the RS50 in G PRO compat mode. Both run through the same `hidpp_dd_ff_*` code path and expose the same wheel-config attributes. The LED attributes differ per rim (see the per-model note above). The driver tells the two apart by the USB product string. On the RS50 in compat mode, LIGHTSYNC works the same way as native. Feature `0x807A` is advertised at the same index that discovery picks up in native, and `wheel_led_*` writes drive the LED strip end-to-end (verified against the live wheel 2026-04-29). These wheel-config attributes work via fallback feature paths (see `docs/PROTOCOL_SPECIFICATION.md` section 5.1): `wheel_range`, `wheel_strength`, `wheel_trueforce`, `wheel_damping`, `wheel_ffb_filter`, `wheel_profile` (write `0` to enter desktop mode), and `wheel_calibrate`. This firmware does not support the remaining attributes (`wheel_brake_force`, `wheel_ffb_filter_auto`, `wheel_sensitivity`). Once their mode gating is satisfied, the store returns `-EOPNOTSUPP`. Note that `wheel_brake_force` still returns `-EPERM` in desktop mode, and `wheel_sensitivity` in onboard mode, before that check. For those settings, use the wheel's OLED menu or G Hub on a Windows host.
 
 ### LED Control Workflow
 
@@ -662,18 +692,18 @@ The RS50 has 10 RGB LEDs in a horizontal strip across the upper faceplate (an en
 3. **Set colors**: `echo "FF0000 FF0000 ... (10 colors)" > wheel_led_colors`
 4. **Apply changes**: `echo 1 > wheel_led_apply`
 
-Alternatively, use built-in effects via `wheel_led_effect`.
+Or use the built-in effects through `wheel_led_effect`.
 
 ### wheel_led_slot
 **Access**: Read/Write
 **Values**: `0` to `4` (custom slot index)
 
 Selects the active custom LED slot and renders it on the strip. On the
-wire a custom slot IS effect value `5 + slot` (see `wheel_led_effect`),
-so writing this attribute is equivalent to writing effect `5 + slot`:
-the driver applies the slot's stored config and switches the strip to it
-(hardware-verified working, both directions, 2026-07-20). The slot-scoped
-attributes (`wheel_led_slot_name`, `wheel_led_colors`,
+wire, a custom slot IS effect value `5 + slot` (see `wheel_led_effect`).
+So a write to this attribute equals a write of effect `5 + slot`. The
+driver applies the slot's stored config and switches the strip to it.
+This is hardware-verified in both directions, 2026-07-20. The
+slot-scoped attributes (`wheel_led_slot_name`, `wheel_led_colors`,
 `wheel_led_direction`, `wheel_led_slot_brightness`) target the slot
 selected here.
 
@@ -686,7 +716,7 @@ echo 2 > wheel_led_slot
 **Access**: Read/Write
 **Values**: String (max 8 characters)
 
-Gets or sets the name of the currently selected LED slot. Names are stored on the device.
+Gets or sets the name of the currently selected LED slot. The device stores the names.
 
 ```bash
 # Read current slot name
@@ -701,7 +731,7 @@ echo "Racing" > wheel_led_slot_name
 **Access**: Read/Write
 **Values**: `0` to `100` (percentage)
 
-Gets or sets the brightness for the currently selected slot. Each slot can have its own brightness level, which is applied when the slot is activated via `wheel_led_apply`.
+Gets or sets the brightness for the currently selected slot. Each slot can have its own brightness level. The wheel applies it when you activate the slot with `wheel_led_apply`.
 
 ```bash
 # Read current slot brightness
@@ -712,7 +742,7 @@ cat wheel_led_slot_brightness
 echo 50 > wheel_led_slot_brightness
 ```
 
-**Note**: This is per-slot brightness. Use `wheel_led_brightness` to set global brightness without changing slot settings.
+**Note**: This is per-slot brightness. Use `wheel_led_brightness` to set the global brightness without changing slot settings.
 
 ### wheel_led_direction
 **Access**: Read/Write
@@ -724,9 +754,9 @@ Sets the LED animation direction for the current slot:
 - `2` = Inside Out (center outward)
 - `3` = Outside In (edges inward)
 
-On the wire the `0x807B` config carries a 1-4 value; the driver translates
-between this 0-3 enum and the device's 1-4 encoding internally (see
-PROTOCOL_SPECIFICATION.md section 9.4.1).
+On the wire, the `0x807B` config carries a 1-4 value. The driver
+translates between this 0-3 enum and the device's 1-4 encoding
+internally (see PROTOCOL_SPECIFICATION.md section 9.4.1).
 
 ```bash
 # Set direction to Right-to-Left
@@ -737,7 +767,7 @@ echo 1 > wheel_led_direction
 **Access**: Read/Write
 **Format**: 10 space-separated hex RGB values (`RRGGBB`)
 
-Sets all 10 LED colors for the current slot. LED1 is leftmost.
+Sets all 10 LED colors for the current slot. LED1 is the leftmost LED.
 
 ```bash
 # Set all LEDs to red
@@ -762,46 +792,46 @@ Sets the global LED brightness.
 echo 50 > wheel_led_brightness
 ```
 
-Brightness changed from the wheel itself (OLED menu) is tracked: the
-driver consumes the official x8040 `brightnessChangeEvent` broadcast,
-updates this attribute's value, and notifies `poll()`ers on
-`wheel_led_brightness`. It does not touch `wheel_sensitivity`: the two
-were once thought to alias in desktop mode, that was disproved on
-hardware, and the driver's own handler carries a note saying the read
-here must never touch sensitivity. The two are fully independent, as
-stated above.
+The driver tracks brightness changes made from the wheel itself (OLED
+menu). It consumes the official x8040 `brightnessChangeEvent` broadcast,
+updates this attribute's value, and wakes `poll()` waiters on
+`wheel_led_brightness`. It does not touch `wheel_sensitivity`. The two
+were once thought to alias in desktop mode. That was disproved on
+hardware. The driver's own handler carries a note that the read here
+must never touch sensitivity. The two are fully independent, as stated
+above.
 
 ### wheel_led_effect
 **Access**: Read/Write
 **Values**: `1` to `9`
 
-Selects the LED animation mode. Values match feature 0x807A fn3 on
+Selects the LED animation mode. The values match feature 0x807A fn3 on
 the wire:
 
 | Value | Effect |
 |---|---|
 | `1` | Inside to out |
 | `2` | Outside to in |
-| `3` | Right to left |
-| `4` | Left to right |
+| `3` | Left to right |
+| `4` | Right to left |
 | `5`-`9` | The five custom slots: `5` = CUSTOM 1 .. `9` = CUSTOM 5 |
 
-Values `5`-`9` ARE the custom slots (decoded 2026-07-20): there is no
-separate slot-activate command, selecting a slot is selecting its
-effect number. Writing `5` renders the ACTIVE slot - the driver
-re-applies `wheel_led_slot`'s stored RGB and sends `5 + slot` on the
-wire, so through this attribute `5` always means "custom mode with the
-currently selected slot". Writing `6`-`9` selects that specific slot's
-image directly without moving `wheel_led_slot`; prefer `wheel_led_slot`
-(or `5`) so the slot-scoped attributes keep targeting the rendered
-slot. Writes for the animated modes (1-4) just switch the effect and
-leave the cached colors untouched. Writes outside `1..9` are clamped
-to the nearest end of the range.
+Values `5`-`9` ARE the custom slots (decoded 2026-07-20). There is no
+separate slot-activate command. Selecting a slot is selecting its
+effect number. A write of `5` renders the ACTIVE slot. The driver
+re-applies the stored RGB of `wheel_led_slot` and sends `5 + slot` on
+the wire. So through this attribute, `5` always means "custom mode with
+the currently selected slot". A write of `6`-`9` selects that specific
+slot's image directly, without moving `wheel_led_slot`. Prefer
+`wheel_led_slot` (or `5`), so the slot-scoped attributes keep targeting
+the rendered slot. A write of an animated mode (1-4) just switches the
+effect and leaves the cached colors untouched. The driver clamps a write
+outside `1..9` to the nearest end of the range.
 
-Effect changed from outside the driver (G Hub-style tools, or the
-wheel itself) is tracked: the driver consumes the LIGHTSYNC
-effect-change broadcast, updates this attribute, and notifies
-`poll()`ers.
+The driver tracks effect changes made from outside the driver, by G
+Hub-style tools or by the wheel itself. It consumes the LIGHTSYNC
+effect-change broadcast, updates this attribute, and wakes `poll()`
+waiters.
 
 ```bash
 # Render the active custom slot
@@ -819,13 +849,14 @@ echo 3 > wheel_led_effect
 **Availability**: wheels with feature `0x8130` (the RS50 and G PRO base OLED); reads `unsupported` elsewhere
 
 Puts a frame on the base's Dynamic OLED, or hands the screen back. Write
-`<layout>|<field>|<field>...`, where the layout is a letter `A` to `J` (or
-`0` to `9`) and the fields follow in **payload order**, which for layouts D
-and E is not the order the screen draws them. `wheel_oled_layouts` lists
-what each layout takes. Text fields are space-padded to their width and
-must not exceed it (`EMSGSIZE`); number fields take `0` to `255`; more
-fields than the layout has is `E2BIG`. Fewer leaves the rest blank. Write
-`off` to hand the screen back to the wheel's own menu immediately.
+`<layout>|<field>|<field>...`. The layout is a letter `A` to `J` (or `0`
+to `9`). The fields follow in **payload order**. For layouts D and E,
+payload order is not the order the screen draws them. `wheel_oled_layouts`
+lists what each layout takes. The driver pads text fields with spaces to
+their width. A text field must not exceed its width (`EMSGSIZE`). Number
+fields take `0` to `255`. More fields than the layout has is `E2BIG`.
+Fewer fields leaves the rest blank. Write `off` to hand the screen back to
+the wheel's own menu immediately.
 
 | layout | fields, in write order | draws |
 |---|---|---|
@@ -840,16 +871,16 @@ fields than the layout has is `E2BIG`. Fewer leaves the rest blank. Write
 | I | text(19), text(10), text(19), text(10) | four rows, 2 and 4 larger, right-aligned |
 | J | same as I | four rows, every row centred |
 
-The panel does not hold a frame: the firmware returns to its own menu
-after under two seconds of silence, so the driver resends the current
-frame every 50 ms for as long as one is up. Reading back gives the last
-write, or `off`. Two renderer rules worth knowing, both watched on an
-RS50: a value on a wide large row (H's lower row, I's large rows) draws its
-first character pinned left and the rest right-aligned, so `112%` shows as
-`1` and `12%` with a gap, and a leading space gives a clean right-aligned
-value instead; and no large-font layout centres, so J's rows are the
-largest centred text the panel has. Full protocol in
-`PROTOCOL_SPECIFICATION.md` 12.3.
+The panel does not hold a frame. The firmware returns to its own menu
+after under two seconds of silence. So the driver resends the current
+frame every 50 ms for as long as one is up. A read gives the last write,
+or `off`. Two renderer rules are worth knowing. Both were watched on an
+RS50. First, a value on a wide large row (H's lower row, I's large rows)
+draws its first character pinned left and the rest right-aligned. So
+`112%` shows as `1` and `12%` with a gap. A leading space gives a clean
+right-aligned value instead. Second, no large-font layout centres. So
+J's rows are the largest centred text the panel has. The full protocol
+is in `PROTOCOL_SPECIFICATION.md` 12.3.
 
 ```bash
 echo 'G|3|142' > wheel_oled          # gear and speed
@@ -857,20 +888,21 @@ echo 'J|Lap 12|1:42.7|Best|1:41.9' > wheel_oled
 echo off > wheel_oled
 ```
 
-These are non-force writes to the HID++ endpoint during play, the same
-class as the rev lights, which have run alongside force and texture on
-these wheels since 0.35.0. On a title that pushes DirectInput force to
-HID++ next to its own TrueForce stream they can cut that force (12.5);
-the rev lights carry the identical caveat.
+These are non-force writes to the HID++ endpoint during play. They are
+the same class as the rev lights, which have run alongside force and
+texture on these wheels since 0.35.0. On a title that pushes DirectInput
+force to HID++ next to its own TrueForce stream, they can cut that force
+(12.5). The rev lights carry the identical caveat.
 
 ### wheel_oled_layouts
 **Access**: Read-only
 **Availability**: as `wheel_oled`
 
-One line per layout the wheel reports: index, letter, the field kinds in
-write order, then the text widths as the wheel's own descriptor lists them,
-which is drawn order. E is the one layout where that differs from write
-order (its 3-character field is written first and drawn on the right). On
+One line per layout the wheel reports. Each line has the index, the
+letter, the field kinds in write order, and then the text widths. The
+widths are listed as the wheel's own descriptor lists them, which is
+drawn order. E is the one layout where drawn order differs from write
+order. Its 3-character field is written first and drawn on the right. On
 an RS50:
 
 ```
@@ -890,12 +922,13 @@ an RS50:
 **Access**: Read/Write
 **Availability**: all direct-drive wheels (feature `0x80A4`)
 
-The steering axis's 64-point response curve - the store behind G Hub's
-**Sensitivity** slider. Write `reset` to revert to the built-in
-(linear) curve, or 2-64 whitespace-separated `in:out` pairs (decimal
-0-65535, strictly increasing `in`, non-decreasing `out`, starting at
-`0:0` and ending at `65535:65535`). Fewer than 64 pairs are resampled
-by linear interpolation to the 64 points the wheel stores.
+The steering axis's 64-point response curve. This is the store behind
+G Hub's **Sensitivity** slider. Write `reset` to revert to the built-in
+(linear) curve. Or write 2-64 whitespace-separated `in:out` pairs. The
+values are decimal 0-65535. `in` must strictly increase. `out` must not
+decrease. The pairs must start at `0:0` and end at `65535:65535`. If you
+write fewer than 64 pairs, the driver resamples them by linear
+interpolation to the 64 points the wheel stores.
 
 ```bash
 # Soften the centre (slower response near straight-ahead)
@@ -908,14 +941,15 @@ cat wheel_response_curve
 # 64/64 points loaded (0 = built-in curve)
 ```
 
-The wheel applies this curve to the steering axis it reports to the PC (base
-`0x80A4` axis 0, the same `wheel_sensitivity` uploads its slider curve to).
-`wheel_sensitivity` and `wheel_response_curve` both write that one axis-0 curve,
-so the last one written wins. The axis does not change until the wheel next
-moves: it sends no HID reports while held still, so an upload appears to do
-nothing until you nudge the wheel; `cat wheel_response_curve` reads the point
-count back from the wheel and is the honest check. Use `reset` if steering feels
-wrong after an upload. Whether curves persist across power cycles is untested.
+The wheel applies this curve to the steering axis it reports to the PC.
+That is base `0x80A4` axis 0, the same axis `wheel_sensitivity` uploads
+its slider curve to. `wheel_sensitivity` and `wheel_response_curve` both
+write that one axis-0 curve. So the last one written wins. The axis does
+not change until the wheel next moves. The wheel sends no HID reports
+while held still. So an upload appears to do nothing until you nudge the
+wheel. `cat wheel_response_curve` reads the point count back from the
+wheel and is the honest check. Use `reset` if steering feels wrong after
+an upload. Whether curves persist across power cycles is untested.
 
 ### wheel_rev_level
 **Access**: Read/Write
@@ -923,42 +957,43 @@ wrong after an upload. Whether curves persist across power cycles is untested.
 **Availability**: real G PRO rim AND the RS50's LIGHTSYNC strip
 (hardware-verified 2026-07-20, re-verified with the current wire form
 2026-08-14). On the RS50 the display renders **center-out by
-default**, so a 10-LED strip shows 5 mirrored visual steps across a
+default**. So a 10-LED strip shows 5 mirrored visual steps across a
 0-10 level sweep. The display pattern is a separate concern from the
-level protocol: the level write says how much of the bar is lit, the
+level protocol. The level write says how much of the bar is lit. The
 wheel's stored display config says how that amount is drawn.
 Reconfiguring the pattern mid-session (feature `0x807B`) is NOT part
-of G HUB's own mid-session vocabulary and is untested during live
+of G HUB's own mid-session vocabulary. It is untested during live
 TrueForce sessions, so do not assume it is safe there. A written
-level holds until the next write; write `wheel_led_effect` to restore
+level holds until the next write. Write `wheel_led_effect` to restore
 the normal idle pattern.
 
 Rev-light level for the G PRO rim. The G PRO's rim lights are
-level-based: the host commands how many LEDs are lit (0-10) and the
-wheel's onboard profile owns colours, direction and scaling. Protocol
-decoded from G HUB captures (see
-`docs/PROTOCOL_SPECIFICATION.md` section 9). No arming is needed:
-from the onboard power-on state the strip renders bare levels exactly
-(hardware-proven 2026-08-14; the earlier "the first write arms the
-feature" belief is disproven, and the driver's direct-drive path sends
-no arm burst). Writes return immediately: the driver coalesces them and
-flushes only the newest level at a ~10 ms floor, comfortably above
-G HUB's own measured ~60 Hz rev-light rate (faster
-bursts would starve the wheel's shared HID++ command processor), so a
+level-based. The host commands how many LEDs are lit (0-10). The
+wheel's onboard profile owns colours, direction and scaling. The
+protocol was decoded from G HUB captures (see
+`docs/PROTOCOL_SPECIFICATION.md` section 9). No arming is needed. From
+the onboard power-on state, the strip renders bare levels exactly
+(hardware-proven 2026-08-14). The earlier belief that "the first write
+arms the feature" is disproven. The driver's direct-drive path sends no
+arm burst. Writes return immediately. The driver coalesces them and
+flushes only the newest level, at a ~10 ms floor. That floor is
+comfortably above G HUB's own measured ~60 Hz rev-light rate. Faster
+bursts would starve the wheel's shared HID++ command processor. So a
 fast telemetry feeder always shows the latest value with no queueing
-lag. The
-wheel holds a level for a while but reverts eventually - a telemetry
-feeder should refresh at ~1 Hz or faster (natural for rev-light use).
+lag. The wheel holds a level for a while but reverts eventually. A
+telemetry feeder should refresh at ~1 Hz or faster, which is natural
+for rev-light use.
 
-Level writes coexist safely with a live native TrueForce SDK session
-since the driver moved to the bare fn2+fn6 wire form: base FFB +
-TrueForce texture + telemetry-driven levels are hardware-validated
-running together (2026-08-14). The old arm-burst form did NOT coexist:
-it killed the SDK session at init and killed wheel input mid-session.
+Level writes coexist safely with a live native TrueForce SDK session.
+This has been true since the driver moved to the bare fn2+fn6 wire
+form. Base FFB + TrueForce texture + telemetry-driven levels are
+hardware-validated running together (2026-08-14). The old arm-burst
+form did NOT coexist. It killed the SDK session at init and killed wheel
+input mid-session.
 
 **Status: hardware-validated on the RS50 (2026-07-20, live 0-10-0 sweep
-demos; fill semantics per the note above); not yet validated on a real
-G PRO - reports welcome (issue tracker).**
+demos; fill semantics per the note above). Not yet validated on a real
+G PRO. Reports are welcome (issue tracker).**
 
 ```bash
 # Light 7 of 10 rev LEDs
@@ -969,15 +1004,16 @@ echo 7 > wheel_rev_level
 **Access**: Read-only
 **Values**: 12-character device serial
 
-The wheel's real serial number, read from HID++ DeviceInfo (feature
-0x0003 fn2) at init. Matches the USB `iSerial` descriptor.
+The wheel's real serial number. The driver reads it from HID++
+DeviceInfo (feature 0x0003 fn2) at init. It matches the USB `iSerial`
+descriptor.
 
 ### wheel_firmware
 **Access**: Read-only
 
-Firmware versions read from DeviceInfo at init: the wheel base's
-active main firmware and the motor unit's servo firmware (from
-sub-device 0x05's own DeviceInfo).
+Firmware versions, read from DeviceInfo at init. The first is the wheel
+base's active main firmware. The second is the motor unit's servo
+firmware, from sub-device 0x05's own DeviceInfo.
 
 ```bash
 cat wheel_firmware
@@ -985,7 +1021,7 @@ cat wheel_firmware
 # motor: SC 02.01.B0042
 ```
 
-Include this output in bug reports - firmware-dependent behaviour
+Include this output in bug reports. Firmware-dependent behaviour
 (feature index drift, settings quirks) is tracked against it.
 
 ### wheel_accessory
@@ -993,28 +1029,32 @@ Include this output in bug reports - firmware-dependent behaviour
 **Values**: comma-separated list of active accessory names (e.g. `RS Shifter & Handbrake, RS H-Shifter, Racing Adapter`), or `none`
 
 Presence signal for the base's optional accessories: the **RS Shifter &
-Handbrake**, the **RS H-Shifter**, and the **Logitech Racing Adapter**, which
-plug into the base's USB-A ports. Reports the attached accessory's name
-(`RS Shifter & Handbrake`, `RS H-Shifter`, or `Racing Adapter`), a
-comma-separated list when multiple accessories are attached (e.g.
-`RS Shifter & Handbrake, RS H-Shifter` or `RS Shifter & Handbrake, Racing Adapter`),
-or `none` when none is attached. Unlike the pedal/handbrake attributes
-below, this never returns an error: it exists precisely so apps can check
-for an accessory without inferring presence from another attribute's error
-code.
+Handbrake**, the **RS H-Shifter** and the **Logitech Racing Adapter**. They
+plug into the base's USB-A ports. The attribute lists the attached
+accessories by name, separated by commas, always in this order: the RS
+Shifter & Handbrake (its own HID++ device name), `RS H-Shifter`, `Racing
+Adapter`. It reads `none` when no accessory is attached. Unlike the
+pedal/handbrake attributes below, this never returns an error. It exists
+precisely so apps can check for an accessory without inferring presence
+from another attribute's error code.
 
-Both accessories are found at probe time and re-checked on demand: a read
-queues a presence re-check in the background, so an accessory plugged in or
-pulled after the module loaded shows up within a few reads. An RS H-Shifter
-that arrives this way in desktop mode gets its gate routing enabled at the
-same time, as it would have at probe.
+The driver finds all three accessories at probe time and re-checks on
+demand. A read queues a presence re-check in the background. So an
+accessory plugged in or pulled after the module loaded shows up within a
+few reads. An RS H-Shifter or a Racing Adapter that arrives this way in
+desktop mode gets the base's gate routing enabled at the same time, as it
+would have at probe.
 
 ```bash
 cat wheel_accessory
 # RS Shifter & Handbrake
+
+# with an H-Shifter and a Racing Adapter on the base as well:
+cat wheel_accessory
+# RS Shifter & Handbrake, RS H-Shifter, Racing Adapter
 ```
 
-All three of the accessory's G HUB settings are now exposed:
+The driver exposes all three of the accessory's G HUB settings:
 
 | G HUB slider | sysfs attribute |
 |---|---|
@@ -1022,10 +1062,11 @@ All three of the accessory's G HUB settings are now exposed:
 | Handbrake Actuation | `wheel_handbrake_actuation` |
 | Handbrake Sensitivity | `wheel_handbrake_sensitivity` (+ `wheel_handbrake_curve`) |
 
-The first two are trigger POINTS on the lever's travel and are named
+The first two are trigger POINTS on the lever's travel. They are named
 `_actuation` for that reason, even though G HUB calls the shifter one
-"sensitivity": in this driver a `*_sensitivity` attribute means one of an
-axis's response-shaping generators, which these are not.
+"sensitivity". In this driver, a `*_sensitivity` attribute means a
+generator that applies a response curve to an axis. These two are not
+that.
 
 ### wheel_led_apply
 **Access**: Write-only
@@ -1044,50 +1085,57 @@ echo 1 > wheel_led_apply
 ### wheel_reset
 **Access**: Write-only (`1`)
 
-Re-enumerates the wheel over USB from inside the driver, the software
-equivalent of unplugging and replugging it. Logitech's TrueForce SDK can
-leave the wheel's engine latched after a session that ended without its
-teardown (a hard-killed or crashed game): the next SDK session opens but
-never streams, and the wheel's steering and force go dead on track. A power
-cycle clears it; so does this, and `logi-launch` writes it before a
-TrueForce session so the ritual is unnecessary (`LOGI_TF_RESET=0` opts out).
+Re-enumerates the wheel over USB from inside the driver. This is the
+software equivalent of unplugging and replugging it. Logitech's TrueForce
+SDK can leave the wheel's engine latched after a session that ended
+without its teardown, for example a hard-killed or crashed game. The next
+SDK session then opens but never streams. The wheel's steering and force
+go dead on track. A power cycle clears it. So does this attribute.
+`logi-launch` writes it before a TrueForce session, so the ritual is
+unnecessary (`LOGI_TF_RESET=0` opts out).
 
 ```bash
 echo 1 > wheel_reset   # the wheel drops off the bus and comes back in ~2 s
 ```
 
-The reset is queued to a workqueue, so the write returns immediately and the
-driver re-probes cleanly; the hid ids change across it. USB wheels only.
+The driver queues the reset to a workqueue, a kernel background job
+queue. So the write returns immediately, and the driver re-probes
+cleanly. The hid ids change across the reset. USB wheels only.
+
 ## Pedal Configuration
 
-Pedal shaping is a 64-point `0x80A4` response curve, the same mechanism as
-the steering `wheel_response_curve`, applied on the **wheel base** at axes
-1/2/3 (throttle/brake/clutch).
+A pedal curve is a 64-point `0x80A4` response curve. It is the same
+mechanism as the steering `wheel_response_curve`. The driver applies it on
+the **wheel base** at axes 1/2/3 (throttle/brake/clutch).
 
-Not on the pedal unit. The pedal MCU has its own `0x80A4` store and will
-accept an upload, reporting it back as loaded, but never applies it to the
-axis it reports to the PC. Anything written there is silently inert. This
-was proven on an RS50 (2026-07-28) with a step curve, which makes the band
-between its two output plateaus unreachable if it is applied: loaded on the
-pedal MCU the axis swept straight through that band, while the same curve on
-base axis 1 pinned the axis to the plateau exactly, with the pedals
-untouched.
+It is not applied on the pedal unit. The pedal MCU (the pedal unit's own
+microcontroller) has its own `0x80A4` store. It accepts an upload and
+reports it back as loaded. But it never applies the curve to the axis it
+reports to the PC. Anything written there is silently inert. This was
+proven on an RS50 (2026-07-28) with a step curve. A step curve makes the
+band between its two output plateaus unreachable if it is applied. Loaded
+on the pedal MCU, the axis swept straight through that band. The same
+curve on base axis 1 pinned the axis to the plateau exactly, with the
+pedals untouched.
 
-These attributes still require a pedal unit to be present: the base has
-axes 1/2/3 regardless, but shaping an axis nothing drives is pointless, so
-they return `EOPNOTSUPP` when no pedal unit answered discovery.
+These attributes still require a pedal unit to be present. The base has
+axes 1/2/3 regardless. But a curve on an axis that nothing drives is
+pointless. So they return `EOPNOTSUPP` when no pedal unit answered
+discovery.
 
-Each pedal `<p>` in {`throttle`, `brake`, `clutch`} exposes three attributes.
-**They all write the single curve the axis holds, so the last write wins.** The
-`_curve` attribute always reads back the wheel's true loaded-point count.
+Each pedal `<p>` in {`throttle`, `brake`, `clutch`} exposes three
+attributes. **They all write the single curve the axis holds, so the last
+write wins.** The `_curve` attribute always reads back the wheel's true
+loaded-point count.
 
 ### wheel_&lt;p&gt;_curve
 **Access**: Read/Write
 
-The raw 64-point curve, identical in format to `wheel_response_curve`: write
-`reset` for the built-in linear curve, or 2-64 whitespace-separated `in:out`
-pairs (0-65535, strictly increasing `in`, non-decreasing `out`, starting `0:0`
-and ending `65535:65535`; fewer than 64 pairs are resampled). Reads back
+The raw 64-point curve. The format is identical to `wheel_response_curve`.
+Write `reset` for the built-in linear curve. Or write 2-64
+whitespace-separated `in:out` pairs (0-65535, strictly increasing `in`,
+non-decreasing `out`, starting `0:0` and ending `65535:65535`). The driver
+resamples fewer than 64 pairs. A read gives
 `"<loaded>/<max> points loaded"`.
 
 ```bash
@@ -1101,10 +1149,11 @@ cat wheel_throttle_curve      # e.g. "64/64 points loaded (0 = built-in curve)"
 **Access**: Read/Write, **Values**: `0`-`100` (`50` = linear)
 
 G HUB's simple sensitivity slider. Values above 50 make the pedal more
-responsive early in its travel, below 50 less; `50` reverts to the built-in
-linear curve. Generates the same symmetric-Bezier curve G HUB uploads. The
-wheel stores only the resulting curve, so this reads back the last written
-slider value, not a device query.
+responsive early in its travel. Values below 50 make it less responsive.
+`50` reverts to the built-in linear curve. The driver generates the same
+symmetric-Bezier curve G HUB uploads. The wheel stores only the resulting
+curve. So this reads back the last written slider value, not a device
+query.
 
 ```bash
 echo 70 > wheel_brake_sensitivity
@@ -1113,30 +1162,32 @@ echo 70 > wheel_brake_sensitivity
 ### wheel_&lt;p&gt;_deadzone
 **Access**: Read/Write, **Values**: `"<lower> <upper>"` percent
 
-Dead travel at each end: output holds 0 until the pedal passes `lower`%, and
-reaches full by `(100 - upper)`%. `lower + upper` must be at most 99. `"0 0"`
-reverts to the built-in curve. Reads back the last written pair.
+Dead travel at each end. The output holds 0 until the pedal passes
+`lower`%. It reaches full by `(100 - upper)`%. `lower + upper` must be at
+most 99. `"0 0"` reverts to the built-in curve. A read gives the last
+written pair.
 
 ```bash
 # 8% dead at the bottom, 5% saturation at the top of the clutch
 echo "8 5" > wheel_clutch_deadzone
 ```
 
-> Because sensitivity, deadzone and the raw curve all write the one hardware
-> curve per axis, use one of them at a time per pedal. To combine a deadzone
-> with a custom curve, author the whole thing as a single `_curve` upload (this
-> is what the logi-wheel editor does).
+> Sensitivity, deadzone and the raw curve all write the one hardware curve
+> per axis. So use one of them at a time per pedal. To combine a deadzone
+> with a custom curve, write the whole thing as a single `_curve` upload.
+> This is what the logi-wheel editor does.
 
 ### wheel_combined_pedals
 **Access**: Read/Write, **Values**: `0` (separate) / `1` (combined)
 **Mode**: desktop only
 
-G HUB's "combined pedals" toggle (feature `0x80D0`). When on, the wheel merges
-the throttle and brake into a single centred axis for legacy games that expect
-one pedal axis: released = centre, one pedal drives it up, the other down. The
-brake's own axis goes silent. Off for any modern sim. Verified on an RS50: with
-it on, `ABS_RX` re-centres to ~32768 and `ABS_RY` (the separate brake axis)
-stops reporting.
+G HUB's "combined pedals" toggle (feature `0x80D0`). When on, the wheel
+merges the throttle and brake into a single centred axis. This is for
+legacy games that expect one pedal axis. Released = centre. One pedal
+drives the axis up, the other down. The brake's own axis goes silent. Keep
+it off for any modern sim. Verified on an RS50: with it on, `ABS_RX`
+re-centres to ~32768, and `ABS_RY` (the separate brake axis) stops
+reporting.
 
 ```bash
 echo 1 > wheel_combined_pedals   # merge (legacy games)
@@ -1148,11 +1199,11 @@ cat wheel_combined_pedals        # 0 or 1
 **Access**: Read-only
 **Values**: `shifter`, `digital-handbrake`, `analog-handbrake`
 
-Which of its three jobs the **RS Shifter & Handbrake** is currently doing,
-read live from feature `0x1B30` on the accessory. The unit has a physical
-three-position switch and only one mode is active at a time, so most of its
-settings apply to only one of them. Returns `EOPNOTSUPP` when no accessory is
-attached.
+Which of its three jobs the **RS Shifter & Handbrake** is currently doing.
+The driver reads it live from feature `0x1B30` on the accessory. The unit
+has a physical three-position switch. Only one mode is active at a time.
+So most of its settings apply to only one of them. A read returns
+`EOPNOTSUPP` when no accessory is attached.
 
 ```bash
 cat wheel_accessory_mode
@@ -1160,56 +1211,59 @@ cat wheel_accessory_mode
 ```
 
 The desktop and terminal apps use this to grey out the settings that belong
-to a different mode and say which mode each needs. The greying is
-presentation only: the attributes below stay writable in every mode, because
-their values persist across a mode change and setting one up before flipping
-the switch is a reasonable thing to do.
+to a different mode. They also say which mode each setting needs. The
+greying is presentation only. The attributes below stay writable in every
+mode. Their values persist across a mode change. So setting one up before
+you flip the switch is a reasonable thing to do.
 
-An unrecognised value reads as `unknown (N)`, and the apps treat that as
+An unrecognised value reads as `unknown (N)`. The apps treat that as
 "cannot tell" and hide nothing.
 
 ### wheel_shift_actuation / wheel_handbrake_actuation
 **Access**: Read/Write
 **Values**: `1`-`100` (G HUB's own range; it refuses `0`)
 
-The **RS Shifter & Handbrake**'s two trigger points, on feature `0x80B1`
-(BANDED_AXIS) on the accessory itself. Both return `EOPNOTSUPP` when no
-accessory is attached.
+The two trigger points of the **RS Shifter & Handbrake**. They live on
+feature `0x80B1` (BANDED_AXIS) on the accessory itself. Both return
+`EOPNOTSUPP` when no accessory is attached.
 
-- `wheel_shift_actuation` - how far the sequential shifter must be pushed
-  before a shift registers. Writes both of the shifter's bands, one per
-  direction, symmetric about centre. G HUB calls this "Shift Sensitivity";
-  it is a trigger point, not response shaping, hence the name here.
-- `wheel_handbrake_actuation` - how far the handbrake must be pulled before
-  the digital handbrake button (`BTN_THUMB2`) fires. Applies in
-  digital-handbrake mode; the analog mode uses the handbrake curve instead.
+- `wheel_shift_actuation` - how far you must push the sequential shifter
+  before a shift registers. A write sets both of the shifter's bands, one
+  per direction, symmetric about centre. G HUB calls this "Shift
+  Sensitivity". It is a trigger point, not a response curve, hence the
+  name here.
+- `wheel_handbrake_actuation` - how far you must pull the handbrake before
+  the digital handbrake button (`BTN_THUMB2`) fires. It applies in
+  digital-handbrake mode. The analog mode uses the handbrake curve
+  instead.
 
 ```bash
 echo 30 > wheel_shift_actuation        # shift triggers early
 echo 70 > wheel_handbrake_actuation    # handbrake fires late in the pull
 ```
 
-Neither is mode-gated: unlike G HUB's UI, which will not let these be
-changed in onboard mode, the wire accepts them in either mode (tested).
+Neither is mode-gated. G HUB's UI will not let you change these in onboard
+mode. But the wire accepts them in either mode (tested).
 
 **A deliberate difference from G HUB.** The handbrake scale overflows 16
-bits above about 69%, and G HUB truncates there - it writes 75% as a point
-*shorter* than 50%. The wheel accepts the full value, so this driver writes
-the true one and stays monotonic across the whole 1-100 range. Above ~69%,
-values set here and values set in G HUB will not correspond.
+bits above about 69%. G HUB truncates there: it writes 75% as a point
+*shorter* than 50%. The wheel accepts the full value. So this driver
+writes the true one and stays monotonic across the whole 1-100 range.
+Above ~69%, values set here and values set in G HUB will not correspond.
 
 ### wheel_handbrake_curve / wheel_handbrake_sensitivity
 
-Response-curve shaping for the **RS Shifter & Handbrake** in analog handbrake
-mode. The handbrake drives a base axis (`0x80A4` axis 4, evdev `ABS_Z`), and the
-driver bends it with the same mechanism as the pedals, verified on an RS50.
+The response curve for the **RS Shifter & Handbrake** in analog handbrake
+mode. The handbrake drives a base axis (`0x80A4` axis 4, evdev `ABS_Z`).
+The driver bends it with the same mechanism as the pedals. Verified on an
+RS50.
 
 - `wheel_handbrake_curve` - raw `in:out` points or `reset`, like `wheel_response_curve`.
 - `wheel_handbrake_sensitivity` - the 0-100 G HUB slider (50 = linear).
 
-Both write the one curve the axis holds; last write wins. The handbrake *input*
-itself needs no configuration: connected to the wheel base, it works out of the
-box as `ABS_Z`. These attributes only bend it.
+Both write the one curve the axis holds. The last write wins. The
+handbrake *input* itself needs no configuration. Connected to the wheel
+base, it works out of the box as `ABS_Z`. These attributes only bend it.
 
 ```bash
 echo 70 > wheel_handbrake_sensitivity
@@ -1219,8 +1273,8 @@ echo reset > wheel_handbrake_curve
 
 ### RS Shifter & Handbrake input mapping
 
-The accessory rides the wheel's existing report, so its inputs reach evdev with
-no driver change. By its mode switch:
+The accessory rides the wheel's existing report. So its inputs reach evdev
+with no driver change. By its mode switch:
 
 | Mode | Action | evdev |
 |------|--------|-------|
@@ -1229,114 +1283,120 @@ no driver change. By its mode switch:
 | Digital handbrake | pull past point | `BTN_THUMB2` (face button) |
 | Analog handbrake | pull | `ABS_Z` axis |
 
-Use `wheel_accessory` (above) to check whether the accessory is attached, and
-`wheel_accessory_mode` for which of its three jobs it is currently doing. All
-three of its G HUB settings are implemented: `wheel_shift_actuation`,
-`wheel_handbrake_actuation` and `wheel_handbrake_sensitivity` (with
-`wheel_handbrake_curve`).
+Use `wheel_accessory` (above) to check whether the accessory is attached.
+Use `wheel_accessory_mode` to see which of its three jobs it is currently
+doing. All three of its G HUB settings are implemented:
+`wheel_shift_actuation`, `wheel_handbrake_actuation` and
+`wheel_handbrake_sensitivity` (with `wheel_handbrake_curve`).
 
 ---
 
 ## Compatibility Attributes
 
-These attributes provide compatibility with existing wheel management tools (e.g., Oversteer).
-The sysfs filenames use standard Oversteer names (without the `wheel_` prefix).
+These attributes provide compatibility with existing wheel management tools, for example Oversteer, a Linux wheel configuration tool.
+The sysfs filenames use the standard Oversteer names, without the `wheel_` prefix.
 
-**Note:** These aliases are created for every direct-drive wheel this driver
-binds (RS50 and G PRO). They exist so Oversteer, which looks for the new-lg4ff
-attribute names, can drive the wheel; the same settings are also available
-under their `wheel_*` names documented above. On the **G923** the classic names
-are not aliases but the primary (and only) attributes, with classic semantics
-and scales - see the next section.
+**Note:** The driver creates these aliases for every direct-drive wheel it
+binds (RS50 and G PRO). Oversteer looks for the new-lg4ff attribute names.
+(new-lg4ff is the community driver for classic Logitech wheels.) The
+aliases exist so Oversteer can drive the wheel. The same settings are also
+available under their `wheel_*` names documented above. On the **G923**
+the classic names are not aliases. They are the primary (and only)
+attributes, with classic semantics and scales. See the next section.
 
-These attributes follow the de-facto Linux wheel convention (the
-new-lg4ff attribute names and scales) that Oversteer and similar tools
-speak. Conformance was verified 2026-07-03 by driving every getter and
-setter through Oversteer's own code against the live wheel. Note the
-scales differ from the `wheel_*` attributes: tools expect raw device
-units here, not percent.
+These attributes follow the de-facto Linux wheel convention that Oversteer
+and similar tools speak: the new-lg4ff attribute names and scales.
+Conformance was verified 2026-07-03 by driving every getter and setter
+through Oversteer's own code against the live wheel. Note that the scales
+differ from the `wheel_*` attributes. Tools expect raw device units here,
+not percent.
 
 ### range
 **Access**: Read/Write
 **Values**: `90` to `2700` (degrees)
 
-Same functionality as `wheel_range` (degrees on both).
+The same function as `wheel_range`. Both use degrees.
 
 ### gain
 **Access**: Read/Write
 **Values**: `0` to `65535` (raw; the FF_GAIN scale)
 
-Drives the same wheel strength setting as `wheel_strength`, but the
-file speaks the raw 0-65535 scale tools expect (Oversteer shows it as
-percent in its UI). `wheel_strength` keeps its human-friendly 0-100
-percent scale; the two stay in sync.
+Drives the same wheel strength setting as `wheel_strength`. But this file
+speaks the raw 0-65535 scale that tools expect. Oversteer shows it as
+percent in its UI. `wheel_strength` keeps its human-friendly 0-100 percent
+scale. The two stay in sync.
 
 ### autocenter
 **Access**: Read/Write
 **Values**: `0` to `65535` (raw; the FF_AUTOCENTER scale)
 
-A real, driver-emulated centring spring: while
-nonzero, the wheel pulls itself toward centre with a damped spring
-computed in the 500 Hz effect loop - firm within roughly the central
-eighth of the axis, like hardware autocenter on other wheels. Also
-reachable through the standard evdev `FF_AUTOCENTER` control, which
-means games that write autocenter 0 before taking over force feedback
-correctly disable it for their session. Useful for desk-driving
-without a game, or as idle centring.
+A real, driver-emulated centring spring. While nonzero, the wheel pulls
+itself toward centre with a damped spring. The driver computes the spring
+in the 1 kHz effect loop. The spring is firm within roughly the central
+eighth of the axis, like hardware autocenter on other wheels. It is also
+reachable through the standard evdev `FF_AUTOCENTER` control. So a game
+that writes autocenter 0 before it takes over force feedback correctly
+disables it for its session. Useful for desk-driving without a game, or
+as idle centring.
 
 ### spring_level / damper_level / friction_level / inertia_level
 **Access**: Read/Write
 **Values**: `0` to `400` (percent), default `100`
 
 Global output scales for the emulated `FF_SPRING` / `FF_DAMPER` /
-`FF_FRICTION` / `FF_INERTIA` effect classes, matching the new-lg4ff
-semantics: 100 = effects play as the game commanded, lower values tame
-that effect class across all games, 0 mutes it. `damper_level` scales
-DAMPER effects from games; the wheel's own firmware damping is
+`FF_FRICTION` / `FF_INERTIA` effect classes. They match the new-lg4ff
+semantics. 100 = effects play as the game commanded. Lower values tame
+that effect class across all games. 0 mutes it. `damper_level` scales
+DAMPER effects from games. The wheel's own firmware damping is
 `wheel_damping`.
 
-new-lg4ff stops at 100. This engine accepts up to 400 because its gains sit
-below what the wheels' firmware renders for the same effect, by amounts that
-differ per wheel: a G923 Xbox edition owner measured the engine's damper at
-0.61 of the firmware's ([#87](../../issues/87)), and a G PRO owner runs
-2.25x damper and 4x spring against theirs ([#89](../../issues/89)). Until
-those measurements settle the defaults, the levels are how to try them:
+new-lg4ff stops at 100. This engine accepts up to 400. Its gains sit
+below what the wheels' firmware renders for the same effect, by amounts
+that differ per wheel. A G923 Xbox edition owner measured the engine's
+damper at 0.61 of the firmware's ([#87](../../issues/87)). A G PRO owner
+runs 2.25x damper and 4x spring against theirs ([#89](../../issues/89)).
+Until those measurements settle the defaults, the levels are how to try
+them:
 
 ```bash
 echo 225 > damper_level     # the G PRO numbers from #89
 echo 400 > spring_level
 ```
 
-The summed force is clamped to the motor's range after every effect is
-added, so a large level saturates instead of wrapping. `inertia_level` has
-no new-lg4ff counterpart; the engine's inertia estimate is band-limited
-(a 50 ms one-pole on the velocity), so a steady acceleration reads as
-itself and the encoder's quantisation no longer arrives as grain.
+The driver clamps the summed force to the motor's range after it adds
+every effect. So a large level saturates instead of wrapping.
+`inertia_level` has no new-lg4ff counterpart. The engine's inertia
+estimate is band-limited (a 50 ms one-pole on the velocity). So a steady
+acceleration reads as itself, and the encoder's quantisation no longer
+arrives as grain.
 
 ---
 
 ## G923 Attributes (PlayStation edition, c266/c267)
 
-The G923 PlayStation edition runs a classic force-feedback engine ported from
-berarma's new-lg4ff, not the direct-drive `hidpp_dd_ff_*` path, so it exposes
-the classic lg4ff attribute names as its primary attributes (Oversteer speaks
-them natively). None of the `wheel_*` attributes above exist on this wheel.
-The attributes live on the wheel's interface-0 HID device:
+The G923 PlayStation edition runs a classic force-feedback engine ported
+from berarma's new-lg4ff. It does not use the direct-drive `hidpp_dd_ff_*`
+path. So it exposes the classic lg4ff attribute names as its primary
+attributes. Oversteer speaks them natively. None of the `wheel_*`
+attributes above exist on this wheel. The attributes live on the wheel's
+interface-0 HID device:
 
 ```bash
 find /sys/bus/hid/devices -name "*046D*C266*" 2>/dev/null   # G923 PS (after mode switch)
 ```
 
-The wheel enumerates as `046d:c267` in PlayStation mode; the driver switches it
-to classic mode (`046d:c266`) automatically, so `c266` is the device you
-configure. All attributes are hardware-verified on a c266 except where noted.
+The wheel enumerates as `046d:c267` in PlayStation mode. The driver
+switches it to classic mode (`046d:c266`) automatically. So `c266` is the
+device you configure. All attributes are hardware-verified on a c266
+except where noted.
 
 ### range
 **Access**: Read/Write
 **Values**: `40` to `900` (degrees)
 
-Steering rotation range. Writing `0` selects the maximum (900). Out-of-range
-values are ignored (the write succeeds but changes nothing).
+Steering rotation range. A write of `0` selects the maximum (900). The
+driver ignores out-of-range values. The write succeeds but changes
+nothing.
 
 ```bash
 echo 540 > range
@@ -1347,8 +1407,8 @@ echo 540 > range
 **Values**: `0` to `65535`
 **Default**: `65535`
 
-Master gain applied to all effects the classic engine plays, multiplied with
-the per-application `FF_GAIN` from evdev.
+Master gain for all effects the classic engine plays. The engine
+multiplies it with the per-application `FF_GAIN` from evdev.
 
 ### autocenter
 **Access**: Read/Write
@@ -1356,55 +1416,56 @@ the per-application `FF_GAIN` from evdev.
 **Default**: `0`
 
 Hardware autocenter spring. Writes go through the same `FF_AUTOCENTER`
-callback games use, so a game that disables autocenter before taking over
-force feedback behaves correctly.
+callback that games use. So a game that disables autocenter before it
+takes over force feedback behaves correctly.
 
 ### combine_pedals
 **Access**: Read/Write
 **Values**: `0`, `1`, `2`
 
-Merges two pedals into one centred axis for legacy games, by rewriting the
-wheel's input report in the driver:
+Merges two pedals into one centred axis for legacy games. The driver does
+this by rewriting the wheel's input report:
 
 - `0` - separate pedals (default)
 - `1` - throttle and brake combined into the throttle axis
 - `2` - throttle and clutch combined into the throttle axis
 
-Values above `2` are clamped to `2`.
+The driver clamps values above `2` to `2`.
 
 ### ffb_output
 **Access**: Read-only
 **Values**: roughly `-32768` to `32767` (`0` = no force)
 
-The classic engine's current net force output (post-gain), updated once per
-effect-loop tick. `logi-tf-sim` polls this to mirror live force feedback into
-the G923's TrueForce stream while simulated TrueForce is running (an active
-stream makes the wheel follow the stream's force field instead of the classic
-path, so the mirror is what keeps force feedback alive during streaming).
+The classic engine's current net force output, after gain. The engine
+updates it once per effect-loop tick. `logi-tf-sim` polls this to mirror
+live force feedback into the G923's TrueForce stream while simulated
+TrueForce is running. An active stream makes the wheel follow the stream's
+force field instead of the classic path. So the mirror is what keeps force
+feedback alive during streaming.
 
 ### Rev LEDs
 
-The five rev-light pairs are standard Linux LED class devices, one per
-mirrored pair, outermost first:
+The five rev-light pairs are standard Linux LED class devices. There is
+one device per mirrored pair, outermost first:
 
 ```
 /sys/class/leds/<hid-device>::RPM1 .. ::RPM5
 # e.g. /sys/class/leds/0003:046D:C266.0005::RPM1/brightness
 ```
 
-Write `1`/`0` to each `brightness` file to switch a pair on or off. Any LED
-tool (or a telemetry feeder) that speaks the standard `leds` class works. This
-is the classic G29-family LED command under the hood, not the DD wheels'
-HID++ feature, so `wheel_rev_level` does not exist here.
+Write `1`/`0` to each `brightness` file to switch a pair on or off. Any
+LED tool (or a telemetry feeder) that speaks the standard `leds` class
+works. Under the hood this is the classic G29-family LED command, not the
+DD wheels' HID++ feature. So `wheel_rev_level` does not exist here.
 
 ### Xbox edition (c26e)
 
-The G923 Xbox edition routes through the driver's HID++ 0x8123 (G920-style)
-force-feedback path instead of the classic engine, so it exposes `range`
-(clamped to `180`-`900`) and `range_restore`, and none of the classic
-engine's `gain`/`autocenter`/`combine_pedals` or its rev-LED devices.
-Force feedback and TrueForce are both hardware-confirmed on this edition
-(issue #27, 2026-07-30).
+The G923 Xbox edition routes through the driver's HID++ 0x8123
+(G920-style) force-feedback path instead of the classic engine. So it
+exposes `range` (clamped to `180`-`900`) and `range_restore`. It exposes
+none of the classic engine's `gain`/`autocenter`/`combine_pedals`, and
+none of its rev-LED devices. Force feedback and TrueForce are both
+hardware-confirmed on this edition (issue #27, 2026-07-30).
 
 #### range_restore
 
@@ -1412,39 +1473,41 @@ Force feedback and TrueForce are both hardware-confirmed on this edition
 **Default**: `1`, on (matching `wheel_range_restore` on the direct-drive
 wheels)
 
-Put the rotation range back when a game moves it.
+Puts the rotation range back when a game moves it.
 
-A game reaching the Logitech SDK directly (which on Linux means
-`PROTON_ENABLE_HIDRAW=1`) pushes its own configured steering rotation at the
-wheel as a TrueForce type-`0x0e` packet. That bypasses the HID++ range
-feature entirely, so nothing is notified, and a title configured for 90
-degrees silently locks the wheel to 90 with a soft stop there. The SDK sends
-it once at session start, so putting the range back sticks for that session.
+A game that reaches the Logitech SDK directly pushes its own configured
+steering rotation at the wheel. On Linux, direct SDK access means
+`PROTON_ENABLE_HIDRAW=1`. The push is a TrueForce type-`0x0e` packet. It
+bypasses the HID++ range feature entirely, so nothing is notified. A
+title configured for 90 degrees silently locks the wheel to 90, with a
+soft stop there. The SDK sends the push once at session start. So putting
+the range back sticks for that session.
 
-On this edition specifically, that push does not appear to reach the wheel:
-an owner's rim keeps its full travel in ACC's config screen while the limit
-shows up only on track, which means the game is clamping its own steering
-rather than the wheel being reconfigured (see `docs/TRUEFORCE_PROTOCOL.md`).
-So this is expected to find nothing to do there. It is on regardless,
-because the cost of watching is a read every two seconds and the cost of not
-watching is an unusable wheel for anyone whose game does write the range.
+On this edition specifically, that push does not appear to reach the
+wheel. An owner's rim keeps its full travel in ACC's config screen. The
+limit shows up only on track. That means the game is clamping its own
+steering, and the wheel is not being reconfigured (see
+`docs/TRUEFORCE_PROTOCOL.md`). So this attribute is expected to find
+nothing to do there. It is on regardless. The cost of watching is a read
+every two seconds. The cost of not watching is an unusable wheel for
+anyone whose game does write the range.
 
-While on, the driver re-reads the range the wheel is actually
-enforcing every two seconds and re-applies the configured one if a game has
-moved it. It gives up after three restores and logs once, so a program that
-genuinely wants a different range wins rather than being fought forever;
-writing `1` again forgives that count.
+While on, the driver re-reads the range the wheel is actually enforcing
+every two seconds. If a game has moved it, the driver re-applies the
+configured one. It gives up after three restores and logs once. So a
+program that genuinely wants a different range wins, instead of being
+fought forever. A write of `1` again forgives that count.
 
-**Why it defaults to off.** Enabling it means the driver writes a range while
-a game holds the wheel. On the direct-drive wheels, doing that at the wrong
-moment desynchronised the centre violently, which is why their equivalent
-checks the rim is still and near centre first, using an encoder read this
-wheel does not offer. The check here reads the reported steering axis
-instead and refuses to write unless the rim is within 3% of centre, which is
-believed equivalent but has not been proven on this hardware. Turn it on
-deliberately, and watch the wheel the first time.
+**The risk.** The driver writes a range while a game holds the wheel. On the direct-drive wheels, doing that at the
+wrong moment desynchronised the centre violently. That is why their
+equivalent first checks that the rim is still and near centre. It uses an
+encoder read that this wheel does not offer. The check here reads the
+reported steering axis instead. It refuses to write unless the rim is
+within 3% of centre. This is believed equivalent, but it has not been
+proven on this hardware. Watch the wheel the first time it fires. Write
+`0` to turn it off if the centre moves.
 
-Doing it by hand is a complete alternative, since the push is one-shot:
+Doing it by hand is a complete alternative, because the push is one-shot:
 
 ```bash
 # after the game has started and taken the wheel
@@ -1459,7 +1522,7 @@ echo 900 > /sys/class/hidraw/hidrawN/device/range
 **Access**: Read/Write, mode 0600 (root only)
 **Availability**: Only present when the module is built with `CONFIG_HID_LOGITECH_HIDPP_DEBUG` (e.g. `make DEBUG=1`). Absent from default builds.
 
-Raw HID++ command shell for protocol bring-up. Write `feature fn [params...]` (hex), read the last command's response.
+Raw HID++ command shell for protocol bring-up. Write `feature fn [params...]` in hex. Read the last command's response.
 
 ```bash
 # Send fn 0x5c to feature 0x0b with three zero params
@@ -1529,28 +1592,29 @@ fi
 
 ## Module parameters
 
-Set at load time (`modprobe hid-logitech-dd stream_yield=N`) or, where the
-mode allows, live under `/sys/module/hid_logitech_dd/parameters/`. All of
-them default to the right thing; each exists so a behaviour that was
-introduced to fix something can be turned off again if it ever misbehaves
-on hardware nobody here has.
+Set a parameter at load time (`modprobe hid-logitech-dd stream_yield=N`).
+Or, where the mode allows, set it live under
+`/sys/module/hid_logitech_dd/parameters/`. All of them default to the
+right thing. Each exists so a behaviour that was introduced to fix
+something can be turned off again. That matters if it ever misbehaves on
+hardware nobody here has.
 
 | Parameter | Default | What it does |
 |---|---|---|
-| `stream_yield` | `Y` | Stay off the TrueForce stream while another process is writing it. The endpoint carries one packet per millisecond, so two streamers halve each other and square-modulate the motor at 500 Hz (see the one-writer section of TRUEFORCE_PROTOCOL.md). While yielding, the driver still applies its own force by writing it into the owner's packet, but only when an effect is actually running here, so a game's own force is never overwritten. `N` restores the old behaviour of streaming regardless. |
-| `kf_idle_gate` | `Y` | Stop the 1 kHz zero-force keepalive after 500 ms of exact-zero force, which is what keeps an idle wheel silent instead of holding a stream open. `N` streams always. |
-| `g923_pedal_invert` | `Y` | Report the G923's pedals the way round Linux expects, 0 released and full scale pressed. The wheel sends all three inverted (255 released, 0 fully pressed), on every id it has, both editions included, and nothing in HID marks an axis as inverted so no layer corrects it by itself. Applied at the input layer only: raw HID stays exactly as the wheel sent it, because a Wine or Proton game reading the wheel over raw HID expects the Windows convention. `N` passes the axes through as sent, for anyone who already inverted them inside their games. Does not apply to the direct-drive wheels, which report these axes the normal way up, nor while `combine_pedals` is on, because that mode merges throttle and brake into one bidirectional axis where inverting would swap them. |
-| `g923_xbox_dd_engine` | `N` | Experimental, and load-time only. Drives the G923 Xbox edition's force feedback from this driver's own engine instead of downloading the effects into the wheel's firmware over HID++ 0x8123. The reason to want it is simulated TrueForce: the firmware sums the effects itself, so the driver never knows the force being produced, and a TrueForce stream, whose torque field takes the motor, can only carry a zero. That is why `logi-tf-sim` refuses that wheel by default. With this engine the force is summed here and goes into the stream with the texture, the way it does on the direct-drive wheels, and the daemon streams without an override. Untested on hardware: nobody working on this owns that wheel. Its rev lights are unaffected and stay on their own LED device; the direct-drive `wheel_rev_level` that appears with this parameter does nothing on this wheel, which speaks the other rev-light dialect. Condition effects (spring, damper, friction, inertia) stay silent until the wheel's steering position reaches this engine, which needs that edition's report layout and is not done. |
-| `inject_pid` | `0` (off) | Appends a PID force-feedback collection to interface 0's report descriptor. **Leave it off**: the injected collection declares report ids this wheel does not use, so its input reports are then misparsed and steering and pedals stop working. It was briefly a default in 0.34.0 and that is exactly what happened (#59, #63). `1` is a dry run, `2` actuates. |
+| `stream_yield` | `Y` | Stay off the TrueForce stream while another process is writing it. The endpoint carries one packet per millisecond. So two streamers halve each other and square-modulate the motor at 500 Hz (see the one-writer section of TRUEFORCE_PROTOCOL.md). While yielding, the driver still applies its own force by writing it into the owner's packet. It does this only when an effect is actually running here, so a game's own force is never overwritten. `N` restores the old behaviour of streaming regardless. |
+| `kf_idle_gate` | `Y` | Stop the 1 kHz zero-force keepalive after 500 ms of exact-zero force. This keeps an idle wheel silent instead of holding a stream open. `N` streams always. |
+| `g923_pedal_invert` | `Y` | Report the G923's pedals the way round Linux expects: 0 released and full scale pressed. The wheel sends all three inverted (255 released, 0 fully pressed). It does this on every id it has, both editions included. Nothing in HID marks an axis as inverted, so no layer corrects it by itself. The driver applies this at the input layer only. Raw HID stays exactly as the wheel sent it, because a Wine or Proton game that reads the wheel over raw HID expects the Windows convention. `N` passes the axes through as sent, for anyone who already inverted them inside their games. It does not apply to the direct-drive wheels, which report these axes the normal way up. It also does not apply while `combine_pedals` is on. That mode merges throttle and brake into one bidirectional axis, where inverting would swap them. |
+| `g923_xbox_dd_engine` | `N` | Experimental, and load-time only. Drives the G923 Xbox edition's force feedback from this driver's own engine. The default downloads the effects into the wheel's firmware over HID++ 0x8123 instead. The reason to want it is simulated TrueForce. The firmware sums the effects itself, so the driver never knows the force being produced. A TrueForce stream, whose torque field takes the motor, can then only carry a zero. That is why `logi-tf-sim` refuses that wheel by default. With this engine, the driver sums the force here and puts it into the stream with the texture, the way it does on the direct-drive wheels. The daemon then streams without an override. Untested on hardware: nobody working on this owns that wheel. Its rev lights are unaffected and stay on their own LED device. The direct-drive `wheel_rev_level` that appears with this parameter does nothing on this wheel, which speaks the other rev-light dialect. Condition effects (spring, damper, friction, inertia) stay silent until the wheel's steering position reaches this engine. That needs that edition's report layout and is not done. |
+| `inject_pid` | `0` (off) | Appends a PID force-feedback collection to interface 0's report descriptor. (PID is the USB HID force-feedback class.) **Leave it off.** The injected collection declares report ids this wheel does not use. The wheel's input reports are then misparsed, and steering and pedals stop working. It was briefly a default in 0.34.0, and that is exactly what happened (#59, #63). `1` is a dry run. `2` actuates. |
 
-`disable_tap_to_click` also exists, inherited from the in-tree driver this
-one forked: it concerns a K400 touchpad and nothing about a wheel.
+`disable_tap_to_click` also exists. It is inherited from the in-tree driver
+this one forked. It concerns a K400 touchpad and nothing about a wheel.
 
 ---
 
 ## Protocol Details
 
-For developers interested in the HID++ protocol details, see:
+For the HID++ protocol details, see:
 - `PROTOCOL_SPECIFICATION.md` - Full protocol documentation
 - `dev/docs/CAPTURE_ANALYSIS_*.md` - USB capture analysis
 

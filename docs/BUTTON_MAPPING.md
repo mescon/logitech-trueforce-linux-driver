@@ -1,21 +1,22 @@
 # Button Mapping
 
-The physical controls on the RS50 / G PRO wheel and hub, and the joystick button
-index each one reports. Buttons use sequential indices matching Windows
-DirectInput, so bindings stay consistent across platforms.
+This page lists the physical controls on the RS50 / G PRO wheel and hub. It
+gives the joystick button index each one reports. Buttons use sequential
+indices that match Windows DirectInput (the Windows game-input interface).
+So bindings stay the same across platforms.
 
 This is the reference for binding controls in a game. The wire-level bitmask
 (which report bit encodes which button) is in
 [PROTOCOL_SPECIFICATION.md](PROTOCOL_SPECIFICATION.md). The G923 has its own
-table below: it reports its own classic button layout straight from its HID
-descriptor, not the RS50/G PRO one.
+table below. It reports its own classic button layout straight from its HID
+descriptor (the device's own list of its controls), not the RS50/G PRO one.
 
 ![RS50 button layout](images/rs-wheel-hub-button-layout.png)
 
 The **Index** column is the joystick button number games show when binding
 (sequential, matching Windows DirectInput). The **Diagram #** column is the
-numbered callout box in the layout image above - the two numbering systems
-are unrelated, so a button's index and its diagram number usually differ.
+numbered callout box in the layout image above. The two numbering systems
+are unrelated. So a button's index and its diagram number usually differ.
 
 | Index | Button | Diagram # |
 |-------|--------|-----------|
@@ -41,18 +42,22 @@ are unrelated, so a button's index and its diagram number usually differ.
 | 28 | GL | 13 |
 | 29 | GR | 7 |
 
-GL and GR are their own buttons, not aliases of the shifter paddles
-(hardware-verified 2026-07-20 by guided capture: evdev 0x2cc / 0x2cd,
-sequential after G1).
+GL and GR are their own buttons, not aliases of the shifter paddles. This
+was hardware-verified on 2026-07-20 by guided capture: evdev 0x2cc / 0x2cd,
+sequential after G1. evdev is the Linux input event interface.
 
 The D-pad reports as a hat switch (`ABS_HAT0X` / `ABS_HAT0Y`), not as four
-buttons - diagram callout "D".
+buttons. It is diagram callout "D".
 
 ## RS H-Shifter (046d:c26b)
 
 ### Connected to the Wheel Base
 
-When connected to a wheel base accessory port, gears 1 to 7 and Reverse report on DirectInput button indices 12 to 19 (hardware-verified 2026-10-29). Index 20 is used by the Racing Adapter DB9 Reverse.
+When you connect the shifter to a wheel base accessory port, gears 1 to 7
+and Reverse report on DirectInput button indices 12 to 20
+(hardware-verified 2026-10-29 and 2026-11-09). Index 19 is not used. A DB9
+Driving Force Shifter on the Racing Adapter reports its Reverse on the same
+index 20.
 
 | Index | Button / Gear | evdev Code | Wire bitmask (Report 0x08) |
 |---|---|---|---|
@@ -63,12 +68,14 @@ When connected to a wheel base accessory port, gears 1 to 7 and Reverse report o
 | 16 | RS H-Shifter: Gear 5 | `0x2c0` (`BTN_TRIGGER_HAPPY1`) | Byte 2 bit 4 (`0x10`) |
 | 17 | RS H-Shifter: Gear 6 | `0x2c1` (`BTN_TRIGGER_HAPPY2`) | Byte 2 bit 5 (`0x20`) |
 | 18 | RS H-Shifter: Gear 7 | `0x2c2` (`BTN_TRIGGER_HAPPY3`) | Byte 2 bit 6 (`0x40`) |
-| 19 | RS H-Shifter: Reverse | `0x2c3` (`BTN_TRIGGER_HAPPY4`) | Byte 3 bit 0 (`0x01`) |
-| 20 | Racing Adapter DB9 Reverse | `0x2c4` (`BTN_TRIGGER_HAPPY5`) | Byte 3 bit 1 (`0x02`) |
+| 19 | not used | `0x2c3` (`BTN_TRIGGER_HAPPY4`) | Byte 2 bit 7 (`0x80`) |
+| 20 | RS H-Shifter: Reverse (also Racing Adapter DB9 Reverse) | `0x2c4` (`BTN_TRIGGER_HAPPY5`) | Byte 3 bit 0 (`0x01`) |
 
 ### Connected Directly to PC via USB
 
-When connected directly to the PC via USB (`046d:c26b Logitech RS H-Shifter`), it enumerates as an independent joystick reporting 8 digital buttons:
+When you connect the shifter directly to the PC via USB
+(`046d:c26b Logitech RS H-Shifter`), it enumerates as an independent
+joystick. It reports 8 digital buttons:
 - Buttons 0 to 6 (`0x120`..`0x126`): 1st through 7th gear
 - Button 7 (`0x127`): Reverse (R)
 
@@ -79,7 +86,7 @@ Dual-mode sim accessory featuring a physical toggle switch between progressive a
 ### Connected to the Wheel Base
 
 When connected to a direct-drive wheel base accessory port (RS50 / G PRO):
-- **Handbrake Mode**: Reports as the wheel base's handbrake axis (progressive 0–100%).
+- **Handbrake Mode**: Reports as the wheel base's handbrake axis (progressive 0 to 100%).
 - **Sequential Shifter Mode**: Shift Up (pull back) and Shift Down (push forward) are routed directly by base firmware to the wheel paddle button codes:
   - Shift Up: Right Paddle (`0x124`, `BTN_TOP2`)
   - Shift Down: Left Paddle (`0x125`, `BTN_PINKIE`)
@@ -123,7 +130,7 @@ Connected via the adapter's DB9 shifter port when the adapter is plugged directl
 
 When the Racing Adapter is plugged into an RS50 / G PRO wheel base USB port (`wheel_accessory` reports `Racing Adapter`):
 - **Pedals**: Routed through the wheel base's standard pedal axes (`ABS_RX` Throttle, `ABS_RY` Brake, `ABS_RZ` Clutch).
-- **DB9 Driving Force Shifter**: Routed through the wheel base's standard H-shifter button slots (`0x12c`..`0x12f` for 1st–4th, `0x2c0`..`0x2c1` for 5th–6th, and `0x2c4` (`BTN_TRIGGER_HAPPY5`) for Reverse, hardware-verified 2026-11-09). In Desktop mode (`profile 0`), the kernel driver automatically enables `0x8120` (`GAMING_ATTACHMENTS`) slot routing and `0x1BC0` (`SYNC`) when the Racing Adapter sub-device is detected.
+- **DB9 Driving Force Shifter**: Routed through the wheel base's standard H-shifter button slots (`0x12c`..`0x12f` for 1st to 4th, `0x2c0`..`0x2c1` for 5th to 6th, and `0x2c4` (`BTN_TRIGGER_HAPPY5`) for Reverse, hardware-verified 2026-11-09). In Desktop mode (`profile 0`), the kernel driver automatically enables `0x8120` (`GAMING_ATTACHMENTS`) slot routing and `0x1BC0` (`SYNC`) when the Racing Adapter sub-device is detected.
 
 ## Pedals Connected to Wheel Base
 
@@ -137,12 +144,13 @@ When pedals (and optional RS Shifter & Handbrake) are connected to a wheel base'
 
 ## G923
 
-The G923's own button layout, hardware-captured 2026-07-27 by a guided live
-capture (every physical button pressed in turn, its joystick index
-recorded) on a PS-edition unit (PID 0xc266). It reports the same sequential
-DirectInput indexing as the RS50/G PRO above, but a different set of
-buttons: no G1/GL/GR, and only one dial (right hand; the G923 has no left
-encoder at all).
+This is the G923's own button layout. It was hardware-captured on
+2026-07-27 by a guided live capture on a PS-edition unit (PID 0xc266, the
+USB product id). Every physical button was pressed in turn, and its
+joystick index recorded. The G923 reports the same sequential DirectInput
+indexing as the RS50/G PRO above, but a different set of buttons. It has no
+G1/GL/GR. It has only one dial (right hand); the G923 has no left encoder
+at all.
 
 | Index | Button |
 |-------|--------|
@@ -165,9 +173,9 @@ encoder at all).
 | 23 | Dial Push |
 | 24 | PS |
 
-Indices 12 to 18 are gaps in the HID descriptor (unused). Indices 19-20
-(Plus/Minus) are real buttons on the G923, unlike the RS50/G PRO, which
-have no buttons there at all.
+Indices 12 to 18 are gaps in the HID descriptor (unused). Indices 19 to 20
+(Plus/Minus) are real buttons on the G923. The RS50/G PRO have no buttons
+there at all.
 
 The D-pad reports as a hat switch (`ABS_HAT0X` / `ABS_HAT0Y`), not as four
-buttons, same as the RS50/G PRO.
+buttons, the same as the RS50/G PRO.
