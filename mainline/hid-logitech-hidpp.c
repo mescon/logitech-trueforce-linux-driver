@@ -15141,18 +15141,16 @@ static ssize_t wheel_firmware_show(struct device *dev,
 static DEVICE_ATTR(wheel_firmware, 0444, wheel_firmware_show, NULL);
 
 /*
- * wheel_accessory: presence signal for the RS Shifter & Handbrake, an
- * optional accessory attached to the base's USB-A port (Phase 1: discovery
- * only, see hidpp_dd_discover_settings_features). Reports its 0x0005 name
- * when found, or "none" - deliberately not -EOPNOTSUPP, so apps get a
- * clean yes/no instead of having to infer presence from every dependent
- * attribute's error code. The accessory's three G HUB settings (shift
- * sensitivity, handbrake actuation, handbrake sensitivity) are not wired
- * up yet: their wire protocol is uncaptured.
+ * wheel_accessory: presence signal for the base's optional accessories, the
+ * RS Shifter & Handbrake, the RS H-Shifter and the Racing Adapter, which
+ * attach to the base's USB-A ports. Lists the attached ones by name (the
+ * Shifter & Handbrake by its 0x0005 name), comma-separated, or "none" -
+ * deliberately not -EOPNOTSUPP, so apps get a clean yes/no instead of
+ * having to infer presence from every dependent attribute's error code.
  */
 /*
- * Re-check which accessories are attached: the RS Shifter & Handbrake and
- * the RS H-Shifter.
+ * Re-check which accessories are attached: the RS Shifter & Handbrake, the
+ * RS H-Shifter and the Racing Adapter.
  *
  * Discovery runs once at probe, but an accessory plugs into the base's own
  * USB-A ports, so it can arrive or leave while the driver is loaded and the

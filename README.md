@@ -200,6 +200,7 @@ to work · 🟡 needs a tester · `-` not applicable.
 | Pedal response curves, sensitivity, deadzones, combined pedals | ✅ | 🟢 |
 | RS Shifter & Handbrake (shift, digital + analog handbrake) | ✅ | 🟢 |
 | RS H-Shifter (7 gates + reverse, works on the desktop, hot-plug) | ✅ | 🟢 |
+| Racing Adapter on the base (legacy pedal sets + DB9 shifter, hot-plug) | ✅ | 🟢 |
 | LIGHTSYNC RGB LEDs (slots, colors, direction; edits apply live) | ✅ (faceplate strip, see note) | 🟡 (rev lights) |
 | RPM rev-light display (level fill; drawn center-out by default - the strip's pattern comes from the wheel's stored display config, separate from the level itself) | ✅ | 🟡 |
 | Native texture merge + telemetry rev lights in AC EVO (relay triple -> logi-rpm-bridge -> wheel) | ✅ | 🟢 |
@@ -661,11 +662,20 @@ handbrake curve is live while the two trigger points are not.
 ![logi-wheel-gui RS Shifter and Handbrake settings](docs/images/logi-wheel-accessory.png)
 
 The **RS H-Shifter** works the same way. Plug it into an accessory port on
-the base, and its seven gates and reverse appear as buttons 12 to 19. The
-driver also turns on the base's routing for it in desktop mode, so the gates
-work outside a game. The Info / Testing page shows which gate is in. Plug
-the shifter straight into the computer by USB instead, and the page reads it
-there too, with the mode shown next to the gate.
+the base, and its seven gates and reverse appear as buttons 12 to 20 (button
+19 is not used). The driver also turns on the base's routing for it in
+desktop mode, so the gates work outside a game. The Info / Testing page
+shows which gate is in. Plug the shifter straight into the computer by USB
+instead, and the page reads it there too, with the mode shown next to the
+gate.
+
+The **Logitech Racing Adapter** is recognised on the base as well. It takes
+a G29, G920 or G923 pedal set and a DB9 Driving Force Shifter. The driver
+turns on the base's routing for the adapter in desktop mode, like the
+H-Shifter. The Info / Testing page also reads the adapter and the RS Shifter
+& Handbrake on their own USB cables: the three pedals and the 6+R shifter
+on the adapter, the handbrake lever and the shift direction on the Shifter
+& Handbrake.
 
 The Info / Testing page doubles as a live input tester (does this button
 reach the computer?). The Setup page manages the game helpers:
