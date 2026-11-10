@@ -59,7 +59,7 @@
                 };
 
           buildInputs = [ pkgs.fontconfig ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.libxkbcommon pkgs.wayland ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.libxkbcommon pkgs.wayland ]
             ++ [ pkgs.libx11 pkgs.libxcursor pkgs.libxi pkgs.libxrandr ];
 
           postInstall = ''
@@ -289,10 +289,10 @@
               softdep hid-logitech pre: hid-logitech-dd
               blacklist hid-logitech-new
             '';
-            services.udev.packages = [ self.packages.${pkgs.system}.udev-rules ];
+            services.udev.packages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.udev-rules ];
             environment.systemPackages = [
-              self.packages.${pkgs.system}.logi-wheel 
-              self.packages.${pkgs.system}.logi-wheel-modeswitch 
+              self.packages.${pkgs.stdenv.hostPlatform.system}.logi-wheel 
+              self.packages.${pkgs.stdenv.hostPlatform.system}.logi-wheel-modeswitch 
             ];
           };
         };
