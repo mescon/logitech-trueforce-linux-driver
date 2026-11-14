@@ -16,7 +16,7 @@
 
 /// How a settings row relates to an axis's shaping view toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShapingRole {
+pub enum ResponseRole {
     /// A sensitivity percentage: shown while the axis's toggle is off.
     Simple,
     /// A full response-curve editor: shown while the axis's toggle is on.
@@ -71,19 +71,19 @@ pub fn axis(attr: &str) -> Option<Axis> {
 }
 
 /// Classify `attr` for the per-axis shaping toggles.
-pub fn role(attr: &str) -> ShapingRole {
+pub fn role(attr: &str) -> ResponseRole {
     match attr {
         "wheel_sensitivity"
         | "wheel_throttle_sensitivity"
         | "wheel_brake_sensitivity"
         | "wheel_clutch_sensitivity"
-        | "wheel_handbrake_sensitivity" => ShapingRole::Simple,
+        | "wheel_handbrake_sensitivity" => ResponseRole::Simple,
         "wheel_response_curve"
         | "wheel_throttle_curve"
         | "wheel_brake_curve"
         | "wheel_clutch_curve"
-        | "wheel_handbrake_curve" => ShapingRole::Advanced,
-        _ => ShapingRole::Neutral,
+        | "wheel_handbrake_curve" => ResponseRole::Advanced,
+        _ => ResponseRole::Neutral,
     }
 }
 
@@ -92,11 +92,11 @@ pub fn role(attr: &str) -> ShapingRole {
 /// own edit path and flip local view state instead.
 pub fn toggle_attr(axis: Axis) -> &'static str {
     match axis {
-        Axis::Steering => "ui:shaping:steering",
-        Axis::Throttle => "ui:shaping:throttle",
-        Axis::Brake => "ui:shaping:brake",
-        Axis::Clutch => "ui:shaping:clutch",
-        Axis::Handbrake => "ui:shaping:handbrake",
+        Axis::Steering => "ui:response:steering",
+        Axis::Throttle => "ui:response:throttle",
+        Axis::Brake => "ui:response:brake",
+        Axis::Clutch => "ui:response:clutch",
+        Axis::Handbrake => "ui:response:handbrake",
     }
 }
 
@@ -109,11 +109,11 @@ pub fn toggle_axis(attr: &str) -> Option<Axis> {
 /// The per-axis toggle rows' labels, shared by both front-ends.
 pub fn toggle_label(axis: Axis) -> &'static str {
     match axis {
-        Axis::Steering => "Steering shaping",
-        Axis::Throttle => "Throttle shaping",
-        Axis::Brake => "Brake shaping",
-        Axis::Clutch => "Clutch shaping",
-        Axis::Handbrake => "Handbrake shaping",
+        Axis::Steering => "Steering response",
+        Axis::Throttle => "Throttle response",
+        Axis::Brake => "Brake response",
+        Axis::Clutch => "Clutch response",
+        Axis::Handbrake => "Handbrake response",
     }
 }
 
@@ -153,9 +153,9 @@ impl AxisToggles {
 pub fn visible(attr: &str, toggles: AxisToggles) -> bool {
     let curve = axis(attr).is_some_and(|ax| toggles.get(ax));
     match role(attr) {
-        ShapingRole::Simple => !curve,
-        ShapingRole::Advanced => curve,
-        ShapingRole::Neutral => true,
+        ResponseRole::Simple => !curve,
+        ResponseRole::Advanced => curve,
+        ResponseRole::Neutral => true,
     }
 }
 
@@ -183,14 +183,14 @@ mod tests {
     #[test]
     fn every_sensitivity_attr_is_simple() {
         for attr in SENSITIVITIES {
-            assert_eq!(role(attr), ShapingRole::Simple, "{attr}");
+            assert_eq!(role(attr), ResponseRole::Simple, "{attr}");
         }
     }
 
     #[test]
     fn every_curve_attr_is_advanced() {
         for attr in CURVES {
-            assert_eq!(role(attr), ShapingRole::Advanced, "{attr}");
+            assert_eq!(role(attr), ResponseRole::Advanced, "{attr}");
         }
     }
 
@@ -206,7 +206,7 @@ mod tests {
             toggle_attr(Axis::Throttle),
             "not_a_real_attr",
         ] {
-            assert_eq!(role(attr), ShapingRole::Neutral, "{attr}");
+            assert_eq!(role(attr), ResponseRole::Neutral, "{attr}");
         }
     }
 
@@ -257,7 +257,7 @@ mod tests {
             assert!(matches!(spec.kind, Kind::Curve), "{attr} is not a curve");
         }
         for spec in REGISTRY.iter().filter(|s| matches!(s.kind, Kind::Curve)) {
-            assert_eq!(role(spec.attr), ShapingRole::Advanced, "{} is a curve but not Advanced", spec.attr);
+            assert_eq!(role(spec.attr), ResponseRole::Advanced, "{} is a curve but not Advanced", spec.attr);
         }
     }
 
@@ -267,7 +267,7 @@ mod tests {
             assert_eq!(toggle_axis(toggle_attr(ax)), Some(ax));
         }
         assert_eq!(toggle_axis("wheel_sensitivity"), None);
-        assert_eq!(toggle_axis("ui:shaping:nope"), None);
+        assert_eq!(toggle_axis("ui:response:nope"), None);
     }
 
     #[test]

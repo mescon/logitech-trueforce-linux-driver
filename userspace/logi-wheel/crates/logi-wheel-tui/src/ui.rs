@@ -4,7 +4,7 @@ use crate::curve_editor::CurveEditor;
 use crate::wheel_test::TestView;
 use logi_wheel_core::fftest::StepState;
 use logi_wheel_core::sysfs::SysfsIo;
-use logi_wheel_core::{shaping, Category, Device, Mode, Value};
+use logi_wheel_core::{response_view, Category, Device, Mode, Value};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -426,7 +426,7 @@ fn draw_settings<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
                         _ => "(not on this wheel)".to_string(),
                     };
                     (why, Style::default().fg(Color::DarkGray))
-                } else if shaping::toggle_axis(&row.attr).is_some() {
+                } else if response_view::toggle_axis(&row.attr).is_some() {
                     // A synthetic per-axis view toggle (no registry spec):
                     // show which shaping control the axis currently offers.
                     let curve = matches!(row.value, Ok(Value::Bool(true)));
@@ -628,9 +628,9 @@ fn draw_settings<S: SysfsIo>(buf: &mut Buffer, app: &App<S>, area: Rect) {
 fn draw_status<S: SysfsIo>(f: &mut Frame, app: &App<S>, area: Rect) {
     let plain_settings = !app.is_setup() && !app.is_info() && app.edit.is_none();
     let help = if plain_settings
-        && app.selected().is_some_and(|r| shaping::toggle_axis(&r.attr).is_some())
+        && app.selected().is_some_and(|r| response_view::toggle_axis(&r.attr).is_some())
     {
-        shaping::TOGGLE_HELP.to_string()
+        response_view::TOGGLE_HELP.to_string()
     } else {
         crate::keymap::footer(app)
     };

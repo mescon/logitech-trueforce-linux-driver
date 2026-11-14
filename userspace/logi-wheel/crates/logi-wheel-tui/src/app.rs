@@ -8,7 +8,7 @@ use logi_wheel_core::games::{self, SetupAction};
 use logi_wheel_core::onboard::{self, OnboardEditor};
 use logi_wheel_core::profiles;
 use logi_wheel_core::setting::Access;
-use logi_wheel_core::shaping::{self, ShapingRole};
+use logi_wheel_core::response_view::{self, ResponseRole};
 use logi_wheel_core::launchers::{self, DiscoveredGame};
 use logi_wheel_core::lightsync;
 use logi_wheel_core::steam;
@@ -269,10 +269,10 @@ pub struct App<S: SysfsIo> {
     /// off (simple, the default) its block shows the sensitivity row and
     /// hides the curve row; while on, the other way around. Deadzones show
     /// either way. Each axis is rendered as a synthetic toggle row
-    /// (`shaping::toggle_attr`) heading its block on the Steering/Pedals
+    /// (`response_view::toggle_attr`) heading its block on the Steering/Pedals
     /// pages; Enter on that row (or 'a' anywhere in the axis's block)
     /// flips it.
-    pub shaping_toggles: shaping::AxisToggles,
+    pub response_toggles: response_view::AxisToggles,
     /// The Setup view's SDK folder field text (see `sdk_field_prefill` for
     /// the startup value, `s` in the Setup view to edit it). The field is
     /// only the first candidate; `sdk_resolved` holds the actual outcome.
@@ -481,7 +481,7 @@ impl<S: SysfsIo> App<S> {
             add_game: None,
             next_wheel_requested: false,
             quit: false,
-            shaping_toggles: shaping::AxisToggles::default(),
+            response_toggles: response_view::AxisToggles::default(),
             ffb_path: logi_wheel_core::helpers::ffb_path(),
             launch_bin: logi_wheel_core::helpers::launch_path(),
             shim_binary: logi_wheel_core::helpers::installer_path(),
@@ -708,7 +708,7 @@ impl<S: SysfsIo> App<S> {
             self.profiles_rows()
         } else {
             let rows = self.registry_rows(cat);
-            self.shaping_rows(rows)
+            self.response_view_rows(rows)
         };
         if self.row_idx >= self.rows.len() {
             self.row_idx = self.rows.len().saturating_sub(1);
@@ -1106,16 +1106,16 @@ impl<S: SysfsIo> App<S> {
 
     /// Compose a category's rows for the per-axis shaping toggles: when any
     /// row is a shaping generator (a sensitivity or a curve; see
-    /// `shaping::role`), insert each axis's synthetic toggle row right
+    /// `response_view::role`), insert each axis's synthetic toggle row right
     /// before that axis's first row (its block heading) and keep only the
-    /// rows `shaping::visible` allows for the current toggles (an axis on
+    /// rows `response_view::visible` allows for the current toggles (an axis on
     /// sensitivity hides its curve, an axis on the curve hides its
     /// sensitivity, deadzones and everything else stay). Rows for a
     /// category with no shaping generators pass through untouched, so
     /// `reload` can call this unconditionally, matching the GUI's
-    /// `compose_shaping`.
-    fn shaping_rows(&self, rows: Vec<Row>) -> Vec<Row> {
-        if !rows.iter().any(|r| shaping::role(&r.attr) != ShapingRole::Neutral) {
+    /// `compose_response_view`.
+    fn response_view_rows(&self, rows: Vec<Row>) -> Vec<Row> {
+        if !rows.iter().any(|r| response_view::role(&r.attr) != ResponseRole::Neutral) {
             return rows;
         }
         // An axis with no available generator row has nothing for its toggle to
@@ -1123,26 +1123,26 @@ impl<S: SysfsIo> App<S> {
         // attached), so it gets no toggle at all rather than one that offers a
         // choice which cannot change anything. Keyed on availability, not on
         // the handbrake specifically, so any future axis behaves the same way.
-        let live: Vec<shaping::Axis> = shaping::Axis::ALL
+        let live: Vec<response_view::Axis> = response_view::Axis::ALL
             .iter()
             .copied()
-            .filter(|ax| rows.iter().any(|r| shaping::axis(&r.attr) == Some(*ax) && r.available))
+            .filter(|ax| rows.iter().any(|r| response_view::axis(&r.attr) == Some(*ax) && r.available))
             .collect();
-        let mut out = Vec::with_capacity(rows.len() + shaping::Axis::ALL.len());
-        let mut headed: Vec<shaping::Axis> = Vec::new();
+        let mut out = Vec::with_capacity(rows.len() + response_view::Axis::ALL.len());
+        let mut headed: Vec<response_view::Axis> = Vec::new();
         for row in rows {
-            if let Some(ax) = shaping::axis(&row.attr) {
+            if let Some(ax) = response_view::axis(&row.attr) {
                 if !headed.contains(&ax) && live.contains(&ax) {
                     headed.push(ax);
                     out.push(Row {
-                        attr: shaping::toggle_attr(ax).to_string(),
-                        label: shaping::toggle_label(ax).to_string(),
+                        attr: response_view::toggle_attr(ax).to_string(),
+                        label: response_view::toggle_label(ax).to_string(),
                         available: true,
-                        value: Ok(Value::Bool(self.shaping_toggles.get(ax))),
+                        value: Ok(Value::Bool(self.response_toggles.get(ax))),
                     });
                 }
             }
-            if shaping::visible(&row.attr, self.shaping_toggles) {
+            if response_view::visible(&row.attr, self.response_toggles) {
                 out.push(row);
             }
         }
@@ -1151,18 +1151,18 @@ impl<S: SysfsIo> App<S> {
 
     /// Whether the on-screen category carries any shaping toggle rows
     /// (Steering and Pedals do).
-    pub fn has_shaping_toggle(&self) -> bool {
-        self.rows.iter().any(|r| shaping::toggle_axis(&r.attr).is_some())
+    pub fn has_response_toggle(&self) -> bool {
+        self.rows.iter().any(|r| response_view::toggle_axis(&r.attr).is_some())
     }
 
     /// Flip one axis's shaping view toggle and re-compose the page. Pure
     /// view state: nothing is written to the device.
-    pub fn toggle_shaping(&mut self, axis: shaping::Axis) {
-        self.shaping_toggles.toggle(axis);
+    pub fn toggle_response_view(&mut self, axis: response_view::Axis) {
+        self.response_toggles.toggle(axis);
         self.status = format!(
             "{}: {}",
-            shaping::toggle_label(axis),
-            if self.shaping_toggles.get(axis) { "curve editor" } else { "sensitivity" }
+            response_view::toggle_label(axis),
+            if self.response_toggles.get(axis) { "curve editor" } else { "sensitivity" }
         );
         self.reload();
     }
@@ -1173,11 +1173,11 @@ impl<S: SysfsIo> App<S> {
     pub fn toggle_selected_axis(&mut self) {
         let Some(axis) = self
             .selected()
-            .and_then(|r| shaping::toggle_axis(&r.attr).or_else(|| shaping::axis(&r.attr)))
+            .and_then(|r| response_view::toggle_axis(&r.attr).or_else(|| response_view::axis(&r.attr)))
         else {
             return;
         };
-        self.toggle_shaping(axis);
+        self.toggle_response_view(axis);
     }
 
     fn led_row(&self, attr: &str, label: &str) -> Row {
@@ -2042,8 +2042,8 @@ impl<S: SysfsIo> App<S> {
                 ModeReq::OnboardOnly => lines.push("Onboard mode only.".to_string()),
                 ModeReq::Any => {}
             }
-        } else if shaping::toggle_axis(&row.attr).is_some() {
-            lines.push(shaping::TOGGLE_HELP.to_string());
+        } else if response_view::toggle_axis(&row.attr).is_some() {
+            lines.push(response_view::TOGGLE_HELP.to_string());
         } else if let Ok(Value::Text(hint)) = &row.value {
             // The profile rows carry their key hint as their value text;
             // it doubles as the popup body.
@@ -2061,8 +2061,8 @@ impl<S: SysfsIo> App<S> {
         };
         // A per-axis shaping row is view state, not a device attribute:
         // Enter flips it in place (same as the 'a' shortcut), no editor.
-        if let Some(axis) = shaping::toggle_axis(&attr) {
-            self.toggle_shaping(axis);
+        if let Some(axis) = response_view::toggle_axis(&attr) {
+            self.toggle_response_view(axis);
             return;
         }
         let Some(spec) = Device::<S>::spec(&attr) else { return };
@@ -3626,7 +3626,7 @@ mod tests {
         a.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
         // A curve row only shows while its axis's shaping toggle is on (the
         // default is the simple sensitivity view).
-        a.shaping_toggles.set(shaping::Axis::Throttle, true);
+        a.response_toggles.set(response_view::Axis::Throttle, true);
         a.reload();
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_throttle_curve").unwrap();
         a
@@ -3732,12 +3732,12 @@ mod tests {
         a.row_idx = a
             .rows
             .iter()
-            .position(|r| r.attr == shaping::toggle_attr(shaping::Axis::Throttle))
+            .position(|r| r.attr == response_view::toggle_attr(response_view::Axis::Throttle))
             .unwrap();
         a.on_key(KeyCode::Char('i'));
         let popup = a.info_popup.as_ref().expect("popup opens on a synthetic row");
-        assert_eq!(popup.title, "Throttle shaping");
-        assert_eq!(popup.lines, vec![shaping::TOGGLE_HELP.to_string()]);
+        assert_eq!(popup.title, "Throttle response");
+        assert_eq!(popup.lines, vec![response_view::TOGGLE_HELP.to_string()]);
     }
 
     #[test]
@@ -4741,7 +4741,7 @@ mod tests {
         fs.set("wheel_sensitivity", "50");
         fs.set("wheel_response_curve", "reset");
         // Give every shapeable axis one available generator, so this stands for
-        // a wheel that actually has these axes: `shaping_rows` heads an axis
+        // a wheel that actually has these axes: `response_view_rows` heads an axis
         // block only when the axis has something available to toggle between,
         // and an axis with no attributes at all is an axis the wheel lacks.
         for attr in [
@@ -4792,13 +4792,13 @@ mod tests {
         let hb = a.rows.iter().find(|r| r.attr == "wheel_handbrake_sensitivity").expect("row listed");
         assert!(!hb.available, "handbrake sensitivity must read unavailable");
         assert!(
-            !a.rows.iter().any(|r| r.attr == shaping::toggle_attr(shaping::Axis::Handbrake)),
+            !a.rows.iter().any(|r| r.attr == response_view::toggle_attr(response_view::Axis::Handbrake)),
             "no handbrake shaping toggle without the accessory"
         );
         // The pedals themselves are untouched by the accessory's absence.
         let th = a.rows.iter().find(|r| r.attr == "wheel_throttle_sensitivity").expect("row listed");
         assert!(th.available);
-        assert!(a.rows.iter().any(|r| r.attr == shaping::toggle_attr(shaping::Axis::Throttle)));
+        assert!(a.rows.iter().any(|r| r.attr == response_view::toggle_attr(response_view::Axis::Throttle)));
     }
 
     #[test]
@@ -4806,27 +4806,27 @@ mod tests {
         let a = pedals_app("RS Shifter & Handbrake");
         let hb = a.rows.iter().find(|r| r.attr == "wheel_handbrake_sensitivity").expect("row listed");
         assert!(hb.available);
-        assert!(a.rows.iter().any(|r| r.attr == shaping::toggle_attr(shaping::Axis::Handbrake)));
+        assert!(a.rows.iter().any(|r| r.attr == response_view::toggle_attr(response_view::Axis::Handbrake)));
     }
 
     #[test]
-    fn shaping_toggles_head_each_axis_block_on_steering_and_pedals_only() {
-        use shaping::Axis;
+    fn response_toggles_head_each_axis_block_on_steering_and_pedals_only() {
+        use response_view::Axis;
         let a = steering_app();
         let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         // The steering toggle heads the axis block (right before the
         // sensitivity row), not the whole page.
-        let toggle = attrs.iter().position(|a| *a == shaping::toggle_attr(Axis::Steering)).unwrap();
+        let toggle = attrs.iter().position(|a| *a == response_view::toggle_attr(Axis::Steering)).unwrap();
         assert_eq!(attrs[toggle + 1], "wheel_sensitivity");
         let mut p = steering_app();
         p.cat_idx = Category::ALL.iter().position(|c| *c == Category::Pedals).unwrap();
         p.reload();
         let pattrs: Vec<&str> = p.rows.iter().map(|r| r.attr.as_str()).collect();
         for ax in [Axis::Throttle, Axis::Brake, Axis::Clutch, Axis::Handbrake] {
-            assert!(pattrs.contains(&shaping::toggle_attr(ax)), "missing {ax:?} toggle");
+            assert!(pattrs.contains(&response_view::toggle_attr(ax)), "missing {ax:?} toggle");
         }
         let ffb = app(); // first category, Ffb
-        assert!(!ffb.has_shaping_toggle(), "Ffb has no shaping generators");
+        assert!(!ffb.has_response_toggle(), "Ffb has no shaping generators");
     }
 
     #[test]
@@ -4842,15 +4842,15 @@ mod tests {
         use crossterm::event::KeyCode;
         let mut a = steering_app();
         a.row_idx =
-            a.rows.iter().position(|r| r.attr == shaping::toggle_attr(shaping::Axis::Steering)).unwrap();
+            a.rows.iter().position(|r| r.attr == response_view::toggle_attr(response_view::Axis::Steering)).unwrap();
         a.on_key(KeyCode::Enter);
-        assert!(a.shaping_toggles.get(shaping::Axis::Steering));
+        assert!(a.response_toggles.get(response_view::Axis::Steering));
         assert!(a.edit.is_none(), "no inline editor opens");
         let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(attrs.contains(&"wheel_response_curve"));
         assert!(!attrs.contains(&"wheel_sensitivity"));
         // Pure view state: the reserved attr never reaches the device.
-        assert!(a.device.read(shaping::toggle_attr(shaping::Axis::Steering)).is_err());
+        assert!(a.device.read(response_view::toggle_attr(response_view::Axis::Steering)).is_err());
     }
 
     #[test]
@@ -4859,10 +4859,10 @@ mod tests {
         let mut a = steering_app();
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_sensitivity").unwrap();
         a.on_key(KeyCode::Char('a'));
-        assert!(a.shaping_toggles.get(shaping::Axis::Steering));
+        assert!(a.response_toggles.get(response_view::Axis::Steering));
         a.row_idx = a.rows.iter().position(|r| r.attr == "wheel_response_curve").unwrap();
         a.on_key(KeyCode::Char('a'));
-        assert!(!a.shaping_toggles.get(shaping::Axis::Steering));
+        assert!(!a.response_toggles.get(response_view::Axis::Steering));
         let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(attrs.contains(&"wheel_sensitivity"), "back to the simple view");
     }
@@ -4873,7 +4873,7 @@ mod tests {
         let mut a = app(); // Ffb
         let before: Vec<String> = a.rows.iter().map(|r| r.attr.clone()).collect();
         a.on_key(KeyCode::Char('a'));
-        assert_eq!(a.shaping_toggles, shaping::AxisToggles::default());
+        assert_eq!(a.response_toggles, response_view::AxisToggles::default());
         let after: Vec<String> = a.rows.iter().map(|r| r.attr.clone()).collect();
         assert_eq!(before, after);
     }
@@ -4888,7 +4888,7 @@ mod tests {
         assert!(simple.contains(&"wheel_throttle_sensitivity"));
         assert!(!simple.contains(&"wheel_throttle_curve"));
         // Brake to the curve view; the throttle stays on sensitivity.
-        a.toggle_shaping(shaping::Axis::Brake);
+        a.toggle_response_view(response_view::Axis::Brake);
         let mixed: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(mixed.contains(&"wheel_brake_curve"));
         assert!(!mixed.contains(&"wheel_brake_sensitivity"));
@@ -4896,8 +4896,8 @@ mod tests {
         assert!(mixed.contains(&"wheel_throttle_sensitivity"));
         assert!(!mixed.contains(&"wheel_throttle_curve"));
         // Every axis on the curve view: no sensitivities remain.
-        for ax in [shaping::Axis::Throttle, shaping::Axis::Clutch, shaping::Axis::Handbrake] {
-            a.toggle_shaping(ax);
+        for ax in [response_view::Axis::Throttle, response_view::Axis::Clutch, response_view::Axis::Handbrake] {
+            a.toggle_response_view(ax);
         }
         let curves: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
         assert!(curves.contains(&"wheel_throttle_curve"));
@@ -4909,8 +4909,8 @@ mod tests {
     #[test]
     fn shaping_state_survives_a_category_round_trip() {
         let mut a = steering_app();
-        a.toggle_shaping(shaping::Axis::Steering);
-        assert!(a.shaping_toggles.get(shaping::Axis::Steering));
+        a.toggle_response_view(response_view::Axis::Steering);
+        assert!(a.response_toggles.get(response_view::Axis::Steering));
         a.move_cat(-1); // away to Ffb
         a.move_cat(1); // and back to Steering
         let attrs: Vec<&str> = a.rows.iter().map(|r| r.attr.as_str()).collect();
