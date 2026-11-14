@@ -475,14 +475,14 @@ All non-calibration commands use Short HID++ (`0x10`) with device index `0xFF`.
 ```
 Set: 10 FF 16 2D [Value_Hi] [Value_Lo] 00
 ```
-**Encoding**: Value = Nm × 8192 (range 1.0-8.0 Nm with 0.1 Nm steps)
+**Encoding**: Value = Nm × 8192 - 1, rounded down (range 1.0-8.0 Nm with 0.1 Nm steps). This is the same formula as the compat-mode table in section 5.1.
 
 | Value | Nm | Formula |
 |-------|-----|---------|
-| `0x1FFF` | 1.0 Nm | 1.0 × 8192 ≈ 8191 |
-| `0x4FFF` | 2.5 Nm | 2.5 × 8192 ≈ 20479 |
-| `0x7FFF` | 4.0 Nm | 4.0 × 8192 ≈ 32767 |
-| `0xC998` | 6.3 Nm | 6.3 × 8192 ≈ 51608 |
+| `0x1FFF` | 1.0 Nm | 1.0 × 8192 - 1 = 8191 |
+| `0x4FFF` | 2.5 Nm | 2.5 × 8192 - 1 = 20479 |
+| `0x7FFF` | 4.0 Nm | 4.0 × 8192 - 1 = 32767 |
+| `0xC998` | 6.3 Nm | 6.3 × 8192 - 1 ≈ 51608 |
 | `0xFFFF` | 8.0 Nm | Maximum torque |
 
 **Driver Formula**: `value = (uint16_t)(nm * 8191.875)` or `value = nm * 0xFFFF / 8.0`
@@ -925,7 +925,7 @@ A few behaviors observed in compat mode look like driver problems. They are firm
 - **Default steering angle is 90°**: the factory default angle in compat mode is 90°, not the wheel's 1080° hardware maximum. This is correct firmware behavior. To set it from Linux: first write `wheel_profile=0`, then write `wheel_range=<degrees>`. Or set it from the OLED by editing the active onboard profile.
 - **LIGHTSYNC works in compat mode**: feature `0x807A` is advertised in compat at the same index that discovery picks up in native. `wheel_led_*` writes drive the LED strip end-to-end (verified 2026-04-29). An earlier draft of this document claimed otherwise. That claim was incorrect.
 
-### 5.3 Sub-device Addressing (HID++ dev_idx 0x01 / 0x02 / 0x05)
+### 5.3 Sub-device Addressing (HID++ dev_idx 0x01 to 0x05; the index is the port)
 
 Cross-capture census (2026-07-02, all 62 captures): the wheel base sits at
 dev_idx `0xff` (~100k packets each way). Besides it, three sub-devices
@@ -1210,7 +1210,7 @@ again.
 | Feature | G920/G923 | RS50 |
 |---------|-----------|------|
 | FFB Method | HID++ Feature 0x8123 | Dedicated endpoint 0x03 |
-| FFB Commands | Via HID++ FAP messages | Raw HID output reports (05 XX) |
+| FFB Commands | Via HID++ FAP messages | Raw 64-byte output reports, report ID 0x01 (section 4) |
 | Report ID | 0x11/0x12 | 0x01 (custom) |
 | Sequence Field | 2 bytes | 1 byte |
 | Max Rotation | 900° | 2700° |
@@ -1253,7 +1253,7 @@ queue-saturation failures). But a minimal 0x8123-fn2 force-target sender
 remains an untested alternative transport. It could matter if the wheel's
 FFB-filter smoothing turns out to apply only to that path.
 
-**Interface initialization**: FFB must be initialized on Interface 1 (HID++), not Interface 0 (joystick). Interface 0 has no HID++ support.
+**Interfaces**: HID++ lives on Interface 1. That is where feature `0x8123` and the settings (strength, range, filters) are written. The endpoint `0x03` force stream, and the session init that opens it (see `TRUEFORCE_PROTOCOL.md`), live on Interface 2. Interface 0 (joystick) carries neither and has no HID++ support.
 
 ---
 
@@ -1498,7 +1498,7 @@ Interpretation: May enumerate effect types or zone capabilities (appears to be z
  │  │  │  │  │
  │  │  │  │  └── LED count (10)
  │  │  │  └───── Unknown (1)
- │  │  └──────── Max name length (8 characters)
+ │  │  └──────── Max name length as advertised (8; the wheel accepts 9, see 9.6)
  │  └─────────── Number of slots (5)
  └────────────── Number of slots (5, duplicated)
 ```
@@ -1701,7 +1701,10 @@ Custom slots can have user-defined names (shown in G Hub UI).
 12 FF [idx] 4C [slot] [len] [ASCII name, null-padded]...
 ```
 
-Name is up to 15 ASCII characters. Default names: "CUSTOM 1" through "CUSTOM 5".
+The wheel accepts a name of up to 9 ASCII characters and stores it in upper
+case (hardware-verified 2026-07-16). fn0 advertises 8. A longer name is
+refused by the wheel, which the driver reports as `EIO`. Default names:
+"CUSTOM 1" through "CUSTOM 5".
 
 ### 9.7 Protocol Examples
 

@@ -496,7 +496,7 @@ Used for constant force values with extended precision.
 | `userspace/libtrueforce/src/tf_init_data.h` | 68 canonical init packets, auto-generated from capture, sent twice at session bring-up |
 | `userspace/libtrueforce/src/session.c` | `logitf_session_ensure()` opens the hidraw node and runs the two-pass init |
 | `userspace/libtrueforce/src/stream.c` | 1000 Hz timerfd loop (`LOGITF_TF_PKT_HZ`), 13-slot rolling window, `logitf_stream_push_s16()` / `_clear()` / `_start/stop()` |
-| `userspace/libtrueforce/include/trueforce.h` | Mirrors the 62 exports of `trueforce_sdk_x64.dll` (Windows SDK) so a Linux app can call the same API surface |
+| `userspace/libtrueforce/include/trueforce.h` | Declares the 58 `logi*` functions that `trueforce_sdk_x64.dll` (Windows SDK 1.3.11, 75 exports in all) exports, so a Linux app can call the same API surface. The DLL's other 17 exports are `dllOpen`/`dllClose`, two COM registration stubs and 13 mangled C++ internals |
 
 ## Open Items
 
@@ -545,6 +545,6 @@ other call to Logitech's own library and answers only the rotation getters.
 Signatures for those are in `docs/SDK_ABI_NOTES.md`, taken from the library's
 machine code rather than from any header.
 
-Assetto Corsa Competizione resolves 56 symbols from this SDK, including all
+Assetto Corsa Competizione resolves 59 symbols from this SDK, including all
 four rotation getters, and none at all from the older Steering Wheel SDK. So
 for that title this is the right library to answer through.

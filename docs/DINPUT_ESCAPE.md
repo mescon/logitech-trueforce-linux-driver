@@ -26,7 +26,7 @@ Everything here was measured on an RS50 (`046d:c276`) in Assetto Corsa EVO on
 |---|---|
 | Our shim registers the SDK | fixed; it was broken from 0.27.1 to 0.34.x by a quoting bug |
 | The game loads the SDK | yes, verified by signature and loaded |
-| The game resolves the SDK API | yes, 56 of 59 symbols |
+| The game resolves the SDK API | yes, 59 of the 63 symbols it looks up; the other 4 were never exported (counted 2026-11-14) |
 | The SDK opens the wheel | yes, interface `mi_02`, the TrueForce interface |
 | The SDK writes to the wheel | **yes**, on endpoint 3, once the range questions are answered locally (see 2026-08-12 below) |
 | The game streams torque | **yes**, `logiTrueForceSetTorqueKF` at ~190/sec |
@@ -186,7 +186,7 @@ backend, and raw HID stops being a trade-off.
 - **The missing viscosity API.** The game resolves
   `logiTrueForceGetViscosity`, `GetViscosityMax` and `SetViscosity`, and all
   three fail. This is not the blocker. `1_3_11` and `1_3_12` have identical
-  76-symbol export sets, and neither has them. So no shipped G HUB provides
+  75-symbol export sets, and neither has them. So no shipped G HUB provides
   them, and Windows users are equally without. The game probes optionally.
 - **A G HUB agent.** The SDK and the effect driver both enumerate HID
   themselves. Neither references `LGHUB`, a pipe, or a socket to one.

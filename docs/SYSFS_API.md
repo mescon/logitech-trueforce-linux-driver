@@ -1000,6 +1000,8 @@ G PRO. Reports are welcome (issue tracker).**
 echo 7 > wheel_rev_level
 ```
 
+## Identity
+
 ### wheel_serial
 **Access**: Read-only
 **Values**: 12-character device serial
@@ -1032,8 +1034,8 @@ Presence signal for the base's optional accessories: the **RS Shifter &
 Handbrake**, the **RS H-Shifter** and the **Logitech Racing Adapter**. They
 plug into the base's USB-A ports. The attribute lists the attached
 accessories by name, separated by commas, always in this order: the RS
-Shifter & Handbrake (its own HID++ device name), `RS H-Shifter`, `Racing
-Adapter`. It reads `none` when no accessory is attached. Unlike the
+Shifter & Handbrake (its own HID++ device name, or `RS Shifter & Handbrake`
+when that name could not be read), `RS H-Shifter`, `Racing Adapter`. It reads `none` when no accessory is attached. Unlike the
 pedal/handbrake attributes below, this never returns an error. It exists
 precisely so apps can check for an accessory without inferring presence
 from another attribute's error code.

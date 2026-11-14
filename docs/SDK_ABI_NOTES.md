@@ -126,9 +126,10 @@ that added this section.
 
 ## Which SDK a game uses
 
-Grep the game binary. Assetto Corsa Competizione resolves 56 symbols from
-the TrueForce SDK, including all four rotation getters. It resolves none at
-all from the legacy Steering Wheel SDK:
+Grep the game binary. Assetto Corsa Competizione resolves 59 symbols from
+the TrueForce SDK (57 `logi*` calls plus `dllOpen` and `dllClose`, counted
+2026-11-14 on the current build), including all four rotation getters. It
+resolves none at all from the legacy Steering Wheel SDK:
 
 ```bash
 strings -n 6 AC2-Win64-Shipping.exe | grep -E "^(logi|Logi|dll)[A-Za-z]" | sort -u
