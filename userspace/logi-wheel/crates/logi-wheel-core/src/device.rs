@@ -822,16 +822,18 @@ impl<S: SysfsIo> Device<S> {
         }
     }
 
+    /// The RS Shifter & Handbrake's entry in `wheel_accessory`, or `None`
+    /// when the attribute is missing, unreadable, `none`, or lists only
+    /// other accessories. The driver lists every attached accessory,
+    /// comma-separated (`RS Shifter & Handbrake, RS H-Shifter, Racing
+    /// Adapter`), so the entry has to be picked out: an H-Shifter or a
+    /// Racing Adapter on its own must not light up the handbrake settings.
     pub fn accessory_name(&self) -> Option<String> {
         if !self.io.exists("wheel_accessory") {
             return None;
         }
         let raw = self.io.read("wheel_accessory").ok()?;
-        let t = raw.trim();
-        if t.is_empty() || t == "none" {
-            return None;
-        }
-        Some(t.to_string())
+        shifter_handbrake_entry(&raw).map(str::to_string)
     }
 
     pub fn accessory_attached(&self) -> Option<bool> {
@@ -839,11 +841,10 @@ impl<S: SysfsIo> Device<S> {
             return None;
         }
         let raw = self.io.read("wheel_accessory").ok()?;
-        let t = raw.trim();
-        if t.is_empty() {
+        if raw.trim().is_empty() {
             return None;
         }
-        Some(t != "none")
+        Some(shifter_handbrake_entry(&raw).is_some())
     }
 
     pub fn write(&self, attr: &str, v: &Value) -> Result<(), Error> {
@@ -912,6 +913,21 @@ impl<S: SysfsIo> Device<S> {
         self.io.write("wheel_mode", "desktop").map_err(|e| map_io_error(&e, "wheel_mode"))?;
         Ok(())
     }
+}
+
+/// The RS Shifter & Handbrake's entry in a `wheel_accessory` value, which is
+/// `none` or a comma-separated list of accessory names. The entry is whatever
+/// is not one of the two fixed names the driver uses for the other
+/// accessories: normally the device's own HID++ name, `RS Shifter &
+/// Handbrake`, but the driver may report a firmware variant of it.
+fn shifter_handbrake_entry(raw: &str) -> Option<&str> {
+    let t = raw.trim();
+    if t.is_empty() || t == "none" {
+        return None;
+    }
+    t.split(',')
+        .map(str::trim)
+        .find(|e| !e.is_empty() && *e != "RS H-Shifter" && *e != "Racing Adapter")
 }
 
 #[cfg(test)]
@@ -1091,6 +1107,26 @@ mod tests {
         assert!(!d.available("wheel_handbrake_curve"));
         assert_eq!(d.read_supported("wheel_handbrake_sensitivity").unwrap(), None);
         assert_eq!(d.read_supported("wheel_handbrake_curve").unwrap(), None);
+    }
+
+    #[test]
+    fn handbrake_settings_stay_hidden_when_only_other_accessories_are_attached() {
+        // Since the driver lists every attached accessory, an H-Shifter or a
+        // Racing Adapter alone must not count as the Shifter & Handbrake.
+        for list in ["RS H-Shifter", "Racing Adapter", "RS H-Shifter, Racing Adapter"] {
+            let d = dev_with_accessory(Some(list));
+            assert_eq!(d.accessory_attached(), Some(false), "{list}");
+            assert_eq!(d.accessory_name(), None, "{list}");
+            assert!(!d.available("wheel_handbrake_sensitivity"), "{list}");
+        }
+    }
+
+    #[test]
+    fn handbrake_settings_are_available_with_the_accessory_in_a_list() {
+        let d = dev_with_accessory(Some("RS Shifter & Handbrake, RS H-Shifter, Racing Adapter"));
+        assert_eq!(d.accessory_attached(), Some(true));
+        assert_eq!(d.accessory_name().as_deref(), Some("RS Shifter & Handbrake"));
+        assert!(d.available("wheel_handbrake_sensitivity"));
     }
 
     #[test]
