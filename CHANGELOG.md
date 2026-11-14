@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## Unreleased
+## 0.43.1 - 2026-11-14
 
 **An RS Shifter & Handbrake is never dropped from `wheel_accessory`.** When
 the accessory's name could not be read, the driver left it out of the list
