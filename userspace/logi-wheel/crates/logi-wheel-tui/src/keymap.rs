@@ -246,7 +246,7 @@ fn context_section<S: SysfsIo>(app: &App<S>) -> (Section, Scope) {
     } else {
         keys.push(bfs("d", "toggle desktop/onboard mode", "mode"));
     }
-    if app.has_shaping_toggle() {
+    if app.has_response_toggle() {
         keys.push(b("a", "sensitivity/curve for the row's axis"));
     }
     keys.push(b("r", "refresh"));

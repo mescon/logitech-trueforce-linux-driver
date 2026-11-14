@@ -5,6 +5,32 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## Unreleased
+
+**An RS Shifter & Handbrake is never dropped from `wheel_accessory`.** When
+the accessory's name could not be read, the driver left it out of the list
+and only its settings showed it was there. It is now listed under the fixed
+name `RS Shifter & Handbrake` in that case.
+
+**The apps no longer mistake another accessory for the Shifter & Handbrake.**
+Since 0.43.0 the attribute lists every attached accessory. The apps took any
+list that was not `none` as the Shifter & Handbrake, so an H-Shifter or a
+Racing Adapter on its own switched the handbrake settings on. They now look
+for the Shifter & Handbrake's own entry.
+
+**Plain language, continued.** The per-game setup text in the apps and in
+`docs/GAME_SETUP.md` is rewritten in short sentences. The per-axis view
+toggles are now called "response", as in "Throttle response".
+
+**Specification corrections.** The FFB strength encoding is `Nm × 8192 - 1`
+in both places it appears. The LIGHTSYNC slot name is 9 characters, as the
+wheel accepts, not 8 or 15. The interface summary says which interface
+carries HID++ and which carries the force stream. The RS50's force packets
+are 64-byte reports with ID `0x01`. The SDK symbol counts were recounted
+against the DLL (75 exports, 58 of them `logi*`) and the current game build
+(59 of 63 lookups resolved). The sysfs identity attributes have their own
+section in the reference and the wiki.
+
 ## 0.43.0 - 2026-11-14
 
 **The Logitech RS H-Shifter works on the RS50 and the G PRO.** Plug it into

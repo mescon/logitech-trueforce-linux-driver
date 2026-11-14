@@ -6,7 +6,7 @@
 //! is the only place that knows about both worlds.
 
 use logi_wheel_core::curve::{Curve, FULL};
-use logi_wheel_core::shaping::{self, ShapingRole};
+use logi_wheel_core::response_view::{self, ResponseRole};
 use logi_wheel_core::{lightsync, oled, Access, Category, Color, Error, Kind, Value, WheelModel, REGISTRY};
 
 use logi_wheel_core::games::{self, SetupAction};
@@ -62,10 +62,10 @@ pub const KIND_LIGHT_SLOT: i32 = 13;
 /// The "Edit screen..." button row: opens the OLED editor overlay
 /// (`oled_editor.slint`). Synthetic, like the slot editor's row.
 pub const KIND_OLED_EDIT: i32 = 15;
-/// A per-axis shaping toggle row `compose_shaping` inserts: a Switch whose
+/// A per-axis shaping toggle row `compose_response_view` inserts: a Switch whose
 /// own label reads "Sensitivity" (off) or "Curve" (on). Never produced by
 /// `kind_tag`; the row does not exist in the registry (its attr is
-/// `shaping::toggle_attr`'s reserved `ui:` name, intercepted in `main.rs`).
+/// `response_view::toggle_attr`'s reserved `ui:` name, intercepted in `main.rs`).
 pub const KIND_SHAPING: i32 = 14;
 
 /// The synthetic "Edit slot" row's attr. Not a sysfs attribute: it only
@@ -135,7 +135,7 @@ fn is_read_only(attr: &str) -> bool {
 /// (the per-axis shaping toggle, the LIGHTSYNC "Edit slot" button) are
 /// grouped with their block. An unknown attr returns "" (no card header).
 pub fn attr_group(attr: &str) -> &'static str {
-    if let Some(ax) = shaping::toggle_axis(attr) {
+    if let Some(ax) = response_view::toggle_axis(attr) {
         return axis_group(ax);
     }
     if attr == LIGHT_EDIT_SLOT_ATTR {
@@ -185,13 +185,13 @@ pub fn attr_group(attr: &str) -> &'static str {
 /// The group title of one shaping axis's block (its sensitivity/curve/
 /// deadzone rows and the injected toggle). Steering's shaping lives under
 /// the steering "Response" card; each pedal has its own card.
-fn axis_group(ax: shaping::Axis) -> &'static str {
+fn axis_group(ax: response_view::Axis) -> &'static str {
     match ax {
-        shaping::Axis::Steering => "RESPONSE",
-        shaping::Axis::Throttle => "THROTTLE",
-        shaping::Axis::Brake => "BRAKE",
-        shaping::Axis::Clutch => "CLUTCH",
-        shaping::Axis::Handbrake => "HANDBRAKE",
+        response_view::Axis::Steering => "RESPONSE",
+        response_view::Axis::Throttle => "THROTTLE",
+        response_view::Axis::Brake => "BRAKE",
+        response_view::Axis::Clutch => "CLUTCH",
+        response_view::Axis::Handbrake => "HANDBRAKE",
     }
 }
 
@@ -609,17 +609,17 @@ pub fn oled_preview_model(layout: &oled::Layout, values: &[String]) -> slint::Mo
     slint::ModelRc::new(slint::VecModel::from(rows))
 }
 
-/// Build one synthetic per-axis shaping toggle row `compose_shaping`
+/// Build one synthetic per-axis shaping toggle row `compose_response_view`
 /// inserts. A `KIND_SHAPING` Switch wearing that axis's reserved
-/// `shaping::toggle_attr` attr: it commits through the same `edit-switch`
+/// `response_view::toggle_attr` attr: it commits through the same `edit-switch`
 /// callback every real toggle uses, and `main.rs` intercepts those attrs
 /// there to flip its local view state instead of sending a worker request
 /// (the toggles are pure view state, never a device write).
-fn shaping_toggle_row(axis: shaping::Axis, curve: bool) -> SettingRow {
+fn shaping_toggle_row(axis: response_view::Axis, curve: bool) -> SettingRow {
     SettingRow {
-        attr: shaping::toggle_attr(axis).into(),
-        label: shaping::toggle_label(axis).into(),
-        help: shaping::TOGGLE_HELP.into(),
+        attr: response_view::toggle_attr(axis).into(),
+        label: response_view::toggle_label(axis).into(),
+        help: response_view::TOGGLE_HELP.into(),
         kind: KIND_SHAPING,
         int_value: 0,
         int_value2: 0,
@@ -641,16 +641,16 @@ fn shaping_toggle_row(axis: shaping::Axis, curve: bool) -> SettingRow {
 }
 
 /// Compose a category's rows for the per-axis shaping toggles: when any row
-/// is a shaping generator (a sensitivity or a curve; see `shaping::role`),
+/// is a shaping generator (a sensitivity or a curve; see `response_view::role`),
 /// insert each axis's toggle row right before that axis's first row (its
-/// block heading) and keep only the rows `shaping::visible` allows for the
+/// block heading) and keep only the rows `response_view::visible` allows for the
 /// current toggles (an axis on "Sensitivity" hides its curve, an axis on
 /// "Curve" hides its sensitivity, deadzones and everything else stay). Rows
 /// for a category with no shaping generators pass through untouched, so
 /// `load_rows` can call this unconditionally, same convention as
 /// `compose_lightsync`.
-pub fn compose_shaping(items: Vec<SettingRow>, toggles: shaping::AxisToggles) -> Vec<SettingRow> {
-    if !items.iter().any(|r| shaping::role(r.attr.as_str()) != ShapingRole::Neutral) {
+pub fn compose_response_view(items: Vec<SettingRow>, toggles: response_view::AxisToggles) -> Vec<SettingRow> {
+    if !items.iter().any(|r| response_view::role(r.attr.as_str()) != ResponseRole::Neutral) {
         return items;
     }
     // An axis with no available generator row has nothing for its toggle to
@@ -658,22 +658,22 @@ pub fn compose_shaping(items: Vec<SettingRow>, toggles: shaping::AxisToggles) ->
     // attached), so it gets no toggle at all rather than one that offers a
     // choice which cannot change anything. Keyed on availability, not on the
     // handbrake specifically, so any future axis behaves the same way. Mirrors
-    // the TUI's `shaping_rows`.
-    let live: Vec<shaping::Axis> = shaping::Axis::ALL
+    // the TUI's `response_view_rows`.
+    let live: Vec<response_view::Axis> = response_view::Axis::ALL
         .iter()
         .copied()
-        .filter(|ax| items.iter().any(|r| shaping::axis(r.attr.as_str()) == Some(*ax) && r.available))
+        .filter(|ax| items.iter().any(|r| response_view::axis(r.attr.as_str()) == Some(*ax) && r.available))
         .collect();
-    let mut out = Vec::with_capacity(items.len() + shaping::Axis::ALL.len());
-    let mut headed: Vec<shaping::Axis> = Vec::new();
+    let mut out = Vec::with_capacity(items.len() + response_view::Axis::ALL.len());
+    let mut headed: Vec<response_view::Axis> = Vec::new();
     for item in items {
-        if let Some(ax) = shaping::axis(item.attr.as_str()) {
+        if let Some(ax) = response_view::axis(item.attr.as_str()) {
             if !headed.contains(&ax) && live.contains(&ax) {
                 headed.push(ax);
                 out.push(shaping_toggle_row(ax, toggles.get(ax)));
             }
         }
-        if shaping::visible(item.attr.as_str(), toggles) {
+        if response_view::visible(item.attr.as_str(), toggles) {
             out.push(item);
         }
     }
@@ -2576,7 +2576,7 @@ mod tests {
         let fs = FakeSysfs::new();
         fs.set("wheel_mode", "desktop");
         // Give every shapeable axis one available generator, so this stands for
-        // a wheel that actually has these axes. `compose_shaping` heads an axis
+        // a wheel that actually has these axes. `compose_response_view` heads an axis
         // block only when the axis has something available to toggle between,
         // and a fixture with no attributes at all is a wheel with no axes.
         for attr in [
@@ -2600,7 +2600,7 @@ mod tests {
         rows.iter().map(|r| r.attr.to_string()).collect()
     }
 
-    use logi_wheel_core::shaping::{Axis, AxisToggles};
+    use logi_wheel_core::response_view::{Axis, AxisToggles};
 
     fn all_curves() -> AxisToggles {
         let mut t = AxisToggles::default();
@@ -2611,15 +2611,15 @@ mod tests {
     }
 
     #[test]
-    fn compose_shaping_simple_steering_shows_sensitivity_not_the_curve() {
-        let out = compose_shaping(category_setting_rows(Category::Steering), AxisToggles::default());
+    fn compose_response_view_simple_steering_shows_sensitivity_not_the_curve() {
+        let out = compose_response_view(category_setting_rows(Category::Steering), AxisToggles::default());
         let attrs = attrs_of(&out);
         assert_eq!(
             attrs,
             vec![
                 "wheel_range",
                 "wheel_range_restore",
-                shaping::toggle_attr(Axis::Steering),
+                response_view::toggle_attr(Axis::Steering),
                 "wheel_sensitivity",
                 "wheel_calibrate_here",
                 "wheel_rev_level",
@@ -2628,15 +2628,15 @@ mod tests {
     }
 
     #[test]
-    fn compose_shaping_curve_steering_shows_the_curve_not_sensitivity() {
-        let out = compose_shaping(category_setting_rows(Category::Steering), all_curves());
+    fn compose_response_view_curve_steering_shows_the_curve_not_sensitivity() {
+        let out = compose_response_view(category_setting_rows(Category::Steering), all_curves());
         let attrs = attrs_of(&out);
         assert_eq!(
             attrs,
             vec![
                 "wheel_range",
                 "wheel_range_restore",
-                shaping::toggle_attr(Axis::Steering),
+                response_view::toggle_attr(Axis::Steering),
                 "wheel_response_curve",
                 "wheel_calibrate_here",
                 "wheel_rev_level",
@@ -2645,25 +2645,25 @@ mod tests {
     }
 
     #[test]
-    fn compose_shaping_simple_pedals_heads_each_block_and_hides_curves() {
-        let out = compose_shaping(category_setting_rows(Category::Pedals), AxisToggles::default());
+    fn compose_response_view_simple_pedals_heads_each_block_and_hides_curves() {
+        let out = compose_response_view(category_setting_rows(Category::Pedals), AxisToggles::default());
         let attrs = attrs_of(&out);
         assert_eq!(
             attrs,
             vec![
                 "wheel_combined_pedals",
                 "wheel_brake_force",
-                shaping::toggle_attr(Axis::Throttle),
+                response_view::toggle_attr(Axis::Throttle),
                 "wheel_throttle_sensitivity",
                 "wheel_throttle_deadzone",
-                shaping::toggle_attr(Axis::Brake),
+                response_view::toggle_attr(Axis::Brake),
                 "wheel_brake_sensitivity",
                 "wheel_brake_deadzone",
-                shaping::toggle_attr(Axis::Clutch),
+                response_view::toggle_attr(Axis::Clutch),
                 "wheel_clutch_sensitivity",
                 "wheel_clutch_deadzone",
                 "wheel_accessory_mode",
-                shaping::toggle_attr(Axis::Handbrake),
+                response_view::toggle_attr(Axis::Handbrake),
                 "wheel_handbrake_sensitivity",
                 "wheel_shift_actuation",
                 "wheel_handbrake_actuation",
@@ -2672,25 +2672,25 @@ mod tests {
     }
 
     #[test]
-    fn compose_shaping_curve_pedals_keep_the_deadzone_right_after_the_curve() {
-        let out = compose_shaping(category_setting_rows(Category::Pedals), all_curves());
+    fn compose_response_view_curve_pedals_keep_the_deadzone_right_after_the_curve() {
+        let out = compose_response_view(category_setting_rows(Category::Pedals), all_curves());
         let attrs = attrs_of(&out);
         assert_eq!(
             attrs,
             vec![
                 "wheel_combined_pedals",
                 "wheel_brake_force",
-                shaping::toggle_attr(Axis::Throttle),
+                response_view::toggle_attr(Axis::Throttle),
                 "wheel_throttle_curve",
                 "wheel_throttle_deadzone",
-                shaping::toggle_attr(Axis::Brake),
+                response_view::toggle_attr(Axis::Brake),
                 "wheel_brake_curve",
                 "wheel_brake_deadzone",
-                shaping::toggle_attr(Axis::Clutch),
+                response_view::toggle_attr(Axis::Clutch),
                 "wheel_clutch_curve",
                 "wheel_clutch_deadzone",
                 "wheel_accessory_mode",
-                shaping::toggle_attr(Axis::Handbrake),
+                response_view::toggle_attr(Axis::Handbrake),
                 "wheel_handbrake_curve",
                 "wheel_shift_actuation",
                 "wheel_handbrake_actuation",
@@ -2699,8 +2699,8 @@ mod tests {
     }
 
     #[test]
-    fn compose_shaping_curve_pedals_keeps_deadzones_and_hides_sensitivities() {
-        let out = compose_shaping(category_setting_rows(Category::Pedals), all_curves());
+    fn compose_response_view_curve_pedals_keeps_deadzones_and_hides_sensitivities() {
+        let out = compose_response_view(category_setting_rows(Category::Pedals), all_curves());
         let attrs = attrs_of(&out);
         for kept in [
             "wheel_throttle_deadzone",
@@ -2720,12 +2720,12 @@ mod tests {
     }
 
     #[test]
-    fn compose_shaping_mixes_axes_independently() {
+    fn compose_response_view_mixes_axes_independently() {
         // The user's own example: throttle on simple sensitivity, brake on
         // the curve editor, at the same time.
         let mut toggles = AxisToggles::default();
         toggles.set(Axis::Brake, true);
-        let out = compose_shaping(category_setting_rows(Category::Pedals), toggles);
+        let out = compose_response_view(category_setting_rows(Category::Pedals), toggles);
         let attrs = attrs_of(&out);
         assert!(attrs.contains(&"wheel_throttle_sensitivity".to_string()));
         assert!(!attrs.contains(&"wheel_throttle_curve".to_string()));
@@ -2734,31 +2734,31 @@ mod tests {
         // Both blocks keep their deadzones and their own toggle row.
         assert!(attrs.contains(&"wheel_throttle_deadzone".to_string()));
         assert!(attrs.contains(&"wheel_brake_deadzone".to_string()));
-        assert!(attrs.contains(&shaping::toggle_attr(Axis::Throttle).to_string()));
-        assert!(attrs.contains(&shaping::toggle_attr(Axis::Brake).to_string()));
+        assert!(attrs.contains(&response_view::toggle_attr(Axis::Throttle).to_string()));
+        assert!(attrs.contains(&response_view::toggle_attr(Axis::Brake).to_string()));
     }
 
     #[test]
-    fn compose_shaping_toggle_rows_carry_the_axis_flag_and_help() {
+    fn compose_response_view_toggle_rows_carry_the_axis_flag_and_help() {
         let mut toggles = AxisToggles::default();
         toggles.set(Axis::Brake, true);
-        let out = compose_shaping(category_setting_rows(Category::Pedals), toggles);
-        let brake = out.iter().find(|r| r.attr == shaping::toggle_attr(Axis::Brake)).unwrap();
+        let out = compose_response_view(category_setting_rows(Category::Pedals), toggles);
+        let brake = out.iter().find(|r| r.attr == response_view::toggle_attr(Axis::Brake)).unwrap();
         assert_eq!(brake.kind, KIND_SHAPING);
         assert!(brake.bool_value, "brake toggle is on");
-        assert_eq!(brake.label, shaping::toggle_label(Axis::Brake));
-        assert_eq!(brake.help, shaping::TOGGLE_HELP);
+        assert_eq!(brake.label, response_view::toggle_label(Axis::Brake));
+        assert_eq!(brake.help, response_view::TOGGLE_HELP);
         assert!(brake.available && brake.mode_ok);
-        let throttle = out.iter().find(|r| r.attr == shaping::toggle_attr(Axis::Throttle)).unwrap();
+        let throttle = out.iter().find(|r| r.attr == response_view::toggle_attr(Axis::Throttle)).unwrap();
         assert!(!throttle.bool_value, "throttle toggle is off");
     }
 
     #[test]
-    fn compose_shaping_leaves_other_categories_untouched() {
+    fn compose_response_view_leaves_other_categories_untouched() {
         for cat in [Category::Ffb, Category::Leds, Category::Profiles, Category::Info] {
             let items = category_setting_rows(cat);
             let before = attrs_of(&items);
-            let after = attrs_of(&compose_shaping(items, all_curves()));
+            let after = attrs_of(&compose_response_view(items, all_curves()));
             assert_eq!(before, after, "{cat:?} must pass through");
         }
     }
@@ -2813,8 +2813,8 @@ mod tests {
         assert_eq!(attr_group("wheel_led_brightness"), "STRIP");
         assert_eq!(attr_group(LIGHT_EDIT_SLOT_ATTR), "CUSTOM SLOT");
         // The synthetic per-axis shaping toggle rows join their axis block.
-        assert_eq!(attr_group(shaping::toggle_attr(shaping::Axis::Steering)), "RESPONSE");
-        assert_eq!(attr_group(shaping::toggle_attr(shaping::Axis::Brake)), "BRAKE");
+        assert_eq!(attr_group(response_view::toggle_attr(response_view::Axis::Steering)), "RESPONSE");
+        assert_eq!(attr_group(response_view::toggle_attr(response_view::Axis::Brake)), "BRAKE");
         // Unknown attrs carry no card header.
         assert_eq!(attr_group("nope"), "");
     }

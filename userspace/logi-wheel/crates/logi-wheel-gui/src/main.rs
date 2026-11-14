@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use logi_wheel_core::curve::Curve;
 use logi_wheel_core::evtest;
 use logi_wheel_core::fftest::{self, SequenceEnd, SequenceEvent};
-use logi_wheel_core::{lightsync, shaping};
+use logi_wheel_core::{lightsync, response_view};
 use logi_wheel_core::{Category, Color, Mode, Value, WheelModel, REGISTRY};
 use slint::Model as _;
 use viewmodel::WidgetInput;
@@ -208,7 +208,7 @@ fn load_rows(
     rows: &[viewmodel::Row],
     profile_names: &[String],
     led_names: &[String],
-    shaping_toggles: shaping::AxisToggles,
+    response_toggles: response_view::AxisToggles,
 ) {
     let items = bridge::setting_rows(rows);
     // A no-op for every category but Profiles (see `compose_profiles`'s
@@ -221,10 +221,10 @@ fn load_rows(
     // button instead of the registry's raw row-per-attr list.
     let items = bridge::compose_lightsync(items, led_names);
     // A no-op for every category without shaping generators (see
-    // `compose_shaping`'s doc): Steering and Pedals get a per-axis shaping
+    // `compose_response_view`'s doc): Steering and Pedals get a per-axis shaping
     // toggle row heading each axis block, and each axis shows either its
     // sensitivity row or its curve row, never both.
-    let items = bridge::compose_shaping(items, shaping_toggles);
+    let items = bridge::compose_response_view(items, response_toggles);
     // The page's ordered distinct card titles for this composed row set (see
     // `bridge::row_groups`); the settings list groups its rows by these.
     // Recomputed on every reload so a shaping toggle that changes which rows
@@ -1435,9 +1435,9 @@ fn main() -> Result<(), slint::PlatformError> {
         Arc::new(Mutex::new(vec![String::new(); lightsync::CUSTOM_SLOTS]));
     // The per-axis shaping view toggles: pure per-session view state (never
     // persisted, never a sysfs write). Read when composing rows; flipped by
-    // the synthetic `shaping::toggle_attr` rows' Switches, which
+    // the synthetic `response_view::toggle_attr` rows' Switches, which
     // `edit-switch` intercepts below.
-    let shaping_toggles = Arc::new(Mutex::new(shaping::AxisToggles::default()));
+    let response_toggles = Arc::new(Mutex::new(response_view::AxisToggles::default()));
     // The current category's last full (unfiltered) row list, kept so the
     // shaping toggle can re-compose the page locally, without a worker
     // round trip: the visible model only holds the filtered rows, so
@@ -1477,7 +1477,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let known_values = known_values.clone();
         let led_slot_names = led_slot_names.clone();
         let slot_text_editor = slot_text_editor.clone();
-        let shaping_toggles = shaping_toggles.clone();
+        let response_toggles = response_toggles.clone();
         let last_rows = last_rows.clone();
         let visible_categories = visible_categories.clone();
         let onboard_name_rev = onboard_name_rev.clone();
@@ -1494,7 +1494,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let known_values = known_values.clone();
             let led_slot_names = led_slot_names.clone();
             let slot_text_editor = slot_text_editor.clone();
-            let shaping_toggles = shaping_toggles.clone();
+            let response_toggles = response_toggles.clone();
             let last_rows = last_rows.clone();
             let visible_categories = visible_categories.clone();
             let onboard_name_rev = onboard_name_rev.clone();
@@ -1620,7 +1620,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             &rows,
                             &profile_names(&known_values),
                             &led_names,
-                            get(&shaping_toggles),
+                            get(&response_toggles),
                         );
                     }
                     Response::RowUpdated { category, row, error } => {
@@ -2008,7 +2008,7 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let worker = worker.clone();
         let current_category = current_category.clone();
-        let shaping_toggles = shaping_toggles.clone();
+        let response_toggles = response_toggles.clone();
         let last_rows = last_rows.clone();
         let known_values = known_values.clone();
         let led_slot_names = led_slot_names.clone();
@@ -2017,9 +2017,9 @@ fn main() -> Result<(), slint::PlatformError> {
             // A per-axis shaping row is view state, not a device attribute:
             // flip that axis's flag and re-compose the current rows from
             // the unfiltered cache, without a worker round trip.
-            if let Some(axis) = shaping::toggle_axis(&attr) {
+            if let Some(axis) = response_view::toggle_axis(&attr) {
                 let toggles = {
-                    let mut guard = shaping_toggles.lock().unwrap();
+                    let mut guard = response_toggles.lock().unwrap();
                     guard.set(axis, value);
                     *guard
                 };

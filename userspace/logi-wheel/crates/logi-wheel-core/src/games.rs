@@ -500,20 +500,13 @@ impl GameCompat {
         {
             // An SDK title with no telemetry: the simulated route below
             // has nothing to synthesise from, so it must not be offered.
-            "Leave PROTON_ENABLE_HIDRAW unset: on this wheel it costs you \
-             force feedback, and this game publishes no telemetry yet, so \
-             there is no simulated TrueForce to turn on either. Steam Input \
-             off."
+            "Leave PROTON_ENABLE_HIDRAW unset. On this wheel it costs you force feedback. This game publishes no telemetry yet. So there is no simulated TrueForce to turn on either. Turn Steam Input off."
         } else if self.ffb == Ffb::TrueForceShim && !caps.sdk_trueforce {
             // Worded as "not available on this wheel" rather than "this
             // wheel has no SDK TrueForce", because it also covers the
             // unidentified wheel, about which we know only that we cannot
             // deliver it.
-            "Leave PROTON_ENABLE_HIDRAW unset: on this wheel it costs you \
-             force feedback. For haptics, turn this game on under Simulated \
-             TrueForce; logi-launch puts the telemetry relay in the game's \
-             prefix and starts the daemon for you, and that route is \
-             confirmed working on a G923. Steam Input off."
+            "Leave PROTON_ENABLE_HIDRAW unset. On this wheel it costs you force feedback. For haptics, turn this game on under Simulated TrueForce. logi-launch puts the telemetry relay in the game's prefix. It also starts the daemon for you. That route is confirmed working on a G923. Turn Steam Input off."
         } else {
             self.setup
         }
@@ -653,7 +646,7 @@ pub const GAMES: &[GameCompat] = &[
         // The last sentence is the answer to "why does AC EVO's card say
         // texture merge and this one does not": the merge is gated per
         // title in `LaunchPlan::for_game`, and ACC is not in the gate.
-        setup: "Install the TrueForce shim once, from the app's Setup page; launch options `logi-launch %command%` (it turns raw HID on, stages the proxy that answers the SDK's rotation question, without which the stock library stops steering and force on track, and everything else this game needs); turn Steam Input off. No engine-note texture merge here: ACC produces its own TrueForce audio, so the merge is not wired for it.",
+        setup: "Install the TrueForce shim once, from the app's Setup page. Set the launch options to `logi-launch %command%`. logi-launch turns raw HID on. It stages the proxy that answers the SDK's rotation question. Without that proxy, the stock library stops steering and force on track. It also sets up everything else this game needs. Turn Steam Input off. There is no engine-note texture merge here. ACC produces its own TrueForce audio, so the merge is not wired for it.",
         confidence: Confidence::Verified,
     },
     GameCompat {
@@ -667,7 +660,7 @@ pub const GAMES: &[GameCompat] = &[
         // redline into the physics block, so unlike Competizione it needed
         // its own decoder rather than Assetto Corsa's unchanged.
         simulated_tf: SimTf::LiveNow("ac-evo"),
-        setup: "Install the TrueForce shim once, from the app's Setup page; launch options `logi-launch %command%` (it turns raw HID on, stages the proxy that answers the SDK's rotation question, without which the stock library stops steering and force on track, and everything else this game needs); turn Steam Input off.",
+        setup: "Install the TrueForce shim once, from the app's Setup page. Set the launch options to `logi-launch %command%`. logi-launch turns raw HID on. It stages the proxy that answers the SDK's rotation question. Without that proxy, the stock library stops steering and force on track. It also sets up everything else this game needs. Turn Steam Input off.",
         confidence: Confidence::Verified,
     },
     GameCompat {
@@ -676,10 +669,7 @@ pub const GAMES: &[GameCompat] = &[
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("assetto"),
-        setup: "Plain force feedback; no shim; turn Steam Input off. For \
-simulated TrueForce, launch options `logi-launch %command%` (it puts the \
-telemetry relay in the game's prefix and starts the daemon for you); \
-nothing to switch on in the game.",
+        setup: "Plain force feedback. No shim. Turn Steam Input off. For simulated TrueForce, set the launch options to `logi-launch %command%`. logi-launch puts the telemetry relay in the game's prefix. It also starts the daemon for you. There is nothing to switch on in the game.",
         // Documented: the decoder reads only the head of Kunos' physics
         // block, which has not moved since AC 1.0, and checks the static
         // block's layout in-band before trusting the redline. Those exact
@@ -696,7 +686,7 @@ nothing to switch on in the game.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("ams2-pcars2"),
-        setup: "Enable UDP telemetry (Project CARS 2 format) to 127.0.0.1; launch options `logi-launch %command%` (it starts logi-tf-sim for you); Steam Input off.",
+        setup: "Enable UDP telemetry. Use the Project CARS 2 format. Send it to 127.0.0.1. Set the launch options to `logi-launch %command%`. logi-launch starts logi-tf-sim for you. Turn Steam Input off.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -705,7 +695,7 @@ nothing to switch on in the game.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("ams2-pcars2"),
-        setup: "Enable UDP telemetry (Project CARS 2 format); launch options `logi-launch %command%` (it starts logi-tf-sim for you).",
+        setup: "Enable UDP telemetry. Use the Project CARS 2 format. Set the launch options to `logi-launch %command%`. logi-launch starts logi-tf-sim for you.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -714,7 +704,7 @@ nothing to switch on in the game.",
         ffb: Ffb::DirectInput,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("rf2"),
-        setup: "Launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off. Simulated TrueForce also needs the community rF2SharedMemoryMapPlugin installed in the game.",
+        setup: "Set the launch options to `logi-launch %command%`. logi-launch keeps raw HID off. It runs the logi-ffb helper. It puts the telemetry relay in the game's prefix for you. Turn Steam Input off. Simulated TrueForce also needs the community rF2SharedMemoryMapPlugin. Install that plugin in the game.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -723,7 +713,7 @@ nothing to switch on in the game.",
         ffb: Ffb::DirectInput,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("lmu"),
-        setup: "Launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off. Simulated TrueForce also needs the community rF2SharedMemoryMapPlugin installed in the game.",
+        setup: "Set the launch options to `logi-launch %command%`. logi-launch keeps raw HID off. It runs the logi-ffb helper. It puts the telemetry relay in the game's prefix for you. Turn Steam Input off. Simulated TrueForce also needs the community rF2SharedMemoryMapPlugin. Install that plugin in the game.",
         confidence: Confidence::Verified,
     },
     GameCompat {
@@ -738,7 +728,7 @@ nothing to switch on in the game.",
         // therefore stays DirectInput on purpose.
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("iracing"),
-        setup: "Now Linux-playable; launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off.",
+        setup: "This game is now playable on Linux. Set the launch options to `logi-launch %command%`. logi-launch keeps raw HID off. It runs the logi-ffb helper. It puts the telemetry relay in the game's prefix for you. Turn Steam Input off.",
         // Expected: the decoder reads iRacing's own self-describing variable
         // table rather than guessed offsets, and is tested against the
         // documented layout, but nobody has yet confirmed the game even
@@ -752,7 +742,7 @@ nothing to switch on in the game.",
         ffb: Ffb::DirectInput,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("raceroom"),
-        setup: "Launch options `logi-launch %command%` (it keeps raw HID off, runs the logi-ffb helper and puts the telemetry relay in the game's prefix for you); Steam Input off. Nothing to switch on in the game.",
+        setup: "Set the launch options to `logi-launch %command%`. logi-launch keeps raw HID off. It runs the logi-ffb helper. It puts the telemetry relay in the game's prefix for you. Turn Steam Input off. There is nothing to switch on in the game.",
         // Verified 2026-09-12 on an RS50 under Proton (#92): the relay read
         // `$R3E`, the daemon streamed engine texture from it and drove the
         // rev lights, and DirectInput force reached the wheel through
@@ -770,9 +760,7 @@ nothing to switch on in the game.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("beamng"),
-        setup: "Plain force feedback on the native Linux build (Proton also \
-works); for simulated TrueForce, enable OutGauge to 127.0.0.1:4444 and run \
-logi-tf-sim.",
+        setup: "Plain force feedback on the native Linux build. Proton also works. For simulated TrueForce, enable OutGauge. Send it to 127.0.0.1:4444. Then run logi-tf-sim.",
         confidence: Confidence::Expected,
     },
     GameCompat {
@@ -781,7 +769,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("dirt-rally-2"),
-        setup: "Switch on the game's UDP telemetry, which is off by default: in `hardware_settings_config.xml` (under the game's documents folder in the prefix) set `<udp enabled=\"true\" extradata=\"3\" ...>` (the daemon needs the `extradata=\"3\"` packet; the default 0 is too short to synthesise from), port 20777 as it ships; launch options `logi-launch %command%` (it starts logi-tf-sim for you); Steam Input off. Force feedback under Proton reaches this game only through Wine's joystick path, which on some builds does not present the wheel at all; where it does not, the `logi-ffb` proxy route works, confirmed on a G PRO: add `690790 ffb=proxy` to `~/.config/logi-wheel/games.conf`, and because the game keys force feedback on the wheel's USB id, add `<device id=\"{C2DD046D-0000-0000-0000-504944564944}\" name=\"lg_g29\" priority=\"100\" type=\"wheel\" />` to `input/devices/device_defines.xml` in the game folder: that is the virtual wheel's id on every wheel, not your wheel's own (#105, #125).",
+        setup: "Switch on the game's UDP telemetry. It is off by default. Open `hardware_settings_config.xml`. It is under the game's documents folder in the prefix. In that file, set `<udp enabled=\"true\" extradata=\"3\" ...>`. The daemon needs the `extradata=\"3\"` packet. The default 0 is too short to synthesise from. Keep port 20777 as it ships. Set the launch options to `logi-launch %command%`. logi-launch starts logi-tf-sim for you. Turn Steam Input off. Under Proton, force feedback reaches this game only through Wine's joystick path. On some builds, that path does not present the wheel at all. Where it does not, the `logi-ffb` proxy route works. It is confirmed on a G PRO. Add `690790 ffb=proxy` to `~/.config/logi-wheel/games.conf`. The game keys force feedback on the wheel's USB id. So also add `<device id=\"{C2DD046D-0000-0000-0000-504944564944}\" name=\"lg_g29\" priority=\"100\" type=\"wheel\" />` to `input/devices/device_defines.xml` in the game folder. That id is the virtual wheel's id on every wheel. It is not your wheel's own id. See #105 and #125.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -790,7 +778,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("codemasters"),
-        setup: "Enable UDP telemetry (Codemasters format); launch options `logi-launch %command%` (it starts logi-tf-sim for you).",
+        setup: "Enable UDP telemetry. Use the Codemasters format. Set the launch options to `logi-launch %command%`. logi-launch starts logi-tf-sim for you.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -799,7 +787,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("ea-wrc"),
-        setup: "Add the logi-tf-sim WRC packet to config.json (UDP to 127.0.0.1:20777); launch options `logi-launch %command%` (it starts logi-tf-sim for you).",
+        setup: "Add the logi-tf-sim WRC packet to config.json. Send it over UDP to 127.0.0.1:20777. Set the launch options to `logi-launch %command%`. logi-launch starts logi-tf-sim for you.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -808,7 +796,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("f1"),
-        setup: "Enable in-game UDP telemetry (F1 format, port 20777); launch options `logi-launch %command%` (it starts logi-tf-sim for you).",
+        setup: "Enable UDP telemetry in the game. Use the F1 format and port 20777. Set the launch options to `logi-launch %command%`. logi-launch starts logi-tf-sim for you.",
         confidence: Confidence::Expected,
     },
     GameCompat {
@@ -817,7 +805,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::PossibleWithParser,
-        setup: "Plain force feedback; a telemetry plugin can feed logi-tf-sim.",
+        setup: "Plain force feedback. A telemetry plugin can feed logi-tf-sim.",
         confidence: Confidence::Expected,
     },
     GameCompat {
@@ -826,7 +814,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::No,
-        setup: "Plain force feedback; turn Steam Input off.",
+        setup: "Plain force feedback. Turn Steam Input off.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -842,7 +830,7 @@ logi-tf-sim.",
         ffb: Ffb::TrueForceShim,
         native_trueforce: Support::Yes,
         simulated_tf: SimTf::No,
-        setup: "Install the TrueForce shim once, from the app's Setup page; launch options `logi-launch %command%` (it turns raw HID on, stages the proxy that answers the SDK's rotation question, and resets the wheel first, the same recipe as Assetto Corsa EVO); turn Steam Input off. No telemetry yet, so nothing to feed the lights. On a G PRO a USB capture showed Logitech's library loading and then sending the wheel nothing at all: the route is in place, the game does not drive it (#105).",
+        setup: "Install the TrueForce shim once, from the app's Setup page. Set the launch options to `logi-launch %command%`. logi-launch turns raw HID on. It stages the proxy that answers the SDK's rotation question. It resets the wheel first. This is the same recipe as Assetto Corsa EVO. Turn Steam Input off. The game has no telemetry yet, so nothing feeds the lights. On a G PRO, a USB capture showed Logitech's library loading. It then sent the wheel nothing at all. The route is in place, but the game does not drive it. See #105.",
         // Confirmed on a G923 Xbox edition (#83). On a G PRO the route
         // stages correctly and the game's SDK streams nothing (#105, USB
         // capture), so Expected rather than Verified stands.
@@ -854,8 +842,7 @@ logi-tf-sim.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("ets2"),
-        setup: "Plain force feedback on the native Linux build; no shim. For \
-simulated TrueForce, install the logi-tf-scs plugin (see docs/SCS_PLUGIN.md).",
+        setup: "Plain force feedback on the native Linux build. No shim. For simulated TrueForce, install the logi-tf-scs plugin. See docs/SCS_PLUGIN.md.",
         // Expected, not Verified: the plugin is built against the official
         // SDK headers with its struct layouts pinned by tests, but nobody
         // has yet loaded it into a running game and felt the result.
@@ -867,8 +854,7 @@ simulated TrueForce, install the logi-tf-scs plugin (see docs/SCS_PLUGIN.md).",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("ats"),
-        setup: "Plain force feedback on the native Linux build; no shim. For \
-simulated TrueForce, install the logi-tf-scs plugin (see docs/SCS_PLUGIN.md).",
+        setup: "Plain force feedback on the native Linux build. No shim. For simulated TrueForce, install the logi-tf-scs plugin. See docs/SCS_PLUGIN.md.",
         // See the Euro Truck Simulator 2 entry: same plugin, same caveat.
         confidence: Confidence::Expected,
     },
@@ -878,7 +864,7 @@ simulated TrueForce, install the logi-tf-scs plugin (see docs/SCS_PLUGIN.md).",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::PossibleWithParser,
-        setup: "Plain force feedback; a telemetry parser could be added later.",
+        setup: "Plain force feedback. A telemetry parser could be added later.",
         confidence: Confidence::Unknown,
     },
     GameCompat {
@@ -887,7 +873,7 @@ simulated TrueForce, install the logi-tf-scs plugin (see docs/SCS_PLUGIN.md).",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::No,
-        setup: "Plain force feedback; turn Steam Input off.",
+        setup: "Plain force feedback. Turn Steam Input off.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -896,10 +882,7 @@ simulated TrueForce, install the logi-tf-scs plugin (see docs/SCS_PLUGIN.md).",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::Expected,
         simulated_tf: SimTf::LiveNow("codemasters"),
-        setup: "Enable UDP telemetry (Codemasters format); launch options \
-`logi-launch %command%` (it starts logi-tf-sim for you); Steam Input off. \
-Whether its TrueForce reaches the wheel through Logitech's SDK is \
-unconfirmed, so nothing here installs one; reports welcome.",
+        setup: "Enable UDP telemetry. Use the Codemasters format. Set the launch options to `logi-launch %command%`. logi-launch starts logi-tf-sim for you. Turn Steam Input off. It is not confirmed that this game's TrueForce reaches the wheel through Logitech's SDK. So nothing here installs the SDK. Reports are welcome.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -908,9 +891,7 @@ unconfirmed, so nothing here installs one; reports welcome.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::LiveNow("codemasters"),
-        setup: "Enable UDP telemetry (Codemasters format); launch options \
-`logi-launch %command%` (it starts logi-tf-sim for you); turn Steam Input \
-off.",
+        setup: "Enable UDP telemetry. Use the Codemasters format. Set the launch options to `logi-launch %command%`. logi-launch starts logi-tf-sim for you. Turn Steam Input off.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -919,7 +900,7 @@ off.",
         ffb: Ffb::TrueForceShim,
         native_trueforce: Support::Yes,
         simulated_tf: SimTf::No,
-        setup: "Not on Linux (anti-cheat / storefront); TrueForce here is a Windows-only story.",
+        setup: "Not on Linux, because of the anti-cheat and the storefront. TrueForce in this game is Windows-only.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -942,7 +923,7 @@ off.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::No,
-        setup: "PlayStation 5 only; not a Linux target.",
+        setup: "PlayStation 5 only. Not a Linux target.",
         confidence: Confidence::Documented,
     },
     GameCompat {
@@ -960,7 +941,7 @@ off.",
         ffb: Ffb::NativeEvdev,
         native_trueforce: Support::No,
         simulated_tf: SimTf::No,
-        setup: "Anti-cheat may block some builds; verify per release.",
+        setup: "Anti-cheat may block some builds. Verify this for each release.",
         confidence: Confidence::Unknown,
     },
         GameCompat {

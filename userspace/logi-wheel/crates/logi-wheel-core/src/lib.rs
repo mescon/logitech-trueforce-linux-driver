@@ -31,7 +31,7 @@ pub mod launch;
 pub mod launchers;
 pub mod onboard;
 pub mod profiles;
-pub mod shaping;
+pub mod response_view;
 pub mod steam;
 pub mod tfsim;
 pub mod device;

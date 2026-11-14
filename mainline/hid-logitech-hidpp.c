@@ -8727,9 +8727,9 @@ static int hidpp_dd_read_device_name(struct hidpp_device *hidpp, u8 dev_idx,
  * Read the RS Shifter & Handbrake accessory's own DeviceNameType (0x0005)
  * name into ff->accessory_name, once the accessory has been confirmed at
  * dev_idx (see hidpp_dd_discover_settings_features). Best-effort: any
- * failure leaves accessory_name empty, which wheel_accessory_show reports
- * as "none" - the same as a genuinely absent accessory, since without a
- * name the sysfs attribute cannot usefully distinguish the two anyway.
+ * failure leaves accessory_name empty, and wheel_accessory_show then lists
+ * the accessory under the fixed name "RS Shifter & Handbrake" instead, so a
+ * confirmed accessory is never reported as absent.
  */
 static void hidpp_dd_query_accessory_name(struct hidpp_dd_ff_data *ff, u8 dev_idx)
 {
@@ -8768,10 +8768,9 @@ static void hidpp_dd_adopt_shifter_handbrake(struct hidpp_dd_ff_data *ff,
  * 2026-10-29). Only called for a candidate already known to answer, so the
  * normal transport timeout is fine: a silent index never gets this far.
  *
- * On a hit this records the feature index and, unless an accessory with a
- * queried name already owns it, the wheel_accessory text. The caller
- * publishes h_shifter_dev_idx itself, last, because that is what the
- * readers gate on.
+ * On a hit this records the feature index. The caller publishes
+ * h_shifter_dev_idx itself, last, because that is what the readers gate
+ * on, and wheel_accessory_show derives its text from that index.
  */
 static bool hidpp_dd_probe_h_shifter(struct hidpp_dd_ff_data *ff, u8 cand)
 {
@@ -15356,14 +15355,14 @@ static ssize_t wheel_accessory_show(struct device *dev,
 			   jiffies + HIDPP_DD_ACCESSORY_RESCAN_INTERVAL);
 		queue_work(ff->wq, &ff->accessory_rescan_work);
 	}
-	has_shifter = READ_ONCE(ff->shifter_dev_idx) != HIDPP_DD_FEATURE_NOT_FOUND &&
-		      ff->accessory_name[0];
+	has_shifter = READ_ONCE(ff->shifter_dev_idx) != HIDPP_DD_FEATURE_NOT_FOUND;
 	has_h_shifter = READ_ONCE(ff->h_shifter_dev_idx) != HIDPP_DD_FEATURE_NOT_FOUND;
 	has_adapter = READ_ONCE(ff->adapter_dev_idx) != HIDPP_DD_FEATURE_NOT_FOUND;
 	if (!has_shifter && !has_h_shifter && !has_adapter)
 		return sysfs_emit(buf, "none\n");
 	if (has_shifter)
-		len += sysfs_emit_at(buf, len, "%s", ff->accessory_name);
+		len += sysfs_emit_at(buf, len, "%s", ff->accessory_name[0] ?
+				     ff->accessory_name : "RS Shifter & Handbrake");
 	if (has_h_shifter)
 		len += sysfs_emit_at(buf, len, "%sRS H-Shifter", len ? ", " : "");
 	if (has_adapter)
