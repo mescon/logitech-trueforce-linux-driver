@@ -5,7 +5,7 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
-## 0.43.0 - 2026-11-09
+## 0.43.0 - 2026-11-14
 
 **The Logitech RS H-Shifter works on the RS50 and the G PRO.** Plug it into
 an accessory port on the wheel base. The driver finds it when the module
@@ -42,16 +42,21 @@ nothing extra.
 **pulldown-cmark 0.13.6** clears advisory RUSTSEC-2026-0414 in the Rust
 workspace ([#142](../../pull/142)).
 
+**The Nix flake no longer trips nixpkgs deprecation warnings.** Its four
+uses of `pkgs.system` and `stdenv.isLinux` now go through
+`stdenv.hostPlatform`. No behaviour change. By schiffy91
+([#146](../../pull/146)).
+
 **Troubleshooting now covers a wheel that never enumerates.** A front-panel
 USB port can fail the USB link before any driver runs. The kernel log shows
 `disabled by hub (EMI?)` or `error -71`. A rear port fixes it
 ([#141](../../issues/141)).
 
 Thanks to gonzaloadrio for the shifter and adapter work and the hot-plug
-test runs, to
-kangaro0 for the first power-up report that found the port problem, and to
-fenixadam for the Windows captures in
-[#134](../../issues/134) and [#135](../../issues/135).
+test runs, to kangaro0 for the first power-up report that found the port
+problem, to fenixadam for the Windows captures in
+[#134](../../issues/134) and [#135](../../issues/135), and to schiffy91
+for the flake fix.
 
 ## 0.42.6 - 2026-10-22
 

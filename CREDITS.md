@@ -163,10 +163,15 @@ the work to prove it.
 Commit authors appear in
 [the contributors graph](../../graphs/contributors), including
 **[aderumier](https://github.com/aderumier)**, whose pull request is in the
-tree, and **[gonzaloadrio](https://github.com/gonzaloadrio)**, who wrote the
+tree, **[gonzaloadrio](https://github.com/gonzaloadrio)**, who wrote the
 RS H-Shifter support ([#140](../../pull/140)) and its desktop-mode gate
-routing, then tested every revision on their own RS50, including the hot-plug
-path nobody here could try.
+routing, then the Racing Adapter detection, the accessory list in
+`wheel_accessory` and the standalone handbrake and adapter on the Test page
+([#139](../../pull/139)), and tested every revision on their own RS50,
+including the hot-plug paths nobody here could try, and the measurement
+that put the H-Shifter's Reverse on its real button; and
+**[schiffy91](https://github.com/schiffy91)**, who cleared the nixpkgs
+deprecation warnings from the flake ([#146](../../pull/146)).
 
 Upstream projects this driver is built on are credited in the
 [README](README.md#acknowledgments).
