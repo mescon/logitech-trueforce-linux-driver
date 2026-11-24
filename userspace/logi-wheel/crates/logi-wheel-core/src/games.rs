@@ -357,22 +357,40 @@ pub struct WheelCaps {
     /// Xbox edition's SDK packets already carry real texture, so merging
     /// ours there would double it.
     pub texture_merge: bool,
+    /// Steam appids of titles that get their force feedback through the
+    /// `logi-ffb` proxy on this wheel, whatever route the registry lists
+    /// for them. Set from owner reports, one wheel edition at a time: on
+    /// a G PRO PlayStation/PC edition, Proton's own wheel path listed no
+    /// wheel for DiRT Rally 2.0, and Assetto Corsa Rally's SDK sent the
+    /// wheel nothing (issues 105 and 150), while the proxy route gave
+    /// both their force feedback. Empty for every other wheel.
+    pub logi_ffb_titles: &'static [u32],
 }
+
+/// The titles that take the `logi-ffb` route on the G PRO PlayStation/PC
+/// edition (`c268`): DiRT Rally 2.0 and Assetto Corsa Rally.
+const G_PRO_PS_LOGI_FFB_TITLES: &[u32] = &[690790, 3917090];
 
 impl WheelCaps {
     /// The direct-drive family.
     pub const fn direct_drive() -> Self {
-        WheelCaps { sdk_trueforce: true, texture_merge: true }
+        WheelCaps { sdk_trueforce: true, texture_merge: true, logi_ffb_titles: &[] }
+    }
+
+    /// The G PRO PlayStation/PC edition: direct drive, plus the two titles
+    /// an owner showed need the `logi-ffb` route there.
+    pub const fn g_pro_ps() -> Self {
+        WheelCaps { sdk_trueforce: true, texture_merge: true, logi_ffb_titles: G_PRO_PS_LOGI_FFB_TITLES }
     }
 
     /// The G923 Xbox edition on the SDK route.
     pub const fn xbox_sdk() -> Self {
-        WheelCaps { sdk_trueforce: true, texture_merge: false }
+        WheelCaps { sdk_trueforce: true, texture_merge: false, logi_ffb_titles: &[] }
     }
 
     /// A wheel the SDK cannot drive.
     pub const fn classic() -> Self {
-        WheelCaps { sdk_trueforce: false, texture_merge: false }
+        WheelCaps { sdk_trueforce: false, texture_merge: false, logi_ffb_titles: &[] }
     }
 
     /// The capabilities of a wheel of `model` with product id `pid`.
@@ -385,6 +403,12 @@ impl WheelCaps {
     /// cost an owner force feedback.
     pub fn for_wheel(model: WheelModel, pid: Option<u16>) -> Self {
         match model {
+            // The PlayStation/PC edition of the G PRO keeps its own
+            // product id (`c268`; the Xbox edition is `c272`). An RS50 in
+            // G PRO compatibility mode enumerates with the same ids but
+            // is told apart by name and keeps the plain direct-drive
+            // answer: the proxy exceptions were seen on a real G PRO.
+            WheelModel::GPro if pid == Some(0xc268) => Self::g_pro_ps(),
             WheelModel::Rs50 | WheelModel::GPro => Self::direct_drive(),
             WheelModel::G923 => match pid {
                 Some(0xc26e) | Some(0xc26d) => Self::xbox_sdk(),
@@ -449,8 +473,21 @@ impl GameCompat {
         self.setup_action(caps) == SetupAction::InstallShim
     }
 
+    /// Whether this title takes the `logi-ffb` route on `caps`' wheel
+    /// although the registry lists another route for it (see
+    /// [`WheelCaps::logi_ffb_titles`]).
+    pub fn takes_logi_ffb_on(&self, caps: WheelCaps) -> bool {
+        appid_for(self.name).is_some_and(|id| caps.logi_ffb_titles.contains(&id))
+    }
+
     pub fn setup_action(&self, caps: WheelCaps) -> SetupAction {
-        if self.ffb == Ffb::TrueForceShim {
+        if self.takes_logi_ffb_on(caps) {
+            // An owner's report put this title on the proxy for this
+            // wheel edition: the route below did not give it force
+            // feedback there. Checked first so the SDK branch cannot
+            // reclaim it.
+            SetupAction::UseLogiFfb
+        } else if self.ffb == Ffb::TrueForceShim {
             // The shim is only worth installing on a wheel that answers the
             // SDK. Everywhere else this title still has ordinary force
             // feedback, so it degrades to "nothing to do" rather than to an
@@ -493,6 +530,9 @@ impl GameCompat {
         // as though it were only the wheel standing in the way.
         if self.linux == Linux::Unsupported {
             return self.setup;
+        }
+        if self.takes_logi_ffb_on(caps) {
+            return "On this wheel edition, this game gets its force feedback through the logi-ffb proxy. Set the launch options to `logi-launch %command%`. logi-launch runs the proxy for you and leaves raw HID off. Turn Steam Input off.";
         }
         if self.ffb == Ffb::TrueForceShim
             && !caps.sdk_trueforce
@@ -1087,6 +1127,13 @@ impl LaunchPlan {
         if game.ffb == Ffb::DirectInput && game.launch_options(caps).is_none() {
             plan.hidraw = Some(false);
         }
+        // A title moved onto the proxy for this wheel edition must not
+        // also get the raw HID its registry route would ask for: stated
+        // off, so the plan reads the same as the owner's working line.
+        if game.takes_logi_ffb_on(caps) {
+            plan.hidraw = Some(false);
+            plan.notes.push("on this wheel edition the game only gets force feedback through logi-ffb".into());
+        }
 
         // A title whose own TrueForce reaches this wheel must NOT also get
         // the simulated kind: a synthesised engine note over the real
@@ -1317,9 +1364,62 @@ mod tests {
     const DD: WheelCaps = WheelCaps::direct_drive();
     const G923: WheelCaps = WheelCaps::classic();
     const XBOX: WheelCaps = WheelCaps::xbox_sdk();
+    const GPRO_PS: WheelCaps = WheelCaps::g_pro_ps();
 
     fn acc() -> &'static GameCompat {
         compat_for_appid(805550).expect("Assetto Corsa Competizione is in the registry")
+    }
+
+    #[test]
+    fn only_the_g_pro_playstation_edition_carries_the_proxy_titles() {
+        use crate::device::WheelModel;
+        assert_eq!(WheelCaps::for_wheel(WheelModel::GPro, Some(0xc268)), GPRO_PS);
+        assert_eq!(WheelCaps::for_wheel(WheelModel::GPro, Some(0xc272)), DD);
+        assert_eq!(WheelCaps::for_wheel(WheelModel::GPro, None), DD);
+        // An RS50 in G PRO compatibility mode shares the product id, not
+        // the exception.
+        assert_eq!(WheelCaps::for_wheel(WheelModel::Rs50, Some(0xc268)), DD);
+        assert_eq!(GPRO_PS.logi_ffb_titles, &[690790, 3917090]);
+    }
+
+    #[test]
+    fn g_pro_playstation_edition_takes_logi_ffb_for_the_two_reported_titles() {
+        let dr2 = compat_for_appid(690790).unwrap();
+        let acr = compat_for_appid(3917090).unwrap();
+        // The registry routes stand everywhere else.
+        assert_eq!(dr2.setup_action(DD), SetupAction::SimulatedTrueForce);
+        assert_eq!(acr.setup_action(DD), SetupAction::InstallShim);
+        assert_eq!(dr2.setup_action(GPRO_PS), SetupAction::UseLogiFfb);
+        assert_eq!(acr.setup_action(GPRO_PS), SetupAction::UseLogiFfb);
+        assert_eq!(acr.launch_options(GPRO_PS), Some(LAUNCH_LOGI_FFB));
+        assert!(acr.setup_line(GPRO_PS).contains("logi-ffb"));
+        assert!(!acr.setup_line(DD).contains("logi-ffb"));
+        // Any other title is untouched on that wheel.
+        assert_eq!(acc().setup_action(GPRO_PS), SetupAction::InstallShim);
+        assert!(acc().native_trueforce_reaches(GPRO_PS));
+    }
+
+    #[test]
+    fn g_pro_playstation_plans_match_the_owners_working_lines() {
+        // The lines from issue 150: `690790 ffb=proxy` and
+        // `3917090 ffb=proxy tfsim=1 hidraw=0`. The daemon runs for DiRT
+        // Rally 2.0 (it has a telemetry decoder) and stays off for Assetto
+        // Corsa Rally (it publishes none), raw HID is stated off for both.
+        let dr2 = LaunchPlan::for_game(compat_for_appid(690790).unwrap(), GPRO_PS, false);
+        assert_eq!(dr2.hidraw, Some(false));
+        assert!(dr2.ffb_proxy);
+        assert!(dr2.tfsim);
+        let acr = LaunchPlan::for_game(compat_for_appid(3917090).unwrap(), GPRO_PS, false);
+        assert_eq!(acr.hidraw, Some(false));
+        assert!(acr.ffb_proxy);
+        assert!(!acr.tfsim);
+        assert!(!acr.texture_merge);
+        let lines = acr.lines();
+        assert!(lines.contains(&"hidraw=0".to_string()) && lines.contains(&"ffb=proxy".to_string()), "{lines:?}");
+        // The same title on an RS50 keeps the SDK route.
+        let acr_dd = LaunchPlan::for_game(compat_for_appid(3917090).unwrap(), DD, false);
+        assert_eq!(acr_dd.hidraw, Some(true));
+        assert!(!acr_dd.ffb_proxy);
     }
 
     #[test]

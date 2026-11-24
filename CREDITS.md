@@ -116,6 +116,8 @@ until the last round.
   root-only where uhid is not loaded, and a shifter's gears dropped for
   want of buttons past 32), and finally the debug trace proving the game
   sent the wheel nothing until it was given an identity the game knew.
+  Then the two working `games.conf` lines that made the proxy the default
+  route for both games on that edition ([#150](../../issues/150)).
 - **[Lorenzoo78](https://github.com/Lorenzoo78)** - the Assetto Corsa EVO
   stutter report under the launcher ([#74](../../issues/74)).
 - **[matthiasvegh](https://github.com/matthiasvegh)** - twelve issues and

@@ -5,6 +5,23 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.43.2 - 2026-11-24
+
+**The G PRO PlayStation/PC edition gets its own route for two games.** On
+that edition (USB id `c268`), DiRT Rally 2.0 and Assetto Corsa Rally only
+have force feedback through the logi-ffb proxy: Proton's own wheel path
+listed no wheel for the first, and the second's SDK sent the wheel nothing
+([#105](../../issues/105)). `logi-launch`, the Setup page and the generated
+game table now take that route for those two titles on that wheel by
+themselves, raw HID off, so the `games.conf` lines purpleferret wrote by
+hand are no longer needed ([#150](../../issues/150)). Every other wheel
+keeps the registry's route.
+
+**Dependency advisory cleared.** The `url` crate moves to 2.5.9 for
+RUSTSEC-2026-0592 (a stack overflow on nested `blob:` URLs). It reaches
+this workspace only through the Slint compiler and the browser-opening
+helper, so no untrusted URL ever met it.
+
 ## 0.43.1 - 2026-11-14
 
 **An RS Shifter & Handbrake is never dropped from `wheel_accessory`.** When
