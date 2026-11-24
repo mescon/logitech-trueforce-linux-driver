@@ -28,6 +28,38 @@ const CLASSES: [(&str, WheelCaps); 2] = [
     ("G923", WheelCaps::classic()),
 ];
 
+/// The per-edition exceptions to the table: titles that take the logi-ffb
+/// route on one wheel edition only. Generated from the registry's
+/// capability table so the doc cannot drift from what `logi-launch` does.
+fn edition_exceptions() -> String {
+    let gpro_ps = WheelCaps::g_pro_ps();
+    let titles: Vec<&str> = games::sorted_by_name()
+        .into_iter()
+        .filter(|g| g.takes_logi_ffb_on(gpro_ps))
+        .map(|g| g.name)
+        .collect();
+    if titles.is_empty() {
+        return String::new();
+    }
+    format!(
+        "**G PRO, PlayStation/PC edition (USB id `c268`).** On this edition\n\
+         the table's RS50 / G PRO column does not hold for {}. An owner's\n\
+         logs showed those titles get no force feedback on it by the\n\
+         table's route, and that the logi-ffb proxy gives it (issues 105 and\n\
+         150). So on that wheel `logi-launch` takes the logi-ffb route for\n\
+         them by itself, raw HID off. Nothing to add to `games.conf`.\n\n",
+        join_names(&titles)
+    )
+}
+
+fn join_names(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [head @ .., last] => format!("{} and {}", head.join(", "), last),
+    }
+}
+
 fn doc_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../../docs/GAME_SETUP.md")
@@ -165,6 +197,7 @@ fn render() -> String {
         "\nRows marked `*` are not confirmed on this driver yet. They are\n\
          expected or documented, not tested end to end.\n\n",
     );
+    out.push_str(&edition_exceptions());
 
     out.push_str("## Simulated TrueForce\n\n");
     out.push_str(
