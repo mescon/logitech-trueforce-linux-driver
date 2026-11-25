@@ -138,6 +138,12 @@ pub struct Device<S: SysfsIo> {
     /// every `Device` built via `with_io`/`with_io_and_model` (tests, and
     /// any caller with no real sysfs directory to anchor to).
     hid_dir: Option<PathBuf>,
+    /// The wheel's input-node name as discovery read it ("Logitech  PRO
+    /// Racing Wheel for PlayStation/PC"), or empty when there was none to
+    /// read. Kept because the name is the only thing that tells the two
+    /// G PRO editions apart: both enumerate as `c272` in PC mode (issue
+    /// 150), so the product id cannot.
+    input_name: String,
 }
 
 /// The generic label used for the Info page's "Wheel" row when the wheel's
@@ -485,6 +491,7 @@ impl Device<RealSysfs> {
                     model,
                     hid_dir: Some(dir),
                     sysfs_key: Some(key),
+                    input_name: name,
                 });
                 continue;
             }
@@ -499,6 +506,7 @@ impl Device<RealSysfs> {
                     model: WheelModel::G923,
                     hid_dir: Some(dir),
                     sysfs_key: Some(key),
+                    input_name: String::new(),
                 });
             }
         }
@@ -518,6 +526,7 @@ impl Device<RealSysfs> {
                 model: WheelModel::Unknown,
                 hid_dir: Some(dir.clone()),
                 sysfs_key: Some(dir),
+                input_name: String::new(),
             });
         }
         if classic_attrs_present(&dir) {
@@ -530,6 +539,7 @@ impl Device<RealSysfs> {
                 model: WheelModel::G923,
                 hid_dir: Some(dir.clone()),
                 sysfs_key: Some(dir),
+                input_name: String::new(),
             });
         }
         None
@@ -538,14 +548,14 @@ impl Device<RealSysfs> {
 
 impl<S: SysfsIo> Device<S> {
     pub fn with_io(io: S) -> Device<S> {
-        Device { io, model: WheelModel::default(), hid_dir: None, sysfs_key: None }
+        Device { io, model: WheelModel::default(), hid_dir: None, sysfs_key: None, input_name: String::new() }
     }
 
     /// Same as `with_io`, but with an explicit `WheelModel` (tests, and any
     /// caller building a `Device` for a known-model classic wheel without
     /// going through `discover()`'s PID sniffing).
     pub fn with_io_and_model(io: S, model: WheelModel) -> Device<S> {
-        Device { io, model, hid_dir: None, sysfs_key: None }
+        Device { io, model, hid_dir: None, sysfs_key: None, input_name: String::new() }
     }
 
     /// The canonical sysfs directory this device was discovered at, used
@@ -614,7 +624,7 @@ impl<S: SysfsIo> Device<S> {
             WheelModel::Unknown if self.io.exists("wheel_range") => {
                 crate::games::WheelCaps::direct_drive()
             }
-            model => crate::games::WheelCaps::for_wheel(model, self.product_id()),
+            model => crate::games::WheelCaps::for_named_wheel(model, self.product_id(), &self.input_name),
         }
     }
 
@@ -1584,6 +1594,7 @@ mod tests {
             model: WheelModel::Rs50,
             hid_dir: None,
             sysfs_key: Some(std::path::PathBuf::from(key)),
+            input_name: String::new(),
         };
         assert_eq!(
             with_key("/sys/devices/pci0000:00/usb1/1-8/1-8:1.2/0003:046D:C276.0003").hid_id(),
@@ -1609,7 +1620,7 @@ mod tests {
         std::fs::write(dir.join("uevent"), "HID_UNIQ=FAKESERIAL01\n").unwrap();
         let fs = FakeSysfs::new();
         fs.set("range", "900");
-        let d = Device { io: fs, model: WheelModel::G923, hid_dir: Some(dir.clone()), sysfs_key: None };
+        let d = Device { io: fs, model: WheelModel::G923, hid_dir: Some(dir.clone()), sysfs_key: None, input_name: String::new() };
         let info = d.info().unwrap();
         assert_eq!(info.serial, "FAKESERIAL01");
         assert_eq!(info.model, WheelModel::G923);
@@ -1652,7 +1663,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let fs = FakeSysfs::new();
         fs.set("range", "900");
-        let d = Device { io: fs, model: WheelModel::G923, hid_dir: Some(dir.clone()), sysfs_key: None };
+        let d = Device { io: fs, model: WheelModel::G923, hid_dir: Some(dir.clone()), sysfs_key: None, input_name: String::new() };
         assert!(d.classic_firmware().is_none());
         assert!(d.info().is_ok(), "the cheap identity fields must not be affected");
         std::fs::remove_dir_all(&dir).unwrap();

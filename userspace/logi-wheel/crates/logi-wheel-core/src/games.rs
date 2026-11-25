@@ -368,7 +368,7 @@ pub struct WheelCaps {
 }
 
 /// The titles that take the `logi-ffb` route on the G PRO PlayStation/PC
-/// edition (`c268`): DiRT Rally 2.0 and Assetto Corsa Rally.
+/// edition: DiRT Rally 2.0 and Assetto Corsa Rally.
 const G_PRO_PS_LOGI_FFB_TITLES: &[u32] = &[690790, 3917090];
 
 impl WheelCaps {
@@ -402,13 +402,28 @@ impl WheelCaps {
     /// (found by name only) is treated as classic, the answer that cannot
     /// cost an owner force feedback.
     pub fn for_wheel(model: WheelModel, pid: Option<u16>) -> Self {
+        Self::for_named_wheel(model, pid, "")
+    }
+
+    /// [`WheelCaps::for_wheel`] with the wheel's input-node name, which is
+    /// what tells the G PRO editions apart.
+    ///
+    /// The product id does not: the PlayStation/PC edition enumerates as
+    /// `c272` in PC mode, the same id as the Xbox/PC edition, and only
+    /// its name ("PRO Racing Wheel for PlayStation/PC") says which wheel
+    /// it is. 0.43.2 keyed the edition on `c268` alone and so never
+    /// matched the owner's wheel (issue 150). `c268` still counts, for a
+    /// wheel whose name could not be read.
+    ///
+    /// An RS50 in G PRO compatibility mode shares the ids and says
+    /// "PlayStation/PC" too, but is modeled as an RS50 by its name and
+    /// keeps the plain direct-drive answer: the proxy exceptions were
+    /// seen on a real G PRO.
+    pub fn for_named_wheel(model: WheelModel, pid: Option<u16>, name: &str) -> Self {
         match model {
-            // The PlayStation/PC edition of the G PRO keeps its own
-            // product id (`c268`; the Xbox edition is `c272`). An RS50 in
-            // G PRO compatibility mode enumerates with the same ids but
-            // is told apart by name and keeps the plain direct-drive
-            // answer: the proxy exceptions were seen on a real G PRO.
-            WheelModel::GPro if pid == Some(0xc268) => Self::g_pro_ps(),
+            WheelModel::GPro if pid == Some(0xc268) || name.to_uppercase().contains("PLAYSTATION") => {
+                Self::g_pro_ps()
+            }
             WheelModel::Rs50 | WheelModel::GPro => Self::direct_drive(),
             WheelModel::G923 => match pid {
                 Some(0xc26e) | Some(0xc26d) => Self::xbox_sdk(),
@@ -1376,6 +1391,18 @@ mod tests {
         assert_eq!(WheelCaps::for_wheel(WheelModel::GPro, Some(0xc268)), GPRO_PS);
         assert_eq!(WheelCaps::for_wheel(WheelModel::GPro, Some(0xc272)), DD);
         assert_eq!(WheelCaps::for_wheel(WheelModel::GPro, None), DD);
+        // The owner's wheel in issue 150, exactly as its log names it:
+        // PC mode, so the Xbox edition's product id, double space and all.
+        let ps_name = "Logitech  PRO Racing Wheel for PlayStation/PC";
+        assert_eq!(WheelCaps::for_named_wheel(WheelModel::GPro, Some(0xc272), ps_name), GPRO_PS);
+        assert_eq!(
+            WheelCaps::for_named_wheel(WheelModel::GPro, Some(0xc272), "Logitech PRO Racing Wheel for Xbox/PC"),
+            DD
+        );
+        assert_eq!(
+            WheelCaps::for_named_wheel(WheelModel::Rs50, Some(0xc272), "Logitech RS50 Base for PlayStation/PC"),
+            DD
+        );
         // An RS50 in G PRO compatibility mode shares the product id, not
         // the exception.
         assert_eq!(WheelCaps::for_wheel(WheelModel::Rs50, Some(0xc268)), DD);
