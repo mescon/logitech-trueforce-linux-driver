@@ -42,7 +42,8 @@ fn edition_exceptions() -> String {
         return String::new();
     }
     format!(
-        "**G PRO, PlayStation/PC edition (USB id `c268`).** On this edition\n\
+        "**G PRO, PlayStation/PC edition.** On this edition (the wheel that\n\
+         names itself \"PRO Racing Wheel for PlayStation/PC\")\n\
          the table's RS50 / G PRO column does not hold for {}. An owner's\n\
          logs showed those titles get no force feedback on it by the\n\
          table's route, and that the logi-ffb proxy gives it (issues 105 and\n\

@@ -99,7 +99,8 @@ Without it, the line replaces the game instead of wrapping it.
 Rows marked `*` are not confirmed on this driver yet. They are
 expected or documented, not tested end to end.
 
-**G PRO, PlayStation/PC edition (USB id `c268`).** On this edition
+**G PRO, PlayStation/PC edition.** On this edition (the wheel that
+names itself "PRO Racing Wheel for PlayStation/PC")
 the table's RS50 / G PRO column does not hold for Assetto Corsa Rally (early access) and DiRT Rally 2.0. An owner's
 logs showed those titles get no force feedback on it by the
 table's route, and that the logi-ffb proxy gives it (issues 105 and
