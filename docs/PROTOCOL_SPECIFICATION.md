@@ -5,7 +5,7 @@
 **Author**: Verified from USB capture analysis
 **Status**: Protocol reference for Linux driver development
 
-This document started as an RS50-only reference. Most of it now also applies to the Logitech G Pro Racing Wheel (`046d:c272` Xbox/PC, `046d:c268` PS/PC). Where the G Pro or the RS50 differs, the text says so at that point.
+This document started as an RS50-only reference. Most of it now also applies to the Logitech G Pro Racing Wheel (`046d:c272` and `046d:c268`, see section 5.1). Where the G Pro or the RS50 differs, the text says so at that point.
 
 ---
 
@@ -27,7 +27,7 @@ This document started as an RS50-only reference. Most of it now also applies to 
 | Property | Value |
 |----------|-------|
 | Vendor ID | `0x046D` (Logitech) |
-| Product ID | `0xC272` (Xbox/PC), `0xC268` (PS/PC) |
+| Product ID | `0xC272` (Xbox/PC, and PS/PC), `0xC268` (PS/PC) |
 | Device Name | Logitech G Pro Racing Wheel |
 
 The G Pro exposes additional HID++ sub-devices. HID++ is Logitech's configuration protocol, carried over USB. A sub-device is a unit inside the wheel that HID++ addresses with its own device index. The G Pro sub-devices are at indices 0x01, 0x02 and 0x05, all over the shared interface 1. The RS50 is a single-device base. Centre calibration (section 5, page 0x812C) lives on sub-device 0x05. The driver only uses it on the G Pro.
@@ -763,7 +763,7 @@ Two sysfs attributes drive this (see `docs/SYSFS_API.md`). `wheel_calibrate` is 
 
 ### 5.1 G PRO PID Feature Set (RS50-in-compat-mode and real G PRO)
 
-The G PRO Racing Wheel PIDs (product IDs) for Xbox/PC (`046d:c272`) and PS/PC (`046d:c268`) cover two physically distinct cases:
+The G PRO Racing Wheel PIDs (product IDs) are `046d:c272` and `046d:c268`. The PS/PC edition has been seen with both ids (`c268` in a Windows capture, `c272` on Linux in PC mode, issues 8 and 150), so the id does not tell the editions apart. The product name does. The two ids cover two physically distinct cases:
 
 - **Real G PRO Racing Wheel.** Direct-drive wheel. iProduct string is "Logitech PRO Racing Wheel".
 - **RS50 in "G PRO compatibility" mode.** RS50 hardware re-enumerated as the same VID/PID via the wheel's OLED menu. iProduct string is "Logitech RS50 Base for PlayStation/PC".

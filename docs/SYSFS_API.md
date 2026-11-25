@@ -3,7 +3,7 @@
 **Driver**: `hid-logitech-dd` (module), `logitech-dd` (hid_driver)
 **Devices**:
 - Logitech RS50 Direct Drive Wheel Base (USB `046d:c276`)
-- Logitech G Pro Racing Wheel (USB `046d:c272` Xbox/PC, `046d:c268` PS/PC)
+- Logitech G Pro Racing Wheel (USB `046d:c272` either edition, `046d:c268` PS/PC)
 - Logitech G923 (USB `046d:c266`/`c267` PlayStation edition, `046d:c26e` Xbox edition)
 
 **Applies to**: the `hid-logitech-dd` driver in this repository.
@@ -23,7 +23,7 @@ The driver puts the wheel settings in sysfs attributes under this directory:
 /sys/bus/hid/devices/<DEVICE_ID>/
 ```
 
-`<DEVICE_ID>` is typically `0003:046D:C276.XXXX` (RS50), `0003:046D:C272.XXXX` (G Pro Xbox/PC), or `0003:046D:C268.XXXX` (G Pro PS/PC).
+`<DEVICE_ID>` is typically `0003:046D:C276.XXXX` (RS50), `0003:046D:C272.XXXX` (G Pro, either edition), or `0003:046D:C268.XXXX` (G Pro PS/PC). The PS/PC edition has been seen with both ids.
 
 The driver talks to the wheel with HID++, Logitech's configuration protocol over USB. Each HID++ setting lives in a feature, named by a hex id such as `0x8137`. A feature has numbered functions, written `fn` in this document.
 
