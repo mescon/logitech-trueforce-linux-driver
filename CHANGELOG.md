@@ -5,6 +5,17 @@ changes to the sysfs surface, minor versions add supported wheels or
 new attributes, patch versions are bug fixes and documentation. Pre-1.0
 the contract is "it works on RS50 and G Pro as listed here".
 
+## 0.43.3 - 2026-11-25
+
+**The G PRO PlayStation/PC route from 0.43.2 now reaches the wheel it was
+written for.** 0.43.2 recognised that edition by the USB id `c268`, but in
+PC mode it enumerates as `c272`, the same id as the Xbox/PC edition, so
+`logi-launch` kept the old route and purpleferret's logs showed it
+([#150](../../issues/150)). The edition is now recognised by the name the
+wheel gives itself ("PRO Racing Wheel for PlayStation/PC"). DiRT Rally 2.0
+and Assetto Corsa Rally take the logi-ffb route on it without any
+`games.conf` lines, as 0.43.2 meant them to.
+
 ## 0.43.2 - 2026-11-24
 
 **The G PRO PlayStation/PC edition gets its own route for two games.** On

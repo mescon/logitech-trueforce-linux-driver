@@ -117,7 +117,9 @@ until the last round.
   want of buttons past 32), and finally the debug trace proving the game
   sent the wheel nothing until it was given an identity the game knew.
   Then the two working `games.conf` lines that made the proxy the default
-  route for both games on that edition ([#150](../../issues/150)).
+  route for both games on that edition ([#150](../../issues/150)), and
+  the logs from 0.43.2 showing that edition shares the Xbox edition's
+  product id in PC mode, which 0.43.3 corrected.
 - **[Lorenzoo78](https://github.com/Lorenzoo78)** - the Assetto Corsa EVO
   stutter report under the launcher ([#74](../../issues/74)).
 - **[matthiasvegh](https://github.com/matthiasvegh)** - twelve issues and
